@@ -36,7 +36,7 @@ export async function createJob(input: {
   const [job] = await sql`
     INSERT INTO jobs (type, capability, payload, channel_id, preferred_worker_id, priority, created_by)
     VALUES (
-      ${input.type}, ${def.capability}, ${JSON.stringify(input.payload ?? {})}::jsonb,
+      ${input.type}, ${def.capability}, ${JSON.stringify(input.payload ?? {})}::text::jsonb,
       ${input.channelId ?? null},
       (SELECT home_worker_id FROM channels WHERE id = ${input.channelId ?? null}),
       ${input.priority ?? 0}, ${input.createdBy}
@@ -139,7 +139,7 @@ export async function heartbeat(jobId: string, workerId: string, progress?: numb
 
 export async function completeJob(jobId: string, workerId: string, result: Record<string, unknown>, message?: string) {
   const rows = await db()`
-    UPDATE jobs SET status = 'succeeded', result = ${JSON.stringify(result)}::jsonb, progress = 1,
+    UPDATE jobs SET status = 'succeeded', result = ${JSON.stringify(result)}::text::jsonb, progress = 1,
       message = ${message?.slice(0, 500) ?? "Done"}, finished_at = now(), lease_expires_at = NULL, error = NULL
     WHERE id = ${jobId} AND worker_id = ${workerId} AND status = 'running'
     RETURNING id

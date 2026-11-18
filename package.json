@@ -20,6 +20,10 @@
     "test:unit": "node --test \"apps/portal/lib/**/*.test.ts\"",
     "test:worker": "node --test \"apps/worker/*.test.ts\"",
     "typecheck": "npm run typecheck -w apps/portal && npm run typecheck:worker",
-    "typecheck:worker": "tsc -p apps/worker/tsconfig.json"
+    "typecheck:worker": "tsc -p apps/worker/tsconfig.json",
+    "test:ui": "node scripts/ui-e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.1"
   }
 }

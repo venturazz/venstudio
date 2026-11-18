@@ -12,6 +12,6 @@ export async function audit(entry: {
   await db()`
     INSERT INTO audit_log (user_id, worker_id, action, target, detail, ip)
     VALUES (${entry.userId ?? null}, ${entry.workerId ?? null}, ${entry.action}, ${entry.target ?? null},
-            ${JSON.stringify(entry.detail ?? {})}::jsonb, ${entry.ip ?? null})
+            ${JSON.stringify(entry.detail ?? {})}::text::jsonb, ${entry.ip ?? null})
   `;
 }

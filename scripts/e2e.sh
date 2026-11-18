@@ -74,6 +74,8 @@ BYTES=$(q "SELECT bytes FROM artifacts WHERE job_id = '$SMOKE_JOB' AND name = 's
 FILE=$(q "SELECT storage_path FROM artifacts WHERE job_id = '$SMOKE_JOB'")
 ffprobe -v error -show_entries stream=width,height -of csv=p=0 "$FILE" | grep -q "540,960" || fail "artifact is not a 540x960 video"
 q "SELECT result FROM jobs WHERE id = '$SMOKE_JOB'"
+[ "$(q "SELECT jsonb_typeof(result) FROM jobs WHERE id = '$SMOKE_JOB'")" = "object" ] || fail "job result stored as $(q "SELECT jsonb_typeof(result) FROM jobs WHERE id = '$SMOKE_JOB'"), not object"
+[ "$(q "SELECT result->>'resolution' FROM jobs WHERE id = '$SMOKE_JOB'")" = "540x960" ] || fail "result fields missing"
 
 echo "== artifacts require a signed-in user"
 ART=$(q "SELECT id FROM artifacts WHERE job_id = '$SMOKE_JOB'")
