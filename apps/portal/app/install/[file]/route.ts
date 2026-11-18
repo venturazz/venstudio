@@ -16,8 +16,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ file: string }
   const { file } = await ctx.params;
   const entry = FILES[file];
   if (!entry) return new Response("Not found", { status: 404 });
-  const dir = path.resolve(process.cwd(), env().WORKER_DIR);
-  let body = await readFile(path.join(dir, entry.source), "utf8");
+  const dir = path.resolve(/*turbopackIgnore: true*/ process.cwd(), env().WORKER_DIR);
+  let body = await readFile(path.join(/*turbopackIgnore: true*/ dir, entry.source), "utf8");
   if (entry.template) body = body.replaceAll("{{PORTAL_URL}}", env().APP_URL.replace(/\/+$/, ""));
   return new Response(body, {
     headers: { "content-type": entry.type, "cache-control": "no-store", "x-content-type-options": "nosniff" },

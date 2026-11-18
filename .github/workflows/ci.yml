@@ -62,7 +62,19 @@ jobs:
         run: npm run build
 
       - name: Install ffmpeg
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+        timeout-minutes: 8
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # Skip slow man-db triggers; fall back to a static build if apt is stuck.
+          echo 'path-exclude /usr/share/man/*' | sudo tee /etc/dpkg/dpkg.cfg.d/01_noman >/dev/null
+          sudo rm -f /var/lib/man-db/auto-update
+          if ! timeout 240 sh -c 'sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg'; then
+            curl -fsSL -o /tmp/ff.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+            mkdir -p /tmp/ff && tar -xJf /tmp/ff.tar.xz -C /tmp/ff --strip-components=1
+            sudo cp /tmp/ff/ffmpeg /tmp/ff/ffprobe /usr/local/bin/
+          fi
+          ffmpeg -version | head -1
 
       - name: End-to-end (portal + Postgres + worker)
         run: bash scripts/e2e.sh
