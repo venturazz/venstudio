@@ -1,0 +1,25 @@
+{
+  "name": "venstudio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "VenStudio: command center for automated YouTube video production",
+  "workspaces": [
+    "apps/portal",
+    "packages/protocol"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "npm run dev -w apps/portal",
+    "build": "npm run build -w apps/portal",
+    "start": "npm run start -w apps/portal",
+    "migrate": "npm run migrate -w apps/portal",
+    "test": "npm run test:unit && npm run test:worker",
+    "test:unit": "node --test \"apps/portal/lib/**/*.test.ts\"",
+    "test:worker": "node --test \"apps/worker/*.test.ts\"",
+    "typecheck": "npm run typecheck -w apps/portal && npm run typecheck:worker",
+    "typecheck:worker": "tsc -p apps/worker/tsconfig.json"
+  }
+}

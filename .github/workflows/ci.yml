@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: venstudio
+          POSTGRES_PASSWORD: venstudio
+          POSTGRES_DB: venstudio
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U venstudio" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://venstudio:venstudio@localhost:5432/venstudio
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Upload lockfile (first run)
+        if: hashFiles('package-lock.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-lock
+          path: package-lock.json
+
+      - name: Unit tests (crypto)
+        run: npm run test:unit
+
+      - name: Worker tests
+        run: npm run test:worker
+
+      - name: Typecheck worker
+        run: npm run typecheck:worker
+
+      - name: Typecheck portal
+        run: npm run typecheck -w apps/portal
+
+      - name: Build portal
+        run: npm run build
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: End-to-end (portal + Postgres + worker)
+        run: bash scripts/e2e.sh
+
+      - name: Shell syntax
+        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f apps/portal/Dockerfile -t venstudio-portal:ci .

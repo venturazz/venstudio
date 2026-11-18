@@ -1,0 +1,17 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Large uploads (rendered videos) from workers.
+	request_body {
+		max_size 4GB
+	}
+
+	reverse_proxy portal:3000 {
+		# Caddy sets X-Forwarded-For from the real client; the portal trusts it (TRUST_PROXY=true).
+		header_up X-Real-IP {remote_host}
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+}

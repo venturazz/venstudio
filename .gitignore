@@ -1,0 +1,20 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# local data
+.env
+.env.*
+!.env.example
+data/
+artifacts/
+apps/worker/work/
+apps/worker/config.json
+
+# os / editor
+.DS_Store
+*.log

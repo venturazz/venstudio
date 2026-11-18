@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/* Theme: neutral "studio" palette, light and dark from the OS setting. */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-bg: var(--vs-bg);
+  --color-surface: var(--vs-surface);
+  --color-surface-2: var(--vs-surface-2);
+  --color-border: var(--vs-border);
+  --color-fg: var(--vs-fg);
+  --color-muted: var(--vs-muted);
+  --color-accent: var(--vs-accent);
+  --color-accent-fg: var(--vs-accent-fg);
+  --color-ok: var(--vs-ok);
+  --color-warn: var(--vs-warn);
+  --color-danger: var(--vs-danger);
+  --color-info: var(--vs-info);
+}
+
+:root {
+  --vs-bg: #f6f7f9;
+  --vs-surface: #ffffff;
+  --vs-surface-2: #f0f2f5;
+  --vs-border: #e2e5ea;
+  --vs-fg: #14161a;
+  --vs-muted: #5d6573;
+  --vs-accent: #6d4aff;
+  --vs-accent-fg: #ffffff;
+  --vs-ok: #12805c;
+  --vs-warn: #a15c00;
+  --vs-danger: #c8322b;
+  --vs-info: #1f6feb;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --vs-bg: #0c0d10;
+    --vs-surface: #14161b;
+    --vs-surface-2: #1b1e25;
+    --vs-border: #272b34;
+    --vs-fg: #eceef2;
+    --vs-muted: #969daa;
+    --vs-accent: #8b6cff;
+    --vs-accent-fg: #ffffff;
+    --vs-ok: #3ccf91;
+    --vs-warn: #f0b04a;
+    --vs-danger: #ff6b62;
+    --vs-info: #5ea2ff;
+    color-scheme: dark;
+  }
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--vs-bg);
+  color: var(--vs-fg);
+}
+
+/* Inputs at 16px stop iOS Safari from zooming on focus. */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+@media (min-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 14px;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--vs-accent);
+  outline-offset: 2px;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
