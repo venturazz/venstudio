@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowRight, Cpu, ListVideo, Tv } from "lucide-react";
 import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
-import { reapExpiredLeases } from "@/lib/server/jobs.ts";
+import { JOB_TYPES, reapExpiredLeases } from "@/lib/server/jobs.ts";
 import { presence } from "@/lib/server/workers.ts";
 import { gatewayStatus } from "@/lib/server/ai-gateway.ts";
 import { Alert, Badge, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, Stat, timeAgo } from "@/components/ui.tsx";
@@ -89,7 +89,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
                 <li key={j.id}>
                   <Link href={`/jobs/${j.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2 sm:px-5">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{j.type}</p>
+                      <p className="truncate text-sm font-medium">{JOB_TYPES[j.type as keyof typeof JOB_TYPES]?.label ?? j.type}</p>
                       <p className="truncate text-xs text-muted">
                         {j.channel ?? "No channel"} · {j.worker ?? "unassigned"} · {timeAgo(j.created_at)}
                       </p>
