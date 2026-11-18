@@ -14,7 +14,7 @@ WORK="$ROOT/.e2e"
 rm -rf "$WORK" && mkdir -p "$WORK"
 
 fail() { echo "E2E FAIL: $*" >&2; [ -f "$WORK/portal.log" ] && tail -n 80 "$WORK/portal.log" >&2; exit 1; }
-q() { psql "$DATABASE_URL" -tAc "$1"; }
+q() { psql "$DATABASE_URL" -qtAX -v ON_ERROR_STOP=1 -c "$1"; }
 
 echo "== migrate"
 node "$ROOT/apps/portal/scripts/migrate.mjs"
