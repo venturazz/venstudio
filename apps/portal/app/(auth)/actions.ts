@@ -17,7 +17,7 @@ import { getDummyHash, hashPassword, PASSWORD_MIN_LENGTH, verifyPassword } from 
 import { decrypt } from "@/lib/crypto/secretbox.ts";
 import { verifyTotp } from "@/lib/crypto/totp.ts";
 import { safeEqual } from "@/lib/crypto/tokens.ts";
-import { str, type FormState } from "@/lib/form.ts";
+import { fail, str, type FormState } from "@/lib/form.ts";
 
 const GENERIC = "Email or password is incorrect.";
 const BLOCKED = "Too many attempts. Wait 15 minutes and try again.";
@@ -25,16 +25,16 @@ const BLOCKED = "Too many attempts. Wait 15 minutes and try again.";
 export async function login(_prev: FormState, fd: FormData): Promise<FormState> {
   const email = str(fd, "email", 254).toLowerCase();
   const password = typeof fd.get("password") === "string" ? (fd.get("password") as string) : "";
-  if (!email || !password) return { error: GENERIC };
+  if (!email || !password) return fail(fd, GENERIC);
   const meta = await requestMeta();
-  if (await loginBlocked(email, meta.ip)) return { error: BLOCKED };
+  if (await loginBlocked(email, meta.ip)) return fail(fd, BLOCKED);
 
   const [user] = await db()`SELECT id, password_hash, totp_enabled FROM users WHERE email = ${email}`;
   // Always run one hash so response time doesn't reveal whether the email exists.
   const ok = await verifyPassword(password, user?.password_hash ?? (await getDummyHash()));
   if (!user || !ok) {
     await recordLoginAttempt(email, meta.ip, false);
-    return { error: GENERIC };
+    return fail(fd, GENERIC);
   }
 
   if (user.totp_enabled) {
@@ -79,15 +79,15 @@ const setupSchema = z.object({
 
 export async function setupOwner(_prev: FormState, fd: FormData): Promise<FormState> {
   const expected = env().SETUP_TOKEN;
-  if (!expected) return { error: "SETUP_TOKEN is not set on the server." };
+  if (!expected) return fail(fd, "SETUP_TOKEN is not set on the server.");
   const parsed = setupSchema.safeParse({
     token: str(fd, "token", 200),
     name: str(fd, "name", 80),
     email: str(fd, "email", 254).toLowerCase(),
     password: typeof fd.get("password") === "string" ? fd.get("password") : "",
   });
-  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
-  if (!safeEqual(parsed.data.token, expected)) return { error: "Setup token is incorrect." };
+  if (!parsed.success) return fail(fd, parsed.error.issues[0]?.message ?? "Invalid input");
+  if (!safeEqual(parsed.data.token, expected)) return fail(fd, "Setup token is incorrect.");
 
   const hash = await hashPassword(parsed.data.password);
   const meta = await requestMeta();

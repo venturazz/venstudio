@@ -8,7 +8,7 @@ import { requireUser } from "@/lib/server/auth.ts";
 import { audit } from "@/lib/server/audit.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { cancelJob, createJob, JOB_TYPES, retryJob } from "@/lib/server/jobs.ts";
-import { str, type FormState } from "@/lib/form.ts";
+import { fail, str, type FormState } from "@/lib/form.ts";
 
 const schema = z.object({
   type: z.enum(Object.keys(JOB_TYPES) as [JobType, ...JobType[]]),
@@ -23,7 +23,7 @@ export async function createJobAction(_prev: FormState, fd: FormData): Promise<F
     channelId: str(fd, "channelId", 40),
     seconds: str(fd, "seconds", 3) || "5",
   });
-  if (!p.success) return { error: p.error.issues[0]?.message ?? "Invalid input" };
+  if (!p.success) return fail(fd, p.error.issues[0]?.message ?? "Invalid input");
   const payload = p.data.type === "smoke-test" ? { seconds: p.data.seconds, width: 1080, height: 1920, fps: 30 } : {};
   const id = await createJob({ type: p.data.type, payload, channelId: p.data.channelId || null, createdBy: user.id });
   await audit({ userId: user.id, action: "job.create", target: id, detail: { type: p.data.type }, ip: (await requestMeta()).ip });

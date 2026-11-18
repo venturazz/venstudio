@@ -8,7 +8,7 @@ import { db } from "@/lib/server/db.ts";
 import { audit } from "@/lib/server/audit.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { FORMATS } from "@/lib/formats.ts";
-import { str, type FormState } from "@/lib/form.ts";
+import { fail, str, type FormState } from "@/lib/form.ts";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required").max(80),
@@ -44,7 +44,7 @@ function read(fd: FormData) {
 export async function createChannel(_prev: FormState, fd: FormData): Promise<FormState> {
   const user = await requireUser("editor");
   const p = read(fd);
-  if (!p.success) return { error: p.error.issues[0]?.message ?? "Invalid input" };
+  if (!p.success) return fail(fd, p.error.issues[0]?.message ?? "Invalid input");
   const d = p.data;
   const [row] = await db()`
     INSERT INTO channels (name, handle, niche, format, language, google_account, status, videos_per_day, home_worker_id, notes)
@@ -61,7 +61,7 @@ export async function updateChannel(id: string, _prev: FormState, fd: FormData):
   const user = await requireUser("editor");
   if (!z.uuid().safeParse(id).success) return { error: "Unknown channel" };
   const p = read(fd);
-  if (!p.success) return { error: p.error.issues[0]?.message ?? "Invalid input" };
+  if (!p.success) return fail(fd, p.error.issues[0]?.message ?? "Invalid input");
   const d = p.data;
   await db()`
     UPDATE channels SET name = ${d.name}, handle = ${d.handle || null}, niche = ${d.niche}, format = ${d.format},

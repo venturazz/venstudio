@@ -31,7 +31,8 @@ export function ChannelForm({
   submitLabel: string;
 }) {
   const [state, formAction] = useActionState(action, undefined);
-  const v = values ?? {};
+  // After a failed submit, show what the user typed instead of the saved values.
+  const v: Partial<Record<keyof ChannelValues, string | number>> = { ...values, ...(state?.values ?? {}) };
   return (
     <form action={formAction} className="space-y-5">
       {state?.error && <Alert tone="danger">{state.error}</Alert>}

@@ -11,7 +11,7 @@ export function LoginForm() {
     <form action={action} className="space-y-4">
       {state?.error && <Alert tone="danger">{state.error}</Alert>}
       <Field label="Email" htmlFor="email">
-        <Input id="email" name="email" type="email" autoComplete="username" required autoFocus />
+        <Input id="email" name="email" type="email" autoComplete="username" required autoFocus defaultValue={state?.values?.email} />
       </Field>
       <Field label="Password" htmlFor="password">
         <Input id="password" name="password" type="password" autoComplete="current-password" required />
@@ -57,10 +57,10 @@ export function SetupForm() {
         <Input id="token" name="token" type="password" autoComplete="off" required />
       </Field>
       <Field label="Your name" htmlFor="name">
-        <Input id="name" name="name" autoComplete="name" required />
+        <Input id="name" name="name" autoComplete="name" required defaultValue={state?.values?.name} />
       </Field>
       <Field label="Email" htmlFor="email">
-        <Input id="email" name="email" type="email" autoComplete="username" required />
+        <Input id="email" name="email" type="email" autoComplete="username" required defaultValue={state?.values?.email} />
       </Field>
       <Field label="Password" htmlFor="password" hint="At least 12 characters. A passphrase works well.">
         <Input id="password" name="password" type="password" autoComplete="new-password" minLength={12} required />
