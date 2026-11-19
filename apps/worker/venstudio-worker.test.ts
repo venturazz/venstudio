@@ -15,12 +15,19 @@ import {
   normalizePortalUrl,
   parseArgs,
   NonRetryableError,
+  parseBlackRuns,
+  parseFreezeRuns,
   parseLoudness,
   parseProbe,
   parseShowinfoTimes,
+  parseSilenceRuns,
+  parseTruePeak,
   summarizeAnalysis,
   wrapText,
 } from "./venstudio-worker.ts";
+import { technicalGate } from "../portal/lib/studio/qc.ts";
+import { measureFromQcResult } from "../portal/lib/studio/qc-result.ts";
+import { seedTemplates } from "../portal/lib/studio/templates.ts";
 
 /** In-memory fake of the portal's worker API. */
 function fakePortal() {
@@ -350,6 +357,94 @@ test("analyze-video refuses a job without exactly one input asset", async (t) =>
   portal.state.queue.push({ id: "33333333-3333-4444-8555-666666666666", type: "analyze-video", payload: { inputs: [] } });
   await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
   assert.equal(portal.state.failed.get("33333333-3333-4444-8555-666666666666")?.retryable, false);
+});
+
+test("qc parsers read literal ffmpeg log lines", () => {
+  const black = "[blackdetect @ 0x55d] black_start:2 black_end:4.04 black_duration:2.04\n[blackdetect @ 0x55d] black_start:9.5 black_end:10 black_duration:0.5";
+  assert.deepEqual(parseBlackRuns(black), [{ start: 2, end: 4.04 }, { start: 9.5, end: 10 }]);
+  assert.deepEqual(parseBlackRuns("nothing"), []);
+
+  const silence = [
+    "[silencedetect @ 0x1] silence_start: 3.001",
+    "[silencedetect @ 0x1] silence_end: 6.5 | silence_duration: 3.499",
+    "[silencedetect @ 0x1] silence_start: 8",
+  ].join("\n");
+  assert.deepEqual(parseSilenceRuns(silence, 10), [{ start: 3, end: 6.5 }, { start: 8, end: 10 }]);
+
+  const freeze = [
+    "[freezedetect @ 0x2] lavfi.freezedetect.freeze_start: 2",
+    "[freezedetect @ 0x2] lavfi.freezedetect.freeze_duration: 3",
+    "[freezedetect @ 0x2] lavfi.freezedetect.freeze_end: 5",
+  ].join("\n");
+  assert.deepEqual(parseFreezeRuns(freeze, 10), [{ start: 2, end: 5 }]);
+  assert.deepEqual(parseFreezeRuns("[freezedetect @ 0x2] lavfi.freezedetect.freeze_start: 7", 10), [{ start: 7, end: 10 }]);
+
+  const summary = "[Parsed_ebur128_0 @ 0x3] Summary:\n\n  Integrated loudness:\n    I:         -14.2 LUFS\n    Threshold: -24.2 LUFS\n\n  Loudness range:\n    LRA:         3.0 LU\n\n  True peak:\n    Peak:        -1.3 dBFS\n";
+  assert.equal(parseTruePeak(summary), -1.3);
+  assert.equal(parseTruePeak("True peak:\n    Peak:       -inf dBFS"), null);
+  assert.equal(parseTruePeak("no summary"), null);
+});
+
+test("qc-video refuses a job without exactly one input", async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "QC guard worker" });
+  portal.state.queue.push({ id: "44444444-3333-4444-8555-666666666666", type: "qc-video", payload: { inputs: [] } });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  assert.equal(portal.state.failed.get("44444444-3333-4444-8555-666666666666")?.retryable, false);
+});
+
+test("qc-video finds black and silent sections and feeds the technical gate", { skip: !hasFfmpeg && "ffmpeg is not installed" }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "QC worker" });
+
+  // 2 s red, 2 s black, 2 s blue; a tone for 3 s, then 3 s of silence.
+  const clip = path.join(home, "qc-sample.mp4");
+  execFileSync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=red:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "color=c=black:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=3",
+    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=3",
+    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v];[3:a][4:a]concat=n=2:v=0:a=1[a]",
+    "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", clip,
+  ]);
+  const assetId = "55555555-2222-4333-8444-555555555555";
+  const jobId = "66666666-3333-4444-8555-666666666666";
+  portal.state.inputs.set(assetId, await readFile(clip));
+  portal.state.queue.push({ id: jobId, type: "qc-video", payload: { inputs: [assetId] } });
+
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+
+  const result = portal.state.completed.get(jobId) as Record<string, unknown>;
+  assert.ok(result, "qc job completed");
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.width, 320);
+  assert.equal(result.hasAudio, true);
+  assert.equal(typeof result.integratedLufs, "number");
+  const black = result.blackRuns as Array<{ start: number; end: number }>;
+  assert.ok(black.some((r) => r.start < 2.5 && r.end > 3.5), `black run near 2-4 s: ${JSON.stringify(black)}`);
+  const silence = result.silenceRuns as Array<{ start: number; end: number }>;
+  assert.ok(silence.some((r) => r.end - r.start >= 2.5), `silent run of about 3 s: ${JSON.stringify(silence)}`);
+  assert.ok((portal.state.artifacts.get(`${jobId}/qc.json`)?.bytes ?? 0) > 100, "qc.json uploaded");
+
+  const measure = measureFromQcResult(result);
+  assert.ok(measure, "result matches the technical measure shape");
+  const gate = technicalGate(measure, seedTemplates()[0], "short");
+  assert.equal(gate.gate, "G-technical");
+  assert.equal(gate.passed, false);
 });
 
 test("wrapText keeps lines within the limit and drops nothing", () => {

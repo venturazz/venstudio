@@ -36,7 +36,7 @@ import type {
   WorkerMode,
 } from "../../packages/protocol/src/index.ts";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -340,6 +340,72 @@ export function parseLoudness(stderr: string): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
+export interface TimeRun {
+  start: number;
+  end: number;
+}
+
+/** Black runs from ffmpeg's blackdetect log ("black_start:1.5 black_end:3.5 ..."). */
+export function parseBlackRuns(stderr: string): TimeRun[] {
+  const runs: TimeRun[] = [];
+  for (const m of stderr.matchAll(/black_start:(-?\d+(?:\.\d+)?)\s+black_end:(-?\d+(?:\.\d+)?)/g)) {
+    runs.push({ start: round2(Math.max(0, Number(m[1]))), end: round2(Number(m[2])) });
+  }
+  return runs;
+}
+
+/** Pairs "<label>_start: t" and "<label>_end: t" lines. A run still open at the end of the log ends at the video's end. */
+function pairRuns(stderr: string, label: string, durationSec: number): TimeRun[] {
+  const runs: TimeRun[] = [];
+  let open: number | null = null;
+  for (const m of stderr.matchAll(new RegExp(`${label}_(start|end):\\s*(-?\\d+(?:\\.\\d+)?)`, "g"))) {
+    const t = Number(m[2]);
+    if (m[1] === "start") {
+      open = Math.max(0, t);
+    } else if (open !== null) {
+      runs.push({ start: round2(open), end: round2(t) });
+      open = null;
+    }
+  }
+  if (open !== null && durationSec > open) runs.push({ start: round2(open), end: round2(durationSec) });
+  return runs;
+}
+
+/** Silent runs from silencedetect ("silence_start: 3" then "silence_end: 6 | silence_duration: 3"). */
+export function parseSilenceRuns(stderr: string, durationSec: number): TimeRun[] {
+  return pairRuns(stderr, "silence", durationSec);
+}
+
+/** Frozen-picture runs from freezedetect ("lavfi.freezedetect.freeze_start: 2" then "freeze_end: 5"). */
+export function parseFreezeRuns(stderr: string, durationSec: number): TimeRun[] {
+  return pairRuns(stderr, "freeze", durationSec);
+}
+
+/** True peak (dBTP) from the ebur128 summary block ("True peak:" then "Peak: -1.2 dBFS"). Null when absent or -inf. */
+export function parseTruePeak(stderr: string): number | null {
+  const at = stderr.lastIndexOf("True peak:");
+  if (at < 0) return null;
+  const m = /Peak:\s+(-?\d+(?:\.\d+)?)\s+dBFS/.exec(stderr.slice(at));
+  if (!m) return null;
+  const v = Number(m[1]);
+  return Number.isFinite(v) ? v : null;
+}
+
+export interface QcDoc {
+  schemaVersion: 1;
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  hasAudio: boolean;
+  integratedLufs: number | null;
+  truePeakDb: number | null;
+  blackRuns: TimeRun[];
+  silenceRuns: TimeRun[];
+  freezeRuns: TimeRun[];
+  cuts: number[];
+}
+
 export interface AnalysisDoc {
   schemaVersion: 1;
   source: { assetId: string };
@@ -489,6 +555,58 @@ export const handlers: Record<string, Handler> = {
       height: probe.height,
       fps: probe.fps,
     };
+  },
+
+  async "qc-video"(ctx) {
+    const inputs = Array.isArray(ctx.job.payload.inputs) ? ctx.job.payload.inputs.filter((v): v is string => typeof v === "string") : [];
+    const assetId = inputs[0];
+    if (!assetId || !/^[0-9a-f-]{36}$/i.test(assetId)) throw new NonRetryableError("qc-video needs exactly one input video");
+    const input = path.join(ctx.workDir, "input.bin");
+    if (!(await stat(input).catch(() => null))) {
+      ctx.progress(0.05, "Downloading video");
+      await ctx.download(assetId, input);
+    }
+    ctx.progress(0.15, "Reading stream info");
+    let probeJson: unknown;
+    try {
+      probeJson = JSON.parse(
+        (await runCapture(ffprobePath(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input], ctx.signal)).stdout,
+      );
+    } catch (err) {
+      if (ctx.signal.aborted) throw err;
+      throw new NonRetryableError("The file is not a readable video");
+    }
+    const probe = parseProbe(probeJson);
+    ctx.progress(0.3, probe.hasAudio ? "Measuring picture and sound" : "Measuring picture");
+    const args = ["-hide_banner", "-nostats", "-i", input, "-vf", "blackdetect=d=0.3:pix_th=0.10,freezedetect=n=-60dB:d=2.0"];
+    if (probe.hasAudio) args.push("-af", "silencedetect=noise=-50dB:d=1.0,ebur128=peak=true");
+    else args.push("-an");
+    args.push("-f", "null", "-");
+    const measured = (await runCapture(ffmpegPath(), args, ctx.signal)).stderr;
+    ctx.progress(0.8, "Detecting cuts");
+    const scenes = await runCapture(
+      ffmpegPath(),
+      ["-hide_banner", "-nostats", "-i", input, "-an", "-vf", "select='gt(scene,0.3)',showinfo", "-f", "null", "-"],
+      ctx.signal,
+    );
+    const doc: QcDoc = {
+      schemaVersion: 1,
+      width: probe.width,
+      height: probe.height,
+      fps: probe.fps,
+      durationSec: probe.durationSec,
+      hasAudio: probe.hasAudio,
+      integratedLufs: probe.hasAudio ? parseLoudness(measured) : null,
+      truePeakDb: probe.hasAudio ? parseTruePeak(measured) : null,
+      blackRuns: parseBlackRuns(measured),
+      silenceRuns: probe.hasAudio ? parseSilenceRuns(measured, probe.durationSec) : [],
+      freezeRuns: parseFreezeRuns(measured, probe.durationSec),
+      cuts: parseShowinfoTimes(scenes.stderr, probe.durationSec).map(round2),
+    };
+    const out = path.join(ctx.workDir, "qc.json");
+    await writeFile(out, JSON.stringify(doc, null, 2));
+    await ctx.upload("qc.json", out, "application/json");
+    return { ...doc };
   },
 
   async "render-preview"(ctx) {
