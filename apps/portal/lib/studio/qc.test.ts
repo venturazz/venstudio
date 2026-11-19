@@ -236,3 +236,17 @@ test("qcSummary is plain English", () => {
   assert.match(lines[1], /^Technical: needs attention\. Loudness is -20 LUFS/);
   assert.deepEqual(qcSummary([]), ["No checks have run yet."]);
 });
+
+test("storyboard gate: shots must be able to cover the estimated narration", () => {
+  const t = explainer();
+  const max = t.pacing.maxShotSeconds;
+  const make = (n: number) => Array.from({ length: n }, (_, i) => ({ beatRole: t.beats[i % t.beats.length].role, seconds: 2 }));
+  const narration = 45.2;
+  const enough = Math.ceil((narration * 1.1 - 0.5) / max);
+  assert.equal(storyboardGate(t, make(enough), narration).passed, true);
+  const few = storyboardGate(t, make(Math.max(t.beats.length, enough - 1)).slice(0, enough - 1), narration);
+  assert.match(few.issues.join(), /Add at least \d+ more shot/);
+  // Unknown narration length keeps the old behaviour.
+  assert.equal(storyboardGate(t, make(t.beats.length)).passed, true);
+  assert.match(storyboardGate(t, make(40), 10).issues.join(), /Remove shots/);
+});

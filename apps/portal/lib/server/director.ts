@@ -6,7 +6,8 @@ import { saveQcReport } from "./qc.ts";
 import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
-import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateResult } from "../studio/qc.ts";
+import { estimateNarrationSec } from "../studio/voice.ts";
+import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
 import type { Format } from "../studio/catalog.ts";
 import type { Template } from "../studio/templates.ts";
 import {
@@ -28,21 +29,33 @@ import {
   wordsPerMinuteFor,
   workOrdersFromStoryboard,
   type DirectorContext,
-  type DirectorStage,
   type Idea,
   type ResearchNote,
 } from "../studio/director.ts";
-import { DEFAULT_DURATION_SEC, isEngineStage, nextStage, revisionTarget, stageSummary, STUCK_MINUTES } from "../studio/engine.ts";
-import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewPayload } from "../studio/review.ts";
+import {
+  DEFAULT_DURATION_SEC,
+  isProductionStage,
+  isRunStage,
+  nextRunStage,
+  nextStage,
+  revisionTarget,
+  stageSummary,
+  STUCK_MINUTES,
+  type RunStage,
+} from "../studio/engine.ts";
+import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
+import { finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
+import { cancelRunWork, reapProduction, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
 
 /**
- * The Hermes director engine: idea, research, script and storyboard as stages of a pipeline run.
- * Model output is validated data and is never executed. This module only reads channels; the category, home
- * worker and autonomy level are set by the owner alone. Work orders are created, never executed (Phase 4).
+ * The run engine: idea, research, script and storyboard are Hermes stages; assets, voice, render and qc are the
+ * Phase 4 production stages whose drivers live in lib/server/production.ts. Model output is validated data and is
+ * never executed. This module only reads channels; the category, home worker and autonomy level are set by the
+ * owner alone.
  */
 
 /** A transaction handle is accepted wherever a connection is. */
-type Q = Sql | TransactionSql;
+export type Q = Sql | TransactionSql;
 
 interface RunConfig {
   format: Format;
@@ -54,7 +67,7 @@ interface RunConfig {
   topicHint: string;
 }
 
-interface RunInfo {
+export interface RunInfo {
   id: string;
   channelId: string | null;
   templateId: string | null;
@@ -68,14 +81,13 @@ interface RunInfo {
   category: string;
 }
 
-interface StageRow {
+export interface StageRow {
   id: string;
-  stage: DirectorStage;
+  stage: RunStage;
   attempt: number;
   output: Record<string, unknown>;
 }
 
-const DIRECTOR_STAGE_SQL = "('idea', 'research', 'script', 'storyboard')";
 /** A result for a stage that has no gate of its own: nothing to fail. */
 const NO_GATE: CombinedQc = { passed: true, missingGates: [], score: 100, failedGates: [], blocking: false };
 
@@ -123,7 +135,7 @@ function json(v: unknown): string {
   return JSON.stringify(v);
 }
 
-async function loadRun(sql: Q, runId: string): Promise<RunInfo | null> {
+export async function loadRun(sql: Q, runId: string): Promise<RunInfo | null> {
   const [r] = await sql`
     SELECT r.id, r.channel_id, r.template_id, r.state, r.autonomy_level, r.topic, r.config,
            c.niche, c.plan, c.category, c.autonomy_paused
@@ -146,7 +158,7 @@ async function loadRun(sql: Q, runId: string): Promise<RunInfo | null> {
   };
 }
 
-async function latestPassedOutput(sql: Q, runId: string, stage: DirectorStage): Promise<Record<string, unknown> | null> {
+export async function latestPassedOutput(sql: Q, runId: string, stage: RunStage): Promise<Record<string, unknown> | null> {
   const [r] = await sql`
     SELECT output FROM pipeline_stages WHERE run_id = ${runId} AND stage = ${stage} AND state = 'passed'
     ORDER BY attempt DESC LIMIT 1
@@ -266,14 +278,14 @@ async function claimNext(runId: string): Promise<StageRow | null> {
     UPDATE pipeline_stages s SET state = 'running', started_at = now(), error = NULL
     WHERE s.id = (
       SELECT p.id FROM pipeline_stages p JOIN pipeline_runs r ON r.id = p.run_id
-      WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard')
+      WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc')
       ORDER BY p.attempt, p.id LIMIT 1 FOR UPDATE OF p SKIP LOCKED
     ) AND s.state = 'pending'
     RETURNING s.id, s.stage, s.attempt, s.output
   `;
   const r = rows[0];
-  if (!r || !isEngineStage(r.stage as string)) return null;
-  return { id: r.id as string, stage: r.stage as DirectorStage, attempt: r.attempt as number, output: toObject(r.output) };
+  if (!r || !isRunStage(r.stage as string)) return null;
+  return { id: r.id as string, stage: r.stage as RunStage, attempt: r.attempt as number, output: toObject(r.output) };
 }
 
 type StageOutcome = { ok: true; result: unknown; gate: GateResult | null } | { ok: false; error: string };
@@ -283,6 +295,7 @@ function fromHermes<T>(r: { ok: true; value: T } | { ok: false; error: string })
 }
 
 async function runModel(run: RunInfo, st: StageRow, template: Template, feedback: string): Promise<StageOutcome> {
+  if (isProductionStage(st.stage)) return { ok: false, error: "This step is not a model step" };
   const sql = db();
   const ctx: DirectorContext = {
     niche: run.niche,
@@ -339,39 +352,50 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   if (!checkedScript.ok) return { ok: false, error: "The approved script is missing" };
   const r = fromHermes(await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint), validateStoryboard));
   if (!r.ok) return r;
-  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots) };
+  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wordsPerMinuteFor(template))) };
 }
 
 /**
  * Marks a stage passed and starts the next one. After the storyboard it creates the work orders and leaves the
- * assets stage pending: Phase 4 picks it up. Runs inside the caller's transaction.
+ * assets stage pending. The production stages follow in order (assets, voice, render, qc); approving the quality
+ * check finishes the run (upload is a later phase). Runs inside the caller's transaction.
  */
-async function approveStage(tx: Q, runId: string, stageId: string, stage: DirectorStage, extra: Record<string, unknown>): Promise<void> {
+async function approveStage(tx: Q, runId: string, stageId: string, stage: RunStage, extra: Record<string, unknown>): Promise<void> {
   const [row] = await tx`SELECT output FROM pipeline_stages WHERE id = ${stageId} FOR UPDATE`;
   if (!row) throw new DecisionError("The stage no longer exists");
   const output = { ...toObject(row.output), ...extra };
   await tx`UPDATE pipeline_stages SET state = 'passed', output = ${json(output)}::text::jsonb, finished_at = now() WHERE id = ${stageId}`;
   const chosen = asIdea(output.chosenIdea);
   if (stage === "idea" && chosen) await tx`UPDATE pipeline_runs SET topic = ${chosen.title.slice(0, 300)} WHERE id = ${runId}`;
-  const next = nextStage(stage);
-  if (next) {
-    await insertPending(tx, runId, next, "", 0);
-  } else {
-    const board = validateStoryboard(output.result);
-    if (!board.ok) throw new DecisionError("The storyboard could not be read back");
-    await tx`DELETE FROM work_orders WHERE run_id = ${runId} AND stage = 'assets' AND state = 'pending' AND job_id IS NULL`;
-    for (const w of workOrdersFromStoryboard(board.value.shots)) {
-      await tx`
-        INSERT INTO work_orders (run_id, stage, shot_ref, executor, spec)
-        VALUES (${runId}, 'assets', ${w.shotRef}, ${w.executor}, ${json(w.spec)}::text::jsonb)
-      `;
+  if (isProductionStage(stage)) {
+    const following = nextRunStage(stage);
+    if (!following) {
+      await tx`UPDATE pipeline_runs SET state = 'done', finished_at = now() WHERE id = ${runId}`;
+      return;
     }
-    await insertPending(tx, runId, "assets", "", 0);
+    await insertPending(tx, runId, following, "", 0);
+  } else {
+    const next = nextStage(stage);
+    if (next) {
+      await insertPending(tx, runId, next, "", 0);
+    } else {
+      const board = validateStoryboard(output.result);
+      if (!board.ok) throw new DecisionError("The storyboard could not be read back");
+      // A new storyboard replaces every earlier work order, including finished ones from a revised run.
+      await tx`DELETE FROM work_orders WHERE run_id = ${runId}`;
+      for (const w of workOrdersFromStoryboard(board.value.shots)) {
+        await tx`
+          INSERT INTO work_orders (run_id, stage, shot_ref, executor, spec)
+          VALUES (${runId}, 'assets', ${w.shotRef}, ${w.executor}, ${json(w.spec)}::text::jsonb)
+        `;
+      }
+      await insertPending(tx, runId, "assets", "", 0);
+    }
   }
   await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId} AND state = 'waiting-human'`;
 }
 
-async function recordStageError(runId: string, stageId: string, stage: DirectorStage, message: string): Promise<void> {
+export async function recordStageError(runId: string, stageId: string, stage: RunStage, message: string): Promise<void> {
   const text = message.slice(0, 500);
   await db().begin(async (tx) => {
     const failed = await tx`
@@ -385,25 +409,49 @@ async function recordStageError(runId: string, stageId: string, stage: DirectorS
   });
 }
 
-async function concludeStage(run: RunInfo, st: StageRow, template: Template, outcome: { result: unknown; gate: GateResult | null }): Promise<void> {
+/** What a finished stage hands to concludeStage. The Phase 4 stages use the optional fields. */
+export interface StageConclusion {
+  result: unknown;
+  gate: GateResult | null;
+  /** Kept in the stage output next to the result (for example the job id of a render). */
+  extra?: Record<string, unknown>;
+  /** Decide on this combined result instead of the single gate (the final quality check has several gates). */
+  qc?: CombinedQc;
+  /** Plain issues to show when the problems come from several stored gates. */
+  issues?: string[];
+  /** One plain line per check, for the phone. */
+  checks?: string[];
+  media?: ReviewMedia;
+  /** True for the approval of the finished video: decideNext uses its final point. */
+  final?: boolean;
+}
+
+export async function concludeStage(run: RunInfo, st: StageRow, template: Template, outcome: StageConclusion): Promise<void> {
   const gate = outcome.gate;
-  if (gate) await saveQcReport({ result: gate, runId: run.id, details: { stage: st.stage, attempt: st.attempt } });
-  const qc = gate ? combineGates([gate], template, []) : NO_GATE;
+  const stage = st.stage;
+  if (gate) await saveQcReport({ result: gate, runId: run.id, details: { stage, attempt: st.attempt } });
+  const qc = outcome.qc ?? (gate ? combineGates([gate], template, []) : NO_GATE);
   const autoRevisions = typeof st.output.autoRevisions === "number" ? st.output.autoRevisions : 0;
   const feedback = typeof st.output.feedback === "string" ? st.output.feedback : "";
-  const decision = decideNext({
-    point: "stage",
-    stage: st.stage,
+  const common = {
     level: run.level,
     paused: run.paused,
     template,
     qc,
     videosSincePublishSpotCheck: 0,
     attempts: autoRevisions,
-  });
-  const base = { result: outcome.result, feedback, autoRevisions, ...(gate ? { gate } : {}) };
-  const summary = stageSummary(st.stage, outcome.result);
-  const issues = gate && !gate.passed ? gate.issues : [];
+  };
+  const raw = outcome.final ? decideNext({ ...common, point: "final" }) : decideNext({ ...common, point: "stage", stage });
+  // A revision cannot fix a provider terms or render problem, so production stages ask the owner instead.
+  const decision = isProductionStage(stage) ? productionDecision(raw) : raw;
+  const base = { result: outcome.result, feedback, autoRevisions, ...(gate ? { gate } : {}), ...(outcome.extra ?? {}) };
+  const summary = isProductionStage(stage) ? productionSummary(stage, outcome.result) : stageSummary(stage, outcome.result);
+  const issues = outcome.issues ?? (gate && !gate.passed ? gate.issues : []);
+  const reason = outcome.final ? finalReason(decision.reason, qc.missingGates as GateId[]) : decision.reason;
+  const detail: Partial<ReviewPayload> = {
+    ...(outcome.checks ? { checks: outcome.checks } : {}),
+    ...(outcome.media ? { media: outcome.media } : {}),
+  };
 
   await db().begin(async (tx) => {
     const [live] = await tx`
@@ -432,7 +480,7 @@ async function concludeStage(run: RunInfo, st: StageRow, template: Template, out
       return;
     }
     if (decision.action === "auto-approve" || decision.action === "auto-publish") {
-      if (st.stage === "idea") {
+      if (stage === "idea") {
         const ideas = validateIdeas(outcome.result);
         const best = ideas.ok ? pickIdea(ideas.value.ideas) : null;
         if (best) {
@@ -452,12 +500,12 @@ async function concludeStage(run: RunInfo, st: StageRow, template: Template, out
     await store("waiting-human");
     await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${run.id}`;
     if (issues.length > 0) {
-      await insertReview(tx, run.id, st.stage, "gate-failure", { summary, issues, reason: decision.reason });
-    } else if (st.stage === "idea") {
+      await insertReview(tx, run.id, st.stage, "gate-failure", { summary, issues, reason, ...detail });
+    } else if (stage === "idea") {
       const ideas = validateIdeas(outcome.result);
       await insertReview(tx, run.id, st.stage, "idea", { summary, ideas: ideas.ok ? ideas.value.ideas : [], reason: decision.reason });
     } else {
-      await insertReview(tx, run.id, st.stage, "approval", { summary, reason: decision.reason });
+      await insertReview(tx, run.id, st.stage, "approval", { summary, reason, ...detail });
     }
   });
 }
@@ -472,6 +520,10 @@ async function executeStage(runId: string, st: StageRow): Promise<void> {
   const template = run.templateId ? await getTemplate(run.templateId) : null;
   if (!template) {
     await recordStageError(runId, st.id, st.stage, "The run's template no longer exists");
+    return;
+  }
+  if (isProductionStage(st.stage)) {
+    await runProductionStage(run, st, template);
     return;
   }
   const feedback = typeof st.output.feedback === "string" ? st.output.feedback : "";
@@ -540,15 +592,17 @@ export async function reapStuckStages(): Promise<string[]> {
         console.error("reap failed", row.id, err);
       }
     }
+    // Production repairs first: a stage they put back to pending is found by the orphan query below.
+    for (const id of await reapProduction()) if (!runIds.includes(id)) runIds.push(id);
     const orphaned = await sql`
       SELECT r.id FROM pipeline_runs r
       WHERE r.state = 'running'
-        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard'))
+        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc'))
         AND NOT EXISTS (SELECT 1 FROM pipeline_stages q WHERE q.run_id = r.id AND q.state = 'running')
     `;
     for (const r of orphaned) {
       const id = r.id as string;
-      runIds.push(id);
+      if (!runIds.includes(id)) runIds.push(id);
       // claimNext is skip-locked and idempotent, so a second caller racing a live advanceRun is harmless.
       void advanceRun(id);
     }
@@ -564,6 +618,23 @@ export async function reapStuckStages(): Promise<string[]> {
 export type DecideResult = { ok: true; runId: string; message: string } | { ok: false; error: string };
 
 const CLOSED = "This run is already finished or cancelled";
+
+function approveMessage(stage: RunStage): string {
+  switch (stage) {
+    case "storyboard":
+      return "Approved. The storyboard is ready and asset sourcing comes next.";
+    case "assets":
+      return "Approved. The studio records the narration next.";
+    case "voice":
+      return "Approved. The studio renders the video next.";
+    case "render":
+      return "Approved. The studio checks the video next.";
+    case "qc":
+      return "Approved. The video is ready.";
+    default:
+      return "Approved. Hermes continues.";
+  }
+}
 
 /** Marks the stage the owner was looking at (and anything pending) so a new attempt can start cleanly. */
 async function clearOpenStages(tx: Q, runId: string): Promise<void> {
@@ -585,18 +656,23 @@ export async function decideReview(input: {
     const runId = rv.run_id as string;
     const kind = rv.kind as ReviewKind;
     const stageText = rv.stage as string;
-    if (!isEngineStage(stageText)) return { ok: false, error: "This item is not about a stage Hermes runs" };
-    const stage: DirectorStage = stageText;
+    if (!isRunStage(stageText)) return { ok: false, error: "This item is not about a stage the studio runs" };
+    const stage: RunStage = stageText;
     const decision = input.decision;
     if (!decisionOptions(kind).includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
     const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
     const payload = toObject(rv.payload);
 
-    let target: DirectorStage = stage;
+    let target: RunStage = stage;
     if (decision === "revise") {
       if (!note) return { ok: false, error: "Write what should change" };
-      const c = await hermesJson(classifyPrompt(note, stage), validateClassification, { retries: 1, timeoutMs: 45_000 });
-      target = revisionTarget(c.ok ? c.value.stage : null, note, stage);
+      if (isProductionStage(stage)) {
+        // The Hermes classifier only knows the four director stages, so production notes are sorted by keywords.
+        target = revisionTarget(null, note, stage);
+      } else {
+        const c = await hermesJson(classifyPrompt(note, stage), validateClassification, { retries: 1, timeoutMs: 45_000 });
+        target = revisionTarget(c.ok ? c.value.stage : null, note, stage);
+      }
     }
     let chosen: Idea | null = null;
     if (decision === "approve" && kind === "idea") {
@@ -622,29 +698,34 @@ export async function decideReview(input: {
       if (decision === "approve") {
         if (latest.state !== "waiting-human") throw new DecisionError("This stage is no longer waiting for you");
         await approveStage(tx, runId, latest.id as string, stage, chosen ? { chosenIdea: chosen, auto: false } : { auto: false });
-        message = stage === "storyboard" ? "Approved. The storyboard is ready and asset sourcing comes next." : "Approved. Hermes continues.";
+        message = approveMessage(stage);
         return;
       }
       if (decision === "reject") {
         await supersedeOpenReviews(tx, runId);
         await clearOpenStages(tx, runId);
-        await tx`UPDATE work_orders SET state = 'cancelled' WHERE run_id = ${runId} AND state = 'pending'`;
+        await cancelRunWork(tx, runId);
         await tx`UPDATE pipeline_runs SET state = 'cancelled', finished_at = now() WHERE id = ${runId}`;
         message = "Rejected. The run is cancelled.";
         return;
       }
       if (decision === "retry") {
         const issues = Array.isArray(payload.issues) ? payload.issues.filter((i): i is string => typeof i === "string") : [];
+        const again = retryStageFor(stage, kind);
         await supersedeOpenReviews(tx, runId);
         await clearOpenStages(tx, runId);
-        await insertPending(tx, runId, stage, issuesToFeedback(issues), 0);
+        // Only the shots that failed run again; finished images are kept.
+        if (again === "assets") await resetFailedOrders(tx, runId);
+        await insertPending(tx, runId, again, issuesToFeedback(issues), 0);
         await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
-        message = "Trying again.";
+        message = again === stage ? "Trying again." : `Trying again from the ${stageLabel(again).toLowerCase()} step.`;
         return;
       }
       // revise
       await supersedeOpenReviews(tx, runId);
       await clearOpenStages(tx, runId);
+      // New notes about the images restart every shot, and the note reaches the image prompt as data.
+      if (target === "assets") await resetOrdersForRevision(tx, runId, note);
       await insertPending(tx, runId, target, note, 0);
       await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
       message = target === stage ? "Revision sent. Hermes is redoing this step." : `Revision sent. Hermes goes back to the ${stageLabel(target).toLowerCase()} step.`;
@@ -669,7 +750,7 @@ export async function cancelRun(runId: string, userId: string): Promise<DecideRe
       await supersedeOpenReviews(tx, runId);
       await clearOpenStages(tx, runId);
       await tx`UPDATE pipeline_stages SET state = 'skipped', finished_at = now() WHERE run_id = ${runId} AND state = 'running'`;
-      await tx`UPDATE work_orders SET state = 'cancelled' WHERE run_id = ${runId} AND state = 'pending'`;
+      await cancelRunWork(tx, runId);
       await tx`UPDATE pipeline_runs SET state = 'cancelled', finished_at = now() WHERE id = ${runId}`;
       changed = true;
     });

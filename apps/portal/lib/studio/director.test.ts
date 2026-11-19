@@ -30,6 +30,7 @@ import {
 import { THEME_BY_ID } from "./catalog.ts";
 import { scriptGate, storyboardGate } from "./qc.ts";
 import { seedTemplates } from "./templates.ts";
+import { estimateNarrationSec } from "./voice.ts";
 
 const idea = (n: number, score = 50): Idea => ({ title: `Title ${n}`, hook: `Hook ${n}`, angle: `Angle ${n}`, score });
 const ideas = (n: number) => ({ ideas: Array.from({ length: n }, (_, i) => idea(i + 1, i * 10)) });
@@ -231,8 +232,8 @@ test("guessRevisionStage maps notes to stages", () => {
   assert.deepEqual(guessRevisionStage("Pick a different topic", "script"), { stage: "idea", deferred: false });
   assert.deepEqual(guessRevisionStage("The hook is weak", "storyboard"), { stage: "script", deferred: false });
   assert.deepEqual(guessRevisionStage("Fewer shots in the middle", "script"), { stage: "storyboard", deferred: false });
-  assert.deepEqual(guessRevisionStage("Use a calmer voice", "script"), { stage: "storyboard", deferred: true });
-  assert.deepEqual(guessRevisionStage("Use brighter images", "script"), { stage: "storyboard", deferred: true });
+  assert.deepEqual(guessRevisionStage("Use a calmer voice", "script"), { stage: "voice", deferred: false });
+  assert.deepEqual(guessRevisionStage("Use brighter images", "script"), { stage: "assets", deferred: false });
   assert.deepEqual(guessRevisionStage("Hmm, not sure", "script"), { stage: "script", deferred: false });
 });
 
@@ -292,4 +293,17 @@ test("validateSelfTest accepts the expected reply only", () => {
   assert.equal(validateSelfTest({ ok: true, sum: 6 }).ok, false);
   assert.equal(validateSelfTest([]).ok, false);
   assert.equal(validateSelfTest(null).ok, false);
+});
+
+test("the storyboard prompt states how many shots the narration needs, and enough shots pass the gate for every seed template", () => {
+  const wpm = wordsPerMinuteFor(template);
+  for (const t of seedTemplates()) {
+    const script = Array.from({ length: Math.round((wpm * 45) / 60) }, () => "word").join(" ");
+    const text = storyboardPrompt({ ...ctx, template: t }, script)[1].content;
+    const need = Number(/use at least (\d+) shots/.exec(text)?.[1]);
+    const count = Math.max(t.beats.length, need);
+    const shots = Array.from({ length: count }, (_, i) => ({ beatRole: t.beats[Math.floor((i * t.beats.length) / count)].role, seconds: 2 }));
+    const gate = storyboardGate(t, shots, estimateNarrationSec(script, wpm));
+    assert.equal(gate.passed, true, `${t.id}: ${gate.issues.join("; ")}`);
+  }
 });

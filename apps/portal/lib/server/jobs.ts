@@ -39,6 +39,26 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
     label: "Quality check a video",
     description: "Measures a finished video: size, length, loudness, black frames, silence and frozen frames. Changes nothing.",
   },
+  tts: {
+    capability: "tts-kokoro",
+    label: "Narration (Kokoro voice)",
+    description: "Turns a script into a spoken narration file with Kokoro. Only a worker that can reach Kokoro takes it.",
+  },
+  "render-video": {
+    capability: "ffmpeg",
+    label: "Render the video",
+    description: "Builds the finished video from the shot images, the narration and captions, and sets the loudness.",
+  },
+  "fetch-asset": {
+    capability: "echo",
+    label: "Fetch a public-domain file",
+    description: "Downloads one CC0 or public-domain image or audio file from an approved site and checks that it is what it says.",
+  },
+  "agent-task": {
+    capability: "echo",
+    label: "Muse agent task (unverified)",
+    description: "Asks the agent on a Muse machine to make an asset. Not verified yet and off unless the owner turns it on.",
+  },
 };
 
 export async function createJob(input: {
@@ -46,7 +66,8 @@ export async function createJob(input: {
   payload?: Record<string, unknown>;
   channelId?: string | null;
   priority?: number;
-  createdBy: string;
+  /** Null for jobs the engine creates on its own. */
+  createdBy: string | null;
 }) {
   const def = JOB_TYPES[input.type];
   const sql = db();

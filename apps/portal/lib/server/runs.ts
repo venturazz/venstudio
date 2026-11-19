@@ -35,6 +35,10 @@ export interface WorkOrderView {
   executor: string;
   state: string;
   spec: Record<string, unknown>;
+  attempts: number;
+  provider: string;
+  error: string;
+  jobId: string;
 }
 
 export interface RunReviewView {
@@ -99,7 +103,7 @@ export async function getRun(id: string): Promise<RunDetail | null> {
   if (!r) return null;
   const [stageRows, orderRows, reviewRows, gates] = await Promise.all([
     sql`SELECT id, stage, attempt, state, output, error, started_at, finished_at FROM pipeline_stages WHERE run_id = ${id} ORDER BY attempt`,
-    sql`SELECT id, stage, shot_ref, executor, state, spec FROM work_orders WHERE run_id = ${id} ORDER BY shot_ref`,
+    sql`SELECT id, stage, shot_ref, executor, state, spec, attempts, provider, error, job_id FROM work_orders WHERE run_id = ${id} ORDER BY shot_ref`,
     sql`SELECT id, stage, kind, state, payload, note, created_at FROM review_items WHERE run_id = ${id} ORDER BY created_at DESC`,
     latestGatesByRun([id]),
   ]);
@@ -131,6 +135,10 @@ export async function getRun(id: string): Promise<RunDetail | null> {
       executor: w.executor as string,
       state: w.state as string,
       spec: obj(w.spec),
+      attempts: typeof w.attempts === "number" ? w.attempts : 0,
+      provider: (w.provider as string | null) ?? "",
+      error: (w.error as string | null) ?? "",
+      jobId: (w.job_id as string | null) ?? "",
     })),
     reviews: reviewRows.map((v): RunReviewView => {
       const p = obj(v.payload);

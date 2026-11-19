@@ -13,6 +13,9 @@ import { decrypt, encrypt } from "@/lib/crypto/secretbox.ts";
 import { generateTotpSecret, otpauthUri, verifyTotp } from "@/lib/crypto/totp.ts";
 import { randomToken } from "@/lib/crypto/tokens.ts";
 import { str, type FormState } from "@/lib/form.ts";
+import { kokoroHealth, kokoroTest } from "@/lib/server/tts.ts";
+import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
+import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
 
 function raw(fd: FormData, key: string) {
   const v = fd.get(key);
@@ -109,5 +112,86 @@ export async function removeUser(id: string) {
   if (!z.uuid().safeParse(id).success || id === owner.id) return;
   await db()`DELETE FROM users WHERE id = ${id} AND role <> 'owner'`;
   await audit({ userId: owner.id, action: "user.delete", target: id, ip: (await requestMeta()).ip });
+  revalidatePath("/settings");
+}
+
+export async function recheckKokoro() {
+  await requireUser("editor");
+  await kokoroHealth({ fresh: true });
+  revalidatePath("/settings");
+}
+
+export type TestState =
+  | { ok: true; lines: string[]; preview?: string }
+  | { ok: false; error: string }
+  | undefined;
+
+/** Makes a short test clip with Kokoro and reports how long it took. Nothing is saved. */
+export async function testKokoroVoice(_prev: TestState, _fd: FormData): Promise<TestState> {
+  await requireUser("editor");
+  const r = await kokoroTest();
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, lines: [`Voice ${r.voice}`, `${r.durationSec} s of audio, ${Math.round(r.bytes / 1024)} KB`, `Made in ${(r.ms / 1000).toFixed(1)} s`] };
+}
+
+const PREVIEW_MAX_BYTES = 400_000;
+
+/**
+ * Asks Hermes which image_gen providers it has, then makes one test image and shows the raw outcome. Nothing is
+ * saved and no provider is registered, so the test cannot change what the owner has confirmed.
+ */
+export async function testHermesImage(_prev: TestState, _fd: FormData): Promise<TestState> {
+  await requireUser("editor");
+  const lines: string[] = [];
+  const providers = await listHermesImageProviders();
+  if (providers.ok) lines.push(`Providers Hermes reports: ${providers.providers.map((p) => p.name).join(", ")}`);
+  else lines.push(`Provider list: ${providers.error}`);
+  const img = await generateImage({
+    prompt: "A simple 512 pixel test picture: a red circle on a plain light background. No text.",
+    beatRole: "hook",
+    format: "short",
+    shotRef: "test",
+  });
+  if (!img.ok) return { ok: false, error: [...lines, `Image: ${img.error}`].join("\n") };
+  const { image } = img;
+  lines.push(
+    `Image made by ${image.provider}${image.model ? ` (${image.model})` : ""}`,
+    `${image.info.width}x${image.info.height} ${image.info.mime}, ${Math.round(image.info.bytes / 1024)} KB`,
+    image.originUrl ? "Hermes returned a download link" : "Hermes returned the image data inline",
+    `Asked Hermes ${img.attempts} time${img.attempts === 1 ? "" : "s"}`,
+  );
+  const preview = image.info.bytes <= PREVIEW_MAX_BYTES ? `data:${image.info.mime};base64,${Buffer.from(image.bytes).toString("base64")}` : undefined;
+  return { ok: true, lines, preview };
+}
+
+const termsSchema = z.object({
+  name: z.string().min(1).max(PROVIDER_NAME_MAX),
+  kind: z.enum(["image", "tts", "library"]),
+  status: z.enum(["unknown", "yes", "no"]),
+  note: z.string().max(300),
+});
+
+/**
+ * The only place asset_providers.commercial_ok is ever written. Owner only. Whether a provider's terms allow
+ * commercial use is the owner's call; the studio never decides it from anything a model said.
+ */
+export async function setProviderTerms(fd: FormData) {
+  const owner = await requireUser("owner");
+  const p = termsSchema.safeParse({ name: str(fd, "name", PROVIDER_NAME_MAX), kind: str(fd, "kind", 10), status: str(fd, "status", 10), note: str(fd, "note", 300) });
+  if (!p.success) return;
+  const rows = await db()`
+    UPDATE asset_providers
+    SET commercial_ok = ${p.data.status}, note = ${p.data.note}, confirmed_by = ${owner.id}, confirmed_at = now()
+    WHERE name = ${p.data.name} AND kind = ${p.data.kind}
+    RETURNING name
+  `;
+  if (rows.length === 0) return;
+  await audit({
+    userId: owner.id,
+    action: "asset_provider.terms",
+    target: `${p.data.kind}:${p.data.name}`,
+    detail: { commercialOk: p.data.status },
+    ip: (await requestMeta()).ip,
+  });
   revalidatePath("/settings");
 }

@@ -6,12 +6,13 @@ import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import type { Format } from "../studio/catalog.ts";
 import type { Template } from "../studio/templates.ts";
 import { technicalReportFor } from "../studio/qc-result.ts";
+import { asUuid } from "../studio/production.ts";
 
 /**
  * Queues a quality check of one video asset for a production. Urgent, like a test render: the first free
  * worker with ffmpeg takes it instead of waiting for the channel's home worker.
  */
-export async function createQcJob(assetId: string, productionId: string, createdBy: string): Promise<string> {
+export async function createQcJob(assetId: string, productionId: string, createdBy: string | null): Promise<string> {
   const [p] = await db()`SELECT channel_id FROM productions WHERE id = ${productionId}`;
   return createJob({
     type: "qc-video",
@@ -28,12 +29,16 @@ export async function createQcJob(assetId: string, productionId: string, created
  * The write is an upsert on (job_id, gate), so concurrent or repeated evaluations and retried jobs are safe.
  * Throws on database errors; callers log them and reconcileQcReports retries later.
  */
-async function evaluateQcJob(jobId: string): Promise<void> {
+export async function evaluateQcJob(jobId: string): Promise<void> {
   const sql = db();
   const [job] = await sql`SELECT type, status, payload, result, error FROM jobs WHERE id = ${jobId}`;
   if (!job || job.type !== "qc-video" || (job.status !== "succeeded" && job.status !== "failed")) return;
   const productionId = typeof job.payload?.productionId === "string" ? (job.payload.productionId as string) : null;
-  if (!productionId) return;
+  if (!productionId) {
+    const runId = asUuid(job.payload?.runId);
+    if (runId) await evaluateRunQc(jobId, runId, { status: job.status as string, payload: job.payload, result: job.result, error: job.error });
+    return;
+  }
   const [p] = await sql`SELECT format, style_id, template_id FROM productions WHERE id = ${productionId}`;
   if (!p) return;
   const assetId = Array.isArray(job.payload?.inputs) && typeof job.payload.inputs[0] === "string" ? (job.payload.inputs[0] as string) : null;
@@ -49,6 +54,24 @@ async function evaluateQcJob(jobId: string): Promise<void> {
   }
   const { gate, measure } = technicalReportFor({ status: job.status as string, error: job.error, result: job.result }, template, p.format as Format, templateId);
   await saveQcReport({ result: gate, productionId, jobId, assetId, details: measure ? { measure } : {} });
+}
+
+/**
+ * G-technical for a qc-video job that belongs to a pipeline run (Phase 4 render stage) instead of a production.
+ * The template and format come from the run. Same upsert on (job_id, gate) as the production path.
+ */
+async function evaluateRunQc(jobId: string, runId: string, job: { status: string; payload: unknown; result: unknown; error: unknown }): Promise<void> {
+  const [r] = await db()`SELECT template_id, config FROM pipeline_runs WHERE id = ${runId}`;
+  if (!r) return;
+  const templateId = (r.template_id as string | null) ?? "";
+  const cfg = (typeof r.config === "object" && r.config !== null ? r.config : {}) as Record<string, unknown>;
+  const format: Format = cfg.format === "long" ? "long" : "short";
+  const payload = (typeof job.payload === "object" && job.payload !== null ? job.payload : {}) as Record<string, unknown>;
+  const assetId = Array.isArray(payload.inputs) && typeof payload.inputs[0] === "string" ? (payload.inputs[0] as string) : null;
+  let template: Template | null = null;
+  if (job.status === "succeeded" && templateId) template = await getTemplate(templateId);
+  const { gate, measure } = technicalReportFor({ status: job.status, error: job.error, result: job.result }, template, format, templateId);
+  await saveQcReport({ result: gate, runId, jobId, assetId, details: { stage: "qc", ...(measure ? { measure } : {}) } });
 }
 
 /**
