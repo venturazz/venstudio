@@ -23,7 +23,7 @@ COPY --from=build /repo/apps/portal/.next/standalone ./
 COPY --from=build /repo/apps/portal/.next/static ./apps/portal/.next/static
 COPY --from=build /repo/apps/portal/db ./apps/portal/db
 COPY --from=build /repo/apps/portal/scripts ./apps/portal/scripts
-COPY apps/worker/venstudio-worker.ts apps/worker/install.sh apps/worker/AGENT_DEPLOY.md ./worker/
+COPY apps/worker/venstudio-worker.ts apps/worker/install.sh apps/worker/SETUP.md ./worker/
 RUN mkdir -p /data/artifacts && chown -R node:node /data
 USER node
 EXPOSE 3000

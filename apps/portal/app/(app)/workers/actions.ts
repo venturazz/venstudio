@@ -5,13 +5,13 @@ import { z } from "zod";
 import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { audit } from "@/lib/server/audit.ts";
-import { env } from "@/lib/server/env.ts";
+import { installFileSha256, portalUrl } from "@/lib/server/install-files.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { createEnrollmentCode, ENROLLMENT_MINUTES } from "@/lib/server/workers.ts";
 import { str } from "@/lib/form.ts";
 
 export type EnrollState =
-  | { error?: string; code?: string; expiresAt?: string; prompt?: string; command?: string }
+  | { error?: string; code?: string; expiresAt?: string; prompt?: string; command?: string; installSha256?: string }
   | undefined;
 
 const enrollSchema = z.object({
@@ -36,13 +36,36 @@ export async function createEnrollment(_prev: EnrollState, fd: FormData): Promis
   });
   await audit({ userId: user.id, action: "worker.enrollment_created", detail: { label: p.data.label }, ip: (await requestMeta()).ip });
 
-  const url = env().APP_URL.replace(/\/+$/, "");
-  const prompt =
-    `Set up a VenStudio render worker on this VM. Read ${url}/install/AGENT_DEPLOY.md and follow it step by step. ` +
-    `Portal URL: ${url}. Enrollment code: ${code} (valid ${ENROLLMENT_MINUTES} minutes). Worker name: ${p.data.label}.`;
+  const url = portalUrl();
+  const name = p.data.label.replace(/["`$\\]/g, "");
+  const installSha256 = (await installFileSha256("install.sh")) ?? "";
+  // Written as the owner's own request with every command spelled out, so the Muse agent can review exactly
+  // what it runs. Muse rightly refuses to follow instructions from a fetched web page.
+  const prompt = [
+    `I'm setting up a render worker for my own video production portal (${url}) on this VM. ` +
+      `It's a small Node.js program that asks my portal for render jobs over HTTPS and renders them with ffmpeg. ` +
+      `Everything installs under /home/hatch/venstudio. Please run these commands and show me the output:`,
+    ``,
+    `mkdir -p /home/hatch/venstudio && cd /home/hatch/venstudio`,
+    `curl -fsSL ${url}/install/install.sh -o install.sh`,
+    `sha256sum install.sh`,
+    `bash install.sh --portal ${url} --code ${code} --name "${name}" --mode hold`,
+    ``,
+    `The sha256 should be ${installSha256}. If it's different, stop and tell me. ` +
+      `The script downloads Node.js from nodejs.org and ffmpeg from johnvansickle.com if they're missing, and checks their checksums. ` +
+      `${code} is a one-time code from my portal, valid for ${ENROLLMENT_MINUTES} minutes.`,
+    ``,
+    `Then create a recurring scheduled task named "VenStudio worker" that runs every hour and does this: ` +
+      `run /home/hatch/venstudio/run.sh hold in the foreground and wait for it to finish (it stays online up to about 55 minutes, ` +
+      `then exits by itself), then read the last 5 lines of /home/hatch/venstudio/logs/worker.log. ` +
+      `Only message me if those lines contain "fatal"; "already running" is normal.`,
+    ``,
+    `When done, show me the last 5 lines of /home/hatch/venstudio/logs/worker.log and confirm the scheduled task exists.`,
+  ].join("\n");
   const command =
-    `curl -fsSL ${url}/install/install.sh | bash -s -- --portal ${url} --code ${code} --name "${p.data.label.replace(/"/g, "")}" --mode daemon`;
-  return { code, expiresAt: expiresAt.toISOString(), prompt, command };
+    `curl -fsSL ${url}/install/install.sh -o install.sh && sha256sum install.sh && ` +
+    `bash install.sh --portal ${url} --code ${code} --name "${name}" --mode daemon`;
+  return { code, expiresAt: expiresAt.toISOString(), prompt, command, installSha256 };
 }
 
 const idSchema = z.uuid();

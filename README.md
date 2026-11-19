@@ -72,8 +72,10 @@ Use `docker-compose.coolify.yml` (Docker Compose build pack). Step-by-step: [doc
 ## Add a Muse worker
 
 1. Portal → **Workers** → *Add a worker*. Pick the home channel.
-2. Copy the generated message and send it to the Muse agent of that account (browser profile or app).
-3. The agent follows `/install/AGENT_DEPLOY.md` (served by your portal): installs Node.js + ffmpeg under
+2. Copy the generated message and send it **as your own message** to that Muse account (browser profile, app or
+   WhatsApp). It lists every command and the install script's sha256, so Muse can check them before running.
+   (Muse refuses instructions it would have to fetch from a web page, which is correct.)
+3. Muse runs the commands (reference: `/install/SETUP.md` on your portal): installs Node.js + ffmpeg under
    `/home/hatch/venstudio`, enrolls, and creates an hourly scheduled task running `run.sh hold`.
    If a Muse worker misses its runs, the Workers page marks it **Needs attention** with a "run now" message
    you can send to that Muse from the app or WhatsApp.

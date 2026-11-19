@@ -101,12 +101,17 @@ try {
   await page.getByRole("button", { name: "Create enrollment code" }).click();
   await page.getByText("Code created.").waitFor();
   await shot("05-enroll-desktop");
+  const message = (await page.locator("pre").nth(0).textContent()).trim();
+  if (!/sha256sum install\.sh/.test(message) || !/run\.sh hold/.test(message)) throw new Error(`setup message incomplete: ${message}`);
+  const servedSha = (await import("node:crypto")).createHash("sha256")
+    .update(await (await fetch(`${APP}/install/install.sh`)).text()).digest("hex");
+  if (!message.includes(servedSha)) throw new Error("setup message sha256 doesn't match the served install.sh");
   const command = (await page.locator("pre").nth(1).textContent()).trim();
   const code = /--code (VS-[A-Z0-9-]+)/.exec(command)?.[1];
   if (!code) throw new Error(`no code in command: ${command}`);
   runWorker([
     "-c",
-    `curl -fsSL ${APP}/install/install.sh | bash -s -- --portal ${APP} --code ${code} --name "CI Worker" --mode tick --home ${OUT}/worker`,
+    `cd ${OUT} && curl -fsSL ${APP}/install/install.sh -o install.sh && bash install.sh --portal ${APP} --code ${code} --name "CI Worker" --mode tick --home ${OUT}/worker`,
   ]);
   await page.goto(`${APP}/workers`);
   await page.getByText("CI Worker").first().waitFor();

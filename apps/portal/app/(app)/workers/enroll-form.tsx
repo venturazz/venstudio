@@ -19,7 +19,10 @@ export function EnrollForm({ channels }: { channels: Array<{ id: string; name: s
         </div>
         <div className="space-y-2">
           <p className="text-sm font-medium">For a Muse account</p>
-          <p className="text-xs text-muted">Open the Muse account (browser profile or app) and send this message to the agent:</p>
+          <p className="text-xs text-muted">
+            Open the Muse account (browser profile, app or WhatsApp) and send this message as your own. It lists every
+            command, so Muse can check them before running anything. Approve the network access Muse asks for.
+          </p>
           <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-surface-2 p-3 text-xs">{state.prompt}</pre>
           <CopyButton value={state.prompt!} label="Copy message" />
         </div>
@@ -27,6 +30,11 @@ export function EnrollForm({ channels }: { channels: Array<{ id: string; name: s
           <p className="text-sm font-medium">For a VPS or your own PC</p>
           <pre className="whitespace-pre-wrap break-all rounded-lg border border-border bg-surface-2 p-3 text-xs">{state.command}</pre>
           <CopyButton value={state.command!} label="Copy command" />
+          {state.installSha256 && (
+            <p className="break-all text-xs text-muted">
+              install.sh sha256: <code className="font-mono">{state.installSha256}</code>
+            </p>
+          )}
         </div>
         <a href="/workers" className="block text-center text-sm text-accent">
           Done
