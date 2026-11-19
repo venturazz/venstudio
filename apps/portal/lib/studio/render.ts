@@ -13,6 +13,14 @@ export const MIN_SHOT_SECONDS = 1;
 /** Shots may not leave more than this much narration uncovered or run past it. */
 export const COVER_TOLERANCE_SEC = 0.5;
 
+/** The render planner stretches each shot up to the template limit, so this is the most narration n shots can cover. */
+export function maxCoverSec(shotCount: number, maxShotSeconds: number): number {
+  return shotCount * maxShotSeconds;
+}
+
+/** Margin the storyboard gate keeps because a narration estimate from word count is not exact. */
+export const NARRATION_ESTIMATE_TOLERANCE = 0.1;
+
 export interface RenderShotInput {
   shotRef: string;
   seconds: number;

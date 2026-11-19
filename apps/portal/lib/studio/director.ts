@@ -422,13 +422,16 @@ export function scriptPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "h
 export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint?: string): ChatMessage[] {
   const t = ctx.template;
   const maxShot = t ? t.pacing.maxShotSeconds : 6;
+  const narrationSec = Math.round((script.split(/\s+/).filter(Boolean).length / wordsPerMinuteFor(t)) * 60);
+  const minShots = Math.ceil((narrationSec * 1.15) / maxShot);
   return [
     system("Turn the script into a storyboard of shots."),
     {
       role: "user",
       content: [
         stageMarker("storyboard"),
-        `Split the script into shots that together last about ${ctx.durationSec} seconds. Cover every beat of the template at least once, in order.`,
+        `Split the script into shots that together cover the narration (about ${ctx.durationSec} seconds). Cover every beat of the template at least once, in order.`,
+        `The narration runs about ${narrationSec} seconds, so the shots must be able to cover it: use at least ${minShots} shots, repeating beat roles when needed.`,
         `No shot may be longer than ${maxShot} seconds. beatRole must be one of ${BEAT_ROLES.join(", ")}.`,
         "imagePrompt describes one still image in plain words. It names no real person, no brand and no copyrighted character.",
         ...channelLines(ctx),

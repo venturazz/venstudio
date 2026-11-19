@@ -131,8 +131,11 @@ function directorReply(messages) {
     const roles = [...(/Beats in order: (.*)/.exec(first)?.[1] ?? "hook (x), body (x)").matchAll(/(\w+) \(/g)].map((m) => m[1]);
     const maxShot = Number(/Maximum shot length: ([\d.]+) seconds/.exec(first)?.[1] ?? 3);
     const hookMs = Number(/within (\d+) ms/.exec(first)?.[1] ?? 3000);
+    // The storyboard gate needs enough shots to cover the narration; the prompt states the least number.
+    const minShots = Number(/use at least (\d+) shots/.exec(first)?.[1] ?? 0);
+    const count = Math.max(roles.length, minShots);
     return JSON.stringify({
-      shots: roles.map((role, i) => ({
+      shots: Array.from({ length: count }, (_, i) => roles[Math.floor((i * roles.length) / count)]).map((role, i) => ({
         beatRole: role,
         seconds: Math.min(maxShot, 3, i === 0 ? hookMs / 1000 : 3),
         description: `A calm scene for the ${role} beat`,

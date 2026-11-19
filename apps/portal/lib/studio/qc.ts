@@ -3,6 +3,7 @@
  * vision, or the plan) and return a GateResult. Thresholds follow docs/research/04-autonomous-studio-workflow.md.
  */
 import { LANGUAGE_BY_CODE, VIDEO_FORMATS, type Format } from "./catalog.ts";
+import { COVER_TOLERANCE_SEC, MIN_SHOT_SECONDS, NARRATION_ESTIMATE_TOLERANCE, maxCoverSec } from "./render.ts";
 import type { ProductionPlan } from "./planner.ts";
 import { likenessIssues, provenanceIssues, type ProvenanceRecord } from "./provenance.ts";
 import type { Template } from "./templates.ts";
@@ -154,7 +155,11 @@ export interface StoryShot {
   seconds: number;
 }
 
-export function storyboardGate(template: Template, shots: StoryShot[]): GateResult {
+/**
+ * narrationSec is the narration length estimated from the script. When given, the shots must be able to cover it:
+ * the render planner stretches each shot up to the template limit and shrinks it to no less than the minimum.
+ */
+export function storyboardGate(template: Template, shots: StoryShot[], narrationSec?: number): GateResult {
   const issues: string[] = [];
   for (const b of template.beats) {
     if (!shots.some((s) => s.beatRole === b.role)) issues.push(`No shot covers the ${b.role} beat`);
@@ -165,6 +170,19 @@ export function storyboardGate(template: Template, shots: StoryShot[]): GateResu
     issues.push(`The first shot change comes after the ${template.pacing.hookByMs / 1000} s hook window`);
   }
   if (shots.length === 0) issues.push("The storyboard has no shots");
+  else if (narrationSec !== undefined && narrationSec > 0) {
+    const most = maxCoverSec(shots.length, template.pacing.maxShotSeconds);
+    const needed = narrationSec * (1 + NARRATION_ESTIMATE_TOLERANCE) - COVER_TOLERANCE_SEC;
+    const least = shots.length * MIN_SHOT_SECONDS;
+    if (most < needed) {
+      const more = Math.ceil((needed - most) / template.pacing.maxShotSeconds);
+      issues.push(
+        `The narration is about ${Math.round(narrationSec)} s but ${shots.length} shot(s) of at most ${template.pacing.maxShotSeconds} s cover only ${Math.round(most)} s. Add at least ${more} more shot(s) or lengthen the shots`,
+      );
+    } else if (least > narrationSec * (1 - NARRATION_ESTIMATE_TOLERANCE) + COVER_TOLERANCE_SEC) {
+      issues.push(`The narration is about ${Math.round(narrationSec)} s but ${shots.length} shot(s) need at least ${least} s. Remove shots`);
+    }
+  }
   return result("G-storyboard", issues, "hermes");
 }
 

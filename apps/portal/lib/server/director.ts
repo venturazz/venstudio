@@ -6,6 +6,7 @@ import { saveQcReport } from "./qc.ts";
 import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
+import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
 import type { Format } from "../studio/catalog.ts";
 import type { Template } from "../studio/templates.ts";
@@ -351,7 +352,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   if (!checkedScript.ok) return { ok: false, error: "The approved script is missing" };
   const r = fromHermes(await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint), validateStoryboard));
   if (!r.ok) return r;
-  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots) };
+  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wordsPerMinuteFor(template))) };
 }
 
 /**
