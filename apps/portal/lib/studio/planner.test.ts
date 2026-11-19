@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ENGINES, STYLES, THEMES, VIDEO_FORMATS, FAMILY_LABELS, ASSET_KINDS, ASSET_SOURCES } from "./catalog.ts";
+import { ENGINES, STYLES, THEMES, VIDEO_FORMATS, FAMILY_LABELS, ASSET_KINDS, ASSET_SOURCES, PURPOSES, LANGUAGES } from "./catalog.ts";
 import { buildPlan, detectTheme, hasPhrase, suggestStyles } from "./planner.ts";
 import { provenanceIssues } from "./provenance.ts";
 
@@ -119,4 +119,79 @@ test("provenance: publishing needs a licence note and an origin for uploads", ()
   assert.ok(issues.some((i) => i.startsWith("Study clip: a reference video")));
   assert.ok(!issues.some((i) => i.startsWith("Owned photo")));
   assert.deepEqual(provenanceIssues([{ title: "x", kind: "video", source: "upload", license: "", originUrl: "" }], "analyze"), []);
+});
+
+test("themes, purposes and languages have unique ids and sane fields", () => {
+  const unique = (xs: string[]) => new Set(xs).size === xs.length;
+  assert.ok(unique(THEMES.map((t) => t.id)), "theme ids unique");
+  assert.ok(unique(PURPOSES.map((p) => p.id)), "purpose ids unique");
+  assert.ok(unique(LANGUAGES.map((l) => l.code)), "language codes unique");
+  assert.ok(THEMES.length >= 30, "the catalog covers a wide range of genres and topics");
+  for (const p of PURPOSES) for (const st of p.extraStages) assert.ok(st.id && st.label && st.detail, `${p.id} stage is complete`);
+});
+
+test("new genres are detected from the brief", () => {
+  assert.equal(detectTheme("a true crime case with a detective and a murder")?.id, "true-crime");
+  assert.equal(detectTheme("learn english vocabulary and grammar in five minutes")?.id, "language-learning");
+  assert.equal(detectTheme("a thriller with a spy and a twist")?.id, "thriller");
+});
+
+test("affiliate purpose adds product research after research and a disclosure warning", () => {
+  const r = buildPlan({ brief: "best budget headphones", format: "short", styleId: "product-review", themeId: "product", purposeIds: ["affiliate"] });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  const ids = r.plan.stages.map((s) => s.id);
+  assert.ok(ids.indexOf("product-research") === ids.indexOf("research") + 1);
+  assert.ok(r.plan.warnings.some((w) => w.startsWith("Affiliate links:") && w.includes("paid promotion")));
+  assert.deepEqual(r.plan.purposes, [{ id: "affiliate", label: "Affiliate links" }]);
+});
+
+test("advertising and testimonial purposes add human approval stages", () => {
+  const r = buildPlan({ brief: "launch video for a coffee brand", format: "long", styleId: "explainer-flat-vector", purposeIds: ["advertising", "testimonial"] });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  const human = r.plan.stages.filter((s) => s.executor === "human").map((s) => s.id);
+  assert.ok(human.includes("client-brief"));
+  assert.ok(human.includes("release"));
+});
+
+test("series purpose adds a series bible before the script", () => {
+  const r = buildPlan({ brief: "a cartoon fable episode", format: "short", styleId: "animated-series-2d", purposeIds: ["series"] });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  const ids = r.plan.stages.map((s) => s.id);
+  assert.ok(ids.indexOf("series-bible") < ids.indexOf("script"));
+});
+
+test("non-English narration adds translation and localized metadata stages", () => {
+  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary-stills", language: "es" });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  const ids = r.plan.stages.map((s) => s.id);
+  assert.ok(ids.includes("translate"));
+  assert.ok(ids.includes("localize-meta"));
+  assert.equal(r.plan.stages.find((s) => s.id === "voice")?.label, "Narration (Spanish)");
+  assert.equal(r.plan.language.tts, "kokoro");
+});
+
+test("a language outside Kokoro's list gets a voice-provider warning", () => {
+  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary-stills", language: "id" });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.ok(r.plan.warnings.some((w) => w.startsWith("Narration in Indonesian:") && w.includes("another voice provider")));
+});
+
+test("subtitles add a subtitles stage; the narration language is never repeated as a subtitle", () => {
+  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary-stills", subtitles: ["en", "id", "ja", "id"] });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.plan.subtitles.map((x) => x.code), ["id", "ja"]);
+  assert.ok(r.plan.stages.some((s) => s.id === "subtitles"));
+  assert.ok(r.plan.stages.some((s) => s.id === "localize-meta"));
+});
+
+test("unknown purpose or language is rejected with a reason", () => {
+  assert.equal(buildPlan({ brief: "x y", format: "short", styleId: "kinetic-facts", purposeIds: ["nope"] }).ok, false);
+  assert.equal(buildPlan({ brief: "x y", format: "short", styleId: "kinetic-facts", language: "xx" }).ok, false);
+  assert.equal(buildPlan({ brief: "x y", format: "short", styleId: "kinetic-facts", subtitles: ["xx"] }).ok, false);
 });

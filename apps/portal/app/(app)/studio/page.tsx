@@ -4,6 +4,9 @@ import { listProductions } from "@/lib/server/productions.ts";
 import { Badge, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, timeAgo } from "@/components/ui.tsx";
 import type { ProductionPlan } from "@/lib/studio/planner.ts";
 import { PlanView, StudioForm } from "./studio-form.tsx";
+import { THEMES } from "@/lib/studio/catalog.ts";
+
+const THEME_LABEL: Record<string, string> = Object.fromEntries(THEMES.map((t) => [t.id, t.label]));
 
 export const metadata = { title: "Studio" };
 
@@ -11,7 +14,7 @@ export default async function StudioPage() {
   const user = await requireUser();
   const canEdit = hasRole(user.role, "editor");
   const [channels, references, productions] = await Promise.all([
-    db()`SELECT id, name FROM channels ORDER BY name`,
+    db()`SELECT id, name, category FROM channels ORDER BY name`,
     db()`SELECT id, title FROM assets WHERE kind IN ('video', 'reference-video') ORDER BY created_at DESC LIMIT 100`,
     listProductions(),
   ]);
@@ -32,7 +35,7 @@ export default async function StudioPage() {
           <CardHeader title="New production" description="Planning only for now. Stages marked Runs now can run today." />
           <CardBody>
             {canEdit ? (
-              <StudioForm channels={channels.map((c) => ({ id: c.id, name: c.name }))} references={references.map((r) => ({ id: r.id, title: r.title }))} />
+              <StudioForm channels={channels.map((c) => ({ id: c.id, label: c.category ? `${c.name} · ${THEME_LABEL[c.category] ?? c.category}` : `${c.name} · category not set` }))} references={references.map((r) => ({ id: r.id, title: r.title }))} />
             ) : (
               <p className="text-sm text-muted">You have view-only access. Ask an editor to create productions.</p>
             )}

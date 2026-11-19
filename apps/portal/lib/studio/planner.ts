@@ -1,5 +1,7 @@
 import {
   ENGINES,
+  LANGUAGE_BY_CODE,
+  PURPOSE_BY_ID,
   STYLE_BY_ID,
   STYLES,
   THEME_BY_ID,
@@ -8,6 +10,7 @@ import {
   type Executor,
   type Family,
   type Format,
+  type Language,
   type MusePlacement,
   type RenderTier,
   type Style,
@@ -37,6 +40,9 @@ export interface ProductionPlan {
   targetShots: number;
   themeId: string | null;
   themeLabel: string | null;
+  purposes: Array<{ id: string; label: string }>;
+  language: { code: string; label: string; tts: Language["tts"]; ttsNote: string };
+  subtitles: Array<{ code: string; label: string }>;
   workflow: Workflow;
   engineId: string;
   engineLabel: string;
@@ -98,6 +104,11 @@ export interface BuildInput {
   format: Format;
   styleId: string;
   themeId?: string;
+  purposeIds?: string[];
+  /** Narration language code (default English). */
+  language?: string;
+  /** Extra subtitle language codes. */
+  subtitles?: string[];
   workflow?: Workflow;
   hasReference?: boolean;
 }
@@ -120,7 +131,7 @@ function visualStage(style: Style): Pick<PlanStage, "label" | "role" | "detail">
   return undefined;
 }
 
-function buildStages(style: Style, workflow: Workflow, format: Format, targetShots: number): PlanStage[] {
+function buildStages(style: Style, workflow: Workflow, format: Format, targetShots: number, purposeStages: PlanStage[], primary: Language, subtitles: Language[]): PlanStage[] {
   const engine = ENGINES[style.engine];
   const stages: PlanStage[] = [];
   if (workflow === "copycat-structure") {
@@ -143,12 +154,33 @@ function buildStages(style: Style, workflow: Workflow, format: Format, targetSho
   }
   const [minSec, maxSec] = VIDEO_FORMATS[format].durationSec;
   stages.push({ id: "research", label: "Research", executor: "hermes", role: "research", runnable: false, detail: "Facts for the brief, each with a source link saved to Assets." });
+  stages.push(...purposeStages);
   stages.push({ id: "script", label: "Script", executor: "hermes", role: "script", runnable: false, detail: `Script in this style's voice, sized for ${minSec}–${maxSec} s.` });
+  if (primary.code !== "en") {
+    stages.push({ id: "translate", label: `Translate script to ${primary.label}`, executor: "hermes", role: "translate", runnable: false, detail: "Keeps timing, names and product claims. A native speaker checks the result before recording." });
+  }
   stages.push({ id: "storyboard", label: "Storyboard", executor: "hermes", role: "storyboard", runnable: false, detail: `About ${targetShots} shots, each with a visual prompt, a duration and on-screen text.` });
   const visual = visualStage(style);
   if (visual) stages.push({ id: "visuals", executor: "hermes", runnable: false, ...visual });
   if (style.narration) {
-    stages.push({ id: "voice", label: "Narration", executor: "9router", role: "tts", runnable: false, detail: "Voice with word timings for captions and lip sync. The voice and its licence are logged in Assets." });
+    stages.push({
+      id: "voice",
+      label: `Narration (${primary.label})`,
+      executor: "9router",
+      role: "tts",
+      runnable: false,
+      detail: `Voice with word timings for captions and lip sync. ${primary.ttsNote}`,
+    });
+  }
+  if (subtitles.length > 0) {
+    stages.push({
+      id: "subtitles",
+      label: "Subtitles",
+      executor: "hermes",
+      role: "translate",
+      runnable: false,
+      detail: `Caption files for ${subtitles.map((l) => l.label).join(", ")}, timed from the narration. Each file is checked before upload.`,
+    });
   }
   stages.push({ id: "music", label: "Music and sound", executor: "worker", role: "audio", runnable: false, detail: "Self-composed or licensed tracks only. Each one is logged with its licence." });
   stages.push({
@@ -159,12 +191,15 @@ function buildStages(style: Style, workflow: Workflow, format: Format, targetSho
     runnable: false,
     detail: `${engine.label}. ${engine.note}`,
   });
+  if (primary.code !== "en" || subtitles.length > 0) {
+    stages.push({ id: "localize-meta", label: "Localized title and description", executor: "hermes", role: "translate", runnable: false, detail: "Titles and descriptions for each language, checked against the video before publishing." });
+  }
   stages.push({ id: "review", label: "Your review", executor: "human", role: "approve", runnable: false, detail: "Watch the cut and approve it. Nothing is scheduled before approval." });
   stages.push({ id: "publish", label: "Publish", executor: "human", role: "youtube", runnable: false, detail: "Upload as private first, then schedule. The YouTube connection comes in the next phase." });
   return stages;
 }
 
-function buildWarnings(style: Style, format: Format, workflow: Workflow): string[] {
+function buildWarnings(style: Style, format: Format, workflow: Workflow, primary: Language, purposes: string[]): string[] {
   const engine = ENGINES[style.engine];
   const warnings: string[] = [];
   if (engine.muse === "muse-slow") {
@@ -175,6 +210,11 @@ function buildWarnings(style: Style, format: Format, workflow: Workflow): string
   if (engine.muse === "external") warnings.push("Clips come from a paid AI provider. Check its commercial-use terms for every output.");
   if (format === "long" && engine.tier === "heavy") warnings.push("A long video with a heavy engine can take many hours to render. Split it into chapters.");
   if (workflow === "copycat-structure") warnings.push("Copy-cat mode learns structure only. Script, footage, characters and music must be your own.");
+  if (style.narration && primary.tts !== "kokoro") warnings.push(`Narration in ${primary.label}: ${primary.ttsNote}`);
+  for (const id of purposes) {
+    const purpose = PURPOSE_BY_ID[id];
+    for (const p of purpose.policy) warnings.push(`${purpose.label}: ${p}`);
+  }
   return warnings;
 }
 
@@ -194,10 +234,22 @@ export function buildPlan(input: BuildInput): BuildResult {
   const theme = input.themeId ? THEME_BY_ID[input.themeId] : undefined;
   if (input.themeId && !theme) return { ok: false, error: "Unknown theme." };
 
+  const purposeIds = [...new Set(input.purposeIds ?? [])];
+  const purposes = purposeIds.map((id) => PURPOSE_BY_ID[id]);
+  if (purposes.some((p) => !p)) return { ok: false, error: "Unknown purpose." };
+
+  const primary = LANGUAGE_BY_CODE[input.language ?? "en"];
+  if (!primary) return { ok: false, error: "Choose a narration language from the list." };
+  const subtitleCodes = [...new Set(input.subtitles ?? [])].filter((c) => c !== primary.code);
+  const subtitles = subtitleCodes.map((c) => LANGUAGE_BY_CODE[c]);
+  if (subtitles.some((l) => !l)) return { ok: false, error: "Unknown subtitle language." };
+
   const engine = ENGINES[style.engine];
   const [minSec, maxSec] = VIDEO_FORMATS[input.format].durationSec;
   const targetShots = Math.max(1, Math.round((minSec + maxSec) / 2 / ((style.shotSeconds[0] + style.shotSeconds[1]) / 2)));
-  const warnings = buildWarnings(style, input.format, workflow);
+  const purposeStages = purposes.flatMap((p) => p.extraStages.map((st) => ({ ...st, runnable: false })));
+
+  const warnings = buildWarnings(style, input.format, workflow, primary, purposeIds);
   if (theme) warnings.push(...theme.policy.map((p) => `${theme.label}: ${p}`));
 
   return {
@@ -213,12 +265,15 @@ export function buildPlan(input: BuildInput): BuildResult {
       targetShots,
       themeId: theme?.id ?? null,
       themeLabel: theme?.label ?? null,
+      purposes: purposes.map((p) => ({ id: p.id, label: p.label })),
+      language: { code: primary.code, label: primary.label, tts: primary.tts, ttsNote: primary.ttsNote },
+      subtitles: subtitles.map((l) => ({ code: l.code, label: l.label })),
       workflow,
       engineId: engine.id,
       engineLabel: engine.label,
       engineTier: engine.tier,
       muse: engine.muse,
-      stages: buildStages(style, workflow, input.format, targetShots),
+      stages: buildStages(style, workflow, input.format, targetShots, purposeStages, primary, subtitles),
       warnings,
       cautions: style.cautions,
       policy: theme?.policy ?? [],

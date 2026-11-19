@@ -40,6 +40,7 @@ export default async function ChannelPage({ params }: { params: Promise<{ id: st
                   name: c.name,
                   handle: c.handle ?? "",
                   niche: c.niche,
+                  category: c.category ?? "",
                   format: c.format,
                   language: c.language,
                   googleAccount: c.google_account,

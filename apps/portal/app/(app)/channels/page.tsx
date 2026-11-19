@@ -3,6 +3,9 @@ import { Plus, Tv } from "lucide-react";
 import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { formatLabel } from "@/lib/formats.ts";
+import { THEMES } from "@/lib/studio/catalog.ts";
+
+const THEME_NAME: Record<string, string> = Object.fromEntries(THEMES.map((t) => [t.id, t.label]));
 import { Card, EmptyState, LinkButton, PageHeader } from "@/components/ui.tsx";
 import { ChannelStatus } from "@/components/status.tsx";
 
@@ -11,7 +14,7 @@ export const metadata = { title: "Channels" };
 export default async function ChannelsPage() {
   await requireUser();
   const channels = await db()`
-    SELECT c.id, c.name, c.handle, c.niche, c.format, c.status, c.videos_per_day, c.google_account,
+    SELECT c.id, c.name, c.handle, c.niche, c.category, c.format, c.status, c.videos_per_day, c.google_account,
            w.name AS worker,
            (SELECT count(*)::int FROM jobs j WHERE j.channel_id = c.id AND j.status IN ('queued', 'running')) AS active_jobs
     FROM channels c LEFT JOIN workers w ON w.id = c.home_worker_id
@@ -50,7 +53,8 @@ export default async function ChannelsPage() {
                   </div>
                   <ChannelStatus status={c.status} />
                 </div>
-                <p className="mt-3 line-clamp-2 text-sm text-muted">{c.niche || "No niche set"}</p>
+                <p className="mt-3 text-xs font-medium text-accent">{THEME_NAME[c.category] ?? "Category not set"}</p>
+                <p className="mt-1 line-clamp-2 text-sm text-muted">{c.niche || "No niche set"}</p>
                 <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
                   <div>
                     <dt className="text-muted">Format</dt>

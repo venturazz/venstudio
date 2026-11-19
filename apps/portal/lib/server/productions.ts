@@ -10,6 +10,9 @@ export interface NewProduction {
   format: Format;
   styleId: string;
   themeId: string;
+  purposes: string[];
+  language: string;
+  subtitles: string[];
   workflow: Workflow;
   referenceAssetId: string;
   plan: ProductionPlan;
@@ -18,9 +21,11 @@ export interface NewProduction {
 
 export async function insertProduction(input: NewProduction): Promise<string> {
   const [row] = await db()`
-    INSERT INTO productions (title, brief, channel_id, format, style_id, theme_id, workflow, reference_asset_id, plan, created_by)
+    INSERT INTO productions (title, brief, channel_id, format, style_id, theme_id, purposes, language, subtitles,
+                             workflow, reference_asset_id, plan, created_by)
     VALUES (${input.title}, ${input.brief}, ${input.channelId || null}, ${input.format}, ${input.styleId},
-            ${input.themeId}, ${input.workflow}, ${input.referenceAssetId || null},
+            ${input.themeId}, ${input.purposes}::text[], ${input.language}, ${input.subtitles}::text[],
+            ${input.workflow}, ${input.referenceAssetId || null},
             ${JSON.stringify(input.plan)}::text::jsonb, ${input.createdBy})
     RETURNING id
   `;

@@ -4,12 +4,14 @@ import { useActionState } from "react";
 import { Alert, Field, Input, Select, Textarea } from "@/components/ui.tsx";
 import { SubmitButton } from "@/components/client.tsx";
 import { FORMATS } from "@/lib/formats.ts";
+import { LANGUAGES, THEMES } from "@/lib/studio/catalog.ts";
 import type { FormState } from "@/lib/form.ts";
 
 export interface ChannelValues {
   name: string;
   handle: string;
   niche: string;
+  category: string;
   format: string;
   language: string;
   googleAccount: string;
@@ -19,6 +21,7 @@ export interface ChannelValues {
   notes: string;
 }
 
+/** Category and worker are set by the owner. Nothing here is assigned automatically. */
 export function ChannelForm({
   action,
   values,
@@ -45,8 +48,18 @@ export function ChannelForm({
         <Field label="YouTube handle" htmlFor="handle" hint="Optional, e.g. @mythstories">
           <Input id="handle" name="handle" defaultValue={v.handle} placeholder="@handle" maxLength={40} />
         </Field>
-        <Field label="Niche" htmlFor="niche" hint="What the channel is about, in a few words.">
-          <Input id="niche" name="niche" defaultValue={v.niche} maxLength={120} placeholder="e.g. forgotten history" />
+        <Field label="Category" htmlFor="category" hint="The genre or topic this channel focuses on. You choose it.">
+          <Select id="category" name="category" defaultValue={v.category ?? ""}>
+            <option value="">Not decided yet</option>
+            {THEMES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Niche" htmlFor="niche" hint="Describe the angle in a few words.">
+          <Input id="niche" name="niche" defaultValue={v.niche} maxLength={120} placeholder="e.g. forgotten Roman history" />
         </Field>
         <Field label="Format" htmlFor="format">
           <Select id="format" name="format" defaultValue={v.format ?? "other"}>
@@ -57,11 +70,17 @@ export function ChannelForm({
             ))}
           </Select>
         </Field>
+        <Field label="Default language" htmlFor="language" hint="Narration and titles. Subtitles are chosen per video in Studio.">
+          <Select id="language" name="language" defaultValue={v.language ?? "en"}>
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
         <Field label="Google account" htmlFor="googleAccount" hint="Which of your 5 emails owns this channel.">
           <Input id="googleAccount" name="googleAccount" defaultValue={v.googleAccount} maxLength={120} />
-        </Field>
-        <Field label="Language" htmlFor="language">
-          <Input id="language" name="language" defaultValue={v.language ?? "en"} maxLength={10} />
         </Field>
         <Field label="Status" htmlFor="status">
           <Select id="status" name="status" defaultValue={v.status ?? "planning"}>
@@ -73,11 +92,7 @@ export function ChannelForm({
         <Field label="Videos per day" htmlFor="videosPerDay">
           <Input id="videosPerDay" name="videosPerDay" type="number" min={0} max={24} defaultValue={v.videosPerDay ?? 2} />
         </Field>
-        <Field
-          label="Home worker"
-          htmlFor="homeWorkerId"
-          hint="This channel's jobs go to this worker first. Others take over if it misses its wake."
-        >
+        <Field label="Home worker" htmlFor="homeWorkerId" hint="This channel's jobs go to this worker first. You choose it.">
           <Select id="homeWorkerId" name="homeWorkerId" defaultValue={v.homeWorkerId ?? ""}>
             <option value="">Any worker</option>
             {workers.map((w) => (

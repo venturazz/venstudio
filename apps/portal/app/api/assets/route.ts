@@ -30,6 +30,9 @@ const query = z.object({
   filename: z.string().max(200).default("file"),
 });
 
+/** Names that look like credential files. Keys belong in Coolify's environment, never in the library. */
+const CREDENTIAL_NAME = /(client[_ -]?secret|service[_ -]?account|credentials?|private[_ -]?key|key)\.json$/i;
+
 /** Stored file name: safe characters only, and never starting with a dot. */
 function storedName(filename: string): string {
   const base = path.basename(filename).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 100);
@@ -46,6 +49,9 @@ export async function POST(req: Request) {
   const parsed = query.safeParse(Object.fromEntries(new URL(req.url).searchParams));
   if (!parsed.success) return jsonError(400, parsed.error.issues[0]?.message ?? "Invalid input");
   const q = parsed.data;
+  if (CREDENTIAL_NAME.test(q.filename)) {
+    return jsonError(400, "This looks like a credentials file. Put API keys and OAuth secrets in Coolify environment variables, not in Assets.");
+  }
   const meta = await requestMeta();
 
   const id = await insertAssetRow({

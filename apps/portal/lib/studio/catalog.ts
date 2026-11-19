@@ -167,8 +167,9 @@ export interface Theme {
 }
 
 export const THEMES: Theme[] = [
+  // Original themes (styles already reference these ids)
   { id: "history", label: "History", keywords: ["history", "historical", "ancient", "empire", "war", "medieval", "civilization", "century", "dynasty", "kingdom"], policy: ["Cite sources in the description and check dates against a primary source."] },
-  { id: "science", label: "Science and nature", keywords: ["science", "biology", "physics", "nature", "animals", "evolution", "cell", "facts", "ocean"], policy: ["Check each claim against a primary source before publishing."] },
+  { id: "science", label: "Science and nature", keywords: ["science", "biology", "physics", "nature", "evolution", "cell", "facts", "ocean"], policy: ["Check each claim against a primary source before publishing."] },
   { id: "space", label: "Space and astronomy", keywords: ["space", "astronomy", "planet", "galaxy", "moon", "mars", "universe", "black hole", "telescope"], policy: ["Check each image's usage notes; public-domain agency images still need attribution where asked."] },
   { id: "finance", label: "Finance and economy", keywords: ["money", "finance", "economy", "stock", "inflation", "budget", "invest", "bank", "debt", "salary"], policy: ["No investment advice. Add a disclaimer and avoid promised returns."] },
   { id: "mystery", label: "Mystery and unsolved", keywords: ["mystery", "unsolved", "unexplained", "conspiracy", "disappearance", "clue", "secret"], policy: ["Don't name private people in crime stories, and use no real crime footage.", "Label speculation clearly as speculation."] },
@@ -178,10 +179,148 @@ export const THEMES: Theme[] = [
   { id: "travel", label: "Travel and places", keywords: ["travel", "city", "places", "tour", "destination", "landmark", "country", "journey"], policy: ["Use your own photos or images with recorded licences. Avoid trademarked buildings and logos."] },
   { id: "tech", label: "Tech and gadgets", keywords: ["tech", "technology", "gadget", "software", "device", "app", "ai"], policy: ["Don't reuse press images without permission."] },
   { id: "motivation", label: "Motivation", keywords: ["motivation", "mindset", "discipline", "success", "inspire", "habits", "quote"], policy: ["Quotes need attribution or a public-domain source. Write the rest in your own words."] },
-  { id: "product", label: "Product reviews", keywords: ["review", "product", "unboxing", "gadget", "tested", "buy", "compare"], policy: ["Disclose paid partnerships and affiliate links.", "Use only your own photos and tests."] },
+  { id: "product", label: "Product reviews", keywords: ["review", "product", "unboxing", "tested", "buy", "compare"], policy: ["Disclose paid partnerships and affiliate links.", "Use only your own photos and tests."] },
   { id: "relax", label: "Relaxation and ambience", keywords: ["relax", "ambient", "sleep", "rain", "calm", "lofi", "study", "focus"], policy: ["Music is the main Content ID risk: use self-composed or licensed tracks only."] },
   { id: "news", label: "News recap", keywords: ["news", "recap", "update", "weekly", "breaking", "roundup"], policy: ["Use commentary and original graphics. Don't reuse news clips or photos."] },
+  // Genres and topics added for completeness
+  { id: "thriller", label: "Thriller and suspense", keywords: ["thriller", "suspense", "chase", "twist", "heist", "spy", "betrayal"], policy: ["Fiction only. Keep real people out of suspect or villain roles.", "Check the platform's rules on graphic violence before publishing."] },
+  { id: "comedy", label: "Comedy and sketches", keywords: ["comedy", "funny", "sketch", "humor", "joke", "parody"], policy: ["No copied sketches, clips or jokes from other shows."] },
+  { id: "drama", label: "Drama and character stories", keywords: ["drama", "character", "relationship", "family drama", "emotional"], policy: ["Fiction only. Don't present a story about a real person as fact."] },
+  { id: "romance", label: "Romance", keywords: ["romance", "love story", "wedding", "crush", "couple"], policy: ["Keep it suitable for general audiences unless the age-restriction rules are checked."] },
+  { id: "scifi", label: "Sci-fi", keywords: ["sci-fi", "scifi", "science fiction", "future", "robot", "alien", "spaceship", "dystopia"], policy: [] },
+  { id: "fantasy", label: "Fantasy", keywords: ["fantasy", "dragon", "wizard", "magic", "kingdom of", "quest", "epic"], policy: [] },
+  { id: "true-crime", label: "True crime", keywords: ["true crime", "murder", "case", "detective", "investigation", "criminal"], policy: ["No real crime footage. Don't name or show private people beyond what the public record says.", "Check defamation risk for every named person before publishing."] },
+  { id: "education", label: "Education and how-to", keywords: ["tutorial", "how to", "lesson", "learn", "step by step", "guide", "course"], policy: ["Test every step you show. Note the version or date of any software."] },
+  { id: "language-learning", label: "Language learning", keywords: ["language", "learn english", "vocabulary", "grammar", "pronunciation", "phrases"], policy: ["Have a native speaker check pronunciation and translations."] },
+  { id: "food", label: "Food and recipes", keywords: ["food", "recipe", "cooking", "baking", "kitchen", "dish", "meal"], policy: ["Recipes can be shared, but write the method in your own words and use only photos you took."] },
+  { id: "fitness", label: "Fitness", keywords: ["fitness", "workout", "exercise", "training", "gym", "stretch"], policy: ["Add a safety note. No promised results and no medical advice."] },
+  { id: "health", label: "Health", keywords: ["health", "symptoms", "diet", "wellness", "supplement", "medical"], policy: ["No medical claims or cures. Add a 'not medical advice' note and cite sources.", "Health claims are a common reason for removal: check each one."] },
+  { id: "business", label: "Business and startups", keywords: ["business", "startup", "entrepreneur", "marketing", "sales", "side hustle"], policy: ["No guaranteed-income claims. Show real numbers only with a source."] },
+  { id: "sports", label: "Sports", keywords: ["sports", "football", "soccer", "basketball", "match", "highlights", "athlete"], policy: ["Broadcast highlights and team logos are copyrighted: use your own footage or licensed clips only."] },
+  { id: "gaming", label: "Gaming", keywords: ["gaming", "game", "gameplay", "walkthrough", "speedrun", "esports"], policy: ["Gameplay footage and game music belong to the publisher: check each game's content rules. Commentary alone can be original."] },
+  { id: "music", label: "Music", keywords: ["music", "song", "lyrics", "beat", "album", "playlist"], policy: ["A song needs its licence (publisher or licensed library) before it appears in a video."] },
+  { id: "real-estate", label: "Real estate", keywords: ["property", "house tour", "apartment", "real estate", "rent", "listing"], policy: ["Show a property only with the owner's permission. No misleading price or size claims."] },
+  { id: "fashion", label: "Fashion", keywords: ["fashion", "outfit", "style", "clothing", "wardrobe", "streetwear"], policy: ["Brand names and logos only with fair-use reasons or licences. Disclose paid partnerships."] },
+  { id: "beauty", label: "Beauty", keywords: ["beauty", "makeup", "skincare", "routine", "cosmetics"], policy: ["Disclose paid partnerships. Avoid claims a product can cure skin conditions."] },
+  { id: "cars", label: "Cars", keywords: ["car", "cars", "vehicle", "motorcycle", "driving", "engine"], policy: ["Trademarked badges are fine in reviews; don't imply a brand endorses your video."] },
+  { id: "diy", label: "DIY and crafts", keywords: ["diy", "craft", "woodworking", "repair", "build", "handmade"], policy: ["Add safety notes for tools, electricity and heights."] },
+  { id: "parenting", label: "Parenting", keywords: ["parenting", "parents", "toddler", "baby", "family tips"], policy: ["No medical advice. Don't show children's faces or details without consent."] },
+  { id: "self-improvement", label: "Self-improvement", keywords: ["self improvement", "productivity", "habit", "routine", "focus tips", "life hacks"], policy: ["Avoid promised outcomes. Cite research where you quote a study."] },
+  { id: "interviews", label: "Interviews and talks", keywords: ["interview", "conversation", "podcast", "talk", "guest", "q and a"], policy: ["Get a recording release from every guest before publishing."] },
+  { id: "wildlife", label: "Wildlife and pets", keywords: ["wildlife", "pets", "dogs", "cats", "birds", "safari", "pet care"], policy: ["Don't stage harm to animals. Use your own footage or licensed clips."] },
 ];
+
+/**
+ * Why a video exists. Purposes add stages and rules on top of the style and theme.
+ * extraStages are inserted after the research stage.
+ */
+export interface StageTemplate {
+  id: string;
+  label: string;
+  executor: Executor;
+  role: string;
+  detail: string;
+}
+
+export interface Purpose {
+  id: string;
+  label: string;
+  description: string;
+  extraStages: StageTemplate[];
+  policy: string[];
+}
+
+export const PURPOSES: Purpose[] = [
+  { id: "entertain", label: "Entertain", description: "Story, comedy or fun for its own sake.", extraStages: [], policy: [] },
+  { id: "educate", label: "Educate", description: "Teach or explain something. Facts need sources.", extraStages: [], policy: ["Cite a source for every factual claim."] },
+  {
+    id: "affiliate",
+    label: "Affiliate links",
+    description: "Links that earn a commission when someone buys.",
+    extraStages: [
+      { id: "product-research", label: "Product research and links", executor: "hermes", role: "research", detail: "Products, the claims to verify, and each affiliate link with its disclosure line." },
+    ],
+    policy: [
+      "Affiliate commissions count as paid promotion: tick YouTube's paid promotion box and say so in the video and in the description.",
+      "Test any product before you recommend it.",
+    ],
+  },
+  {
+    id: "advertising",
+    label: "Advertising for a client",
+    description: "A video paid for by a brand or client.",
+    extraStages: [
+      { id: "client-brief", label: "Client brief and claims check", executor: "human", role: "approve", detail: "The brief, the approved claims and the disclosure wording, signed off by the client." },
+    ],
+    policy: [
+      "Paid promotion must be disclosed with YouTube's paid promotion box.",
+      "Check YouTube's rules on third-party sponsorships inside videos before you sell a slot.",
+    ],
+  },
+  {
+    id: "series",
+    label: "Series (recurring episodes)",
+    description: "Episodes that share characters, world and format.",
+    extraStages: [
+      { id: "series-bible", label: "Series bible", executor: "hermes", role: "series", detail: "Characters, world rules, the recurring format and the episode arc. Saved to Assets and reused by every episode." },
+    ],
+    policy: ["Keep recurring characters and the art style in Assets, so every episode matches."],
+  },
+  {
+    id: "testimonial",
+    label: "Testimonial or interview",
+    description: "Someone speaks on camera or in narration about their experience.",
+    extraStages: [
+      { id: "release", label: "Signed release", executor: "human", role: "consent", detail: "A recording and publishing release from everyone who speaks or appears." },
+    ],
+    policy: ["Get a signed release before publishing anyone's words or likeness."],
+  },
+  {
+    id: "brand-story",
+    label: "Brand story",
+    description: "Company or product story told for the brand's own channel.",
+    extraStages: [
+      { id: "client-brief", label: "Brand brief and approval", executor: "human", role: "approve", detail: "Brand guidelines, approved messages and the final approval." },
+    ],
+    policy: ["Keep claims factual and sourced. Disclose that the video is made for the brand."],
+  },
+];
+
+export const PURPOSE_BY_ID: Record<string, Purpose> = Object.fromEntries(PURPOSES.map((p) => [p.id, p]));
+
+/**
+ * Narration and subtitle languages. `tts` says whether Kokoro (the TTS model in the plan) lists the language:
+ * "kokoro" = listed on its model cards, "other" = not listed (needs another voice provider), "verify" = unclear.
+ */
+export interface Language {
+  code: string;
+  label: string;
+  tts: "kokoro" | "other" | "verify";
+  ttsNote: string;
+}
+
+export const LANGUAGES: Language[] = [
+  { code: "en", label: "English", tts: "kokoro", ttsNote: "Kokoro has US and UK English voices." },
+  { code: "es", label: "Spanish", tts: "kokoro", ttsNote: "Kokoro lists Spanish voices." },
+  { code: "fr", label: "French", tts: "kokoro", ttsNote: "Kokoro lists only one French voice; listen before publishing." },
+  { code: "hi", label: "Hindi", tts: "kokoro", ttsNote: "Kokoro lists Hindi voices." },
+  { code: "it", label: "Italian", tts: "kokoro", ttsNote: "Kokoro lists Italian voices." },
+  { code: "ja", label: "Japanese", tts: "kokoro", ttsNote: "Kokoro lists Japanese voices." },
+  { code: "zh", label: "Chinese (Mandarin)", tts: "kokoro", ttsNote: "Kokoro lists Mandarin voices." },
+  { code: "pt", label: "Portuguese (Brazil)", tts: "kokoro", ttsNote: "Kokoro lists Brazilian Portuguese voices." },
+  { code: "id", label: "Indonesian", tts: "other", ttsNote: "Not in Kokoro's listed languages. Narration needs another voice provider; confirm one through 9router or Hermes." },
+  { code: "ms", label: "Malay", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "ko", label: "Korean", tts: "verify", ttsNote: "Some Kokoro builds list Korean. Check the exact model you run." },
+  { code: "de", label: "German", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "ar", label: "Arabic", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "ru", label: "Russian", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "vi", label: "Vietnamese", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "th", label: "Thai", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "tr", label: "Turkish", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+  { code: "nl", label: "Dutch", tts: "other", ttsNote: "Not in Kokoro's listed languages. Needs another voice provider." },
+];
+
+export const LANGUAGE_BY_CODE: Record<string, Language> = Object.fromEntries(LANGUAGES.map((l) => [l.code, l]));
 
 export const THEME_BY_ID: Record<string, Theme> = Object.fromEntries(THEMES.map((t) => [t.id, t]));
 

@@ -4,12 +4,12 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/server/auth.ts";
 import { audit } from "@/lib/server/audit.ts";
-import { getAssetRow } from "@/lib/server/assets.ts";
+import { getAssetRow, VIDEO_KINDS } from "@/lib/server/assets.ts";
 import { insertProduction } from "@/lib/server/productions.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { fail, str, valuesFrom, type FormValues } from "@/lib/form.ts";
-import { VIDEO_KINDS } from "@/lib/server/assets.ts";
 import { buildPlan, detectTheme, suggestStyles, type ProductionPlan } from "@/lib/studio/planner.ts";
+import { LANGUAGE_BY_CODE } from "@/lib/studio/catalog.ts";
 
 export type StudioState =
   | {
@@ -28,6 +28,9 @@ const schema = z.object({
   format: z.enum(["short", "long"]),
   styleId: z.string().max(60),
   themeId: z.string().max(40),
+  purposes: z.array(z.string().max(40)).max(8),
+  language: z.string().max(10).refine((c) => Boolean(LANGUAGE_BY_CODE[c]), "Choose a narration language from the list"),
+  subtitles: z.array(z.string().max(10)).max(20),
   workflow: z.enum(["original", "copycat-structure"]),
   channelId: z.union([z.uuid(), z.literal("")]),
   referenceAssetId: z.union([z.uuid(), z.literal("")]),
@@ -43,6 +46,9 @@ export async function studioAction(_prev: StudioState, fd: FormData): Promise<St
     format: str(fd, "format", 10) || "short",
     styleId: str(fd, "styleId", 60),
     themeId: str(fd, "themeId", 40),
+    purposes: fd.getAll("purposes").filter((v): v is string => typeof v === "string"),
+    language: str(fd, "language", 10) || "en",
+    subtitles: fd.getAll("subtitles").filter((v): v is string => typeof v === "string"),
     workflow: str(fd, "workflow", 30) || "original",
     channelId: str(fd, "channelId", 40),
     referenceAssetId: str(fd, "referenceAssetId", 40),
@@ -59,7 +65,9 @@ export async function studioAction(_prev: StudioState, fd: FormData): Promise<St
       label: s.style.label,
       matched: s.matched,
     }));
-    if (suggestions.length === 0) return { suggestions, detectedThemeId: themeId, values, error: "No style matches that brief yet. Add more detail or pick one from the list." };
+    if (suggestions.length === 0) {
+      return { suggestions, detectedThemeId: themeId, values, error: "No style matches that brief yet. Add more detail or pick one from the list." };
+    }
     return { suggestions, detectedThemeId: themeId, values };
   }
 
@@ -72,6 +80,9 @@ export async function studioAction(_prev: StudioState, fd: FormData): Promise<St
     format: d.format,
     styleId: d.styleId,
     themeId: d.themeId || undefined,
+    purposeIds: d.purposes,
+    language: d.language,
+    subtitles: d.subtitles,
     workflow: d.workflow,
     hasReference: Boolean(d.referenceAssetId),
   });
@@ -87,12 +98,22 @@ export async function studioAction(_prev: StudioState, fd: FormData): Promise<St
     format: d.format,
     styleId: d.styleId,
     themeId: d.themeId,
+    purposes: built.plan.purposes.map((p) => p.id),
+    language: built.plan.language.code,
+    subtitles: built.plan.subtitles.map((s) => s.code),
     workflow: d.workflow,
     referenceAssetId: d.referenceAssetId,
     plan: built.plan,
     createdBy: user.id,
   });
-  await audit({ userId: user.id, action: "production.create", target: id, detail: { style: d.styleId, format: d.format }, ip: (await requestMeta()).ip });
+  await audit({
+    userId: user.id,
+    action: "production.create",
+    target: id,
+    detail: { style: d.styleId, format: d.format, language: built.plan.language.code, purposes: built.plan.purposes.map((p) => p.id) },
+    ip: (await requestMeta()).ip,
+  });
   revalidatePath("/studio");
   return { plan: built.plan, saved: id, values };
 }
+

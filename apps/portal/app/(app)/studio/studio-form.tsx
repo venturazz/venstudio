@@ -4,6 +4,9 @@ import { useActionState, useEffect, useState, useTransition, type FormEvent } fr
 import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.tsx";
 import {
   FAMILY_LABELS,
+  LANGUAGES,
+  LANGUAGE_BY_CODE,
+  PURPOSES,
   STYLES,
   THEMES,
   VIDEO_FORMATS,
@@ -38,6 +41,13 @@ export function PlanView({ plan }: { plan: ProductionPlan }) {
         <Badge tone="accent">{plan.styleLabel}</Badge>
         <Badge>{plan.formatLabel}</Badge>
         {plan.themeLabel && <Badge>{plan.themeLabel}</Badge>}
+        {plan.purposes.map((p) => (
+          <Badge key={p.id}>{p.label}</Badge>
+        ))}
+        <Badge>Narration: {plan.language.label}</Badge>
+        {plan.subtitles.map((s) => (
+          <Badge key={s.code}>Subs: {s.label}</Badge>
+        ))}
         <Badge tone={muse.tone}>{muse.label}</Badge>
       </div>
       <p className="text-sm text-muted">
@@ -85,7 +95,7 @@ export function StudioForm({
   channels,
   references,
 }: {
-  channels: Array<{ id: string; name: string }>;
+  channels: Array<{ id: string; label: string }>;
   references: Array<{ id: string; title: string }>;
 }) {
   const [state, dispatch] = useActionState(studioAction, undefined);
@@ -94,6 +104,7 @@ export function StudioForm({
   const [format, setFormat] = useState<Format>(v.format === "long" ? "long" : "short");
   const [styleId, setStyleId] = useState(v.styleId ?? "");
   const [themeId, setThemeId] = useState(v.themeId ?? "");
+  const [language, setLanguage] = useState(v.language ?? "en");
   const [workflow, setWorkflow] = useState<Workflow>(v.workflow === "copycat-structure" ? "copycat-structure" : "original");
 
   // A suggestion action detects the theme from the brief; select it so the next preview uses it.
@@ -102,7 +113,7 @@ export function StudioForm({
   }, [state]);
 
   // Submit through a handler, not a form action. A form action makes React reset the form after it runs, which
-  // clears the native selects and loses the style the user chose. Here the controlled fields keep their values.
+  // clears the native selects and loses what the user chose. Here the controlled fields keep their values.
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -117,12 +128,12 @@ export function StudioForm({
       {state?.saved && <Alert tone="ok">Saved as a planned production. Its stages run once their workers are connected.</Alert>}
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Channel" htmlFor="channelId">
+        <Field label="Channel" htmlFor="channelId" hint="Shows each channel's category. Nothing is chosen for you.">
           <Select id="channelId" name="channelId" defaultValue={v.channelId ?? ""}>
             <option value="">No channel yet</option>
             {channels.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name}
+                {c.label}
               </option>
             ))}
           </Select>
@@ -130,13 +141,7 @@ export function StudioForm({
         <Field label="Format" htmlFor="format-group" hint={VIDEO_FORMATS[format].label}>
           <div id="format-group" className="grid grid-cols-2 gap-2">
             {(["short", "long"] as const).map((f) => (
-              <Button
-                key={f}
-                type="button"
-                variant={format === f ? "primary" : "secondary"}
-                aria-pressed={format === f}
-                onClick={() => setFormat(f)}
-              >
+              <Button key={f} type="button" variant={format === f ? "primary" : "secondary"} aria-pressed={format === f} onClick={() => setFormat(f)}>
                 {f === "short" ? "Short" : "Long"}
               </Button>
             ))}
@@ -150,7 +155,7 @@ export function StudioForm({
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Theme" htmlFor="themeId">
+        <Field label="Theme or genre" htmlFor="themeId">
           <Select id="themeId" name="themeId" value={themeId} onChange={(e) => setThemeId(e.target.value)}>
             <option value="">Any theme</option>
             {THEMES.map((t) => (
@@ -170,12 +175,51 @@ export function StudioForm({
           </Select>
         </Field>
       </div>
-      {workflow === "copycat-structure" && (
+
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">Purpose</legend>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {PURPOSES.map((p) => (
+            <label key={p.id} className="flex items-start gap-2 rounded-lg border border-border p-2.5 text-sm">
+              <input type="checkbox" name="purposes" value={p.id} defaultChecked={(v.purposes ?? "").includes(p.id)} className="mt-1 size-4 accent-[var(--vs-accent)]" />
+              <span>
+                <span className="font-medium">{p.label}</span>
+                <span className="block text-xs text-muted">{p.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field
-          label="Reference video"
-          htmlFor="referenceAssetId"
-          hint="Upload a video in Assets and analyze it first. Only its structure is learned, never its content."
+          label="Narration language"
+          htmlFor="language"
+          hint={LANGUAGE_BY_CODE[language]?.ttsNote}
         >
+          <Select id="language" name="language" value={language} onChange={(e) => setLanguage(e.target.value)}>
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Subtitles in</legend>
+          <div className="grid max-h-40 grid-cols-2 gap-1.5 overflow-y-auto rounded-lg border border-border p-2 text-sm">
+            {LANGUAGES.filter((l) => l.code !== language).map((l) => (
+              <label key={l.code} className="flex items-center gap-2">
+                <input type="checkbox" name="subtitles" value={l.code} defaultChecked={(v.subtitles ?? "").includes(l.code)} className="size-4 accent-[var(--vs-accent)]" />
+                {l.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      </div>
+
+      {workflow === "copycat-structure" && (
+        <Field label="Reference video" htmlFor="referenceAssetId" hint="Upload a video in Assets and analyze it first. Only its structure is learned, never its content.">
           <Select id="referenceAssetId" name="referenceAssetId" defaultValue={v.referenceAssetId ?? ""}>
             <option value="">Choose a reference…</option>
             {references.map((r) => (
@@ -186,9 +230,7 @@ export function StudioForm({
           </Select>
         </Field>
       )}
-      {workflow === "copycat-structure" && !references.length && (
-        <Alert tone="info">No videos in Assets yet. Upload one there, then come back.</Alert>
-      )}
+      {workflow === "copycat-structure" && !references.length && <Alert tone="info">No videos in Assets yet. Upload one there, then come back.</Alert>}
 
       <Field label="Style" htmlFor="styleId" hint={styleId ? STYLES.find((s) => s.id === styleId)?.description : "Or press Suggest styles to rank them from your brief."}>
         <Select id="styleId" name="styleId" value={styleId} onChange={(e) => setStyleId(e.target.value)}>
@@ -243,4 +285,3 @@ export function StudioForm({
     </form>
   );
 }
-

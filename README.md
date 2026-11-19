@@ -93,6 +93,12 @@ For a VPS or your own PC, use the `curl … install.sh … --mode daemon` comman
   can never appear in a published video.
 - Design and sources: [docs/research/03-production-styles-and-muse-capabilities.md](docs/research/03-production-styles-and-muse-capabilities.md).
 
+## Owner recovery and YouTube keys
+
+- Locked out? See the recovery command in the Coolify section of [docs/deploy-coolify.md](docs/deploy-coolify.md).
+  It sets a new owner password from the server and signs every device out.
+- Where the YouTube keys go, and why a service-account `key.json` doesn't work: [docs/youtube-credentials.md](docs/youtube-credentials.md).
+
 ## Roadmap
 
 1. **Foundation (this):** auth, channels, worker fleet, job queue, smoke-test rendering, 9router status.
