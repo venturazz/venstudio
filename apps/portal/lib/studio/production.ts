@@ -208,7 +208,7 @@ export function productionSummary(stage: ProductionStage, result: unknown): stri
   if (stage === "assets") {
     const done = num(r.done);
     const providers = Array.isArray(r.providers) ? r.providers.filter((p): p is string => typeof p === "string") : [];
-    return `${done} image${done === 1 ? "" : "s"} ready${providers.length ? ` from ${providers.join(", ")}` : ""}`;
+    return `${done} image${done === 1 ? "" : "s"} ready${providers.length ? ` from ${providers.join(", ")} (names stated by Hermes, not verified)` : ""}`;
   }
   if (stage === "voice") {
     const sec = num(r.narrationSec);

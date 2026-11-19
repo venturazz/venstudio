@@ -115,7 +115,7 @@ test("resolveImageProvider keeps names from the owner's order and flags others",
   assert.equal(resolveImageProvider("Agnes AI", ["cloudflare", "Agnes AI"]), "agnes-ai");
   assert.equal(resolveImageProvider("canva", ["cloudflare", "agnes"]), "unlisted-canva");
   assert.equal(resolveImageProvider("", ["cloudflare"]), "unlisted-unknown");
-  assert.equal(resolveImageProvider("canva", []), "canva");
+  assert.equal(resolveImageProvider("canva", []), "unlisted-canva");
   assert.ok(resolveImageProvider("x".repeat(80), ["a"]).length <= 49);
 });
 

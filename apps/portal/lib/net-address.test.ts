@@ -33,6 +33,17 @@ test("NAT64 and 6to4 addresses are blocked", () => {
   assert.equal(blockedAddressReason("2606:4700:4700::1111"), null);
 });
 
+test("hopTrust trusts only the first hop and refuses redirects into the trusted origin", async () => {
+  const { hopTrust } = await import("./net-address.ts");
+  const t = ["http://hermes:8642"];
+  assert.equal(hopTrust("http://hermes:8642/f.png", t, true), "trusted");
+  assert.equal(hopTrust("http://hermes:8642/f.png", t, false), "refused");
+  assert.equal(hopTrust("https://cdn.example/f.png", t, true), "untrusted");
+  assert.equal(hopTrust("https://cdn.example/f.png", t, false), "untrusted");
+  assert.equal(hopTrust("http://hermes:5432/", t, true), "untrusted");
+  assert.equal(hopTrust("http://hermes:8642/", [], true), "untrusted");
+});
+
 test("trusted origin needs the same scheme, host and port", async () => {
   const { matchesTrustedOrigin, originOf } = await import("./net-address.ts");
   const trusted = [originOf("http://hermes:8642/v1") as string];

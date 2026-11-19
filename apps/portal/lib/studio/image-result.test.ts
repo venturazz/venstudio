@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { audioIssues, decodeInlineSource, imageIssues, parseAudioReply, parseImageReply, sniffAudio, sniffImage } from "./image-result.ts";
+import { audioIssues, capcutAudioIssues, decodeInlineSource, imageIssues, parseAudioReply, parseImageReply, sniffAudio, sniffImage } from "./image-result.ts";
 import { makeWav } from "./wav.ts";
 
 const b64 = (bytes: number[]) => Buffer.from(bytes).toString("base64");
@@ -122,4 +122,16 @@ test("sniffAudio and audioIssues", () => {
   assert.deepEqual(audioIssues(sniffAudio(wav)), []);
   assert.match(audioIssues(null)[0], /not a WAV/);
   assert.match(audioIssues({ mime: "audio/wav", bytes: 10 })[0], /almost empty/);
+});
+
+test("capcutAudioIssues refuses Ogg and asks for WAV or MP3", () => {
+  const ogg = new Uint8Array(2000);
+  ogg.set([0x4f, 0x67, 0x67, 0x53]);
+  const issues = capcutAudioIssues(sniffAudio(ogg));
+  assert.equal(issues.length, 1);
+  assert.match(issues[0], /WAV or MP3/);
+  const wav = new Uint8Array(2000);
+  wav.set([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]);
+  assert.deepEqual(capcutAudioIssues(sniffAudio(wav)), []);
+  assert.ok(capcutAudioIssues(null).length > 0);
 });

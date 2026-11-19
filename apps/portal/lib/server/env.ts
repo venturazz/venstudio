@@ -24,6 +24,7 @@ const schema = z.object({
   KOKORO_VOICE: optional(z.string()),
   TTS_BACKUP: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["hermes-capcut", "off"]).default("hermes-capcut")),
   HERMES_IMAGE_PROVIDER_ORDER: optional(z.string()),
+  HERMES_MEDIA_ORIGINS: optional(z.string()),
   MUSE_AGENT_TASKS: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["1", "0"]).default("0")),
 });
 

@@ -92,7 +92,7 @@ jobs:
           # Unroutable address: connections hang, like an unreachable 9router. Pages must not wait for it.
           export NINEROUTER_BASE_URL=http://10.255.255.1:20128/v1
           # Fake Hermes started by scripts/ui-e2e.mjs.
-          export HERMES_BASE_URL=http://127.0.0.1:3299 HERMES_API_KEY=test-hermes-key
+          export HERMES_BASE_URL=http://127.0.0.1:3299 HERMES_API_KEY=test-hermes-key HERMES_IMAGE_PROVIDER_ORDER=cloudflare,agnes,canva
           # Fake Kokoro started by scripts/ui-e2e.mjs.
           export KOKORO_BASE_URL=http://127.0.0.1:3298
           DATABASE_URL="$UI_DB" node apps/portal/scripts/migrate.mjs

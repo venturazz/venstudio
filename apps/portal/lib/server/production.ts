@@ -350,7 +350,7 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     createdBy: null,
   });
   const estimate = estimateNarrationSec(script, wordsPerMinuteFor(template));
-  // WAV and MP3 lengths are measured here. Ogg falls back to the plan estimate, and the render fails if the real length differs by more than a second.
+  // WAV and MP3 lengths are measured here. CapCut audio that is Ogg is refused at the source, so only WAV and MP3 (measured) reach here.
   const narrationSec = n.durationSec ?? estimate;
   const base = voiceGate({
     languageCode: run.config.language,

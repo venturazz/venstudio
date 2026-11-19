@@ -32,7 +32,8 @@ so Coolify reads the file again. Then fill in:
 | `KOKORO_MODEL` | optional | `kokoro` |
 | `KOKORO_VOICE` | optional | `af_heart` (a US English voice) |
 | `TTS_BACKUP` | optional | `hermes-capcut` (default): if Kokoro cannot do a language or is down, Hermes runs its CapCut workflow. `off` disables the backup |
-| `HERMES_IMAGE_PROVIDER_ORDER` | optional | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. A hint only |
+| `HERMES_IMAGE_PROVIDER_ORDER` | optional | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. Also the list of provider names the portal records as is. Any other name, and every name when this is empty, is stored as `unlisted-<name>` and needs owner confirmation in Settings |
+| `HERMES_MEDIA_ORIGINS` | optional | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only |
 | `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows the unverified Muse agent task fallback |
 
 ### Kokoro server (example, verify before relying on it)

@@ -49,6 +49,18 @@ export function hermesOrigin(): string | null {
   }
 }
 
+/** hermesOrigin plus the owner's optional HERMES_MEDIA_ORIGINS (comma list of full origins, e.g. http://hermes-files:8000). */
+export function hermesTrustedOrigins(): string[] {
+  const list: string[] = [];
+  const main = hermesOrigin();
+  if (main) list.push(main);
+  for (const raw of (env().HERMES_MEDIA_ORIGINS ?? "").split(",").slice(0, 8)) {
+    const o = originOf(raw.trim());
+    if (o && !list.includes(o)) list.push(o);
+  }
+  return list;
+}
+
 export function providerOrderHint(): string[] {
   return (env().HERMES_IMAGE_PROVIDER_ORDER ?? "")
     .split(",")
@@ -63,7 +75,7 @@ export function providerOrderHint(): string[] {
  * is a plain failure, never an exception.
  */
 export async function generateImage(job: ImageJob): Promise<ImageResult> {
-  const trusted = hermesOrigin();
+  const trusted = hermesTrustedOrigins();
   const messages = imagePrompt({
     prompt: job.note ? `${job.prompt}\n\nOwner note: ${job.note}` : job.prompt,
     beatRole: job.beatRole,
@@ -80,7 +92,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
       const inline = decodeInlineSource(parsed.source);
       if (inline) bytes = inline;
       else {
-        const got = await fetchMedia(parsed.source.value, { maxBytes: MAX_IMAGE_BYTES, timeoutMs: 60_000, trustedOrigins: trusted ? [trusted] : [] });
+        const got = await fetchMedia(parsed.source.value, { maxBytes: MAX_IMAGE_BYTES, timeoutMs: 60_000, trustedOrigins: trusted });
         bytes = got.bytes;
         originUrl = parsed.source.value;
       }

@@ -211,6 +211,14 @@ export function sniffAudio(b: Uint8Array): AudioInfo | null {
   return null;
 }
 
+/** CapCut backup audio: WAV or MP3 only, because the portal can measure their length and Ogg it cannot. */
+export function capcutAudioIssues(info: AudioInfo | null): string[] {
+  const base = audioIssues(info);
+  if (base.length > 0) return base;
+  if (info && info.mime === "audio/ogg") return ["The audio is Ogg. Return the narration as a WAV or MP3 file instead"];
+  return [];
+}
+
 export function audioIssues(info: AudioInfo | null): string[] {
   if (!info) return ["The file is not a WAV, MP3 or OGG audio file"];
   if (info.bytes < 1000) return ["The audio file is almost empty"];

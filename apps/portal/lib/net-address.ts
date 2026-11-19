@@ -95,6 +95,15 @@ export function originOf(raw: string): string | null {
   }
 }
 
+/**
+ * Trust decision for one hop of a download. Only the first request may use the owner's trusted origins (http and
+ * private addresses allowed). A redirect into a trusted origin is refused, and any other redirect is untrusted.
+ */
+export function hopTrust(raw: string, trustedOrigins: readonly string[], first: boolean): "trusted" | "untrusted" | "refused" {
+  if (!matchesTrustedOrigin(raw, trustedOrigins)) return "untrusted";
+  return first ? "trusted" : "refused";
+}
+
 /** True only when the URL has exactly the scheme, host and port of one of the trusted origins. */
 export function matchesTrustedOrigin(raw: string, trustedOrigins: readonly string[]): boolean {
   const o = originOf(raw);

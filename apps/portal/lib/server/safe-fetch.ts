@@ -3,7 +3,7 @@ import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { blockedAddressReason, matchesTrustedOrigin } from "../net-address.ts";
+import { blockedAddressReason, hopTrust } from "../net-address.ts";
 
 /**
  * Downloads a file a model pointed at, without letting the model reach the portal's own network.
@@ -58,12 +58,14 @@ function checkUrl(raw: string, trusted: string[], first: boolean): { url: URL; i
     throw new SafeFetchError("The file address is not a valid URL");
   }
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const matches = matchesTrustedOrigin(url.toString(), trusted);
-  if (matches && !first) throw new SafeFetchError("The file address redirected into the studio's own network, which is not allowed");
-  const isTrusted = matches && first;
+  const trust = hopTrust(url.toString(), trusted, first);
+  if (trust === "refused") throw new SafeFetchError("The file address redirected into the studio's own network, which is not allowed");
+  const isTrusted = trust === "trusted";
   if (url.username || url.password) throw new SafeFetchError("The file address must not contain a login");
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isTrusted)) {
-    throw new SafeFetchError("The file address must start with https://");
+    throw new SafeFetchError(
+      first ? "The file address must start with https:// (or be on the Hermes address the owner configured)" : "The file address must start with https://",
+    );
   }
   if (!isTrusted && net.isIP(host)) {
     const reason = blockedAddressReason(host);

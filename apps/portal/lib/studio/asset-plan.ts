@@ -29,14 +29,14 @@ export function normalizeProvider(raw: string | null | undefined): string {
 }
 
 /**
- * The provider name Hermes reports is a self-report. When the owner configured a provider order, only a name in that
- * order is recorded as is. Any other name is recorded as "unlisted-<name>", a separate provider the owner has to
- * confirm in Settings, so a reply cannot borrow the terms of a provider the owner already cleared.
+ * The provider name Hermes reports is a self-report. Only a name in the owner's configured provider order is
+ * recorded as is (a reply can still claim any name in that list). Any other name, and every name when no order is set, is recorded
+ * as "unlisted-<name>", a separate provider the owner has to confirm in Settings, so a reply cannot borrow the terms of a provider the owner already cleared.
  */
 export function resolveImageProvider(claimed: string | null | undefined, configuredOrder: readonly string[]): string {
   const name = normalizeProvider(claimed);
   const order = configuredOrder.map((p) => normalizeProvider(p));
-  if (order.length === 0 || order.includes(name)) return name;
+  if (order.length > 0 && order.includes(name)) return name;
   return `unlisted-${name}`.slice(0, 49);
 }
 

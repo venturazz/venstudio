@@ -155,8 +155,14 @@ side at least 480 px. URLs are fetched through an SSRF-safe fetcher (`lib/server
 configured Hermes origin, private, loopback, link-local, NAT64 and 6to4 addresses refused after DNS lookup, size and
 time limits, 3 redirects). The Hermes exemption matches scheme, host and port of `HERMES_BASE_URL` exactly and only for
 the first request: a redirect never keeps it, and a redirect into that origin is refused. The provider name Hermes
-reports is a self-report. When `HERMES_IMAGE_PROVIDER_ORDER` is set, a name outside that order is stored as
-`unlisted-<name>`, a separate provider the owner has to confirm in Settings before anything from it can publish.
+reports is a self-report and Hermes is the only source of it. A name in `HERMES_IMAGE_PROVIDER_ORDER` is stored as is;
+any other name, and every name when the order is empty (the default), is stored as `unlisted-<name>`, a separate
+provider the owner has to confirm in Settings before anything from it can publish. A reply can still claim any name
+inside the order, so list only providers whose terms you have checked. The review card shows the names with
+"stated by Hermes, not verified". If Hermes serves files from another port or host than `HERMES_BASE_URL`, list that
+origin in `HERMES_MEDIA_ORIGINS`.
+CapCut backup narration must be WAV or MP3: the portal can measure those lengths, so an Ogg reply is fed back to
+Hermes with a request for WAV or MP3.
 
 Fallback chain per shot (`fallbackChain`), one work order at a time (`FOR UPDATE SKIP LOCKED`):
 1. Hermes image, two attempts, each asking Hermes up to 3 times with the problems fed back.

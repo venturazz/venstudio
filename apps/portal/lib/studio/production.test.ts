@@ -144,7 +144,7 @@ test("asUuid accepts only uuids", () => {
 });
 
 test("productionSummary describes each stage", () => {
-  assert.equal(productionSummary("assets", { done: 3, providers: ["cloudflare", "agnes"] }), "3 images ready from cloudflare, agnes");
+  assert.equal(productionSummary("assets", { done: 3, providers: ["cloudflare", "agnes"] }), "3 images ready from cloudflare, agnes (names stated by Hermes, not verified)");
   assert.equal(productionSummary("assets", { done: 1 }), "1 image ready");
   assert.equal(productionSummary("voice", { provider: "kokoro", narrationSec: 44.6 }), "Narration by kokoro, 45 seconds");
   assert.equal(productionSummary("render", { durationSec: 45 }), "Video rendered, 45 seconds");

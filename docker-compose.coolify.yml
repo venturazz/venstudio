@@ -54,6 +54,8 @@ services:
       TTS_BACKUP: ${TTS_BACKUP:-hermes-capcut}
       # Optional comma list of Hermes image_gen providers to prefer, e.g. cloudflare,qwen. A hint only.
       HERMES_IMAGE_PROVIDER_ORDER: ${HERMES_IMAGE_PROVIDER_ORDER:-}
+      # Optional comma list of extra full origins Hermes serves files from, e.g. http://hermes-files:8000. Only needed when file URLs differ from HERMES_BASE_URL.
+      HERMES_MEDIA_ORIGINS: ${HERMES_MEDIA_ORIGINS:-}
       # 1 lets the studio create unverified Muse agent tasks. Leave 0 until they are tested.
       MUSE_AGENT_TASKS: ${MUSE_AGENT_TASKS:-0}
     volumes:
