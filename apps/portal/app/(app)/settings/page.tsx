@@ -2,6 +2,7 @@ import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { Suspense } from "react";
 import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
+import { CapabilitiesPanel } from "@/components/capabilities-panel.tsx";
 import { KokoroPanel } from "@/components/kokoro-panel.tsx";
 import { ProviderTerms } from "@/components/provider-terms.tsx";
 import { HermesPanel, HermesPanelFallback } from "@/components/hermes-panel.tsx";
@@ -111,6 +112,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </CardBody>
           </Card>
         )}
+
+        <Card className="lg:col-span-2">
+          <CardHeader
+            title="Studio capabilities"
+            description="What Hermes and 9router can do for each production stage, found by asking them. Nothing to configure here."
+          />
+          <Suspense fallback={<p className="px-4 py-3 text-sm text-muted sm:px-5">Loading…</p>}>
+            <CapabilitiesPanel canScan={hasRole(user.role, "editor")} />
+          </Suspense>
+        </Card>
 
         {isOwner && (
           <Card className="lg:col-span-2">

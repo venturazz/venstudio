@@ -15,6 +15,7 @@ import { randomToken } from "@/lib/crypto/tokens.ts";
 import { str, type FormState } from "@/lib/form.ts";
 import { kokoroHealth, kokoroTest } from "@/lib/server/tts.ts";
 import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
+import { scanCapabilities } from "@/lib/server/capabilities.ts";
 import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
 
 function raw(fd: FormData, key: string) {
@@ -193,5 +194,12 @@ export async function setProviderTerms(fd: FormData) {
     detail: { commercialOk: p.data.status },
     ip: (await requestMeta()).ip,
   });
+  revalidatePath("/settings");
+}
+
+/** Asks Hermes and 9router what they can do and stores the answer. Slow (up to two minutes), so it runs on demand. */
+export async function scanCapabilitiesNow() {
+  await requireUser("editor");
+  await scanCapabilities();
   revalidatePath("/settings");
 }
