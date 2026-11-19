@@ -75,7 +75,7 @@ export type JobResult = { ok: true; jobId: string } | { ok: false; error: string
  * Queues a fetch-asset job for a checked candidate. The payload lists no inputs: the worker downloads from the URL.
  * The portal re-checks the candidate here, so a caller cannot queue a download from a site that is not approved.
  */
-export async function createFetchAssetJob(order: WorkOrderRef, candidate: Cc0Candidate, createdBy: string): Promise<JobResult> {
+export async function createFetchAssetJob(order: WorkOrderRef, candidate: Cc0Candidate, createdBy: string | null): Promise<JobResult> {
   const issues = cc0Issues(candidate.url, candidate.licence);
   if (issues.length > 0) return { ok: false, error: `This file cannot be used: ${issues.join("; ")}` };
   const jobId = await createJob({
@@ -99,7 +99,7 @@ export async function createFetchAssetJob(order: WorkOrderRef, candidate: Cc0Can
 }
 
 /** Queues an agent task on a Muse machine. Off unless MUSE_AGENT_TASKS=1 because the path is not verified yet. */
-export async function createAgentTaskJob(order: WorkOrderRef, createdBy: string): Promise<string> {
+export async function createAgentTaskJob(order: WorkOrderRef, createdBy: string | null): Promise<string> {
   if (env().MUSE_AGENT_TASKS !== "1") {
     throw new Error("Muse agent tasks are off. They are not verified yet; set MUSE_AGENT_TASKS=1 to try them.");
   }

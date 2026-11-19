@@ -66,7 +66,8 @@ export async function createJob(input: {
   payload?: Record<string, unknown>;
   channelId?: string | null;
   priority?: number;
-  createdBy: string;
+  /** Null for jobs the engine creates on its own. */
+  createdBy: string | null;
 }) {
   const def = JOB_TYPES[input.type];
   const sql = db();

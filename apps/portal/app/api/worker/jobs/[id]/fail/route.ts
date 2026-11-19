@@ -1,6 +1,9 @@
+import { after } from "next/server";
 import { z } from "zod";
 import { failJob } from "@/lib/server/jobs.ts";
+import { advanceRun } from "@/lib/server/director.ts";
 import { evaluateQcCompletion } from "@/lib/server/pipeline.ts";
+import { onJobFinished } from "@/lib/server/production.ts";
 import { isUuid, jsonError, parseJson, withWorker } from "@/lib/server/worker-api.ts";
 
 const schema = z.object({
@@ -17,6 +20,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const ok = await failJob(id, worker.id, input.error, input.retryable);
     if (!ok) return jsonError(409, "Job is not running on this worker");
     await evaluateQcCompletion(id);
+    // A job that belongs to a pipeline run advances the run's production stage. Never throws.
+    const runId = await onJobFinished(id);
+    if (runId) after(() => advanceRun(runId));
     return Response.json({ ok: true });
   });
 }
