@@ -195,3 +195,17 @@ test("unknown purpose or language is rejected with a reason", () => {
   assert.equal(buildPlan({ brief: "x y", format: "short", styleId: "kinetic-facts", language: "xx" }).ok, false);
   assert.equal(buildPlan({ brief: "x y", format: "short", styleId: "kinetic-facts", subtitles: ["xx"] }).ok, false);
 });
+
+test("provenance v2: AI disclosure and likeness rules", async () => {
+  const { aiDisclosureRequired, likenessIssues } = await import("./provenance.ts");
+  assert.equal(aiDisclosureRequired({ sources: ["hermes"], realisticSynthetic: true }), true);
+  assert.equal(aiDisclosureRequired({ sources: ["muse", "upload"], realisticSynthetic: true }), true);
+  assert.equal(aiDisclosureRequired({ sources: ["hermes"], realisticSynthetic: false }), false);
+  assert.equal(aiDisclosureRequired({ sources: ["upload", "licensed", "worker"], realisticSynthetic: true }), false);
+  const rec = { title: "face", kind: "image" as const, source: "upload" as const, license: "own", originUrl: "x" };
+  assert.equal(likenessIssues([rec]).length, 0);
+  assert.equal(likenessIssues([{ ...rec, tags: ["person-likeness"] }]).length, 1);
+  assert.equal(likenessIssues([{ ...rec, tags: ["brand-logo"], permissionNote: " " }]).length, 1);
+  assert.equal(likenessIssues([{ ...rec, tags: ["brand-logo", "person-likeness"], permissionNote: "release 2025" }]).length, 0);
+  assert.equal(provenanceIssues([{ ...rec, tags: ["person-likeness"] }], "publish").length, 0, "provenanceIssues is unchanged");
+});
