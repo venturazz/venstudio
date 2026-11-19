@@ -2,6 +2,8 @@ import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { Suspense } from "react";
 import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
+import { KokoroPanel } from "@/components/kokoro-panel.tsx";
+import { ProviderTerms } from "@/components/provider-terms.tsx";
 import { HermesPanel, HermesPanelFallback } from "@/components/hermes-panel.tsx";
 import { hasRole } from "@/lib/server/auth.ts";
 import { serverHealth } from "@/lib/server/diagnostics.ts";
@@ -9,6 +11,7 @@ import { Alert, Badge, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@
 import { ConfirmButton, SubmitButton } from "@/components/client.tsx";
 import { AddUserForm, PasswordForm, TotpDisable, TotpSetup } from "./forms.tsx";
 import { removeUser, signOutOtherSessions } from "./actions.ts";
+import { TestImageForm } from "./media-forms.tsx";
 
 export const metadata = { title: "Settings" };
 
@@ -31,7 +34,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <Alert tone="ok">Owner account created. Next: turn on two-factor below, then remove SETUP_TOKEN from the server.</Alert>
         </div>
       )}
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader title="Two-factor sign-in" />
           <CardBody>{user.totpEnabled ? <TotpDisable /> : <TotpSetup />}</CardBody>
@@ -90,6 +93,36 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </Suspense>
           </CardBody>
         </Card>
+
+        <Card>
+          <CardHeader title="Voice (Kokoro)" description="Primary narration voice. English first." />
+          <CardBody>
+            <Suspense fallback={<p className="text-sm text-muted">Checking…</p>}>
+              <KokoroPanel canRecheck={hasRole(user.role, "editor")} />
+            </Suspense>
+          </CardBody>
+        </Card>
+
+        {hasRole(user.role, "editor") && (
+          <Card>
+            <CardHeader title="Image providers (Hermes)" description="Hermes makes each shot image with its image_gen chain." />
+            <CardBody>
+              <TestImageForm />
+            </CardBody>
+          </Card>
+        )}
+
+        {isOwner && (
+          <Card className="lg:col-span-2">
+            <CardHeader
+              title="Asset providers"
+              description="Confirm each provider's commercial-use terms after reading them. Until you do, anything made by that provider cannot publish."
+            />
+            <Suspense fallback={<p className="px-4 py-3 text-sm text-muted sm:px-5">Loading…</p>}>
+              <ProviderTerms />
+            </Suspense>
+          </Card>
+        )}
 
         {isOwner && (
           <Card>
