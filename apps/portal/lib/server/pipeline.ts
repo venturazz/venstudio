@@ -47,7 +47,7 @@ async function evaluateQcJob(jobId: string): Promise<void> {
       template = await getTemplate(templateId);
     }
   }
-  const { gate, measure } = technicalReportFor(job, template, p.format as Format, templateId);
+  const { gate, measure } = technicalReportFor({ status: job.status as string, error: job.error, result: job.result }, template, p.format as Format, templateId);
   await saveQcReport({ result: gate, productionId, jobId, assetId, details: measure ? { measure } : {} });
 }
 
