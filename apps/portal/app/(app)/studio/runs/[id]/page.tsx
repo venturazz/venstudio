@@ -10,6 +10,7 @@ import { Alert, Badge, Card, CardBody, CardHeader, LinkButton, PageHeader, timeA
 import { stageLabel } from "@/lib/studio/review.ts";
 import { isEngineStage, isProductionStage, stageSummary } from "@/lib/studio/engine.ts";
 import { productionSummary } from "@/lib/studio/production.ts";
+import { waitingText } from "@/lib/studio/pacing.ts";
 import { cancelRunAction } from "../actions.ts";
 import { RunStateBadge, StageStateBadge } from "../run-status.tsx";
 
@@ -50,7 +51,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const open = reviews.find((r) => r.state === "open");
   const finished = run.state === "cancelled" || run.state === "failed" || run.state === "done";
   const board = stages.find((s) => s.stage === "storyboard" && s.state === "passed");
-  const assetsPending = stages.some((s) => s.stage === "assets" && s.state === "pending");
+  // A stage that waits for a rate-limited Hermes is pending with a not-before time. It is busy, not idle or failed.
+  const waiting = run.state === "running" ? stages.find((s) => s.state === "pending" && s.notBefore) : undefined;
+  const now = Date.now();
+  const waitLine = waiting?.notBefore ? waitingText(waiting.notBefore.getTime(), now) : "";
+  const assetsPending = stages.some((s) => s.stage === "assets" && s.state === "pending" && !s.notBefore);
   const storyboardReady = Boolean(board) && assetsPending && run.state === "running";
   // A storyboard that is ready but not yet approved has nothing running, so there is nothing to poll for.
   const live = run.state === "running" && !storyboardReady;
@@ -85,6 +90,13 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           <Alert tone="ok">Storyboard ready. Approve it in Review to start sourcing assets.</Alert>
         </div>
       )}
+      {waiting && (
+        <div className="mb-4" data-testid="hermes-wait">
+          <Alert tone="info">
+            {stageLabel(waiting.stage)}: {waitLine}. Nothing failed; the step continues on its own.
+          </Alert>
+        </div>
+      )}
       {run.state === "waiting-human" && !open && (
         <div className="mb-4">
           <Alert tone="warn">This run is waiting for you, but no open item was found. Open Review to check.</Alert>
@@ -116,6 +128,9 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                     </span>
                   </div>
                   {summary && <p className="break-words text-xs text-muted">{summary}</p>}
+                  {s.state === "pending" && s.notBefore && run.state === "running" && (
+                    <p className="break-words text-xs text-muted">{waitingText(s.notBefore.getTime(), now)}</p>
+                  )}
                   {s.stage === "render" && jobId && (
                     <p className="text-xs">
                       <Link href={`/jobs/${jobId}`} className="inline-flex min-h-11 items-center text-accent underline-offset-2 hover:underline">
@@ -158,6 +173,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                       {w.attempts} attempt{w.attempts === 1 ? "" : "s"}
                     </p>
                     {w.error && <p className="break-words text-danger">{w.error}</p>}
+                    {w.state === "pending" && w.notBefore && run.state === "running" && (
+                      <p className="break-words text-muted" data-testid="work-order-wait">
+                        {waitingText(w.notBefore.getTime(), now)}
+                      </p>
+                    )}
                   </li>
                 ))}
               </ul>

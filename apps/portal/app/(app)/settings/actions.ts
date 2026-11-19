@@ -15,6 +15,7 @@ import { randomToken } from "@/lib/crypto/tokens.ts";
 import { str, type FormState } from "@/lib/form.ts";
 import { kokoroHealth, voiceTest } from "@/lib/server/tts.ts";
 import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
+import { testRouterImages } from "@/lib/server/executors/router-image.ts";
 import { runSkillCheck, scanCapabilities } from "@/lib/server/capabilities.ts";
 import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
 
@@ -170,6 +171,21 @@ export async function testHermesImage(_prev: TestState, _fd: FormData): Promise<
     `Asked Hermes ${img.attempts} time${img.attempts === 1 ? "" : "s"}`,
   );
   const preview = image.info.bytes <= PREVIEW_MAX_BYTES ? `data:${image.info.mime};base64,${Buffer.from(image.bytes).toString("base64")}` : undefined;
+  return { ok: true, lines, preview };
+}
+
+/**
+ * Tries the 9router image models the last scan listed, one at a time, and stops at the first real image. Each outcome
+ * is recorded: a model that works becomes proven (the automatic chain may use it), one that answers with a 4xx is set
+ * aside. Nothing is saved and no provider terms change.
+ */
+export async function testRouterImage(_prev: TestState, _fd: FormData): Promise<TestState> {
+  await requireUser("editor");
+  const r = await testRouterImages();
+  revalidatePath("/settings");
+  const lines = r.lines.map((l) => l.text);
+  if (!r.ok) return { ok: false, error: [...lines, r.error].join("\n") };
+  const preview = r.image.info.bytes <= PREVIEW_MAX_BYTES ? `data:${r.image.info.mime};base64,${Buffer.from(r.image.bytes).toString("base64")}` : undefined;
   return { ok: true, lines, preview };
 }
 

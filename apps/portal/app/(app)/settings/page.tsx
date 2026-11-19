@@ -13,7 +13,7 @@ import { Alert, Badge, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@
 import { ConfirmButton, SubmitButton } from "@/components/client.tsx";
 import { AddUserForm, PasswordForm, TotpDisable, TotpSetup } from "./forms.tsx";
 import { removeUser, signOutOtherSessions } from "./actions.ts";
-import { TestImageForm } from "./media-forms.tsx";
+import { TestImageForm, TestRouterImageForm } from "./media-forms.tsx";
 
 export const metadata = { title: "Settings" };
 
@@ -107,12 +107,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
         {hasRole(user.role, "editor") && (
           <Card>
-            <CardHeader title="Image providers (Hermes)" description="Hermes makes each shot image with its image_gen chain. 9router images are the next fallback." />
-            <CardBody>
+            <CardHeader
+              title="Image providers (Hermes)"
+              description="Hermes makes each shot image with its image_gen chain and picks the provider itself. A 9router image model is the next fallback, only once a real call proved it."
+            />
+            <CardBody className="space-y-4">
               <Suspense fallback={null}>
                 <RouterImageNote />
               </Suspense>
               <TestImageForm />
+              <TestRouterImageForm />
             </CardBody>
           </Card>
         )}
