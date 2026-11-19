@@ -85,6 +85,12 @@ done
 [ "$(q "SELECT count(*) FROM templates")" = "0" ] || fail "templates should be empty until the Templates page seeds them"
 [ "$(q "SELECT autonomy_level FROM channels WHERE id = '$CHANNEL'")" = "1" ] || fail "channel autonomy default is not 1"
 
+echo "== migration 0008 created the director tables and columns"
+[ "$(q "SELECT to_regclass('public.review_items') IS NOT NULL")" = "t" ] || fail "table review_items missing after migration 0008"
+[ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_name = 'channels' AND column_name = 'plan'")" = "1" ] || fail "channels.plan missing after migration 0008"
+[ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_name = 'pipeline_runs' AND column_name = 'config'")" = "1" ] || fail "pipeline_runs.config missing after migration 0008"
+[ "$(q "SELECT count(*) FROM review_items")" = "0" ] || fail "review_items should start empty"
+
 echo "== qc-video measures the smoke-test video"
 QC_SHA=$(q "SELECT sha256 FROM artifacts WHERE job_id = '$SMOKE_JOB'")
 QC_ASSET=$(q "INSERT INTO assets (title, kind, source, license, storage_path, bytes, sha256, content_type)
