@@ -408,7 +408,8 @@ async function approveStage(tx: Q, runId: string, stageId: string, stage: RunSta
 // Waiting for a busy Hermes
 
 declare global {
-  var __venstudioResumeTimers: Map<string, ReturnType<typeof setTimeout>> | undefined;
+  /** Run id to the time its resume timer fires. Duplicates are harmless (advanceRun is idempotent), so none is cancelled. */
+  var __venstudioResumeAt: Map<string, number> | undefined;
 }
 
 /**
@@ -416,16 +417,17 @@ declare global {
  * not_before then lets the worker claim route (nudgeRecovery) or any reaping page pick the run up.
  */
 function scheduleResume(runId: string, until: Date): void {
-  globalThis.__venstudioResumeTimers ??= new Map();
-  const timers = globalThis.__venstudioResumeTimers;
-  const prev = timers.get(runId);
-  if (prev) clearTimeout(prev);
-  const delay = Math.min(Math.max(0, until.getTime() - Date.now()) + 250, 2 ** 31 - 1);
-  const timer = setTimeout(() => {
-    timers.delete(runId);
+  globalThis.__venstudioResumeAt ??= new Map();
+  const planned = globalThis.__venstudioResumeAt;
+  const at = until.getTime() + 250;
+  const existing = planned.get(runId);
+  // A timer already set for this moment covers it.
+  if (existing !== undefined && existing > Date.now() && Math.abs(existing - at) < 1000) return;
+  planned.set(runId, at);
+  setTimeout(() => {
+    if (planned.get(runId) === at) planned.delete(runId);
     void advanceRun(runId);
-  }, delay);
-  timers.set(runId, timer);
+  }, Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1));
 }
 
 /**
