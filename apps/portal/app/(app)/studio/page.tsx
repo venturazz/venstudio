@@ -27,7 +27,7 @@ export default async function StudioPage() {
           </LinkButton>
         }
       />
-      <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card>
           <CardHeader title="New production" description="Planning only for now. Stages marked Runs now can run today." />
           <CardBody>

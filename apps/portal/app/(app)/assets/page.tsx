@@ -41,8 +41,8 @@ export default async function AssetsPage({ searchParams }: { searchParams: Promi
         title="Assets"
         description="Everything the studio uses or makes, with its source and licence. Nothing goes into a published video without a licence note."
       />
-      <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
-        <div className="space-y-4">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0 space-y-4">
           <div className="flex gap-1 overflow-x-auto pb-1">
             {[undefined, ...ASSET_KINDS].map((k) => (
               <Link

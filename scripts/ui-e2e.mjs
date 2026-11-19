@@ -235,6 +235,11 @@ try {
   await page.goto(`${APP}/assets`);
   await page.locator("li", { hasText: "Test reference" }).getByText("2 cuts").waitFor({ timeout: 20_000 });
   await shot("14-assets-desktop");
+  for (const url of ["/assets", "/studio"]) {
+    await page.goto(`${APP}${url}`);
+    const wide = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    if (wide) throw new Error(`${url} overflows horizontally on desktop`);
+  }
 
   step("save a worker output to Assets");
   await page.goto(`${APP}/jobs?status=succeeded`);
