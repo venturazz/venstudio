@@ -56,7 +56,7 @@ export function TotpSetup() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={setup.qr} alt="Two-factor QR code" width={180} height={180} className="rounded-lg bg-white p-1" />
         <div className="w-full min-w-0 space-y-2">
-          <code className="block break-all rounded-lg bg-surface-2 p-2 font-mono text-xs">{setup.secret}</code>
+          <code data-testid="totp-secret" className="block break-all rounded-lg bg-surface-2 p-2 font-mono text-xs">{setup.secret}</code>
           <CopyButton value={setup.secret} label="Copy key" />
         </div>
       </div>

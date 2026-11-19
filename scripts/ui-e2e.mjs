@@ -83,7 +83,7 @@ try {
 
   step("turn on two-factor");
   await page.getByRole("button", { name: "Turn on two-factor" }).click();
-  const secret = (await page.locator("code").first().textContent()).trim();
+  const secret = (await page.getByTestId("totp-secret").textContent()).trim();
   await page.fill("#totp-code", totp(secret));
   await page.getByRole("button", { name: "Confirm and turn on" }).click();
   await page.getByText("Two-factor is on.").first().waitFor();
