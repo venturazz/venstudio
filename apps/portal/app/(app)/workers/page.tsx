@@ -1,4 +1,6 @@
 import { Cpu } from "lucide-react";
+import { WORKER_VERSION } from "@venstudio/protocol";
+import { env } from "@/lib/server/env.ts";
 import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { reapExpiredLeases } from "@/lib/server/jobs.ts";
@@ -37,6 +39,7 @@ export default async function WorkersPage() {
     sql`SELECT id, name FROM channels ORDER BY name`,
   ]);
   const isOwner = user.role === "owner";
+  const APP_URL = env().APP_URL.replace(/\/+$/, "");
 
   return (
     <>
@@ -73,6 +76,17 @@ export default async function WorkersPage() {
                       <p className="text-xs text-muted">
                         Home channel: {w.channels ?? "none"} · {w.done24} done in 24 h
                       </p>
+                      {w.version !== WORKER_VERSION && (
+                        <div className="space-y-1 rounded-lg bg-warn/10 p-2 text-xs text-warn">
+                          <p>
+                            Out of date: running v{w.version ?? "unknown"}, latest is v{WORKER_VERSION}. Newer job types, such as test
+                            renders, wait until it is updated.
+                          </p>
+                          <code className="block break-all font-mono text-muted">
+                            curl -fsSL {APP_URL}/install/venstudio-worker.ts -o /home/hatch/venstudio/app/venstudio-worker.ts
+                          </code>
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-1 pt-1">
                         {(w.capabilities as string[]).length === 0 ? (
                           <span className="text-xs text-muted">No capabilities reported yet</span>
