@@ -9,6 +9,7 @@ import {
   imagePrompt,
   normalizeProvider,
   resolveImageProvider,
+  PROVIDER_NAME_MAX,
   providerTermsIssues,
   ttsCapcutPrompt,
 } from "./asset-plan.ts";
@@ -116,7 +117,9 @@ test("resolveImageProvider keeps names from the owner's order and flags others",
   assert.equal(resolveImageProvider("canva", ["cloudflare", "agnes"]), "unlisted-canva");
   assert.equal(resolveImageProvider("", ["cloudflare"]), "unlisted-unknown");
   assert.equal(resolveImageProvider("canva", []), "unlisted-canva");
-  assert.ok(resolveImageProvider("x".repeat(80), ["a"]).length <= 49);
+  assert.ok(resolveImageProvider("x".repeat(80), ["a"]).length <= PROVIDER_NAME_MAX);
+  assert.equal(resolveImageProvider("x".repeat(80), []).length, PROVIDER_NAME_MAX);
+  assert.ok(resolveImageProvider("x-".repeat(60), []).length <= PROVIDER_NAME_MAX);
 });
 
 test("claimedLicence marks the statement as unverified and keeps the source link", () => {

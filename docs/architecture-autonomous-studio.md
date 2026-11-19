@@ -158,9 +158,10 @@ the first request: a redirect never keeps it, and a redirect into that origin is
 reports is a self-report and Hermes is the only source of it. A name in `HERMES_IMAGE_PROVIDER_ORDER` is stored as is;
 any other name, and every name when the order is empty (the default), is stored as `unlisted-<name>`, a separate
 provider the owner has to confirm in Settings before anything from it can publish. A reply can still claim any name
-inside the order, so list only providers whose terms you have checked. The review card shows the names with
+inside the order, so list only providers whose terms you have checked. Confirming `cloudflare` in Settings does not clear
+`unlisted-cloudflare` while `HERMES_IMAGE_PROVIDER_ORDER` is unset; the owner confirms the `unlisted-` name. The review card shows the names with
 "stated by Hermes, not verified". If Hermes serves files from another port or host than `HERMES_BASE_URL`, list that
-origin in `HERMES_MEDIA_ORIGINS`.
+origin in `HERMES_MEDIA_ORIGINS`. That first request may use plain http and private hosts, so list only origins you control.
 CapCut backup narration must be WAV or MP3: the portal can measure those lengths, so an Ogg reply is fed back to
 Hermes with a request for WAV or MP3.
 

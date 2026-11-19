@@ -33,11 +33,14 @@ export function normalizeProvider(raw: string | null | undefined): string {
  * recorded as is (a reply can still claim any name in that list). Any other name, and every name when no order is set, is recorded
  * as "unlisted-<name>", a separate provider the owner has to confirm in Settings, so a reply cannot borrow the terms of a provider the owner already cleared.
  */
+/** Longest provider name ever stored: "unlisted-" (9) plus a 40 character slug. Settings accepts this many. */
+export const PROVIDER_NAME_MAX = 49;
+
 export function resolveImageProvider(claimed: string | null | undefined, configuredOrder: readonly string[]): string {
   const name = normalizeProvider(claimed);
   const order = configuredOrder.map((p) => normalizeProvider(p));
   if (order.length > 0 && order.includes(name)) return name;
-  return `unlisted-${name}`.slice(0, 49);
+  return `unlisted-${name}`.slice(0, PROVIDER_NAME_MAX);
 }
 
 export interface ProviderUse {

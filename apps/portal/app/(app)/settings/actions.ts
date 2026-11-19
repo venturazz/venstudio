@@ -15,6 +15,7 @@ import { randomToken } from "@/lib/crypto/tokens.ts";
 import { str, type FormState } from "@/lib/form.ts";
 import { kokoroHealth, kokoroTest } from "@/lib/server/tts.ts";
 import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
+import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
 
 function raw(fd: FormData, key: string) {
   const v = fd.get(key);
@@ -164,7 +165,7 @@ export async function testHermesImage(_prev: TestState, _fd: FormData): Promise<
 }
 
 const termsSchema = z.object({
-  name: z.string().min(1).max(40),
+  name: z.string().min(1).max(PROVIDER_NAME_MAX),
   kind: z.enum(["image", "tts", "library"]),
   status: z.enum(["unknown", "yes", "no"]),
   note: z.string().max(300),
@@ -176,7 +177,7 @@ const termsSchema = z.object({
  */
 export async function setProviderTerms(fd: FormData) {
   const owner = await requireUser("owner");
-  const p = termsSchema.safeParse({ name: str(fd, "name", 40), kind: str(fd, "kind", 10), status: str(fd, "status", 10), note: str(fd, "note", 300) });
+  const p = termsSchema.safeParse({ name: str(fd, "name", PROVIDER_NAME_MAX), kind: str(fd, "kind", 10), status: str(fd, "status", 10), note: str(fd, "note", 300) });
   if (!p.success) return;
   const rows = await db()`
     UPDATE asset_providers
