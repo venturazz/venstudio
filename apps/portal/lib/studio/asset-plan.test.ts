@@ -4,9 +4,11 @@ import {
   buildProvenance,
   cc0HostAllowed,
   cc0Issues,
+  claimedLicence,
   fallbackChain,
   imagePrompt,
   normalizeProvider,
+  resolveImageProvider,
   providerTermsIssues,
   ttsCapcutPrompt,
 } from "./asset-plan.ts";
@@ -106,4 +108,21 @@ test("ttsCapcutPrompt carries the marker and the text in a data block", () => {
   assert.match(user.content, /^VENSTUDIO_STAGE: tts-capcut\n/);
   assert.match(user.content, /<<<DATA narration text\nHello world\.\nDATA narration text>>>/);
   assert.match(user.content, /Indonesian/);
+});
+
+test("resolveImageProvider keeps names from the owner's order and flags others", () => {
+  assert.equal(resolveImageProvider("Cloudflare", ["cloudflare", "agnes"]), "cloudflare");
+  assert.equal(resolveImageProvider("Agnes AI", ["cloudflare", "Agnes AI"]), "agnes-ai");
+  assert.equal(resolveImageProvider("canva", ["cloudflare", "agnes"]), "unlisted-canva");
+  assert.equal(resolveImageProvider("", ["cloudflare"]), "unlisted-unknown");
+  assert.equal(resolveImageProvider("canva", []), "canva");
+  assert.ok(resolveImageProvider("x".repeat(80), ["a"]).length <= 49);
+});
+
+test("claimedLicence marks the statement as unverified and keeps the source link", () => {
+  const t = claimedLicence("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/", "https://upload.wikimedia.org/a.jpg");
+  assert.match(t, /^Claimed CC0 1\.0 \(stated by Hermes, not verified\)/);
+  assert.ok(t.includes("https://creativecommons.org/publicdomain/zero/1.0/"));
+  assert.ok(claimedLicence("", "", "https://x.org/a").includes("https://x.org/a"));
+  assert.ok(claimedLicence("Public domain", "", "").length > 0);
 });

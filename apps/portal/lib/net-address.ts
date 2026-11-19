@@ -74,8 +74,29 @@ function blockedV6(g: number[]): string | null {
   if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) {
     return blockedV4([g[6] >> 8, g[6] & 255, g[7] >> 8, g[7] & 255]) ?? null;
   }
+  // NAT64 (64:ff9b::/96 and the local-use 64:ff9b:1::/48) and 6to4 (2002::/16) embed an IPv4 address that a
+  // translator on the route would reach, so they are blocked whole.
+  if (g[0] === 0x64 && g[1] === 0xff9b) return "NAT64 address (64:ff9b::/96)";
+  if (g[0] === 0x2002) return "6to4 address (2002::/16)";
   if ((g[0] & 0xffc0) === 0xfe80) return "link-local address (fe80::/10)";
   if ((g[0] & 0xfe00) === 0xfc00) return "private network (fc00::/7)";
   if ((g[0] & 0xff00) === 0xff00) return "multicast address";
   return null;
+}
+
+/** Scheme, host and port the owner configured, for example from HERMES_BASE_URL. Null when it cannot be read. */
+export function originOf(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return `${u.protocol}//${u.hostname.toLowerCase().replace(/^\[|\]$/g, "")}:${u.port || (u.protocol === "https:" ? "443" : "80")}`;
+  } catch {
+    return null;
+  }
+}
+
+/** True only when the URL has exactly the scheme, host and port of one of the trusted origins. */
+export function matchesTrustedOrigin(raw: string, trustedOrigins: readonly string[]): boolean {
+  const o = originOf(raw);
+  return o !== null && trustedOrigins.some((t) => t.toLowerCase() === o);
 }

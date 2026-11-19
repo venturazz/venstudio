@@ -3,7 +3,7 @@ import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { blockedAddressReason } from "../net-address.ts";
+import { blockedAddressReason, matchesTrustedOrigin } from "../net-address.ts";
 
 /**
  * Downloads a file a model pointed at, without letting the model reach the portal's own network.
@@ -23,8 +23,12 @@ export interface FetchedMedia {
 export interface FetchMediaOptions {
   maxBytes: number;
   timeoutMs?: number;
-  /** Host names the owner configured (for example the Hermes host). They may use http and a private address. */
-  trustedHosts?: string[];
+  /**
+   * Origins (scheme, host and port, see originOf) the owner configured, for example the Hermes base URL. A request
+   * to exactly one of them may use http and a private address. Only the first request counts: a redirect never
+   * gets this trust, and a redirect into a trusted origin is refused.
+   */
+  trustedOrigins?: string[];
   maxRedirects?: number;
 }
 
@@ -46,7 +50,7 @@ function guardedLookup(hostname: string, options: dns.LookupOptions, cb: LookupC
   });
 }
 
-function checkUrl(raw: string, trusted: string[]): { url: URL; isTrusted: boolean } {
+function checkUrl(raw: string, trusted: string[], first: boolean): { url: URL; isTrusted: boolean } {
   let url: URL;
   try {
     url = new URL(raw);
@@ -54,7 +58,9 @@ function checkUrl(raw: string, trusted: string[]): { url: URL; isTrusted: boolea
     throw new SafeFetchError("The file address is not a valid URL");
   }
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const isTrusted = trusted.some((t) => t.toLowerCase() === host);
+  const matches = matchesTrustedOrigin(url.toString(), trusted);
+  if (matches && !first) throw new SafeFetchError("The file address redirected into the studio's own network, which is not allowed");
+  const isTrusted = matches && first;
   if (url.username || url.password) throw new SafeFetchError("The file address must not contain a login");
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isTrusted)) {
     throw new SafeFetchError("The file address must start with https://");
@@ -129,12 +135,12 @@ function plain(err: unknown, url: string): SafeFetchError {
 }
 
 export async function fetchMedia(rawUrl: string, options: FetchMediaOptions): Promise<FetchedMedia> {
-  const trusted = options.trustedHosts ?? [];
+  const trusted = options.trustedOrigins ?? [];
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? 3;
   let current = rawUrl;
   for (let hop = 0; hop <= maxRedirects; hop++) {
-    const { url, isTrusted } = checkUrl(current, trusted);
+    const { url, isTrusted } = checkUrl(current, trusted, hop === 0);
     let result;
     try {
       result = await once(url, isTrusted, { maxBytes: options.maxBytes, timeoutMs });

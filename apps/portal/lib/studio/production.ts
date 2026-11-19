@@ -213,11 +213,14 @@ export function productionSummary(stage: ProductionStage, result: unknown): stri
   if (stage === "voice") {
     const sec = num(r.narrationSec);
     const provider = typeof r.provider === "string" ? r.provider : "unknown";
-    return `Narration by ${provider}${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}`;
+    const unchecked = r.voiceVerified === false ? ". This voice has not been checked by ear, listen before approving" : "";
+    return `Narration by ${provider}${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${unchecked}`;
   }
   if (stage === "render") {
     const sec = num(r.durationSec);
-    return `Video rendered${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}`;
+    const note = typeof r.captionNote === "string" ? r.captionNote.trim().slice(0, 80) : "";
+    const captions = r.captionsBurned === false && note ? `. No captions burned in: ${note}` : "";
+    return `Video rendered${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${captions}`;
   }
   return "Quality check finished";
 }

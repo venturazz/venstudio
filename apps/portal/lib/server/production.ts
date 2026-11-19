@@ -20,7 +20,7 @@ import {
 } from "./director.ts";
 import { assetsGate, combineGates, PUBLISH_GATES, qcSummary, voiceGate, type GateId, type GateResult } from "../studio/qc.ts";
 import { aiDisclosureRequired, type ProvenanceRecord } from "../studio/provenance.ts";
-import { buildProvenance, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind } from "../studio/asset-plan.ts";
+import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind } from "../studio/asset-plan.ts";
 import type { AssetKind, AssetSource } from "../studio/catalog.ts";
 import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
 import type { Template } from "../studio/templates.ts";
@@ -350,7 +350,7 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     createdBy: null,
   });
   const estimate = estimateNarrationSec(script, wordsPerMinuteFor(template));
-  // Non-WAV audio cannot be measured here: the length check is deferred to the render and the plan estimate stands in.
+  // WAV and MP3 lengths are measured here. Ogg falls back to the plan estimate, and the render fails if the real length differs by more than a second.
   const narrationSec = n.durationSec ?? estimate;
   const base = voiceGate({
     languageCode: run.config.language,
@@ -414,7 +414,10 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const done = await sql`SELECT shot_ref, asset_id FROM work_orders WHERE run_id = ${run.id} AND stage = 'assets' AND state = 'done' AND asset_id IS NOT NULL`;
   const shotAssets: Record<string, string> = {};
   for (const d of done) shotAssets[(d.shot_ref as string | null) ?? ""] = d.asset_id as string;
+  // Same pick as the preview render: the newest font in the library. Without one the render runs without captions.
+  const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   const plan = buildRenderPayload({
+    fontAssetId: font ? asUuid(font.id) : null,
     format: run.config.format,
     shots: workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds })),
     shotAssets,
@@ -759,7 +762,7 @@ async function settleOrderJob(job: FinishedJob): Promise<string | null> {
       kind,
       provider: host,
       originUrl: url,
-      licence: text(job.payload.licence),
+      licence: claimedLicence(text(job.payload.licence), text(job.payload.licenceUrl), url),
       shotRef,
     });
     assetId = await assetFromArtifact({

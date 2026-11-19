@@ -1,8 +1,9 @@
 import "server-only";
 import { env } from "./env.ts";
 import { explainFetchError } from "./ai-gateway.ts";
-import { hermesHost } from "./executors/hermes-image.ts";
+import { hermesOrigin } from "./executors/hermes-image.ts";
 import { hermesText } from "./hermes-json.ts";
+import { mp3DurationSec } from "../studio/mp3.ts";
 import { fetchMedia } from "./safe-fetch.ts";
 import { normalizeGatewayBase } from "../gateway-url.ts";
 import { LANGUAGE_BY_CODE } from "../studio/catalog.ts";
@@ -158,7 +159,9 @@ function measure(audio: Uint8Array): { durationSec: number | null; clipped: bool
     const info = parseWav(audio);
     return { durationSec: Math.round(info.durationSec * 100) / 100, clipped: isClipped(info), deferredCheck: false };
   } catch {
-    return { durationSec: null, clipped: null, deferredCheck: true };
+    // MP3 length can be read from the frame headers. Clipping and Ogg length are checked later, by the render.
+    const mp3 = mp3DurationSec(audio);
+    return { durationSec: mp3, clipped: null, deferredCheck: true };
   }
 }
 
@@ -167,7 +170,7 @@ const EXT: Record<"audio/wav" | "audio/mpeg" | "audio/ogg", "wav" | "mp3" | "ogg
 /** CapCut text to speech through Hermes. The reply is checked by magic bytes like any other media. */
 export async function capcutSpeak(script: string, language: string): Promise<SynthesisResult> {
   if (!env().HERMES_BASE_URL) return { ok: false, error: "The backup voice needs Hermes. Set HERMES_BASE_URL and HERMES_API_KEY." };
-  const trusted = hermesHost();
+  const trusted = hermesOrigin();
   const label = LANGUAGE_BY_CODE[language]?.label ?? language;
   const result = await hermesText<{ audio: Uint8Array; mime: "audio/wav" | "audio/mpeg" | "audio/ogg"; model: string }>(
     ttsCapcutPrompt({ text: script, languageLabel: label, languageCode: language }),
@@ -177,7 +180,7 @@ export async function capcutSpeak(script: string, language: string): Promise<Syn
       let audio: Uint8Array;
       try {
         const inline = decodeInlineSource(parsed.source);
-        audio = inline ?? (await fetchMedia(parsed.source.value, { maxBytes: MAX_AUDIO_BYTES, timeoutMs: 90_000, trustedHosts: trusted ? [trusted] : [] })).bytes;
+        audio = inline ?? (await fetchMedia(parsed.source.value, { maxBytes: MAX_AUDIO_BYTES, timeoutMs: 90_000, trustedOrigins: trusted ? [trusted] : [] })).bytes;
       } catch (err) {
         return { ok: false, issues: [`${err instanceof Error ? err.message : "The audio could not be read"}. Return a public https URL or base64 audio data.`] };
       }

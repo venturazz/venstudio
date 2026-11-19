@@ -152,13 +152,18 @@ choose a provider; the optional env `HERMES_IMAGE_PROVIDER_ORDER` is only a hint
 markdown link, a bare URL or a `data:` URI in free text is accepted as a fallback. A file path is a validation issue
 that is fed back to Hermes. The portal checks the bytes itself: PNG, JPEG or WebP by magic bytes, at most 20 MB, short
 side at least 480 px. URLs are fetched through an SSRF-safe fetcher (`lib/server/safe-fetch.ts`: https only except the
-configured Hermes host, private, loopback and link-local addresses refused after DNS lookup, size and time limits, 3
-redirects). The provider name Hermes reports is stored as provenance.
+configured Hermes origin, private, loopback, link-local, NAT64 and 6to4 addresses refused after DNS lookup, size and
+time limits, 3 redirects). The Hermes exemption matches scheme, host and port of `HERMES_BASE_URL` exactly and only for
+the first request: a redirect never keeps it, and a redirect into that origin is refused. The provider name Hermes
+reports is a self-report. When `HERMES_IMAGE_PROVIDER_ORDER` is set, a name outside that order is stored as
+`unlisted-<name>`, a separate provider the owner has to confirm in Settings before anything from it can publish.
 
 Fallback chain per shot (`fallbackChain`), one work order at a time (`FOR UPDATE SKIP LOCKED`):
 1. Hermes image, two attempts, each asking Hermes up to 3 times with the problems fed back.
 2. CC0 library: Hermes names a candidate (`VENSTUDIO_STAGE: cc0`), the portal checks the host allowlist and a CC0 or
-   public-domain licence string, and a `fetch-asset` job downloads it. The work order waits for the job.
+   public-domain licence string, and a `fetch-asset` job downloads it. The work order waits for the job. The licence
+   text is Hermes' claim, so it is stored as "Claimed ... (stated by Hermes, not verified)" with the licence or source
+   link, and the host is a provider the owner has to confirm in Settings.
 3. Muse agent task, only when `MUSE_AGENT_TASKS=1` on the portal.
 A shot that fails the whole chain fails its work order with the reasons. Retry in Review resets only failed orders.
 
@@ -166,8 +171,14 @@ Voice: Kokoro is the primary narration (OpenAI-compatible `POST /v1/audio/speech
 /v1/audio/voices`; env `KOKORO_BASE_URL`, `KOKORO_API_KEY`, `KOKORO_MODEL`, `KOKORO_VOICE`). The portal splits the
 script, speaks each chunk, and joins the WAV pieces in pure JS (the portal image has no ffmpeg). The backup is CapCut
 through Hermes (`VENSTUDIO_STAGE: tts-capcut`, same reply contract with an `audio` field), used when Kokoro is not
-configured, fails, or does not cover the language. `TTS_BACKUP=off` disables it. For non-WAV backup audio the duration
-and clipping checks are deferred to the render result. English is the only language treated as verified.
+configured, fails, or does not cover the language. `TTS_BACKUP=off` disables it. WAV length and clipping are measured in
+the portal and MP3 length is read from the frame headers. Clipping of non-WAV audio is measured by the render, and
+Ogg length falls back to the script estimate. The render fails when ffprobe finds the real narration more than 1 s
+from the length the shots were planned for. English is the only language treated as verified, and the voice stage
+summary says so for any other voice.
+
+Captions: the portal sends the newest font asset (`kind = 'font'`) as `fontAssetId`, as the preview render does. Without
+a font the render still runs and the stage summary says no captions were burned in.
 
 Render and QC: `render-video` is queued at urgent priority for the channel's home worker. The job complete and fail
 routes call `onJobFinished`, and the reaper reconciles stuck runs, because there is no scheduler. The rendered

@@ -148,5 +148,14 @@ test("productionSummary describes each stage", () => {
   assert.equal(productionSummary("assets", { done: 1 }), "1 image ready");
   assert.equal(productionSummary("voice", { provider: "kokoro", narrationSec: 44.6 }), "Narration by kokoro, 45 seconds");
   assert.equal(productionSummary("render", { durationSec: 45 }), "Video rendered, 45 seconds");
+  assert.equal(
+    productionSummary("voice", { provider: "kokoro", narrationSec: 20, voiceVerified: false }),
+    "Narration by kokoro, 20 seconds. This voice has not been checked by ear, listen before approving",
+  );
+  assert.equal(
+    productionSummary("render", { durationSec: 45, captionsBurned: false, captionNote: "no font in Assets" }),
+    "Video rendered, 45 seconds. No captions burned in: no font in Assets",
+  );
+  assert.equal(productionSummary("render", { durationSec: 45, captionsBurned: true, captionNote: "" }), "Video rendered, 45 seconds");
   assert.equal(productionSummary("qc", null), "Quality check finished");
 });

@@ -36,6 +36,8 @@ export interface RenderPayload {
   captions: CaptionCue[];
   targetLufs: number;
   runId?: string;
+  /** Font asset for burned-in captions. Null when the library has none, and the worker then skips captions. */
+  fontAssetId: string | null;
   /** Every asset id the worker may download. */
   inputs: string[];
 }
@@ -54,6 +56,8 @@ export interface RenderInput {
   targetLufs: number;
   /** Template pacing limit for one shot. */
   maxShotSeconds: number;
+  /** Newest font in the library, if any. */
+  fontAssetId?: string | null;
   runId?: string;
 }
 
@@ -116,7 +120,8 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
   }
   const f = VIDEO_FORMATS[i.format];
   const shots = i.shots.map((s, idx) => ({ shotRef: s.shotRef, assetId: i.shotAssets[s.shotRef] as string, seconds: secs[idx], motion: motionFor(idx) }));
-  const inputs = Array.from(new Set([...shots.map((s) => s.assetId), i.narrationAssetId as string]));
+  const fontAssetId = i.fontAssetId || null;
+  const inputs = Array.from(new Set([...shots.map((s) => s.assetId), i.narrationAssetId as string, ...(fontAssetId ? [fontAssetId] : [])]));
   const payload: RenderPayload = {
     format: i.format,
     width: f.width,
@@ -128,6 +133,7 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
     durationSec: round(total),
     captions: captionCues(i.captions, i.narrationSec),
     targetLufs: i.targetLufs,
+    fontAssetId,
     inputs,
   };
   if (i.runId) payload.runId = i.runId;

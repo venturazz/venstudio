@@ -15,7 +15,9 @@ import {
   handlers,
   joinWav,
   makeWavPcm16,
+  narrationLengthIssue,
   parseAstatsPeak,
+  parseAudioDuration,
   parseRenderSpec,
   parseWavPcm16,
   sniffMedia,
@@ -888,4 +890,18 @@ test("render-video renders two stills and a narration into a checked mp4", { ski
   assert.equal(result.narrationClipped, false);
   assert.equal(result.captionsBurned, false, "no font was supplied");
   assert.ok((portal.state.artifacts.get(`${jobId}/video.mp4`)?.bytes ?? 0) > 1000);
+});
+
+test("parseAudioDuration reads ffprobe format duration", () => {
+  assert.equal(parseAudioDuration({ format: { duration: "12.5" } }), 12.5);
+  assert.equal(parseAudioDuration({ format: {} }), null);
+  assert.equal(parseAudioDuration(null), null);
+});
+
+test("narrationLengthIssue flags a real length far from the planned one", () => {
+  assert.equal(narrationLengthIssue(20.4, 20), null);
+  assert.equal(narrationLengthIssue(21, 20), null);
+  assert.match(narrationLengthIssue(24, 20) as string, /narration is 24 s but the shots were planned for 20 s/);
+  assert.match(narrationLengthIssue(15, 20) as string, /Make the narration again/);
+  assert.match(narrationLengthIssue(null, 20) as string, /Could not read/);
 });

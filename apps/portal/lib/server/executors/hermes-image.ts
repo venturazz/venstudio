@@ -3,7 +3,8 @@ import { env } from "../env.ts";
 import { hermesJson, hermesText } from "../hermes-json.ts";
 import { fetchMedia } from "../safe-fetch.ts";
 import { normalizeGatewayBase } from "../../gateway-url.ts";
-import { imagePrompt, normalizeProvider } from "../../studio/asset-plan.ts";
+import { originOf } from "../../net-address.ts";
+import { imagePrompt, resolveImageProvider } from "../../studio/asset-plan.ts";
 import { dataBlock, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 import type { Format } from "../../studio/catalog.ts";
 import type { BeatRole } from "../../studio/templates.ts";
@@ -37,12 +38,12 @@ export interface GeneratedImage {
 
 export type ImageResult = { ok: true; image: GeneratedImage; attempts: number } | { ok: false; error: string };
 
-/** The Hermes host. The portal may fetch images from it over http on the internal network. */
-export function hermesHost(): string | null {
+/** The Hermes origin (scheme, host, port). The portal may fetch from exactly this origin over http on the internal network. */
+export function hermesOrigin(): string | null {
   const base = env().HERMES_BASE_URL;
   if (!base) return null;
   try {
-    return new URL(normalizeGatewayBase(base)).hostname;
+    return originOf(normalizeGatewayBase(base));
   } catch {
     return null;
   }
@@ -62,7 +63,7 @@ export function providerOrderHint(): string[] {
  * is a plain failure, never an exception.
  */
 export async function generateImage(job: ImageJob): Promise<ImageResult> {
-  const trusted = hermesHost();
+  const trusted = hermesOrigin();
   const messages = imagePrompt({
     prompt: job.note ? `${job.prompt}\n\nOwner note: ${job.note}` : job.prompt,
     beatRole: job.beatRole,
@@ -79,7 +80,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
       const inline = decodeInlineSource(parsed.source);
       if (inline) bytes = inline;
       else {
-        const got = await fetchMedia(parsed.source.value, { maxBytes: MAX_IMAGE_BYTES, timeoutMs: 60_000, trustedHosts: trusted ? [trusted] : [] });
+        const got = await fetchMedia(parsed.source.value, { maxBytes: MAX_IMAGE_BYTES, timeoutMs: 60_000, trustedOrigins: trusted ? [trusted] : [] });
         bytes = got.bytes;
         originUrl = parsed.source.value;
       }
@@ -90,7 +91,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     const info = sniffImage(bytes);
     const issues = imageIssues(info, job.format);
     if (issues.length > 0 || !info) return { ok: false, issues };
-    return { ok: true, value: { bytes, info, provider: normalizeProvider(parsed.provider), model: parsed.model, originUrl } };
+    return { ok: true, value: { bytes, info, provider: resolveImageProvider(parsed.provider, providerOrderHint()), model: parsed.model, originUrl } };
   });
   if (!result.ok) return { ok: false, error: result.error };
   return { ok: true, image: result.value, attempts: result.attempts };

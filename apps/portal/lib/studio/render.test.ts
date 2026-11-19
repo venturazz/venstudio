@@ -64,3 +64,14 @@ test("captionCues spreads time by length and skips empties", () => {
   assert.equal(c[1].end, 12);
   assert.deepEqual(captionCues([], 10), []);
 });
+
+test("buildRenderPayload sends the font asset and lists it as an input", () => {
+  const r = buildRenderPayload({ ...base, fontAssetId: "f1" });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.equal(r.payload.fontAssetId, "f1");
+  assert.ok(r.payload.inputs.includes("f1"));
+  const none = buildRenderPayload(base);
+  assert.ok(none.ok);
+  if (none.ok) assert.equal(none.payload.fontAssetId, null);
+});

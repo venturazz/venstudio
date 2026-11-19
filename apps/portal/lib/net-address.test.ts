@@ -25,3 +25,25 @@ test("public IPv6 and mapped public IPv4 pass", () => {
 test("garbage is blocked", () => {
   for (const ip of ["", "example.com", "999.1.1.1", "1:2:3", "1::2::3"]) assert.ok(blockedAddressReason(ip), ip);
 });
+
+test("NAT64 and 6to4 addresses are blocked", () => {
+  for (const ip of ["64:ff9b::7f00:1", "64:ff9b::10.0.0.1", "64:ff9b:1::1", "2002:c0a8:0101::1", "2002:7f00:1::"]) {
+    assert.ok(blockedAddressReason(ip), ip);
+  }
+  assert.equal(blockedAddressReason("2606:4700:4700::1111"), null);
+});
+
+test("trusted origin needs the same scheme, host and port", async () => {
+  const { matchesTrustedOrigin, originOf } = await import("./net-address.ts");
+  const trusted = [originOf("http://hermes:8642/v1") as string];
+  assert.equal(trusted[0], "http://hermes:8642");
+  assert.equal(matchesTrustedOrigin("http://hermes:8642/files/a.png", trusted), true);
+  assert.equal(matchesTrustedOrigin("http://HERMES:8642/x", trusted), true);
+  assert.equal(matchesTrustedOrigin("http://hermes:5432/", trusted), false);
+  assert.equal(matchesTrustedOrigin("http://hermes/", trusted), false);
+  assert.equal(matchesTrustedOrigin("https://hermes:8642/", trusted), false);
+  assert.equal(matchesTrustedOrigin("http://hermes.evil.com:8642/", trusted), false);
+  assert.equal(matchesTrustedOrigin("not a url", trusted), false);
+  assert.equal(originOf("ftp://x/"), null);
+  assert.equal(originOf("https://h.example/a"), "https://h.example:443");
+});
