@@ -51,18 +51,18 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | Stage | Executor |
 |---|---|
 | idea, research, script, storyboard | hermes |
-| assets | hermes+muse work orders |
-| voice | 9router/tts |
-| draft | worker (animatic of stills) |
-| render | worker |
-| qc | worker+hermes vision+portal rules |
+| assets | portal work orders: Hermes `image_gen` chain, CC0 library through a worker `fetch-asset` job, Muse agent task only behind a flag |
+| voice | portal: Kokoro primary, CapCut through Hermes as backup |
+| draft | skipped in Phase 4 (no animatic yet) |
+| render | worker (`render-video`) |
+| qc | worker `qc-video` plus portal rules; vision (`G-presentation`) not built, the owner decides |
 | approval | human or autonomy policy |
 | upload | portal (YouTube API, private) |
 | claim-watch | portal (wait, then read status) |
 | publish | portal |
 | learn | portal (metrics into template stats) |
 
-## 3. Data model (migrations 0007 and 0008)
+## 3. Data model (migrations 0007, 0008 and 0009)
 
 All tables use `uuid` primary keys and `timestamptz` times, matching existing migrations. Append-only numbered SQL;
 `scripts/e2e.sh` asserts a second migrate run says "up to date".
@@ -105,23 +105,32 @@ once at start) and `review_items` (`id`, `run_id`, `stage`, `kind` of `idea`, `a
 `decided_by`, `decided_at`, `created_at`). A unique index allows one open item per run, stage and kind. Nothing in the
 engine writes the channel category, the worker mapping or the autonomy level.
 
+As built in `0009_production_assets.sql` (Phase 4): `asset_providers` (primary key `name`+`kind`; `kind` is `image`, `tts` or
+`library`; `commercial_ok` is `unknown` (default), `yes` or `no`; `note`, `confirmed_by`, `confirmed_at`). A provider row
+is inserted as `unknown` the first time an asset from it is saved, and only the owner's Settings action
+(`setProviderTerms`) ever changes `commercial_ok`. Nothing reads a model's claim about licensing. `work_orders` gains
+`result` (jsonb), `error`, `provider`, `started_at` and `updated_at`, and an index on (`run_id`, `state`). `G-assets` and
+`G-voice` fail with "Confirm the commercial-use terms for <provider> in Settings" while a provider is `unknown`, and
+with a "cannot be published" issue when it is `no`. `scripts/e2e.sh` checks the tables exist, that no provider starts
+cleared, and that a second migrate run says "up to date".
+
 Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
 the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and
 saves a `draft` template. A draft stays a draft; `readyForTrials` is true only with three or more samples.
 
 ## 4. Job types
 
-| Job type | Phase | Runs on | Purpose |
-|---|---|---|---|
-| `qc-video` | 2 (this task) | worker | ffprobe, ebur128, blackdetect, silencedetect, freezedetect, keyframe extraction; returns a measurement report for `G-technical` |
-| `agent-task` | 4 | Muse worker (hold mode) | Hands a work order to the Muse agent through the inbox (section 6) |
-| `fetch-asset` | 4 | worker | Downloads CC0 or licensed library assets, hashes them, returns provenance |
-| `tts` | 4 | worker or portal | Narration through Kokoro or the named provider |
-| `render-video` | 4 | worker | Final render from a storyboard and assets |
+| Job type | Phase | Runs on | Purpose | Verified |
+|---|---|---|---|---|
+| `qc-video` | 2 | worker | ffprobe, ebur128, blackdetect, silencedetect, freezedetect, keyframe extraction; returns a measurement report for `G-technical`. Takes `productionId` or `runId` | In CI (`scripts/e2e.sh`) |
+| `render-video` | 4 | worker (ffmpeg) | Renders ordered stills with a gentle zoom, the narration WAV and captions to `video.mp4` (x264 veryfast, 2 threads, loudnorm). Shots must add up to the narration length within 1 s | Code and offline tests. Real render runs in CI (`scripts/e2e.sh`, then `scripts/ui-e2e.mjs`). Not yet run on a Muse VM |
+| `fetch-asset` | 4 | any worker (capability `echo`) | Downloads one CC0 or public-domain image or audio file from an allowlisted host, checks magic bytes, hashes it, uploads it | Offline tests with a local server. Never run against a real host |
+| `tts` | 4 | worker that sets `VENSTUDIO_KOKORO_URL` | Narration chunks through Kokoro to `narration.wav` | Offline tests. The portal does not create it: it speaks in-process, so no key reaches a worker |
+| `agent-task` | 4 | Muse worker, hold mode, `VENSTUDIO_AGENT_TASKS=1` | Hands a work order to the Muse agent through the inbox (section 6) | **UNVERIFIED** |
 
 Existing job types (`analyze-video`, `render-preview`, and others) stay. A new job type needs: `JOB_TYPES` in
-`lib/server/jobs.ts`, the `JobType` union in `packages/protocol`, a worker handler, a `WORKER_VERSION` bump and worker
-tests.
+`lib/server/jobs.ts`, the `JobType` union in `packages/protocol` (a unit test compares the two), a worker handler, a
+`WORKER_VERSION` bump (0.4.0) and worker tests.
 
 ## 5. Executor abstraction
 
@@ -134,6 +143,42 @@ ExecutorResult { assetBytesRef | text | json, provenance }
 
 Provenance is created by the executor wrapper, not by the model, so it cannot be forgotten or invented. Fallback order:
 worker tool, Hermes image, Muse agent task, CC0 library, licensed library (research doc section 5).
+
+### As built in Phase 4
+The default image source is Hermes' own `image_gen` chain (the owner reports cloudflare, agnes, canva, qwen, minimax,
+sensenova and others, working today). The portal asks for one image per shot (`VENSTUDIO_STAGE: image`) and does not
+choose a provider; the optional env `HERMES_IMAGE_PROVIDER_ORDER` is only a hint in the prompt. The reply is JSON
+`{status, provider, model, image:{type, value, mimeType}, error}` where `type` is `url`, `base64` or `data-uri`. A
+markdown link, a bare URL or a `data:` URI in free text is accepted as a fallback. A file path is a validation issue
+that is fed back to Hermes. The portal checks the bytes itself: PNG, JPEG or WebP by magic bytes, at most 20 MB, short
+side at least 480 px. URLs are fetched through an SSRF-safe fetcher (`lib/server/safe-fetch.ts`: https only except the
+configured Hermes host, private, loopback and link-local addresses refused after DNS lookup, size and time limits, 3
+redirects). The provider name Hermes reports is stored as provenance.
+
+Fallback chain per shot (`fallbackChain`), one work order at a time (`FOR UPDATE SKIP LOCKED`):
+1. Hermes image, two attempts, each asking Hermes up to 3 times with the problems fed back.
+2. CC0 library: Hermes names a candidate (`VENSTUDIO_STAGE: cc0`), the portal checks the host allowlist and a CC0 or
+   public-domain licence string, and a `fetch-asset` job downloads it. The work order waits for the job.
+3. Muse agent task, only when `MUSE_AGENT_TASKS=1` on the portal.
+A shot that fails the whole chain fails its work order with the reasons. Retry in Review resets only failed orders.
+
+Voice: Kokoro is the primary narration (OpenAI-compatible `POST /v1/audio/speech` with `response_format: wav`, `GET
+/v1/audio/voices`; env `KOKORO_BASE_URL`, `KOKORO_API_KEY`, `KOKORO_MODEL`, `KOKORO_VOICE`). The portal splits the
+script, speaks each chunk, and joins the WAV pieces in pure JS (the portal image has no ffmpeg). The backup is CapCut
+through Hermes (`VENSTUDIO_STAGE: tts-capcut`, same reply contract with an `audio` field), used when Kokoro is not
+configured, fails, or does not cover the language. `TTS_BACKUP=off` disables it. For non-WAV backup audio the duration
+and clipping checks are deferred to the render result. English is the only language treated as verified.
+
+Render and QC: `render-video` is queued at urgent priority for the channel's home worker. The job complete and fail
+routes call `onJobFinished`, and the reaper reconciles stuck runs, because there is no scheduler. The rendered
+`video.mp4` is saved as an asset, then a `qc-video` job measures it and stores `G-technical` against the run.
+`G-presentation`, `G-compliance` and `G-claims` are not produced, so they show as missing and the owner decides.
+Approving the `qc` stage sets the run to `done`. Upload is a later phase.
+
+Provenance is automatic: `buildProvenance` writes source, licence text and origin for each executor. Provider terms
+follow section 3. At autonomy level 1 the owner approves `idea` and `assets`; later production stages continue on their
+own when their gates pass and ask the owner when they fail. Production stages never revise automatically and never
+publish. Nothing here writes the channel category, the worker mapping or the autonomy level.
 
 ### Calling Hermes
 The portal posts to `/v1/chat/completions` (model `hermes-agent`, `stream: false`, 180 s timeout) from
@@ -149,6 +194,7 @@ for long tasks and its vision support are **unverified** and still unused.
 
 ## 6. Muse agent-task delivery (UNVERIFIED, needs a Muse test)
 
+0. Flag-gated: the portal creates these jobs only when `MUSE_AGENT_TASKS=1`, and a worker advertises the handler only when `VENSTUDIO_AGENT_TASKS=1`. Both default to off, and the task is never in the default fallback chain.
 1. Portal creates an `agent-task` job from a work order.
 2. A worker in `hold` mode claims it, writes `/home/hatch/venstudio/inbox/<jobId>/TASK.md`, and prints the task text.
 3. The Muse agent that launched `run.sh` reads it and performs the task, saving files to
@@ -172,9 +218,20 @@ Review, Studio, Channels, Jobs and Settings; Assets and Workers are linked from 
 on wide screens lists everything. `scripts/ui-e2e.mjs` covers `/review` at 390 px (no horizontal overflow, tap
 targets of 44 px or more) against a fake Hermes.
 
+Phase 4 cards (`ReviewPayload.media` and `.checks`):
+- **Assets**: a two-column thumbnail grid (`/api/assets/<id>`) with the shot and the provider under each image. When a
+  provider is not confirmed, a notice links to Settings (a 44 px link). The card is a gate-failure item with **Retry**
+  until the owner confirms the provider, then an approval item.
+- **Voice**: an `<audio controls>` player and the voice provider, plus the same terms notice (Kokoro is a provider too).
+- **Video** and **Quality check**: a `<video controls playsInline>` player, the one-line results of each check, and a
+  note that the presentation check is manual in Phase 4.
+
 Routes: `/review` (inbox), `/studio/runs` (start a run, recent runs, Test Hermes JSON), `/studio/runs/[id]` (stage
-timeline, outputs, work order count, cancel). Work orders from the storyboard are created and never executed in this
-phase: the run shows "Storyboard ready" and asset sourcing arrives in Phase 4.
+timeline with a summary for every stage including the production stages, a link to the render job, a work order list
+with state, provider, attempts and error per shot, the checks, cancel). Settings has the Kokoro health card with **Test
+voice**, **Test Hermes image** (lists the providers Hermes reports and makes one small picture, saving nothing) and the
+owner-only Asset providers list. `scripts/ui-e2e.mjs` drives the whole path against a fake Hermes and a fake Kokoro at
+390 px and on desktop.
 
 ## 8. Security rules
 
@@ -194,17 +251,46 @@ phase: the run shows "Storyboard ready" and asset sourcing arrives in Phase 4.
 | 1 | Pure domain engine: templates, QC gates, autonomy, Template Lab, provenance v2, in `apps/portal/lib/studio` with unit tests | Implemented in this task (FEAT-003) |
 | 2 | Migration 0007, `qc-video` worker job, read-only Templates page, e2e | Implemented in this task (FEAT-004) |
 | 3 | Hermes director: idea, research, script, storyboard stages as work orders; Review inbox on mobile | Implemented. Unverified against a real Hermes: JSON reliability, vision, runs API |
-| 4 | Asset work orders (Hermes images, Muse agent tasks, CC0 libraries), `tts` and `render-video` jobs | Planned |
+| 4 | Asset work orders (Hermes `image_gen` chain, CC0 library, flagged Muse agent tasks), Kokoro voice with CapCut backup, `render-video` and `qc-video` | Implemented. Offline tests pass; CI e2e covers it against fakes. Not verified against live services, see below |
 | 5 | YouTube upload, copyright claim wait, metrics | Planned |
 | 6 | Autonomous publishing with demotion | Planned |
 | 7 | Template Lab UI and trial runner | Planned |
+
+### Phase 4: verified and unverified
+
+Verified (offline tests and CI against fakes): reply parsing and byte checks for images and audio, the SSRF-safe
+fetcher, provider terms enforcement, the fallback order, WAV joining and the voice gate, the render payload and
+ffmpeg arguments, the review cards at 390 px, the Settings tests, and a real `render-video` plus `qc-video` on the CI
+worker using generated stills.
+
+Not verified, because it needs the owner's live systems:
+- The real `image_gen` return shape. The parser accepts several shapes, but the exact tool names and what comes back
+  (URL, base64, or a path the portal cannot read) are unknown until **Test Hermes image** is run.
+- Provider licence terms. No provider is assumed cleared. The studio will not publish an asset from a provider the
+  owner has not confirmed in Settings.
+- Kokoro location. No address is assumed. It is a Kokoro container the portal can reach, or a route through 9router.
+- The CapCut backup path through Hermes. It has never run.
+- Muse agent tasks (research tests 12 to 16). Behind a flag, off by default.
+- `G-presentation` (vision). Not built; the owner watches the video and decides.
+- Non-English Kokoro voices, and a full-length render on a Muse VM (2 vCPU, 8 GB, no GPU).
+
+### First live run checklist (owner)
+1. Set `KOKORO_BASE_URL` (and `KOKORO_API_KEY` if needed) on the portal. Kokoro is the primary voice; CapCut through
+   Hermes is the backup. Open Settings and confirm the Kokoro card says Connected.
+2. Press **Test voice**. It should report the voice name and the seconds of audio.
+3. Press **Test Hermes image**. Check the providers listed (for example cloudflare, agnes, canva, qwen, minimax,
+   sensenova) and that a picture appears. If it reports a path or an error, tell the developer the exact text.
+4. After the first run makes assets, open Settings, Asset providers. Read each provider's commercial terms and set
+   **Commercial use OK** only for those you have checked. Then press **Retry** on the Assets card in Review.
+5. Start one short on one channel with a worker enrolled for it. Approve the assets, check the voice, wait for the
+   video, watch it fully (the presentation check is yours) and approve or reject.
 
 ### Entry criteria, unknowns and owner needs
 
 | Phase | Entry criteria | Unverified | Needs from the owner |
 |---|---|---|---|
 | 3 | Phase 2 merged; Hermes reachable from the portal container | Hermes runs API; Hermes vision; structured-output reliability (run Test Hermes JSON, then a real run) | Channel plan text, channel categories, worker mapping, starting autonomy (recommend 1) |
-| 4 | Phase 3 producing approved scripts and storyboards | Muse agent-task delivery (tests 12 to 16); Muse image licence; Kokoro language gaps need a named TTS | Language list; decision on a GPU box for 3D |
+| 4 | Phase 3 producing approved scripts and storyboards | Hermes `image_gen` return shape; provider licence terms; Kokoro location; CapCut backup path; Muse agent-task delivery (tests 12 to 16); Kokoro language gaps | Kokoro address; confirm each provider's terms in Settings; language list; decision on a GPU box for 3D |
 | 5 | Phase 4 renders pass `G-technical` and `G-presentation`; OAuth client and `YOUTUBE_*` env set; consent screen in production | Whether claim status is readable by API for private uploads; claim wait length | Connect each of 10 channels |
 | 6 | Phase 5 live; at least one template `proven` with signed checklist; 5 trial runs recorded | Real false-pass rate of vision QC | Per-channel opt-in to level 3; approval of spot-check rate |
 | 7 | Phase 4 render path stable; analysis job (`analyze-video`) exists | Quality of Hermes structure descriptions | Samples the owner holds rights to; daily lab budget |
