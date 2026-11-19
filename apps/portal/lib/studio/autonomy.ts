@@ -71,6 +71,7 @@ export function decideNext(input: DecisionInput): Decision {
   if (level === 0) return { action: "ask-owner", reason: "Manual mode: the owner approves every stage" };
   if (point === "stage" && !input.stage) return { action: "ask-owner", reason: "The stage of this result is unknown" };
   if (point === "stage" && level < 2 && input.stage === "idea") return { action: "ask-owner", reason: "At level 1 the owner approves ideas" };
+  if (point === "stage" && level < 2 && input.stage === "assets") return { action: "ask-owner", reason: "At level 1 the owner approves the assets" };
   if (point === "stage") return { action: "auto-approve", reason: "All gates passed for this stage" };
   if (level < 3) return { action: "ask-owner", reason: "Final approval is the owner's at this level" };
   if (qc.score < AUTO_PUBLISH_MIN_SCORE) return { action: "ask-owner", reason: `QC score ${qc.score} is below ${AUTO_PUBLISH_MIN_SCORE}` };

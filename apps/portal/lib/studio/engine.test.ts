@@ -1,6 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_DURATION_SEC, HERMES_WORST_CASE_SEC, isEngineStage, isOrphaned, isStuck, STUCK_MINUTES, nextStage, revisionTarget, stageSummary } from "./engine.ts";
+import {
+  DEFAULT_DURATION_SEC,
+  HERMES_WORST_CASE_SEC,
+  isEngineStage,
+  isOrphaned,
+  isProductionStage,
+  isRunStage,
+  isStuck,
+  nextRunStage,
+  RUN_STAGES,
+  STUCK_MINUTES,
+  nextStage,
+  revisionTarget,
+  stageSummary,
+} from "./engine.ts";
 import { VIDEO_FORMATS } from "./catalog.ts";
 
 test("stage order ends after the storyboard", () => {
@@ -43,7 +57,9 @@ test("isOrphaned finds a running run with only unclaimed engine stages", () => {
   assert.equal(isOrphaned("running", [{ stage: "script", state: "pending" }]), true);
   assert.equal(isOrphaned("running", [{ stage: "script", state: "pending" }, { stage: "idea", state: "running" }]), false);
   assert.equal(isOrphaned("waiting-human", [{ stage: "script", state: "pending" }]), false);
-  assert.equal(isOrphaned("running", [{ stage: "assets", state: "pending" }]), false);
+  assert.equal(isOrphaned("running", [{ stage: "assets", state: "pending" }]), true);
+  assert.equal(isOrphaned("running", [{ stage: "render", state: "running" }, { stage: "qc", state: "pending" }]), false);
+  assert.equal(isOrphaned("running", [{ stage: "upload", state: "pending" }]), false);
   assert.equal(isOrphaned("running", []), false);
 });
 
@@ -53,4 +69,24 @@ test("stageSummary describes each stage and tolerates junk", () => {
   assert.match(stageSummary("script", { script: "one two three" }), /^3 words/);
   assert.equal(stageSummary("storyboard", { shots: [{ seconds: 3 }, { seconds: 4.4 }] }), "2 shots, about 7 seconds");
   assert.equal(stageSummary("storyboard", null), "0 shots, about 0 seconds");
+});
+
+test("the run stage order continues through the production stages", () => {
+  assert.deepEqual([...RUN_STAGES], ["idea", "research", "script", "storyboard", "assets", "voice", "render", "qc"]);
+  assert.equal(nextRunStage("storyboard"), "assets");
+  assert.equal(nextRunStage("assets"), "voice");
+  assert.equal(nextRunStage("voice"), "render");
+  assert.equal(nextRunStage("render"), "qc");
+  assert.equal(nextRunStage("qc"), null);
+  assert.ok(isProductionStage("render") && !isProductionStage("script"));
+  assert.ok(isRunStage("qc") && !isRunStage("upload"));
+});
+
+test("revisionTarget handles production stages", () => {
+  assert.equal(revisionTarget(null, "brighter images please", "qc"), "assets");
+  assert.equal(revisionTarget(null, "a calmer voice", "render"), "voice");
+  assert.equal(revisionTarget(null, "make it better", "render"), "render");
+  assert.equal(revisionTarget(null, "rewrite the hook", "qc"), "script");
+  assert.equal(revisionTarget(null, "brighter images please", "voice"), "assets");
+  assert.equal(revisionTarget(null, "a calmer voice", "assets"), "assets");
 });

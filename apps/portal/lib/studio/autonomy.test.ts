@@ -69,6 +69,9 @@ test("level 1 asks the owner to approve ideas, other stages auto-approve", () =>
   assert.equal(decideNext({ ...args, level: 1, stage: "idea" }).action, "ask-owner");
   assert.equal(decideNext({ ...args, level: 1, stage: "script" }).action, "auto-approve");
   assert.equal(decideNext({ ...args, level: 2, stage: "idea" }).action, "auto-approve");
+  assert.equal(decideNext({ ...args, level: 1, stage: "assets" }).action, "ask-owner");
+  assert.equal(decideNext({ ...args, level: 2, stage: "assets" }).action, "auto-approve");
+  assert.equal(decideNext({ ...args, level: 1, stage: "voice" }).action, "auto-approve");
   assert.equal(decideNext({ ...args, level: 3, paused: true, stage: "idea" }).action, "ask-owner");
 });
 

@@ -482,23 +482,25 @@ export function workOrdersFromStoryboard(shots: Shot[]): WorkOrderDraft[] {
   }));
 }
 
-export type RevisableStage = "idea" | "script" | "storyboard";
+export type RevisableStage = "idea" | "script" | "storyboard" | "assets" | "voice";
 export interface RevisionGuess {
   stage: RevisableStage;
-  /** True when the note is about assets or voice, which are not produced yet; mapped to storyboard for now. */
+  /** Always false since Phase 4: notes about images or voice restart the assets or voice stage. Kept for older callers. */
   deferred: boolean;
 }
 
 const IDEA_WORDS = /\b(idea|ideas|topic|subject|different video|another video|theme)\b/i;
 const SCRIPT_WORDS = /\b(script|hook|wording|words|narration|text|sentence|intro|ending|tone|longer|shorter|facts?|claims?)\b/i;
 const STORYBOARD_WORDS = /\b(storyboard|shot|shots|scene|scenes|pacing|order)\b/i;
-const DEFERRED_WORDS = /\b(image|images|picture|pictures|photo|photos|footage|asset|assets|visual|visuals|voice|voiceover|audio|music|sound|speak|accent)\b/i;
+const ASSET_WORDS = /\b(image|images|picture|pictures|photo|photos|footage|asset|assets|visual|visuals)\b/i;
+const VOICE_WORDS = /\b(voice|voiceover|audio|music|sound|speak|accent)\b/i;
 
 export function guessRevisionStage(note: string, fallback: RevisableStage): RevisionGuess {
   if (IDEA_WORDS.test(note)) return { stage: "idea", deferred: false };
   if (SCRIPT_WORDS.test(note)) return { stage: "script", deferred: false };
   if (STORYBOARD_WORDS.test(note)) return { stage: "storyboard", deferred: false };
-  if (DEFERRED_WORDS.test(note)) return { stage: "storyboard", deferred: true };
+  if (ASSET_WORDS.test(note)) return { stage: "assets", deferred: false };
+  if (VOICE_WORDS.test(note)) return { stage: "voice", deferred: false };
   return { stage: fallback, deferred: false };
 }
 

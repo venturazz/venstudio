@@ -16,6 +16,7 @@ export const STAGE_LABELS: Record<string, string> = {
   assets: "Assets",
   voice: "Voice",
   render: "Video",
+  qc: "Quality check",
   upload: "Upload",
 };
 
@@ -104,4 +105,16 @@ export interface ReviewPayload {
   error?: string;
   /** Why the owner is asked (from the autonomy policy). */
   reason?: string;
+  /** One plain line per check that ran (Phase 4 stages). */
+  checks?: string[];
+  /** Media the owner should look at (Phase 4): asset ids the review card can show. */
+  media?: ReviewMedia;
+}
+
+export interface ReviewMedia {
+  images?: Array<{ assetId: string; shotRef: string; provider: string }>;
+  audioAssetId?: string;
+  videoAssetId?: string;
+  /** Voice provider, for the audio card. */
+  voiceProvider?: string;
 }

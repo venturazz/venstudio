@@ -231,8 +231,8 @@ test("guessRevisionStage maps notes to stages", () => {
   assert.deepEqual(guessRevisionStage("Pick a different topic", "script"), { stage: "idea", deferred: false });
   assert.deepEqual(guessRevisionStage("The hook is weak", "storyboard"), { stage: "script", deferred: false });
   assert.deepEqual(guessRevisionStage("Fewer shots in the middle", "script"), { stage: "storyboard", deferred: false });
-  assert.deepEqual(guessRevisionStage("Use a calmer voice", "script"), { stage: "storyboard", deferred: true });
-  assert.deepEqual(guessRevisionStage("Use brighter images", "script"), { stage: "storyboard", deferred: true });
+  assert.deepEqual(guessRevisionStage("Use a calmer voice", "script"), { stage: "voice", deferred: false });
+  assert.deepEqual(guessRevisionStage("Use brighter images", "script"), { stage: "assets", deferred: false });
   assert.deepEqual(guessRevisionStage("Hmm, not sure", "script"), { stage: "script", deferred: false });
 });
 

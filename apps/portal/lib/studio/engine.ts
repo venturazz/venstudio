@@ -5,6 +5,12 @@
 import { guessRevisionStage, type DirectorStage, type Idea, type ResearchNote, type RevisableStage, type Shot } from "./director.ts";
 
 export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "script", "storyboard"];
+/** Phase 4 stages. They are not model calls: assets runs work orders, voice runs TTS, render and qc wait for a worker job. */
+export type ProductionStage = "assets" | "voice" | "render" | "qc";
+export const PRODUCTION_STAGES: readonly ProductionStage[] = ["assets", "voice", "render", "qc"];
+export type RunStage = DirectorStage | ProductionStage;
+/** Every stage the run engine executes, in order. */
+export const RUN_STAGES: readonly RunStage[] = [...ENGINE_STAGES, ...PRODUCTION_STAGES];
 /** Worst case for one stage: hermesJson makes up to 3 attempts of 180 s each. */
 export const HERMES_WORST_CASE_SEC = 3 * 180;
 /** A stage that has been running this long is treated as lost (restart, crash) and failed: worst case plus 6 minutes for the gate and DB work. */
@@ -16,21 +22,34 @@ export function isEngineStage(s: string): s is DirectorStage {
   return ENGINE_STAGES.some((e) => e === s);
 }
 
-export function stageIndex(stage: DirectorStage): number {
-  return ENGINE_STAGES.indexOf(stage);
+export function isProductionStage(s: string): s is ProductionStage {
+  return PRODUCTION_STAGES.some((e) => e === s);
+}
+
+export function isRunStage(s: string): s is RunStage {
+  return RUN_STAGES.some((e) => e === s);
+}
+
+export function stageIndex(stage: RunStage): number {
+  return RUN_STAGES.indexOf(stage);
+}
+
+/** The stage after `stage` across the whole run, or null after the last one (qc), where the owner gives the final approval. */
+export function nextRunStage(stage: RunStage): RunStage | null {
+  return RUN_STAGES[stageIndex(stage) + 1] ?? null;
 }
 
 /** The stage after `stage`, or null after the storyboard (work orders and assets come next, in Phase 4). */
 export function nextStage(stage: DirectorStage): DirectorStage | null {
-  return ENGINE_STAGES[stageIndex(stage) + 1] ?? null;
+  return ENGINE_STAGES[ENGINE_STAGES.indexOf(stage) + 1] ?? null;
 }
 
 /**
  * Which stage an owner's revision note restarts. The classifier's answer wins; without one, keywords decide; a
  * note with no keyword restarts the stage the owner was looking at. The result is never later than that stage.
  */
-export function revisionTarget(classified: DirectorStage | null, note: string, own: DirectorStage): DirectorStage {
-  let target: DirectorStage;
+export function revisionTarget(classified: RunStage | null, note: string, own: RunStage): RunStage {
+  let target: RunStage;
   if (classified) target = classified;
   else {
     const a: RevisableStage = guessRevisionStage(note, "idea").stage;
@@ -53,7 +72,7 @@ export function isStuck(startedAt: Date | null, now: Date, minutes: number = STU
 export function isOrphaned(runState: string, stages: readonly { stage: string; state: string }[]): boolean {
   if (runState !== "running") return false;
   if (stages.some((s) => s.state === "running")) return false;
-  return stages.some((s) => s.state === "pending" && isEngineStage(s.stage));
+  return stages.some((s) => s.state === "pending" && isRunStage(s.stage));
 }
 
 /** One short line for the review card and the run timeline. */
