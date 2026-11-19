@@ -62,7 +62,7 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | publish | portal |
 | learn | portal (metrics into template stats) |
 
-## 3. Data model (migration 0007)
+## 3. Data model (migrations 0007 and 0008)
 
 All tables use `uuid` primary keys and `timestamptz` times, matching existing migrations. Append-only numbered SQL;
 `scripts/e2e.sh` asserts a second migrate run says "up to date".
@@ -98,6 +98,13 @@ load instead of waiting for another job to finish. `combineGates` requires the p
 presentation, assets, compliance, claims) and returns `missingGates`; a missing gate is never a pass. `decideNext` takes
 the stage id so level 1 asks the owner to approve the `idea` stage, and sends a missing gate to the owner.
 
+As built in `0008_director.sql`: `channels.plan` (text, written only by the owner in the channel form; Hermes reads it when it
+proposes ideas), `pipeline_runs.config` (jsonb: format, themeId, language, durationSec, styleId, purposes, topicHint, set
+once at start) and `review_items` (`id`, `run_id`, `stage`, `kind` of `idea`, `approval`, `gate-failure` or
+`stage-error`, `state` of `open`, `approved`, `revision`, `rejected` or `superseded`, `payload` jsonb, `note`,
+`decided_by`, `decided_at`, `created_at`). A unique index allows one open item per run, stage and kind. Nothing in the
+engine writes the channel category, the worker mapping or the autonomy level.
+
 Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
 the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and
 saves a `draft` template. A draft stays a draft; `readyForTrials` is true only with three or more samples.
@@ -129,10 +136,16 @@ Provenance is created by the executor wrapper, not by the model, so it cannot be
 worker tool, Hermes image, Muse agent task, CC0 library, licensed library (research doc section 5).
 
 ### Calling Hermes
-The portal posts to `/v1/chat/completions` (model `hermes-agent`, as `lib/server/hermes.ts` does for status today)
-with a JSON-only prompt for each stage. The reply is parsed and validated with zod; a reply that does not validate is
-a stage failure (counts as a retry), never executed. Prompts contain no secrets. The Hermes runs API for long tasks
-and its vision support are **unverified** in this sandbox; both are checked live in Phase 3.
+The portal posts to `/v1/chat/completions` (model `hermes-agent`, `stream: false`, 180 s timeout) from
+`lib/server/hermes-json.ts`. Each prompt starts with a marker line `VENSTUDIO_STAGE: <stage>`, asks for JSON only and
+wraps untrusted text (channel plan, past titles, owner notes) in labelled DATA blocks that the model is told not to
+obey. The reply is parsed tolerantly (fences and surrounding text are stripped) and checked by a hand-written
+validator in `lib/studio/director.ts` (pure, no zod, so it runs under `node --test`). On a transport error, bad JSON
+or failed validation the portal asks again up to 2 more times, feeding the validation issues back. After the last
+try the stage fails with the reason and the owner sees a stage-error item with Retry. No `response_format` parameter is
+sent because the gateway may reject it; whether live Hermes keeps to the schema is measured with the "Test Hermes JSON"
+button on `/studio/runs`. Model output is data and is never executed. Prompts contain no secrets. The Hermes runs API
+for long tasks and its vision support are **unverified** and still unused.
 
 ## 6. Muse agent-task delivery (UNVERIFIED, needs a Muse test)
 
@@ -147,10 +160,21 @@ Needs tests 12 to 16 in the research doc before any code. Task text comes only f
 
 ## 7. Review screens (mobile first)
 
-A single **Review inbox** lists items waiting for the owner: ideas, final approvals, unresolved gate failures. Each
-item fits a phone: one column, large approve and revise buttons, the video or keyframes inline, the gate results as a
-short plain-language list, a text box for a revision note. No desktop-only controls. The existing `scripts/ui-e2e.mjs`
-Playwright flow covers a mobile viewport and gets a case for this page in Phase 3.
+The **Review inbox** (`/review`) lists items waiting for the owner. Built in Phase 3: one column of cards, each with
+the channel, run topic and stage. Idea cards list every idea (title, hook, angle) with its own **Approve this idea**
+button. Approval cards show a text summary of the research, script or storyboard. Gate-failure cards list the plain
+issues, and stage-error cards show the error with **Retry**. Every card has a revision note box with **Send
+revision** and a **Reject** button; buttons are at least 48 px tall and full width on phones. Problems sort before
+approvals, and approvals before ideas. A revision note is classified to the earliest stage that must change (Hermes,
+then a keyword fallback, then the stage shown), the stage runs again as a new attempt and later stages are
+superseded. Reject cancels the run. The nav shows an open-count badge on Review. On phones the bottom bar holds
+Review, Studio, Channels, Jobs and Settings; Assets and Workers are linked from the Studio page, and the side nav
+on wide screens lists everything. `scripts/ui-e2e.mjs` covers `/review` at 390 px (no horizontal overflow, tap
+targets of 44 px or more) against a fake Hermes.
+
+Routes: `/review` (inbox), `/studio/runs` (start a run, recent runs, Test Hermes JSON), `/studio/runs/[id]` (stage
+timeline, outputs, work order count, cancel). Work orders from the storyboard are created and never executed in this
+phase: the run shows "Storyboard ready" and asset sourcing arrives in Phase 4.
 
 ## 8. Security rules
 
@@ -169,7 +193,7 @@ Playwright flow covers a mobile viewport and gets a case for this page in Phase 
 | 0 | Baseline: existing tests green | Done in this task (41 portal tests, 9 pass and 4 skip for worker) |
 | 1 | Pure domain engine: templates, QC gates, autonomy, Template Lab, provenance v2, in `apps/portal/lib/studio` with unit tests | Implemented in this task (FEAT-003) |
 | 2 | Migration 0007, `qc-video` worker job, read-only Templates page, e2e | Implemented in this task (FEAT-004) |
-| 3 | Hermes director: idea, research, script, storyboard stages as work orders; Review inbox on mobile | Planned |
+| 3 | Hermes director: idea, research, script, storyboard stages as work orders; Review inbox on mobile | Implemented. Unverified against a real Hermes: JSON reliability, vision, runs API |
 | 4 | Asset work orders (Hermes images, Muse agent tasks, CC0 libraries), `tts` and `render-video` jobs | Planned |
 | 5 | YouTube upload, copyright claim wait, metrics | Planned |
 | 6 | Autonomous publishing with demotion | Planned |
@@ -179,7 +203,7 @@ Playwright flow covers a mobile viewport and gets a case for this page in Phase 
 
 | Phase | Entry criteria | Unverified | Needs from the owner |
 |---|---|---|---|
-| 3 | Phase 2 merged; Hermes reachable from the portal container | Hermes runs API; Hermes vision; structured-output reliability | Channel categories, worker mapping, starting autonomy (recommend 1) |
+| 3 | Phase 2 merged; Hermes reachable from the portal container | Hermes runs API; Hermes vision; structured-output reliability (run Test Hermes JSON, then a real run) | Channel plan text, channel categories, worker mapping, starting autonomy (recommend 1) |
 | 4 | Phase 3 producing approved scripts and storyboards | Muse agent-task delivery (tests 12 to 16); Muse image licence; Kokoro language gaps need a named TTS | Language list; decision on a GPU box for 3D |
 | 5 | Phase 4 renders pass `G-technical` and `G-presentation`; OAuth client and `YOUTUBE_*` env set; consent screen in production | Whether claim status is readable by API for private uploads; claim wait length | Connect each of 10 channels |
 | 6 | Phase 5 live; at least one template `proven` with signed checklist; 5 trial runs recorded | Real false-pass rate of vision QC | Per-channel opt-in to level 3; approval of spot-check rate |

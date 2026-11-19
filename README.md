@@ -89,6 +89,9 @@ For a VPS or your own PC, use the `curl … install.sh … --mode daemon` comman
 - **Studio** (`/studio`): choose a format (short or long), a theme and a style. Suggest styles from a brief, preview the
   stage plan, and save it as a production. Stages marked *Runs now* can run today; the rest are planned until their
   workers are built. The style library is at `/studio/styles`.
+- **Hermes runs and Review** (`/studio/runs`, `/review`): Hermes proposes ideas, researches, writes the script and
+  the storyboard for a channel. You approve an idea, ask for a change with a note, or reject, from a phone-friendly
+  inbox. Asset sourcing and rendering come in later phases.
 - **Assets** (`/assets`): every reference, image, audio file or worker output, with its source, licence and origin.
   Publishing checks these notes. Reference videos can be analyzed for cuts, pacing, hook timing and loudness; they
   can never appear in a published video.
