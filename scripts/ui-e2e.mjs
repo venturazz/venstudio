@@ -4,7 +4,7 @@
 // Needs: portal running at APP_URL against an EMPTY database, SETUP_TOKEN set on it, ffmpeg, Playwright Chromium.
 import { chromium } from "playwright";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { totp } from "../apps/portal/lib/crypto/totp.ts";
@@ -272,6 +272,50 @@ function step(msg) {
 }
 function runWorker(args) {
   return execFileSync("bash", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+}
+
+/**
+ * Prints what the production pipeline looks like when a wait gives up: the run, its stages, jobs, work orders, review
+ * items, QC reports, the workers and the worker log tail. Uses psql when UI_DB or DATABASE_URL is set, and always
+ * prints the run page text as a fallback. Never throws.
+ */
+async function dumpPipeline(p, runHref, why) {
+  console.error(`\n---- pipeline diagnostics: ${why} ----`);
+  const runId = /\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(runHref ?? "")?.[1] ?? null;
+  const dbUrl = process.env.UI_DB ?? process.env.DATABASE_URL;
+  const psql = (title, sql) => {
+    try {
+      const out = execFileSync("psql", [dbUrl, "-X", "-A", "-F", " | ", "-P", "footer=off", "-c", sql], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
+      console.error(`## ${title}\n${out.trim() || "(no rows)"}`);
+    } catch (err) {
+      console.error(`## ${title}: query failed: ${String(err.stderr || err.message).slice(0, 300)}`);
+    }
+  };
+  if (dbUrl && runId) {
+    psql("run", `SELECT id, state, autonomy_level, topic, kind FROM pipeline_runs WHERE id = '${runId}'`);
+    psql("stages", `SELECT stage, state, attempt, left(coalesce(error, ''), 300) AS error, left((output - 'result')::text, 400) AS output FROM pipeline_stages WHERE run_id = '${runId}' ORDER BY coalesce(started_at, finished_at, now()), attempt`);
+    psql("jobs of this run, and the latest render and qc jobs", `SELECT type, status, attempts || '/' || max_attempts AS tries, priority, capability, worker_id, preferred_worker_id, run_after <= now() AS runnable, progress, left(coalesce(message, ''), 120) AS message, left(coalesce(error, ''), 400) AS error FROM jobs WHERE payload->>'runId' = '${runId}' OR type IN ('render-video', 'qc-video') ORDER BY created_at DESC LIMIT 10`);
+    psql("job events of the latest render and qc jobs", `SELECT j.type, e.level, left(e.message, 200) AS message FROM job_events e JOIN jobs j ON j.id = e.job_id WHERE j.payload->>'runId' = '${runId}' AND j.type IN ('render-video', 'qc-video') ORDER BY e.id DESC LIMIT 20`);
+    psql("work orders", `SELECT shot_ref, executor, state, attempts, job_id, asset_id IS NOT NULL AS has_asset, left(coalesce(to_jsonb(w)->>'error', ''), 200) AS error FROM work_orders w WHERE run_id = '${runId}' ORDER BY shot_ref`);
+    psql("review items", `SELECT stage, kind, state, left(payload::text, 300) AS payload FROM review_items WHERE run_id = '${runId}' ORDER BY created_at`);
+    psql("qc reports", `SELECT gate, passed, score, executor, left(details::text, 300) AS details FROM qc_reports WHERE run_id = '${runId}' ORDER BY created_at`);
+    psql("workers", `SELECT name, status, mode, capabilities, job_types, last_claim_at FROM workers`);
+  } else {
+    console.error("## no database access (UI_DB and DATABASE_URL unset or no run id); the run page below is the only source");
+  }
+  try {
+    await p.goto(`${APP}${runHref}`);
+    console.error(`## run page text\n${((await p.locator("body").innerText()) || "").slice(0, 3000)}`);
+  } catch (err) {
+    console.error(`## run page text: unavailable (${String(err.message).slice(0, 200)})`);
+  }
+  try {
+    const log = readFileSync(path.join(OUT, "worker", "logs", "worker.log"), "utf8").trimEnd().split("\n");
+    console.error(`## worker log tail\n${log.slice(-60).join("\n")}`);
+  } catch (err) {
+    console.error(`## worker log: unavailable (${err.message})`);
+  }
+  console.error("---- end of pipeline diagnostics ----\n");
 }
 
 try {
@@ -660,9 +704,18 @@ try {
 
   step("production: render with the real worker, then the quality check");
   let qcCard = false;
+  const productionRunHref = assetsRunHref ?? runHref;
+  // A render or voice problem will not fix itself by waiting: stop at once and say what happened.
+  const brokenCard = m.locator('[data-testid="review-card"]', { hasText: /(Video|Voice|Assets) (stopped with an error|did not pass the checks)/ });
   for (let i = 0; i < 14 && !qcCard; i++) {
     runWorker([`${OUT}/worker/run.sh`, "tick"]);
     await m.goto(`${APP}/review`);
+    // Not on the first pass: the voice card that was just retried or approved may still be listed for a moment.
+    if (i > 0 && (await brokenCard.first().isVisible().catch(() => false))) {
+      const text = ((await brokenCard.first().innerText().catch(() => "")) || "").replace(/\s+/g, " ").slice(0, 600);
+      await dumpPipeline(m, productionRunHref, `a production step failed on tick ${i + 1}`);
+      throw new Error(`a production step failed before the quality check: ${text}`);
+    }
     const video = m.getByTestId("render-video").first();
     const approveVideo = m.locator('[data-kind="approval"]', { hasText: "Approve the video" });
     if (await approveVideo.first().isVisible().catch(() => false)) {
@@ -670,11 +723,16 @@ try {
       await assertNoOverflow(m, "/review (render)");
       await shot("23-review-render-mobile", m);
       await approveVideo.first().getByRole("button", { name: "Approve", exact: true }).click();
+      // The decision is saved by a server action. Let it finish so the next tick finds the quality check job.
+      await m.waitForLoadState("networkidle");
     }
     qcCard = await m.locator('[data-testid="review-card"]', { hasText: "Quality check" }).first().isVisible().catch(() => false);
     if (!qcCard) await m.waitForTimeout(3000);
   }
-  if (!qcCard) throw new Error("the quality check review never appeared");
+  if (!qcCard) {
+    await dumpPipeline(m, productionRunHref, "the quality check review never appeared after 14 worker ticks");
+    throw new Error("the quality check review never appeared");
+  }
   await m.waitForLoadState("networkidle");
   await assertNoOverflow(m, "/review (quality check)");
   await shot("24-review-qc-mobile", m);
