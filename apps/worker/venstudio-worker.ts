@@ -36,7 +36,7 @@ import type {
   WorkerMode,
 } from "../../packages/protocol/src/index.ts";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -794,6 +794,7 @@ export async function loop(opts: {
       try {
         res = await client.json<ClaimResponse>("POST", "/api/worker/claim", {
           capabilities,
+          jobTypes: Object.keys(handlers),
           mode: opts.mode,
           version: VERSION,
           waitSeconds,

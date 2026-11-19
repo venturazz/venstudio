@@ -17,7 +17,11 @@ const schema = z.object({
   mode: z.enum(["tick", "hold", "daemon"]),
   version: z.string().max(40),
   waitSeconds: z.number().int().min(0).max(300).optional(),
+  jobTypes: z.array(z.string().max(40)).max(20).optional(),
 });
+
+/** Workers released before job types were sent can only run these. */
+const LEGACY_JOB_TYPES = ["echo", "smoke-test"];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,7 +43,7 @@ export async function POST(req: Request) {
     const until = Date.now() + waitMs;
     let touched = Date.now();
     for (;;) {
-      const job = await claimJob(worker.id, capabilities);
+      const job = await claimJob(worker.id, capabilities, input.jobTypes ?? LEGACY_JOB_TYPES);
       if (job) return Response.json({ job } satisfies ClaimResponse, { headers: { "cache-control": "no-store" } });
       if (Date.now() + POLL_MS > until || req.signal.aborted) break;
       await sleep(POLL_MS);

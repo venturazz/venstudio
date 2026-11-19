@@ -59,8 +59,13 @@ export interface EnrollResponse {
   token: string;
 }
 
+/** Latest worker release. Workers older than this are shown as out of date in the portal. */
+export const WORKER_VERSION = "0.2.0";
+
 export interface ClaimRequest {
   capabilities: Capability[];
+  /** Job types this worker's code can run. The portal never hands it any other type. */
+  jobTypes?: JobType[];
   mode: WorkerMode;
   version: string;
   /** Long-poll: the portal may hold the request up to this many seconds (max 25) waiting for a job. */

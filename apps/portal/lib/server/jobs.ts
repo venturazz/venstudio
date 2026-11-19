@@ -85,7 +85,9 @@ export async function reapExpiredLeases() {
   return rows.length;
 }
 
-export async function claimJob(workerId: string, capabilities: Capability[]): Promise<ClaimedJob | null> {
+export async function claimJob(workerId: string, capabilities: Capability[], jobTypes: string[]): Promise<ClaimedJob | null> {
+  const known = Object.keys(JOB_TYPES);
+  const types = jobTypes.filter((t) => known.includes(t));
   await reapExpiredLeases();
   const sql = db();
   const rows = await sql.begin(async (tx) => {
@@ -95,6 +97,7 @@ export async function claimJob(workerId: string, capabilities: Capability[]): Pr
         WHERE j.status = 'queued'
           AND j.run_after <= now()
           AND j.capability = ANY(${capabilities}::text[])
+          AND j.type = ANY(${types}::text[])
           AND (
             j.preferred_worker_id IS NULL
             OR j.preferred_worker_id = ${workerId}
