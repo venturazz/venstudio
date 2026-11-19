@@ -7,6 +7,9 @@ import { evaluateQcJob } from "./pipeline.ts";
 import { getTemplate } from "./templates.ts";
 import { synthesize } from "./tts.ts";
 import { generateImage } from "./executors/hermes-image.ts";
+import { generateRouterImage, routerImageModel } from "./executors/router-image.ts";
+import { getCapabilities } from "./capabilities.ts";
+import { missingCapabilityMessage, scanStateOf } from "../studio/capabilities.ts";
 import { createAgentTaskJob, createFetchAssetJob, findCc0Candidate } from "./executors/library.ts";
 import { ensureProvider, listProviderTerms, safeFileName, saveGeneratedAsset } from "./executors/persist.ts";
 import {
@@ -125,11 +128,16 @@ async function waitOnJob(orderId: string, jobId: string, executor: string): Prom
 type Produced = { kind: "done" } | { kind: "waiting" } | { kind: "failed"; reason: string };
 
 /**
- * Makes one shot's image along the fallback chain: Hermes image_gen (which walks its own provider chain), then a
- * CC0 file fetched by a worker job, then a Muse agent task when the owner switched those on.
+ * Makes one shot's image along the fallback chain: Hermes image_gen (which walks its own provider chain), then
+ * 9router images (only when 9router lists image models), then a CC0 file fetched by a worker job, then a Muse agent task when the owner switched those on.
  */
 async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
-  const chain = fallbackChain({ hermesConfigured: Boolean(env().HERMES_BASE_URL), museAgentTasks: env().MUSE_AGENT_TASKS === "1" });
+  const routerImage = await routerImageModel();
+  const chain = fallbackChain({
+    hermesConfigured: Boolean(env().HERMES_BASE_URL),
+    museAgentTasks: env().MUSE_AGENT_TASKS === "1",
+    routerImageAvailable: routerImage !== null,
+  });
   const reasons: string[] = [];
   const spec = order.spec;
   const ref = { workOrderId: order.id, runId: run.id, shotRef: order.shotRef, prompt: spec.prompt, channelId: run.channelId };
@@ -168,6 +176,32 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
         await finishOrder(order.id, saved.assetId, saved.provider, { executor: "hermes-image", model: img.model, hermesAsks: r.attempts, claim: order.attempts });
         return { kind: "done" };
       }
+    } else if (step === "router-image") {
+      const r = await generateRouterImage({ prompt: spec.prompt, format: run.config.format, note: spec.note || undefined });
+      if (!r.ok) {
+        reasons.push(`9router image: ${r.error}`);
+        continue;
+      }
+      const img = r.image;
+      const saved = await saveGeneratedAsset({
+        bytes: img.bytes,
+        name: safeFileName(order.shotRef, IMAGE_EXT[img.info.mime] ?? "png"),
+        contentType: img.info.mime,
+        kind: "image",
+        executor: "router-image",
+        title: `${order.shotRef} image`,
+        provider: img.provider,
+        model: img.model,
+        prompt: spec.prompt,
+        originUrl: img.originUrl,
+        runId: run.id,
+        workOrderId: order.id,
+        shotRef: order.shotRef,
+        channelId: run.channelId,
+        createdBy: null,
+      });
+      await finishOrder(order.id, saved.assetId, saved.provider, { executor: "router-image", model: img.model, via: "9router", claim: order.attempts });
+      return { kind: "done" };
     } else if (step === "library") {
       const found = await findCc0Candidate(spec.prompt);
       if (!found.ok) {
@@ -190,6 +224,11 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
         reasons.push(`Muse agent task: ${errorText(err)}`);
       }
     }
+  }
+  if (!chain.includes("hermes-image") && !chain.includes("router-image")) {
+    // Nothing that can make a picture was available. Say what is missing instead of only listing the fallbacks that failed.
+    const snap = await getCapabilities().catch(() => null);
+    reasons.unshift(missingCapabilityMessage("image", scanStateOf(snap)));
   }
   return { kind: "failed", reason: reasons.join(" | ").slice(0, 480) || "No image source is configured" };
 }
@@ -341,7 +380,7 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     name: safeFileName("narration", n.ext),
     contentType: n.mime,
     kind: "audio",
-    executor: n.provider === "kokoro" ? "kokoro" : "hermes-capcut",
+    executor: n.executor,
     title: `Narration (${n.provider})`,
     provider: n.provider,
     model: n.model,
@@ -366,6 +405,8 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     provider: saved.provider,
     voice: n.voice,
     model: n.model,
+    via: n.via,
+    skipped: n.skipped,
     voiceVerified: n.voiceVerified,
     narrationSec,
     scriptEstimateSec: estimate,

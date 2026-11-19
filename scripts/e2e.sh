@@ -115,6 +115,9 @@ echo "== migration 0009 created the production tables"
 [ "$(q "SELECT to_regclass('public.asset_providers') IS NOT NULL")" = "t" ] || fail "table asset_providers missing after migration 0009"
 [ "$(q "SELECT count(*) FROM asset_providers WHERE commercial_ok <> 'unknown'")" = "0" ] || fail "no provider may be cleared for commercial use by default"
 
+echo "== migration 0010 created the capability scan table"
+[ "$(q "SELECT to_regclass('public.capability_scans') IS NOT NULL")" = "t" ] || fail "table capability_scans missing after migration 0010"
+
 echo "== render-video renders generated stills and a WAV, then qc-video measures the result"
 STILLS="$WORK/stills"
 mkdir -p "$STILLS"

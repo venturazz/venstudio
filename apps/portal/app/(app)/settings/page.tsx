@@ -2,7 +2,9 @@ import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { Suspense } from "react";
 import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
-import { KokoroPanel } from "@/components/kokoro-panel.tsx";
+import { CapabilitiesPanel } from "@/components/capabilities-panel.tsx";
+import { VoicePanel } from "@/components/voice-panel.tsx";
+import { RouterImageNote } from "@/components/router-image-note.tsx";
 import { ProviderTerms } from "@/components/provider-terms.tsx";
 import { HermesPanel, HermesPanelFallback } from "@/components/hermes-panel.tsx";
 import { hasRole } from "@/lib/server/auth.ts";
@@ -95,22 +97,35 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Card>
 
         <Card>
-          <CardHeader title="Voice (Kokoro)" description="Primary narration voice. English first." />
+          <CardHeader title="Voice" description="Narration. The studio finds a Kokoro voice through 9router and Hermes by itself. English first." />
           <CardBody>
             <Suspense fallback={<p className="text-sm text-muted">Checking…</p>}>
-              <KokoroPanel canRecheck={hasRole(user.role, "editor")} />
+              <VoicePanel canTest={hasRole(user.role, "editor")} />
             </Suspense>
           </CardBody>
         </Card>
 
         {hasRole(user.role, "editor") && (
           <Card>
-            <CardHeader title="Image providers (Hermes)" description="Hermes makes each shot image with its image_gen chain." />
+            <CardHeader title="Image providers (Hermes)" description="Hermes makes each shot image with its image_gen chain. 9router images are the next fallback." />
             <CardBody>
+              <Suspense fallback={null}>
+                <RouterImageNote />
+              </Suspense>
               <TestImageForm />
             </CardBody>
           </Card>
         )}
+
+        <Card className="lg:col-span-2">
+          <CardHeader
+            title="Studio capabilities"
+            description="What Hermes and 9router can do for each production stage, found by asking them. Nothing to configure here."
+          />
+          <Suspense fallback={<p className="px-4 py-3 text-sm text-muted sm:px-5">Loading…</p>}>
+            <CapabilitiesPanel canScan={hasRole(user.role, "editor")} />
+          </Suspense>
+        </Card>
 
         {isOwner && (
           <Card className="lg:col-span-2">

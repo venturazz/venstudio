@@ -25,15 +25,15 @@ so Coolify reads the file again. Then fill in:
 | `POSTGRES_PASSWORD` | random | `openssl rand -hex 16` |
 | `ENCRYPTION_KEY` | random, **back it up** | `openssl rand -base64 32` (44 characters) or `openssl rand -hex 32` (64 characters) |
 | `SETUP_TOKEN` | random | `openssl rand -hex 16` |
-| `NINEROUTER_BASE_URL` | optional | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
-| `NINEROUTER_API_KEY` | optional | your 9router key |
-| `KOKORO_BASE_URL` | optional | Address of your Kokoro server on the coolify network, e.g. `http://kokoro:8880` (see below). Empty means narration is not configured |
-| `KOKORO_API_KEY` | optional | Only if your Kokoro server asks for a key |
-| `KOKORO_MODEL` | optional | `kokoro` |
-| `KOKORO_VOICE` | optional | `af_heart` (a US English voice) |
-| `TTS_BACKUP` | optional | `hermes-capcut` (default): if Kokoro cannot do a language or is down, Hermes runs its CapCut workflow. `off` disables the backup |
-| `HERMES_IMAGE_PROVIDER_ORDER` | optional | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. Also the list of provider names the portal records as is. Any other name, and every name when this is empty, is stored as `unlisted-<name>` and needs owner confirmation in Settings. While this is unset, confirming `cloudflare` in Settings does not clear `unlisted-cloudflare`; confirm that name too |
-| `HERMES_MEDIA_ORIGINS` | optional | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only. The first request may use plain http and private hosts, so list only origins you control |
+| `NINEROUTER_BASE_URL` | recommended (with the key) | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
+| `NINEROUTER_API_KEY` | recommended | your 9router key |
+| `KOKORO_BASE_URL` | optional override | Leave empty. The studio finds Kokoro through 9router and Hermes using `NINEROUTER_*` and `HERMES_*`. Set it (e.g. `http://kokoro:8880`, see below) only to force your own Kokoro server to be tried first |
+| `KOKORO_API_KEY` | optional override | Only if your Kokoro server asks for a key |
+| `KOKORO_MODEL` | optional override | `kokoro` |
+| `KOKORO_VOICE` | optional override | `af_heart` (a US English voice). Also picks the English voice among the Kokoro voices 9router lists |
+| `TTS_BACKUP` | optional | `hermes-capcut` (default): the last voice fallback is Hermes' CapCut workflow. Voice order: your Kokoro override (if set), Kokoro through 9router, Hermes asked for Kokoro, then CapCut. `off` removes the CapCut step |
+| `HERMES_IMAGE_PROVIDER_ORDER` | optional override | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. Also the list of provider names the portal records as is. Any other name, and every name when this is empty, is stored as `unlisted-<name>` and needs owner confirmation in Settings. While this is unset, confirming `cloudflare` in Settings does not clear `unlisted-cloudflare`; confirm that name too |
+| `HERMES_MEDIA_ORIGINS` | optional override | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only. The first request may use plain http and private hosts, so list only origins you control |
 | `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows the unverified Muse agent task fallback |
 
 ### Kokoro server (example, verify before relying on it)
@@ -56,6 +56,9 @@ networks:
 Give it no public domain. The portal reaches it at `http://kokoro:8880` (the usual Kokoro-FastAPI port; verify). Only
 English voices are treated as verified. Other languages show a warning, and the portal asks Hermes to use CapCut when Kokoro does not cover a language.
 
+Only `NINEROUTER_*` and `HERMES_*` (plus the four required rows above) are recommended. Without 9router the studio still works through Hermes (voice falls to Hermes Kokoro, then CapCut; images go to Hermes `image_gen`). Everything else in the table is an
+optional override: the studio finds Kokoro, image models and Hermes skills by itself.
+
 Run the `openssl` commands in **Servers → your server → Terminal** (or over SSH). If the list still doesn't show a
 variable, add it yourself with **+ Add** using exactly the name above.
 
@@ -77,6 +80,9 @@ Coolify's Traefik proxy stops requests after 60 seconds by default. In **Servers
 1. **Deploy**. `https://studio.yourdomain.com/api/health` should show `{"ok":true}`.
 2. Open `/setup`, paste `SETUP_TOKEN`, create your account, then turn on two-factor in **Settings**.
    The setup page locks once the owner exists.
+3. Studio capabilities: open **Settings**, press **Scan now** on the Studio capabilities card (it can take up to two
+   minutes), and read the map. Voice and Images should show an executor. Then confirm each provider's terms under Asset
+   providers once the first assets exist.
 
 ## Troubleshooting
 

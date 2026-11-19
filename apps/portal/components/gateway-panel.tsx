@@ -1,11 +1,11 @@
-import { gatewayStatus, SLOW_MS } from "@/lib/server/ai-gateway.ts";
+import { gatewayStatusForPage, SLOW_MS } from "@/lib/server/ai-gateway.ts";
 import { Alert, Badge } from "./ui.tsx";
-import { SubmitButton } from "./client.tsx";
+import { AutoRefresh, SubmitButton } from "./client.tsx";
 import { recheckGateway } from "@/app/(app)/gateway-actions.ts";
 
 /** Async server component; wrap in <Suspense> so pages render without waiting for 9router. */
 export async function GatewayPanel({ showModels = false, canRecheck = false }: { showModels?: boolean; canRecheck?: boolean }) {
-  const g = await gatewayStatus();
+  const g = await gatewayStatusForPage();
   const recheck = canRecheck && g.configured && (
     <form action={recheckGateway}>
       <SubmitButton className="min-h-8 text-xs" pendingLabel="Checking…">
@@ -19,6 +19,14 @@ export async function GatewayPanel({ showModels = false, canRecheck = false }: {
       <p className="text-sm text-muted">
         Not configured. Set <code className="font-mono text-xs">NINEROUTER_BASE_URL</code> and{" "}
         <code className="font-mono text-xs">NINEROUTER_API_KEY</code>.
+      </p>
+    );
+  }
+  if (g.pending) {
+    return (
+      <p className="text-sm text-muted">
+        Checking 9router… It is slow to answer. This updates by itself.
+        <AutoRefresh />
       </p>
     );
   }

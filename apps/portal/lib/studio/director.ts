@@ -324,6 +324,19 @@ function templateLines(ctx: DirectorContext): string[] {
   ];
 }
 
+export const MAX_SKILL_HINTS = 5;
+const MAX_SKILL_HINT_CHARS = 80;
+
+/** A DATA block naming skills the owner has, or nothing. Names only, at most 5, each cut short. */
+function skillBlock(hints: readonly string[] | undefined): string {
+  const names = (hints ?? [])
+    .map((h) => h.replace(/\s+/g, " ").trim().slice(0, MAX_SKILL_HINT_CHARS))
+    .filter(Boolean)
+    .slice(0, MAX_SKILL_HINTS);
+  if (names.length === 0) return "";
+  return dataBlock("skills the owner has, use them when they fit", names.join(", "), MAX_SKILL_HINTS * (MAX_SKILL_HINT_CHARS + 2));
+}
+
 function channelLines(ctx: DirectorContext): string[] {
   return [
     `Format: ${ctx.format}, about ${ctx.durationSec} seconds, language code ${ctx.language}.`,
@@ -366,7 +379,7 @@ export function ideaPrompt(ctx: DirectorContext, retryHint?: string): ChatMessag
   ];
 }
 
-export function researchPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "hook" | "angle">, retryHint?: string): ChatMessage[] {
+export function researchPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "hook" | "angle">, retryHint?: string, skillHints?: string[]): ChatMessage[] {
   const needs = ctx.themeId ? requiresSources(ctx.themeId, []) : false;
   return [
     system("Collect research notes for the chosen video idea."),
@@ -381,6 +394,7 @@ export function researchPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | 
         'Schema: {"notes":[{"claim":string,"sourceUrl":string,"sourced":boolean,"summary":string}]}',
         dataBlock("chosen idea", `Title: ${idea.title}\nHook: ${idea.hook}\nAngle: ${idea.angle}`, 1500),
         dataBlock("owner plan", ctx.plan, MAX_PLAN_CHARS),
+        skillBlock(skillHints),
         retryHint ? dataBlock("owner revision note", retryHint, MAX_NOTE_CHARS) : "",
       ]
         .filter((l) => l !== "")
@@ -389,7 +403,13 @@ export function researchPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | 
   ];
 }
 
-export function scriptPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "hook" | "angle">, research: ResearchNote[], retryHint?: string): ChatMessage[] {
+export function scriptPrompt(
+  ctx: DirectorContext,
+  idea: Pick<Idea, "title" | "hook" | "angle">,
+  research: ResearchNote[],
+  retryHint?: string,
+  skillHints?: string[],
+): ChatMessage[] {
   const wpm = wordsPerMinuteFor(ctx.template);
   const target = Math.round((wpm * ctx.durationSec) / 60);
   const firstWindow = ctx.format === "short" ? 3 : 30;
@@ -411,6 +431,7 @@ export function scriptPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "h
         dataBlock("chosen idea", `Title: ${idea.title}\nHook: ${idea.hook}\nAngle: ${idea.angle}`, 1500),
         dataBlock("research notes", notes, MAX_RESEARCH_PROMPT_CHARS),
         dataBlock("owner plan", ctx.plan, MAX_PLAN_CHARS),
+        skillBlock(skillHints),
         retryHint ? dataBlock("owner revision note", retryHint, MAX_NOTE_CHARS) : "",
       ]
         .filter((l) => l !== "")
@@ -419,7 +440,7 @@ export function scriptPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "h
   ];
 }
 
-export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint?: string): ChatMessage[] {
+export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint?: string, skillHints?: string[]): ChatMessage[] {
   const t = ctx.template;
   const maxShot = t ? t.pacing.maxShotSeconds : 6;
   const narrationSec = Math.round((script.split(/\s+/).filter(Boolean).length / wordsPerMinuteFor(t)) * 60);
@@ -438,6 +459,7 @@ export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint
         ...templateLines(ctx),
         'Schema: {"shots":[{"beatRole":string,"seconds":number,"description":string,"imagePrompt":string}]}',
         dataBlock("script", script, MAX_SCRIPT_CHARS),
+        skillBlock(skillHints),
         retryHint ? dataBlock("owner revision note", retryHint, MAX_NOTE_CHARS) : "",
       ]
         .filter((l) => l !== "")
