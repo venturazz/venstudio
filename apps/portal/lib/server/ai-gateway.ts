@@ -36,7 +36,12 @@ function headers(key?: string): HeadersInit {
 }
 
 /** Turns fetch failures into a reason and a fix the owner can act on. */
-export function explainFetchError(err: unknown, url: string): { error: string; hint: string } {
+export function explainFetchError(
+  err: unknown,
+  url: string,
+  service: { name: string; internal: string } = { name: "9router", internal: "http://<9router container name>:20128" },
+  timeoutMs = STATUS_TIMEOUT_MS,
+): { error: string; hint: string } {
   const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
   const code = e?.cause?.code ?? "";
   const host = (() => {
@@ -48,20 +53,23 @@ export function explainFetchError(err: unknown, url: string): { error: string; h
   })();
   if (e?.name === "TimeoutError" || e?.name === "AbortError" || code === "UND_ERR_CONNECT_TIMEOUT" || code === "ETIMEDOUT") {
     return {
-      error: `No answer from ${host} within ${STATUS_TIMEOUT_MS / 1000} s`,
+      error: `No answer from ${host} within ${timeoutMs / 1000} s`,
       hint:
-        "The portal container can't reach that address. If 9router runs on the same server, use its internal address " +
-        "instead of the public domain (Coolify: http://<9router container name>:20128 with both apps on the same network, " +
-        "or http://host.docker.internal:20128). Also check a firewall or Cloudflare rule isn't blocking the server itself.",
+        `The portal container can't reach that address. If ${service.name} runs on the same server, use its internal ` +
+        `address instead of the public domain (${service.internal}, with both apps on the coolify network). ` +
+        "Also check a firewall or Cloudflare rule isn't blocking the server itself.",
     };
   }
   if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
-    return { error: `The name ${host} doesn't resolve`, hint: "Check the spelling of NINEROUTER_BASE_URL and its DNS record." };
+    return {
+      error: `The name ${host} doesn't resolve`,
+      hint: `Check the spelling. A container name only resolves when ${service.name} and VenStudio share a Docker network (coolify).`,
+    };
   }
   if (code === "ECONNREFUSED") {
     return {
       error: `${host} refused the connection`,
-      hint: "9router isn't listening on that address and port. If it only listens on 127.0.0.1, containers can't reach it.",
+      hint: `${service.name} isn't listening on that address and port. If it only listens on 127.0.0.1, containers can't reach it.`,
     };
   }
   if (code.startsWith("ERR_TLS") || code.includes("CERT") || /certificate/i.test(e?.cause?.message ?? "")) {

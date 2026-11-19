@@ -40,6 +40,8 @@ services:
       MAX_ARTIFACT_MB: ${MAX_ARTIFACT_MB:-2048}
       NINEROUTER_BASE_URL: ${NINEROUTER_BASE_URL:-}
       NINEROUTER_API_KEY: ${NINEROUTER_API_KEY:-}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-}
+      HERMES_API_KEY: ${HERMES_API_KEY:-}
     volumes:
       - artifacts:/data/artifacts
     networks: [internal]

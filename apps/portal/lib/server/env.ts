@@ -16,6 +16,8 @@ const schema = z.object({
   WORKER_DIR: z.string().default("../worker"),
   NINEROUTER_BASE_URL: optional(z.string().url()),
   NINEROUTER_API_KEY: optional(z.string()),
+  HERMES_BASE_URL: optional(z.string().url()),
+  HERMES_API_KEY: optional(z.string()),
 });
 
 export type Env = z.infer<typeof schema>;

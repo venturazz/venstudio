@@ -6,6 +6,7 @@ import { JOB_TYPES, reapExpiredLeases } from "@/lib/server/jobs.ts";
 import { presence } from "@/lib/server/workers.ts";
 import { Suspense } from "react";
 import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
+import { HermesPanel, HermesPanelFallback } from "@/components/hermes-panel.tsx";
 import { Alert, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, Stat, timeAgo } from "@/components/ui.tsx";
 import { JobStatus, WorkerPresence } from "@/components/status.tsx";
 
@@ -129,6 +130,15 @@ export default async function Overview({ searchParams }: { searchParams: Promise
                 ))}
               </ul>
             )}
+          </Card>
+
+          <Card>
+            <CardHeader title="Brain (Hermes)" />
+            <CardBody>
+              <Suspense fallback={<HermesPanelFallback />}>
+                <HermesPanel />
+              </Suspense>
+            </CardBody>
           </Card>
 
           <Card>

@@ -20,6 +20,33 @@ mkdirSync(SHOTS, { recursive: true });
 const EMAIL = "owner@venstudio.test";
 const PASSWORD = "correct horse battery staple";
 
+// Fake Hermes API server (same shapes as the real /v1/capabilities and /v1/skills).
+const { createServer } = await import("node:http");
+const HERMES_KEY = process.env.HERMES_API_KEY ?? "test-hermes-key";
+const fakeHermes = createServer((req, res) => {
+  const json = (code, body) => {
+    res.writeHead(code, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  if (req.headers.authorization !== `Bearer ${HERMES_KEY}`) return json(401, { error: { code: "gateway_auth_failed" } });
+  if (req.url === "/v1/capabilities") {
+    return json(200, {
+      object: "hermes.api_server.capabilities",
+      platform: "hermes-agent",
+      features: { chat_completions: true, run_submission: true, run_events_sse: true, run_stop: true },
+    });
+  }
+  if (req.url === "/v1/skills") {
+    return json(200, [
+      { name: "write-story-script", description: "Writes a short story script", category: "video" },
+      { name: "consistent-character-image", description: "Image workflow with a fixed character", category: "image" },
+      { name: "deep-research", description: "Researches a topic with sources", category: "research" },
+    ]);
+  }
+  json(404, { error: "not found" });
+});
+await new Promise((r) => fakeHermes.listen(Number(process.env.FAKE_HERMES_PORT ?? 3299), "127.0.0.1", r));
+
 const browser = await chromium.launch();
 const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
 const page = await desktop.newPage();
@@ -159,6 +186,12 @@ try {
   await page.getByText("Unreachable").waitFor({ timeout: 20_000 });
   await page.getByText("internal address").first().waitFor();
   await page.getByText("Server health").waitFor();
+
+  step("Hermes connection shows features and skills");
+  await page.getByText("3 skills").first().waitFor({ timeout: 20_000 });
+  await page.getByText("Background runs").waitFor();
+  await page.locator("summary", { hasText: "video" }).click();
+  await page.getByText("write-story-script").waitFor();
   await shot("06b-settings-gateway-down");
   await page.goto(`${APP}/`);
   await shot("07-overview-desktop");
@@ -195,4 +228,5 @@ try {
   throw err;
 } finally {
   await browser.close();
+  fakeHermes.close();
 }

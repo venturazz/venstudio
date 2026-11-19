@@ -2,6 +2,7 @@ import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { Suspense } from "react";
 import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
+import { HermesPanel, HermesPanelFallback } from "@/components/hermes-panel.tsx";
 import { hasRole } from "@/lib/server/auth.ts";
 import { serverHealth } from "@/lib/server/diagnostics.ts";
 import { Alert, Badge, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@/components/ui.tsx";
@@ -70,7 +71,19 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Card>
 
         <Card>
-          <CardHeader title="AI gateway (9router)" description="Used for scripts, planning, images and TTS." />
+          <CardHeader
+            title="Brain (Hermes)"
+            description="Runs your skills and workflows: research, scripts, storyboards, image workflows."
+          />
+          <CardBody>
+            <Suspense fallback={<HermesPanelFallback />}>
+              <HermesPanel detailed canRecheck={hasRole(user.role, "editor")} />
+            </Suspense>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader title="AI gateway (9router)" description="Direct model calls: voice and quick formatting tasks." />
           <CardBody>
             <Suspense fallback={<GatewayPanelFallback />}>
               <GatewayPanel showModels canRecheck={hasRole(user.role, "editor")} />
@@ -133,6 +146,10 @@ async function HealthPanel() {
     ["Portal memory", `${h.processRssMb} MB`],
     ["Video storage free", h.artifactsFreeGb === null ? "unknown" : `${h.artifactsFreeGb} of ${h.artifactsTotalGb} GB`],
     ["Server uptime", `${h.uptimeHours} h`],
+    [
+      "Private ports on public IP",
+      h.exposureChecked === null ? "not checked" : h.exposed.length === 0 ? `closed (${h.exposureChecked})` : `${h.exposed.length} OPEN`,
+    ],
   ];
   return (
     <div className="space-y-3 text-sm">
