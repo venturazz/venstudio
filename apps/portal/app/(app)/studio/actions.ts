@@ -1,11 +1,15 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/lib/server/auth.ts";
+import { db } from "@/lib/server/db.ts";
 import { audit } from "@/lib/server/audit.ts";
 import { getAssetRow, VIDEO_KINDS } from "@/lib/server/assets.ts";
-import { insertProduction } from "@/lib/server/productions.ts";
+import { getProduction, insertProduction, setPreviewJob } from "@/lib/server/productions.ts";
+import { createJob } from "@/lib/server/jobs.ts";
+import { previewSpec } from "@/lib/studio/preview.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { fail, str, valuesFrom, type FormValues } from "@/lib/form.ts";
 import { buildPlan, detectTheme, suggestStyles, type ProductionPlan } from "@/lib/studio/planner.ts";
@@ -117,3 +121,25 @@ export async function studioAction(_prev: StudioState, fd: FormData): Promise<St
   return { plan: built.plan, saved: id, values };
 }
 
+
+/** Queues a test render for a saved production, then opens the job so its progress and video can be checked. */
+export async function queuePreviewAction(productionId: string) {
+  const user = await requireUser("editor");
+  if (!z.uuid().safeParse(productionId).success) return;
+  const production = await getProduction(productionId);
+  if (!production) return;
+  const spec = previewSpec(production.plan, production.brief);
+  // The newest font in the library gives the cards real text; without one the render still runs, without text.
+  const [font] = await db()`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
+  const fontAssetId = font ? (font.id as string) : null;
+  const jobId = await createJob({
+    type: "render-preview",
+    payload: { ...spec, productionId, fontAssetId, inputs: fontAssetId ? [fontAssetId] : [] },
+    channelId: production.channel_id,
+    createdBy: user.id,
+  });
+  await setPreviewJob(productionId, jobId);
+  await audit({ userId: user.id, action: "production.preview", target: productionId, detail: { jobId }, ip: (await requestMeta()).ip });
+  revalidatePath("/studio");
+  redirect(`/jobs/${jobId}`);
+}

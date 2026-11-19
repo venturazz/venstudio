@@ -92,7 +92,7 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
             <CardBody>
               <JobForm
                 types={Object.entries(JOB_TYPES)
-                  .filter(([id]) => id !== "analyze-video") // started from Assets, which supplies its input
+                  .filter(([id]) => id === "echo" || id === "smoke-test") // the others are started from Assets and Studio
                   .map(([id, t]) => ({ id, label: t.label, description: t.description }))}
                 channels={channels.map((c) => ({ id: c.id, name: c.name }))}
               />

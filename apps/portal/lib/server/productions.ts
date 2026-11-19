@@ -32,10 +32,26 @@ export async function insertProduction(input: NewProduction): Promise<string> {
   return row.id as string;
 }
 
+export async function getProduction(id: string) {
+  const [row] = await db()`
+    SELECT id, title, brief, channel_id, format, plan, preview_job_id FROM productions WHERE id = ${id}
+  `;
+  return row as
+    | { id: string; title: string; brief: string; channel_id: string | null; format: Format; plan: ProductionPlan; preview_job_id: string | null }
+    | undefined;
+}
+
+export async function setPreviewJob(id: string, jobId: string) {
+  await db()`UPDATE productions SET preview_job_id = ${jobId}, status = 'in_progress', updated_at = now() WHERE id = ${id}`;
+}
+
 export async function listProductions(limit = 30) {
   return db()`
-    SELECT p.id, p.title, p.format, p.style_id, p.status, p.plan, p.created_at, c.name AS channel
-    FROM productions p LEFT JOIN channels c ON c.id = p.channel_id
+    SELECT p.id, p.title, p.format, p.style_id, p.status, p.plan, p.created_at, p.preview_job_id,
+           c.name AS channel, j.status AS preview_status
+    FROM productions p
+    LEFT JOIN channels c ON c.id = p.channel_id
+    LEFT JOIN jobs j ON j.id = p.preview_job_id
     ORDER BY p.created_at DESC
     LIMIT ${limit}
   `;

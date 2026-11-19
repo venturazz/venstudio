@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,7 @@ import {
   parseProbe,
   parseShowinfoTimes,
   summarizeAnalysis,
+  wrapText,
 } from "./venstudio-worker.ts";
 
 /** In-memory fake of the portal's worker API. */
@@ -348,4 +350,58 @@ test("analyze-video refuses a job without exactly one input asset", async (t) =>
   portal.state.queue.push({ id: "33333333-3333-4444-8555-666666666666", type: "analyze-video", payload: { inputs: [] } });
   await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
   assert.equal(portal.state.failed.get("33333333-3333-4444-8555-666666666666")?.retryable, false);
+});
+
+test("wrapText keeps lines within the limit and drops nothing", () => {
+  assert.equal(wrapText("a b c", 10), "a b c");
+  const out = wrapText("The rise of the Roman roads across three continents and their lasting legacy", 20).split("\n");
+  assert.ok(out.every((l) => l.length <= 20));
+  assert.equal(out.join(" "), "The rise of the Roman roads across three continents and their lasting legacy");
+});
+
+test("render-preview renders placeholder cards and uploads preview.mp4", { skip: !hasFfmpeg && "ffmpeg is not installed" }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Preview worker" });
+  const jobId = "44444444-3333-4444-8555-666666666666";
+  portal.state.queue.push({
+    id: jobId,
+    type: "render-preview",
+    payload: { cards: ["Roman roads: a test card", "History · Educate"], durationSec: 5, width: 320, height: 568, fps: 15, fontAssetId: null, inputs: [] },
+  });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  const result = portal.state.completed.get(jobId) as Record<string, unknown>;
+  assert.ok(result, "render completed");
+  assert.equal(result.cards, 2);
+  assert.equal(result.textRendered, false);
+  assert.equal(result.durationSec, 5);
+  assert.ok((portal.state.artifacts.get(`${jobId}/preview.mp4`)?.bytes ?? 0) > 1000, "preview.mp4 uploaded");
+});
+
+const DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+test("render-preview draws the text when a font asset is supplied", { skip: !hasFfmpeg || !existsSync(DEJAVU) ? "needs ffmpeg and DejaVu Sans" : false }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Font worker" });
+  const fontId = "55555555-3333-4444-8555-666666666666";
+  const jobId = "66666666-3333-4444-8555-666666666666";
+  portal.state.inputs.set(fontId, readFileSync(DEJAVU));
+  portal.state.queue.push({
+    id: jobId,
+    type: "render-preview",
+    payload: { cards: ["Text on a card"], durationSec: 5, width: 320, height: 568, fps: 15, fontAssetId: fontId, inputs: [fontId] },
+  });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  const result = portal.state.completed.get(jobId) as Record<string, unknown>;
+  assert.equal(result?.textRendered, true);
 });

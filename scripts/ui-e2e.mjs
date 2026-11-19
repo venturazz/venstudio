@@ -209,6 +209,17 @@ try {
   await page.getByText("Saved as a planned production").waitFor();
   await shot("13-studio-desktop");
 
+  step("studio: queue a test render for the saved production, let the worker run it, see the video");
+  await page.goto(`${APP}/studio`);
+  await page.getByRole("button", { name: "Queue test render" }).first().click();
+  await page.waitForURL(/\/jobs\/[0-9a-f-]{36}$/);
+  runWorker([`${OUT}/worker/run.sh`, "tick"]);
+  await page.goto(page.url());
+  await page.getByText("Test render (placeholder cards)").first().waitFor();
+  await page.getByText("Done").first().waitFor({ timeout: 30_000 });
+  await page.locator("video").first().waitFor();
+  await shot("13b-test-render-desktop");
+
   step("assets: upload a reference video with its licence");
   const refPath = path.join(OUT, "reference.mp4");
   execFileSync("ffmpeg", [

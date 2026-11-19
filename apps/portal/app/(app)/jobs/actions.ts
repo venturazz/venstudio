@@ -11,7 +11,8 @@ import { cancelJob, createJob, JOB_TYPES, retryJob, URGENT_PRIORITY } from "@/li
 import { fail, str, type FormState } from "@/lib/form.ts";
 
 const schema = z.object({
-  type: z.enum(Object.keys(JOB_TYPES) as [JobType, ...JobType[]]),
+  // Only these can be started by hand. Analysis and test renders are started from Assets and Studio.
+  type: z.enum(["echo", "smoke-test"] as [JobType, ...JobType[]]),
   channelId: z.union([z.uuid(), z.literal("")]),
   seconds: z.coerce.number().int().min(1).max(60),
 });

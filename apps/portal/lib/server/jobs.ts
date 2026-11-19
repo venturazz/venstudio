@@ -24,6 +24,11 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
     label: "Render smoke test",
     description: "Renders a 5-second 1080x1920 test clip with ffmpeg and uploads it. Measures render speed.",
   },
+  "render-preview": {
+    capability: "ffmpeg",
+    label: "Test render (placeholder cards)",
+    description: "Renders a short test video from a production plan: text cards and a test tone. Checks the whole render path.",
+  },
   "analyze-video": {
     capability: "ffmpeg",
     label: "Analyze reference video",

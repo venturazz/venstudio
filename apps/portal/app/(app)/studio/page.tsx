@@ -1,14 +1,24 @@
+import Link from "next/link";
 import { requireUser, hasRole } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { listProductions } from "@/lib/server/productions.ts";
 import { Badge, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, timeAgo } from "@/components/ui.tsx";
+import { SubmitButton } from "@/components/client.tsx";
 import type { ProductionPlan } from "@/lib/studio/planner.ts";
-import { PlanView, StudioForm } from "./studio-form.tsx";
 import { THEMES } from "@/lib/studio/catalog.ts";
-
-const THEME_LABEL: Record<string, string> = Object.fromEntries(THEMES.map((t) => [t.id, t.label]));
+import { PlanView, StudioForm } from "./studio-form.tsx";
+import { queuePreviewAction } from "./actions.ts";
 
 export const metadata = { title: "Studio" };
+
+const THEME_LABEL: Record<string, string> = Object.fromEntries(THEMES.map((t) => [t.id, t.label]));
+const JOB_STATUS: Record<string, { tone: "neutral" | "ok" | "warn" | "danger" | "info"; label: string }> = {
+  queued: { tone: "neutral", label: "queued" },
+  running: { tone: "info", label: "rendering" },
+  succeeded: { tone: "ok", label: "done" },
+  failed: { tone: "danger", label: "failed" },
+  cancelled: { tone: "warn", label: "cancelled" },
+};
 
 export default async function StudioPage() {
   const user = await requireUser();
@@ -23,7 +33,7 @@ export default async function StudioPage() {
     <>
       <PageHeader
         title="Studio"
-        description="Pick a format and a style, describe the video, and preview its plan. Nothing runs until you save and its workers are connected."
+        description="Pick a format and a style, describe the video, and preview its plan. Then queue a test render to check the whole path."
         actions={
           <LinkButton href="/studio/styles" variant="secondary">
             Style library
@@ -32,10 +42,16 @@ export default async function StudioPage() {
       />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card>
-          <CardHeader title="New production" description="Planning only for now. Stages marked Runs now can run today." />
+          <CardHeader title="New production" description="Planning only for now. Test renders check the path end to end." />
           <CardBody>
             {canEdit ? (
-              <StudioForm channels={channels.map((c) => ({ id: c.id, label: c.category ? `${c.name} · ${THEME_LABEL[c.category] ?? c.category}` : `${c.name} · category not set` }))} references={references.map((r) => ({ id: r.id, title: r.title }))} />
+              <StudioForm
+                channels={channels.map((c) => ({
+                  id: c.id,
+                  label: c.category ? `${c.name} · ${THEME_LABEL[c.category] ?? c.category}` : `${c.name} · category not set`,
+                }))}
+                references={references.map((r) => ({ id: r.id, title: r.title }))}
+              />
             ) : (
               <p className="text-sm text-muted">You have view-only access. Ask an editor to create productions.</p>
             )}
@@ -50,8 +66,9 @@ export default async function StudioPage() {
             <ul className="divide-y divide-border">
               {productions.map((p) => {
                 const plan = p.plan as ProductionPlan;
+                const job = JOB_STATUS[p.preview_status ?? ""];
                 return (
-                  <li key={p.id} className="px-4 py-3 sm:px-5">
+                  <li key={p.id} className="space-y-3 px-4 py-3 sm:px-5">
                     <details>
                       <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
                         <span className="min-w-0">
@@ -68,6 +85,21 @@ export default async function StudioPage() {
                         </div>
                       )}
                     </details>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {p.preview_job_id && (
+                        <Link href={`/jobs/${p.preview_job_id}`} className="inline-flex items-center gap-2 text-xs">
+                          <Badge tone={job?.tone ?? "neutral"}>Test render: {job?.label ?? "queued"}</Badge>
+                          <span className="text-accent underline-offset-2 hover:underline">open</span>
+                        </Link>
+                      )}
+                      {canEdit && (
+                        <form action={queuePreviewAction.bind(null, p.id)}>
+                          <SubmitButton className="min-h-8 text-xs" pendingLabel="Queuing…">
+                            {p.preview_job_id ? "Queue another test render" : "Queue test render"}
+                          </SubmitButton>
+                        </form>
+                      )}
+                    </div>
                   </li>
                 );
               })}

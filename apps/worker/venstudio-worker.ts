@@ -401,6 +401,25 @@ export function runCapture(cmd: string, args: string[], signal: AbortSignal): Pr
   });
 }
 
+/** Wraps text to lines of at most maxChars characters (at most 8 lines). Newlines count as spaces. */
+export function wrapText(text: string, maxChars: number): string {
+  const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (const w of words) {
+    if (line && `${line} ${w}`.length > maxChars) {
+      lines.push(line);
+      line = w;
+    } else {
+      line = line ? `${line} ${w}` : w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 8).join("\n");
+}
+
+const CARD_COLORS = ["0x1d3557", "0x2a9d8f", "0x264653", "0x457b9d", "0x6d597a"];
+
 export const handlers: Record<string, Handler> = {
   async echo(ctx) {
     ctx.progress(0.5, "Collecting environment");
@@ -459,6 +478,69 @@ export const handlers: Record<string, Handler> = {
       width: probe.width,
       height: probe.height,
       fps: probe.fps,
+    };
+  },
+
+  async "render-preview"(ctx) {
+    const p = ctx.job.payload;
+    const cards = Array.isArray(p.cards) ? p.cards.filter((c): c is string => typeof c === "string" && c.trim().length > 0).slice(0, 8) : [];
+    if (cards.length === 0) throw new NonRetryableError("render-preview needs at least one card of text");
+    const durationSec = clampInt(p.durationSec, 5, 60, 20);
+    const width = clampInt(p.width, 320, 3840, 1080) & ~1;
+    const height = clampInt(p.height, 320, 3840, 1920) & ~1;
+    const fps = clampInt(p.fps, 1, 60, 30);
+    const fontAssetId = typeof p.fontAssetId === "string" && /^[0-9a-f-]{36}$/i.test(p.fontAssetId) ? p.fontAssetId : null;
+
+    // Text needs a font. Without one the cards are plain colour and the result says so.
+    const textRendered = fontAssetId !== null;
+    if (fontAssetId) {
+      ctx.progress(0.05, "Downloading font");
+      if (!(await stat(path.join(ctx.workDir, "font.ttf")).catch(() => null))) {
+        await ctx.download(fontAssetId, path.join(ctx.workDir, "font.ttf"));
+      }
+    }
+    const segment = durationSec / cards.length;
+    const fontSize = Math.round(Math.min(width, height) / 16);
+    const maxChars = Math.max(12, Math.floor(width / (fontSize * 0.55)));
+    const chains: string[] = [];
+    for (let i = 0; i < cards.length; i++) {
+      let chain = `color=c=${CARD_COLORS[i % CARD_COLORS.length]}:s=${width}x${height}:d=${segment.toFixed(3)}:r=${fps},format=yuv420p`;
+      if (textRendered) {
+        const file = `card${i}.txt`;
+        await writeFile(path.join(ctx.workDir, file), wrapText(cards[i], maxChars), "utf8");
+        chain += `,drawtext=fontfile=font.ttf:textfile=${file}:fontcolor=white:fontsize=${fontSize}:line_spacing=${Math.round(fontSize / 3)}:x=(w-text_w)/2:y=(h-text_h)/2`;
+      }
+      chains.push(`${chain}[v${i}]`);
+    }
+    const concat = `${cards.map((_, i) => `[v${i}]`).join("")}concat=n=${cards.length}:v=1:a=0[v]`;
+    const audio = `sine=frequency=220:sample_rate=48000:duration=${durationSec},volume=0.08[a]`;
+    const filter = [...chains, concat, audio].join(";");
+
+    ctx.progress(0.1, "Rendering cards");
+    const started = Date.now();
+    await runFfmpeg(
+      ["-y", "-hide_banner", "-loglevel", "error", "-filter_complex", filter, "-map", "[v]", "-map", "[a]", "-t", String(durationSec),
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+        "-progress", "pipe:1", "-nostats", "preview.part.mp4"],
+      durationSec,
+      (f) => ctx.progress(0.1 + f * 0.8, `Rendering ${Math.round(f * 100)}%`),
+      ctx.signal,
+      ctx.workDir,
+    );
+    const out = path.join(ctx.workDir, "preview.mp4");
+    await rename(path.join(ctx.workDir, "preview.part.mp4"), out);
+    const renderSeconds = (Date.now() - started) / 1000;
+    const up = await ctx.upload("preview.mp4", out, "video/mp4");
+    return {
+      durationSec,
+      width,
+      height,
+      fps,
+      cards: cards.length,
+      textRendered,
+      renderSeconds: Math.round(renderSeconds * 10) / 10,
+      bytes: up.bytes,
+      sha256: up.sha256,
     };
   },
 
@@ -522,9 +604,10 @@ export function runFfmpeg(
   durationSeconds: number,
   onProgress: (fraction: number) => void,
   signal: AbortSignal,
+  cwd?: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.FFMPEG_PATH ?? "ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.env.FFMPEG_PATH ?? "ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"], cwd });
     let stderr = "";
     let lastReport = 0;
     const onAbort = () => child.kill("SIGTERM");
