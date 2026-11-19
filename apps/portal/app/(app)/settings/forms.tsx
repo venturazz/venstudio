@@ -88,7 +88,7 @@ export function TotpDisable() {
       <p className="text-sm text-muted">Two-factor is on. Enter your password to turn it off.</p>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Input name="password" type="password" autoComplete="current-password" required aria-label="Password" />
-        <SubmitButton variant="danger" pendingLabel="Turning off…">
+        <SubmitButton variant="danger" className="shrink-0 whitespace-nowrap" pendingLabel="Turning off…">
           Turn off
         </SubmitButton>
       </div>
