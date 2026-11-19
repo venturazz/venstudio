@@ -1,8 +1,7 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useState, useTransition, type FormEvent } from "react";
 import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.tsx";
-import { SubmitButton } from "@/components/client.tsx";
 import {
   FAMILY_LABELS,
   STYLES,
@@ -89,7 +88,8 @@ export function StudioForm({
   channels: Array<{ id: string; name: string }>;
   references: Array<{ id: string; title: string }>;
 }) {
-  const [state, action] = useActionState(studioAction, undefined);
+  const [state, dispatch] = useActionState(studioAction, undefined);
+  const [isPending, startTransition] = useTransition();
   const v = state?.values ?? {};
   const [format, setFormat] = useState<Format>(v.format === "long" ? "long" : "short");
   const [styleId, setStyleId] = useState(v.styleId ?? "");
@@ -101,8 +101,18 @@ export function StudioForm({
     if (state?.detectedThemeId) setThemeId(state.detectedThemeId);
   }, [state]);
 
+  // Submit through a handler, not a form action. A form action makes React reset the form after it runs, which
+  // clears the native selects and loses the style the user chose. Here the controlled fields keep their values.
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    if (submitter?.name) fd.set(submitter.name, submitter.value);
+    startTransition(() => dispatch(fd));
+  }
+
   return (
-    <form action={action} className="space-y-5">
+    <form onSubmit={onSubmit} className="space-y-5">
       {state?.error && <Alert tone="danger">{state.error}</Alert>}
       {state?.saved && <Alert tone="ok">Saved as a planned production. Its stages run once their workers are connected.</Alert>}
 
@@ -197,15 +207,15 @@ export function StudioForm({
       </Field>
 
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" name="intent" value="suggest">
+        <Button type="submit" name="intent" value="suggest" disabled={isPending}>
           Suggest styles
         </Button>
-        <Button type="submit" name="intent" value="preview">
+        <Button type="submit" name="intent" value="preview" disabled={isPending}>
           Preview plan
         </Button>
-        <SubmitButton name="intent" value="save" variant="primary" pendingLabel="Saving…">
-          Save production
-        </SubmitButton>
+        <Button type="submit" name="intent" value="save" variant="primary" disabled={isPending}>
+          {isPending ? "Working…" : "Save production"}
+        </Button>
       </div>
 
       {state?.suggestions && state.suggestions.length > 0 && (
