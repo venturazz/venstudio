@@ -54,7 +54,7 @@ test("every fifth video is held, counting from the last owner review", () => {
 
 test("stage results auto-approve above level 0", () => {
   const args = { paused: false, template: proven(), qc: pass(), videosSincePublishSpotCheck: 0, point: "stage" as const };
-  assert.equal(decideNext({ ...args, level: 0 }).action, "ask-owner");
+  assert.equal(decideNext({ ...args, level: 0, stage: "script" }).action, "ask-owner");
   assert.equal(decideNext({ ...args, level: 1, stage: "script" }).action, "auto-approve");
 });
 

@@ -190,3 +190,7 @@ Playwright flow covers a mobile viewport and gets a case for this page in Phase 
 Pure modules: `node --test "apps/portal/lib/**/*.test.ts"`. Worker: `node --test "apps/worker/*.test.ts"` (some tests
 skip without ffmpeg). CI also runs typecheck, build, `scripts/e2e.sh`, `scripts/ui-e2e.mjs` and the Docker build;
 typecheck and build cannot run in the offline sandbox, so types are written conservatively.
+
+## Known issues
+
+- `/settings` overflows horizontally on mobile. It predates the studio work and is excluded from the overflow assertion in `scripts/ui-e2e.mjs`. Fix the page, then remove the exclusion.

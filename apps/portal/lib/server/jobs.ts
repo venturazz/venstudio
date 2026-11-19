@@ -90,8 +90,14 @@ export async function reapExpiredLeases() {
   if (rows.some((r) => r.status === "failed")) {
     // A job that ran out of attempts never reaches the fail route; write its QC report now. Dynamic import
     // because pipeline.ts imports this module. reconcileQcReports never throws.
-    const { reconcileQcReports } = await import("./pipeline.ts");
-    await reconcileQcReports();
+    // The dynamic import and the reconcile are guarded: a failure here must never break claimJob. The next
+    // reaper pass or dashboard load retries the reconcile.
+    try {
+      const { reconcileQcReports } = await import("./pipeline.ts");
+      await reconcileQcReports();
+    } catch (err) {
+      console.error("reconcileQcReports failed after lease reap", err);
+    }
   }
   return rows.length;
 }
