@@ -19,6 +19,20 @@ export async function hermesJson<T>(
   validate: (value: unknown) => Validated<T>,
   opts: { retries?: number; timeoutMs?: number } = {},
 ): Promise<HermesJsonResult<T>> {
+  return hermesText(messages, (reply) => validate(extractJson(reply)), opts);
+}
+
+/**
+ * Same loop as hermesJson, but the validator gets the raw reply text and may be async. Media turns use it: the
+ * reply may be JSON, a markdown image link or a bare URL, and the validator downloads and checks the real bytes
+ * so a bad answer is fed back to Hermes like any other validation issue. This file stays the only place that
+ * talks to Hermes for generation.
+ */
+export async function hermesText<T>(
+  messages: ChatMessage[],
+  validate: (reply: string) => Validated<T> | Promise<Validated<T>>,
+  opts: { retries?: number; timeoutMs?: number } = {},
+): Promise<HermesJsonResult<T>> {
   const { HERMES_BASE_URL, HERMES_API_KEY } = env();
   if (!HERMES_BASE_URL) {
     return { ok: false, error: "Hermes is not configured. Set HERMES_BASE_URL and HERMES_API_KEY in Settings or the environment." };
@@ -58,7 +72,7 @@ export async function hermesJson<T>(
 
     let issues: string[];
     try {
-      const checked = validate(extractJson(reply));
+      const checked = await validate(reply);
       if (checked.ok) return { ok: true, value: checked.value, attempts: attempt };
       issues = checked.issues;
     } catch (err) {
