@@ -116,7 +116,7 @@ export default async function WorkersPage() {
                       </div>
                     )}
                   </div>
-                  {needsAttention(w, p, w.waiting) && (
+                  {needsAttention({ host: w.host, status: w.status }, p, w.waiting) && (
                     <div className="space-y-2 border-t border-border p-4">
                       <Alert tone="warn">
                         {p === "never"
