@@ -218,3 +218,11 @@ typecheck and build cannot run in the offline sandbox, so types are written cons
 ## Known issues
 
 - `/settings` overflows horizontally on mobile. It predates the studio work and is excluded from the overflow assertion in `scripts/ui-e2e.mjs`. Fix the page, then remove the exclusion.
+
+### Recovery of lost stages (Phase 3)
+
+`reapStuckStages` fails a stage that has been running longer than `STUCK_MINUTES` (15, above the 540 s worst case of
+`hermesJson`), in one transaction with the run update and the `stage-error` review. It also calls `advanceRun` for
+running runs that have a pending stage and no running one. It runs only when `/review`, `/studio/runs` or a run page
+renders; there is no periodic caller yet, so a phone that never opens those pages does not trigger recovery. A
+blocked stage (for example a retired template) opens a `stage-error` review instead of failing the run silently.

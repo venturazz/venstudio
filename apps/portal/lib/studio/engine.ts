@@ -5,8 +5,10 @@
 import { guessRevisionStage, type DirectorStage, type Idea, type ResearchNote, type RevisableStage, type Shot } from "./director.ts";
 
 export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "script", "storyboard"];
-/** A stage that has been running this long is treated as lost (restart, crash) and failed. */
-export const STUCK_MINUTES = 10;
+/** Worst case for one stage: hermesJson makes up to 3 attempts of 180 s each. */
+export const HERMES_WORST_CASE_SEC = 3 * 180;
+/** A stage that has been running this long is treated as lost (restart, crash) and failed: worst case plus 6 minutes for the gate and DB work. */
+export const STUCK_MINUTES = Math.ceil(HERMES_WORST_CASE_SEC / 60) + 6;
 /** Default video length when the owner does not pick one: inside the catalog range for each format. */
 export const DEFAULT_DURATION_SEC = { short: 45, long: 600 } as const;
 
@@ -42,6 +44,16 @@ export function revisionTarget(classified: DirectorStage | null, note: string, o
 export function isStuck(startedAt: Date | null, now: Date, minutes: number = STUCK_MINUTES): boolean {
   if (!startedAt) return false;
   return now.getTime() - startedAt.getTime() > minutes * 60_000;
+}
+
+/**
+ * A run is orphaned when it is running, has a pending engine stage, and no stage is currently running: nothing
+ * will ever claim that stage unless something calls advanceRun again.
+ */
+export function isOrphaned(runState: string, stages: readonly { stage: string; state: string }[]): boolean {
+  if (runState !== "running") return false;
+  if (stages.some((s) => s.state === "running")) return false;
+  return stages.some((s) => s.state === "pending" && isEngineStage(s.stage));
 }
 
 /** One short line for the review card and the run timeline. */

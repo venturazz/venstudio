@@ -421,7 +421,9 @@ async function concludeStage(run: RunInfo, st: StageRow, template: Template, out
 
     if (decision.action === "block") {
       await store("failed", {}, decision.reason);
-      await tx`UPDATE pipeline_runs SET state = 'failed', finished_at = now() WHERE id = ${run.id}`;
+      // Park the run in the inbox so the owner sees it; retry or reject from there.
+      await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${run.id}`;
+      await insertReview(tx, run.id, st.stage, "stage-error", { summary: `${stageLabel(st.stage)} blocked`, error: decision.reason });
       return;
     }
     if (decision.action === "revise") {
@@ -504,35 +506,56 @@ export async function advanceRun(runId: string): Promise<void> {
   }
 }
 
-/** Fails stages stuck in running (a restart or crash) and asks the owner. Returns the affected run ids. Never throws. */
+/**
+ * Fails stages stuck in running (a restart or crash) and asks the owner, one transaction per stage. Also restarts
+ * runs whose pending stage was never claimed (the after() callback was lost). Returns the run ids it touched.
+ * Runs only when a page that calls it renders. Never throws.
+ */
 export async function reapStuckStages(): Promise<string[]> {
+  const runIds: string[] = [];
   try {
     const sql = db();
     const stuck = await sql`
-      UPDATE pipeline_stages SET state = 'failed', error = 'The stage stopped answering and was cancelled', finished_at = now()
+      SELECT id FROM pipeline_stages
       WHERE state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int) AND stage IN ('idea', 'research', 'script', 'storyboard')
-      RETURNING run_id, stage
     `;
-    const runIds: string[] = [];
-    for (const r of stuck) {
-      const runId = r.run_id as string;
-      const stage = r.stage as string;
+    for (const row of stuck) {
       try {
-        await sql.begin(async (tx) => {
-          const moved = await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${runId} AND state = 'running' RETURNING id`;
-          if (moved.length === 0) return;
-          await insertReview(tx, runId, stage, "stage-error", { summary: `${stageLabel(stage)} stopped`, error: "The stage stopped answering and was cancelled" });
+        const runId = await sql.begin(async (tx): Promise<string | null> => {
+          const failed = await tx`
+            UPDATE pipeline_stages SET state = 'failed', error = 'The stage stopped answering and was cancelled', finished_at = now()
+            WHERE id = ${row.id as string} AND state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int)
+            RETURNING run_id, stage
+          `;
+          const f = failed[0];
+          if (!f) return null;
+          const moved = await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${f.run_id as string} AND state = 'running' RETURNING id`;
+          if (moved.length > 0) {
+            await insertReview(tx, f.run_id as string, f.stage as string, "stage-error", { summary: `${stageLabel(f.stage as string)} stopped`, error: "The stage stopped answering and was cancelled" });
+          }
+          return f.run_id as string;
         });
-        runIds.push(runId);
+        if (runId) runIds.push(runId);
       } catch (err) {
-        console.error("reap failed", runId, err);
+        console.error("reap failed", row.id, err);
       }
     }
-    return runIds;
+    const orphaned = await sql`
+      SELECT r.id FROM pipeline_runs r
+      WHERE r.state = 'running'
+        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard'))
+        AND NOT EXISTS (SELECT 1 FROM pipeline_stages q WHERE q.run_id = r.id AND q.state = 'running')
+    `;
+    for (const r of orphaned) {
+      const id = r.id as string;
+      runIds.push(id);
+      // claimNext is skip-locked and idempotent, so a second caller racing a live advanceRun is harmless.
+      void advanceRun(id);
+    }
   } catch (err) {
     console.error("reapStuckStages failed", err);
-    return [];
   }
+  return runIds;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

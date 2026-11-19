@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_DURATION_SEC, isEngineStage, isStuck, nextStage, revisionTarget, stageSummary } from "./engine.ts";
+import { DEFAULT_DURATION_SEC, HERMES_WORST_CASE_SEC, isEngineStage, isOrphaned, isStuck, STUCK_MINUTES, nextStage, revisionTarget, stageSummary } from "./engine.ts";
 import { VIDEO_FORMATS } from "./catalog.ts";
 
 test("stage order ends after the storyboard", () => {
@@ -31,7 +31,20 @@ test("isStuck compares against the limit", () => {
   const now = new Date("2026-01-01T12:00:00Z");
   assert.equal(isStuck(null, now), false);
   assert.equal(isStuck(new Date("2026-01-01T11:55:00Z"), now), false);
-  assert.equal(isStuck(new Date("2026-01-01T11:49:00Z"), now), true);
+  assert.equal(isStuck(new Date("2026-01-01T11:49:00Z"), now), false);
+  assert.equal(isStuck(new Date("2026-01-01T11:30:00Z"), now), true);
+});
+
+test("the stuck threshold exceeds the worst-case Hermes time", () => {
+  assert.ok(STUCK_MINUTES * 60 > HERMES_WORST_CASE_SEC);
+});
+
+test("isOrphaned finds a running run with only unclaimed engine stages", () => {
+  assert.equal(isOrphaned("running", [{ stage: "script", state: "pending" }]), true);
+  assert.equal(isOrphaned("running", [{ stage: "script", state: "pending" }, { stage: "idea", state: "running" }]), false);
+  assert.equal(isOrphaned("waiting-human", [{ stage: "script", state: "pending" }]), false);
+  assert.equal(isOrphaned("running", [{ stage: "assets", state: "pending" }]), false);
+  assert.equal(isOrphaned("running", []), false);
 });
 
 test("stageSummary describes each stage and tolerates junk", () => {
