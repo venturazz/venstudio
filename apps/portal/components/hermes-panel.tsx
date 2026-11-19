@@ -61,6 +61,12 @@ export async function HermesPanel({ detailed = false, canRecheck = false }: { de
         </Badge>
         <span className="text-muted">{h.skillsError ? "skills unavailable" : `${h.skills.length} skills`}</span>
       </div>
+      {h.skillsSource === "chat" && (
+        <p className="text-xs text-muted">
+          Hermes&apos;s skills endpoint is broken in this version, so this list came from asking Hermes in a chat turn. It&apos;s
+          refreshed at most once an hour.
+        </p>
+      )}
       {!runsReady && (
         <Alert tone="warn">This Hermes version doesn&apos;t support background runs. Update Hermes before using it in pipelines.</Alert>
       )}

@@ -30,3 +30,21 @@ export function groupSkills(skills: HermesSkill[]): Array<[string, HermesSkill[]
   for (const s of skills) map.set(s.category, [...(map.get(s.category) ?? []), s]);
   return [...map.entries()];
 }
+
+/**
+ * Pull a skills list out of a chat reply. The model is asked for a bare JSON array, but replies often wrap it
+ * in prose or a ```json fence, so take the first [...] block that parses.
+ */
+export function skillsFromChatReply(text: string): HermesSkill[] {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1];
+  for (const candidate of [fenced, text].filter((t): t is string => typeof t === "string")) {
+    const start = candidate.indexOf("[");
+    const end = candidate.lastIndexOf("]");
+    if (start === -1 || end <= start) continue;
+    try {
+      const parsed = parseSkills(JSON.parse(candidate.slice(start, end + 1)));
+      if (parsed.length > 0) return parsed;
+    } catch {}
+  }
+  return [];
+}

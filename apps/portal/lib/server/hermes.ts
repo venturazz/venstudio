@@ -11,7 +11,7 @@ import { normalizeGatewayBase } from "../gateway-url.ts";
  * Only the portal holds HERMES_API_KEY; workers never see it.
  */
 
-import { parseSkills, type HermesSkill } from "../hermes-skills.ts";
+import { parseSkills, skillsFromChatReply, type HermesSkill } from "../hermes-skills.ts";
 export type { HermesSkill };
 
 export interface HermesStatus {
@@ -24,6 +24,8 @@ export interface HermesStatus {
   skills: HermesSkill[];
   /** Set when the connection works but the skills list couldn't be read. */
   skillsError?: string;
+  /** "api" = /v1/skills, "chat" = asked Hermes in a chat turn because /v1/skills failed. */
+  skillsSource?: "api" | "chat";
   error?: string;
   hint?: string;
   checkedAt?: string;
@@ -89,15 +91,36 @@ async function checkHermes(): Promise<HermesStatus> {
 
     let skills: HermesSkill[] = [];
     let skillsError: string | undefined;
+    let skillsSource: HermesStatus["skillsSource"];
     try {
       const sk = await getJson(`${cfg.base}/v1/skills`, cfg.key);
-      if (sk.res.ok && typeof sk.body !== "string") skills = parseSkills(sk.body);
-      else skillsError = sk.res.status === 404 ? "This Hermes version has no /v1/skills endpoint; update Hermes." : `HTTP ${sk.res.status}`;
+      if (sk.res.ok && typeof sk.body !== "string") {
+        skills = parseSkills(sk.body);
+        skillsSource = "api";
+      } else {
+        skillsError =
+          sk.res.status === 404
+            ? "This Hermes version has no /v1/skills endpoint."
+            : `Hermes couldn't list its skills (HTTP ${sk.res.status}). ` +
+              "Its log shows the cause under \"GET /v1/skills failed\"; this is a known Hermes bug in some versions.";
+      }
     } catch (err) {
       skillsError = explainFetchError(err, `${cfg.base}/v1/skills`, { name: "Hermes", internal: INTERNAL }, TIMEOUT_MS).error;
     }
+    if (skillsSource !== "api") {
+      if (chatSkillsCache && Date.now() - chatSkillsCache.at < CHAT_SKILLS_TTL_MS) {
+        skills = chatSkillsCache.skills;
+        skillsSource = "chat";
+        skillsError = undefined;
+      } else {
+        // Asking in chat takes a model turn (often 30+ s). Don't hold the status check for it: start it and
+        // patch the cached status when it answers.
+        startChatSkills(cfg);
+        skillsError = `${skillsError ?? "Skills endpoint unavailable."} Asking Hermes for the list in a chat turn; refresh in a minute.`;
+      }
+    }
     return {
-      configured: true, ok: true, url, latencyMs, checkedAt, features, skills, skillsError,
+      configured: true, ok: true, url, latencyMs, checkedAt, features, skills, skillsError, skillsSource,
       version: typeof c.version === "string" ? c.version : typeof c.platform === "string" ? c.platform : undefined,
     };
   } catch (err) {
@@ -110,6 +133,54 @@ async function checkHermes(): Promise<HermesStatus> {
 
 let cache: { at: number; status: HermesStatus } | undefined;
 let inflight: Promise<HermesStatus> | undefined;
+
+const CHAT_SKILLS_PROMPT =
+  "List every skill and workflow you have installed. Use your skills tools to look them up; don't guess. " +
+  'Reply with only a JSON array, no other text: [{"name": "...", "description": "one short sentence", "category": "..."}]. ' +
+  "Use each skill's exact name as you would load it.";
+const CHAT_SKILLS_TTL_MS = 60 * 60_000;
+let chatSkillsCache: { at: number; skills: HermesSkill[] } | undefined;
+
+/**
+ * Fallback when /v1/skills is broken: ask Hermes in one chat turn. Costs a model call, so the result is
+ * cached for an hour, and an empty or unparseable answer is never cached as "no skills".
+ */
+let chatInflight: Promise<void> | undefined;
+
+function startChatSkills(cfg: { base: string; key?: string }) {
+  chatInflight ??= skillsViaChat(cfg)
+    .then((skills) => {
+      if (skills.length > 0 && cache?.status.ok) {
+        cache = { ...cache, status: { ...cache.status, skills, skillsSource: "chat", skillsError: undefined } };
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      chatInflight = undefined;
+    });
+}
+
+async function skillsViaChat(cfg: { base: string; key?: string }): Promise<HermesSkill[]> {
+  try {
+    const res = await fetch(`${cfg.base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(cfg.key ? { authorization: `Bearer ${cfg.key}` } : {}) },
+      body: JSON.stringify({
+        model: "hermes-agent",
+        stream: false,
+        messages: [{ role: "user", content: CHAT_SKILLS_PROMPT }],
+      }),
+      signal: AbortSignal.timeout(180_000),
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const skills = skillsFromChatReply(body.choices?.[0]?.message?.content ?? "");
+    if (skills.length > 0) chatSkillsCache = { at: Date.now(), skills };
+    return skills;
+  } catch {
+    return [];
+  }
+}
 
 function refresh(): Promise<HermesStatus> {
   inflight ??= checkHermes()
