@@ -192,7 +192,7 @@ test("readRouterImageItem reads b64_json first, then a url, else null", () => {
 
 const scan = (over: { ok?: boolean; tts?: { ok: boolean; error?: string }; list?: ReturnType<typeof m>[] }) => ({
   status: { ok: over.ok ?? true },
-  probes: over.tts ? { tts: over.tts } : {},
+  probes: (over.tts ? { tts: over.tts } : {}) as Record<string, { ok: boolean; error?: string }>,
   lists: { tts: over.list ?? [] },
 });
 
