@@ -91,6 +91,11 @@ interface OrderRow {
 }
 
 async function claimOrder(runId: string): Promise<OrderRow | null> {
+  // Wait marks whose time has passed are stale once the stage runs again.
+  await db()`
+    UPDATE work_orders SET not_before = NULL, wait_reason = NULL
+    WHERE run_id = ${runId} AND stage = 'assets' AND state = 'pending' AND not_before IS NOT NULL AND not_before <= now()
+  `;
   const rows = await db()`
     UPDATE work_orders w SET state = 'running', attempts = w.attempts + 1, started_at = now(), updated_at = now(), error = NULL,
       not_before = NULL, wait_reason = NULL
@@ -320,7 +325,7 @@ async function runAssetsStage(run: RunInfo, st: StageRow): Promise<void> {
     if (out.kind === "busy") {
       await returnOrderBusy(run.id, order.id, out.until, out.text);
       if (!progressed && waitExpired(st.output.waitSince, Date.now())) {
-        await recordStageError(run.id, st.id, "assets", giveUpMessage());
+        await recordStageError(run.id, st.id, "assets", `${giveUpMessage()} ${out.text}`);
         return;
       }
       await deferStage(run.id, st.id, out.until, out.text, { restartClock: progressed });

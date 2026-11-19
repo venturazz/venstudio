@@ -6,7 +6,7 @@ import { normalizeGatewayBase } from "../../gateway-url.ts";
 import { originOf } from "../../net-address.ts";
 import { imagePrompt, normalizeProvider, parseTriedProviders, resolveImageProvider, type TriedProvider } from "../../studio/asset-plan.ts";
 import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
-import { classifyReplyFailure, type FailureClass } from "../../studio/pacing.ts";
+import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
 import { recordEndpointResult } from "../endpoint-health.ts";
 import type { Format } from "../../studio/catalog.ts";
 import type { BeatRole } from "../../studio/templates.ts";
@@ -59,7 +59,7 @@ async function recordHermesChain(provider: string, tried: readonly TriedProvider
   if (made !== "unknown") await recordEndpointResult("hermes", made, "image", { ok: true });
   for (const t of tried) {
     if (t.provider === made) continue;
-    await recordEndpointResult("hermes", t.provider, "image", { ok: false, failureClass: classifyReplyFailure(t.error) === "busy" ? "busy" : "server", error: t.error || "Hermes said this provider failed" });
+    await recordEndpointResult("hermes", t.provider, "image", { ok: false, failureClass: looksRateLimited(t.error) ? "busy" : "server", error: t.error || "Hermes said this provider failed" });
   }
 }
 
@@ -140,7 +140,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
         tried: triedIn(reply),
       },
     };
-  });
+  }, { busyFromReply: true });
   if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
   const { rawProvider, tried, ...image } = result.value;
   await recordHermesChain(rawProvider, tried);

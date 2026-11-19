@@ -78,18 +78,40 @@ export function classifyStatus(status: number): FailureClass | null {
 }
 
 const RATE_LIMIT_TEXT =
-  /\b429\b|rate[ -]?limit|too many requests|quota (?:is )?exceeded|exceeded (?:your|the) quota|try again (?:later|in \d+)|overloaded|temporarily unavailable|server is busy/i;
+  /rate[ -]?limit|too many requests|quota (?:is )?exceeded|exceeded (?:your|the) quota|(?:http|status|error|code)[ :]*429\b|\b429 too many|server is busy/i;
 
-/** True for short text that says the provider is rate limited or overloaded. Used on replies that failed validation. */
+/** True for short text that says the provider is rate limited. Applied to error texts, never to whole answers. */
 export function looksRateLimited(text: string): boolean {
   const t = text.trim();
-  if (!t || t.length > 2000) return false;
+  if (!t || t.length > 600) return false;
   return RATE_LIMIT_TEXT.test(t);
 }
 
-/** Classifies a failed Hermes reply that came back with HTTP 200 but no usable answer. */
+/**
+ * True when a media reply (image, voice, CC0 search) that failed validation says the provider chain is rate limited:
+ * the `error` of a `{"status":"error"}` JSON reply, or a short plain-text reply. A normal answer that only mentions
+ * such words (a story about the year 429) is never read this way, and director stages do not use this check.
+ */
+export function replySaysRateLimited(reply: string): boolean {
+  const t = reply.trim();
+  const start = t.indexOf("{");
+  const end = t.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      const v = JSON.parse(t.slice(start, end + 1)) as unknown;
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+      const r = v as { status?: unknown; error?: unknown };
+      return r.status === "error" && typeof r.error === "string" && looksRateLimited(r.error);
+    } catch {
+      return false;
+    }
+  }
+  return t.length <= 300 && looksRateLimited(t);
+}
+
+/** Classifies a failed media reply that came back with HTTP 200 but no usable answer. */
 export function classifyReplyFailure(reply: string): FailureClass {
-  return looksRateLimited(reply) ? "busy" : "content";
+  return replySaysRateLimited(reply) ? "busy" : "content";
 }
 
 /**
@@ -122,7 +144,7 @@ export function systemicPause(outcomes: ReadonlyArray<FailureClass | "ok">, afte
 }
 
 const CAUSE_TEXT: Record<FailureClass, string> = {
-  busy: "Hermes is rate limited",
+  busy: "the image providers are rate limited or overloaded",
   auth: "Hermes rejected the key. HERMES_API_KEY must equal Hermes's API_SERVER_KEY",
   client: "the request was refused",
   server: "Hermes answered with a server error",

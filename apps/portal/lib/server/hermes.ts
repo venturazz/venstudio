@@ -192,7 +192,7 @@ async function skillsViaChat(cfg: { base: string; key?: string }): Promise<Herme
     } catch {
       return [];
     }
-  }, { queueTimeoutMs: 60_000 });
+  });
   return slot.ok ? slot.value : [];
 }
 

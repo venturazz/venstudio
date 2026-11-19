@@ -21,6 +21,11 @@ export interface HermesCallOptions {
   timeoutMs?: number;
   /** How long to wait for a free gate slot before answering busy. Owner clicks use a short one. */
   queueTimeoutMs?: number;
+  /**
+   * Media turns (image, voice, CC0 search) set this: a reply that fails validation and says the provider chain is rate
+   * limited (replySaysRateLimited) is a wait, not a bad answer. Director stages leave it off.
+   */
+  busyFromReply?: boolean;
 }
 
 const TIMEOUT_MS = 180_000;
@@ -44,6 +49,7 @@ export async function hermesJson<T>(
 type Answer =
   | { kind: "reply"; text: string }
   | { kind: "status"; status: number; retryAfter: string | null; body: string }
+  | { kind: "busy"; status: number; until: Date; text: string }
   | { kind: "error"; message: string };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -83,6 +89,11 @@ export async function hermesText<T>(
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
+          if (classifyStatus(res.status) === "busy") {
+            // Recorded while this call still holds its slot, so a queued turn sees the busy time before it calls.
+            const b = await reportHermesBusy({ status: res.status, retryAfter: res.headers.get("retry-after"), detail: `HTTP ${res.status}` });
+            return { kind: "busy", status: res.status, until: b.until, text: b.text };
+          }
           return { kind: "status", status: res.status, retryAfter: res.headers.get("retry-after"), body: body.slice(0, 2000) };
         }
         const body = (await res.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
@@ -101,14 +112,13 @@ export async function hermesText<T>(
       lastCause = "unreachable";
       continue;
     }
+    if (answer.kind === "busy") {
+      return { ok: false, cause: "busy", busyUntil: answer.until, error: `Hermes answered HTTP ${answer.status} (rate limited). ${answer.text}` };
+    }
     if (answer.kind === "status") {
       const cls = classifyStatus(answer.status) ?? "server";
       if (cls === "auth") {
         return { ok: false, cause: "auth", error: `Hermes rejected the key (HTTP ${answer.status}). HERMES_API_KEY must equal Hermes's API_SERVER_KEY.` };
-      }
-      if (cls === "busy") {
-        const b = await reportHermesBusy({ status: answer.status, retryAfter: answer.retryAfter, detail: `HTTP ${answer.status}` });
-        return { ok: false, cause: "busy", busyUntil: b.until, error: `Hermes answered HTTP ${answer.status} (rate limited). ${b.text}` };
       }
       lastError = `Hermes answered HTTP ${answer.status}`;
       lastCause = cls;
@@ -130,7 +140,7 @@ export async function hermesText<T>(
       issues = [err instanceof Error ? err.message : "The reply is not valid JSON"];
     }
     // Hermes answered, but its provider chain may have been rate limited: that is a wait, not a bad answer.
-    if (classifyReplyFailure(reply) === "busy") {
+    if (opts.busyFromReply && classifyReplyFailure(reply) === "busy") {
       const b = await reportHermesBusy({ status: 200, retryAfter: null, detail: reply.replace(/\s+/g, " ").slice(0, 200) });
       return { ok: false, cause: "busy", busyUntil: b.until, error: `Hermes said it is rate limited. ${b.text}` };
     }

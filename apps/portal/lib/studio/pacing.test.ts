@@ -18,6 +18,7 @@ import {
   parseRetryAfter,
   pauseMessage,
   readTime,
+  replySaysRateLimited,
   systemicPause,
   waitExpired,
   waitingText,
@@ -76,14 +77,28 @@ test("classifyStatus sorts statuses into busy, auth, client and server", () => {
   assert.equal(classifyStatus(502), "server");
 });
 
-test("looksRateLimited spots rate-limit text in short replies only", () => {
+test("looksRateLimited spots rate-limit text in short error texts only", () => {
   assert.equal(looksRateLimited("All providers are rate limited, try again later"), true);
-  assert.equal(looksRateLimited('{"status":"error","error":"upstream returned 429"}'), true);
+  assert.equal(looksRateLimited("upstream returned HTTP 429"), true);
+  assert.equal(looksRateLimited("error 429: slow down"), true);
   assert.equal(looksRateLimited("Too Many Requests"), true);
-  assert.equal(looksRateLimited("The model is overloaded"), true);
+  assert.equal(looksRateLimited("Daily quota exceeded"), true);
   assert.equal(looksRateLimited("Fake provider chain is down"), false);
+  assert.equal(looksRateLimited("The fall of Rome in 429"), false);
   assert.equal(looksRateLimited(""), false);
-  assert.equal(looksRateLimited(`rate limit ${"x".repeat(3000)}`), false);
+  assert.equal(looksRateLimited(`rate limit ${"x".repeat(700)}`), false);
+});
+
+test("replySaysRateLimited reads only the error of a status error reply, or short plain text", () => {
+  assert.equal(replySaysRateLimited('{"status":"error","provider":"cloudflare","error":"All providers are rate limited"}'), true);
+  assert.equal(replySaysRateLimited('Here you go: {"status":"error","error":"Too many requests"}'), true);
+  assert.equal(replySaysRateLimited('{"status":"error","error":"Fake provider chain is down"}'), false);
+  // A normal answer that mentions the words is not a rate limit.
+  assert.equal(replySaysRateLimited('{"ideas":[{"title":"Why the rate limit of 429 AD mattered"}]}'), false);
+  assert.equal(replySaysRateLimited('{"status":"ok","error":"rate limited earlier, then worked"}'), false);
+  assert.equal(replySaysRateLimited("Sorry, I am rate limited right now."), true);
+  assert.equal(replySaysRateLimited(`rate limited ${"x".repeat(400)}`), false);
+  assert.equal(replySaysRateLimited("{not json"), false);
   assert.equal(classifyReplyFailure("rate-limited by provider"), "busy");
   assert.equal(classifyReplyFailure("not json"), "content");
 });

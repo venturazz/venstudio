@@ -316,10 +316,14 @@ and `/v1/skills` GETs of the status card are not model turns and stay outside.
   with a one-minute not-before ("busy with other studio work"). Owner clicks use a shorter wait (5 s for the revision
   classifier, which then falls back to keywords). The stuck-stage limits count this wait (`HERMES_ASK_WORST_SEC`).
 - Busy time: `hermes_gate.busy_until` in Postgres, so a restart keeps it. While it is in the future no call is made.
-  It is set on HTTP 429 or 503, and on a reply that failed validation and reads like a rate limit (429, "rate limit",
-  "too many requests", "quota exceeded", "overloaded"). The wait is `Retry-After` (delay seconds or an HTTP date, at
-  least 1 s, at most 1 h per wait), otherwise exponential backoff from 15 s doubling to 10 min. A normal answer resets
-  the backoff. The cause of a 429 (Hermes's own concurrency limit or its upstream model) does not matter: both are waits.
+  It is set on HTTP 429 or 503 (recorded while the call still holds its slot, so a queued turn never slips through),
+  and on a media reply (image, voice, CC0 search) that failed validation and whose `error` says rate limited
+  (`replySaysRateLimited`: "rate limit", "too many requests", "quota exceeded", "HTTP 429"). Director answers are never
+  read this way, so a script about the year 429 is not a rate limit. The wait is `Retry-After` (delay seconds or an HTTP
+  date, at least 1 s, at most 1 h per wait), otherwise exponential backoff from 15 s doubling to 10 min. A normal answer
+  resets the backoff. The cause of a 429 (Hermes's own concurrency limit or its upstream model) does not matter: both
+  are waits. With one slot, the chat skills fallback of the status card queues behind the scan turn; when it cannot get
+  a slot in time it returns nothing and is asked again on the next status refresh.
 
 **Busy is not failure.** `hermesJson`/`hermesText` return `cause: "busy"` and `busyUntil`. A work order goes back to
 pending with its attempt returned and `not_before`/`wait_reason` set; the stage goes back to pending with

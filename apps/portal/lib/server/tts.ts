@@ -374,7 +374,7 @@ export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, l
     if (issues.length > 0 || !info) return { ok: false, issues };
     const provider = engine === "kokoro" ? resolveKokoroProvider(parsed.provider) : "capcut";
     return { ok: true, value: { audio, mime: info.mime, model: parsed.model, provider } };
-  });
+  }, { busyFromReply: true });
   if (!result.ok) {
     if (result.cause === "busy") return { ok: false, error: `${what} is waiting. ${result.error}`, busyUntil: result.busyUntil };
     return { ok: false, error: `${what} failed. ${result.error}` };

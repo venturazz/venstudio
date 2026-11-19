@@ -66,7 +66,7 @@ export type CandidateResult = { ok: true; candidate: Cc0Candidate } | { ok: fals
 
 /** Asks Hermes for a CC0 candidate. The reply is checked against the host allowlist and the licence wording. */
 export async function findCc0Candidate(prompt: string): Promise<CandidateResult> {
-  const result = await hermesJson<Cc0Candidate>(cc0Prompt(prompt), validateCandidate, { retries: 1 });
+  const result = await hermesJson<Cc0Candidate>(cc0Prompt(prompt), validateCandidate, { retries: 1, busyFromReply: true });
   return result.ok ? { ok: true, candidate: result.value } : { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
 }
 
