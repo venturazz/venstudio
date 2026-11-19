@@ -8,7 +8,8 @@ import { AutoRefresh } from "@/components/auto-refresh.tsx";
 import { SubmitButton } from "@/components/client.tsx";
 import { Alert, Badge, Card, CardBody, CardHeader, LinkButton, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { stageLabel } from "@/lib/studio/review.ts";
-import { isEngineStage, stageSummary } from "@/lib/studio/engine.ts";
+import { isEngineStage, isProductionStage, stageSummary } from "@/lib/studio/engine.ts";
+import { productionSummary } from "@/lib/studio/production.ts";
 import { cancelRunAction } from "../actions.ts";
 import { RunStateBadge, StageStateBadge } from "../run-status.tsx";
 
@@ -16,7 +17,7 @@ export const metadata = { title: "Hermes run" };
 export const dynamic = "force-dynamic";
 
 function outputText(stage: string, output: Record<string, unknown>): string {
-  if (!isEngineStage(stage)) return "";
+  if (!isEngineStage(stage) && !isProductionStage(stage)) return "";
   const result = output.result;
   if (result === undefined || result === null) return "";
   let text = "";
@@ -51,7 +52,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const board = stages.find((s) => s.stage === "storyboard" && s.state === "passed");
   const assetsPending = stages.some((s) => s.stage === "assets" && s.state === "pending");
   const storyboardReady = Boolean(board) && assetsPending && run.state === "running";
-  // Once the storyboard is ready nothing runs until Phase 4, so there is nothing to poll for.
+  // A storyboard that is ready but not yet approved has nothing running, so there is nothing to poll for.
   const live = run.state === "running" && !storyboardReady;
 
   return (
@@ -81,7 +82,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       </div>
       {storyboardReady && (
         <div className="mb-4">
-          <Alert tone="ok">Storyboard ready. Asset sourcing arrives in Phase 4.</Alert>
+          <Alert tone="ok">Storyboard ready. Approve it in Review to start sourcing assets.</Alert>
         </div>
       )}
       {run.state === "waiting-human" && !open && (
@@ -96,7 +97,15 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           <ul className="divide-y divide-border">
             {stages.map((s) => {
               const text = outputText(s.stage, s.output);
-              const summary = s.state === "passed" || s.state === "waiting-human" ? stageSummary(isEngineStage(s.stage) ? s.stage : "idea", s.output.result) : "";
+              const done = s.state === "passed" || s.state === "waiting-human";
+              const summary = !done
+                ? ""
+                : isProductionStage(s.stage)
+                  ? productionSummary(s.stage, s.output.result)
+                  : isEngineStage(s.stage)
+                    ? stageSummary(s.stage, s.output.result)
+                    : "";
+              const jobId = typeof s.output.jobId === "string" ? s.output.jobId : "";
               return (
                 <li key={s.id} className="space-y-2 px-4 py-3 sm:px-5" data-testid={`stage-${s.stage}`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -106,7 +115,14 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                       <StageStateBadge state={s.state} />
                     </span>
                   </div>
-                  {summary && isEngineStage(s.stage) && <p className="break-words text-xs text-muted">{summary}</p>}
+                  {summary && <p className="break-words text-xs text-muted">{summary}</p>}
+                  {s.stage === "render" && jobId && (
+                    <p className="text-xs">
+                      <Link href={`/jobs/${jobId}`} className="inline-flex min-h-11 items-center text-accent underline-offset-2 hover:underline">
+                        Open the render job
+                      </Link>
+                    </p>
+                  )}
                   {s.error && <p className="break-words text-xs text-danger">{s.error}</p>}
                   {text && (
                     <details>
@@ -128,8 +144,24 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
               <p>
                 {workOrders.length} work order{workOrders.length === 1 ? "" : "s"} from the storyboard.
               </p>
-              <p className="text-xs text-muted">Asset sourcing arrives in Phase 4. Nothing runs these yet.</p>
             </CardBody>
+            {workOrders.length > 0 && (
+              <ul className="divide-y divide-border border-t border-border" data-testid="work-orders">
+                {workOrders.map((w) => (
+                  <li key={w.id} className="space-y-1 px-4 py-3 text-xs sm:px-5" data-testid="work-order" data-state={w.state}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium">{w.shotRef || w.stage}</span>
+                      <Badge tone={w.state === "done" ? "ok" : w.state === "failed" ? "danger" : "info"}>{w.state}</Badge>
+                    </div>
+                    <p className="break-words text-muted">
+                      {w.provider ? `Provider ${w.provider}. ` : ""}
+                      {w.attempts} attempt{w.attempts === 1 ? "" : "s"}
+                    </p>
+                    {w.error && <p className="break-words text-danger">{w.error}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
           </Card>
           {gates.length > 0 && (
             <Card>

@@ -1,7 +1,7 @@
 import "server-only";
 import { db } from "./db.ts";
 import type { GateId, GateResult } from "../studio/qc.ts";
-import type { ReviewKind, ReviewPayload, ReviewState } from "../studio/review.ts";
+import type { ReviewKind, ReviewMedia, ReviewPayload, ReviewState } from "../studio/review.ts";
 
 export interface ReviewCard {
   id: string;
@@ -31,6 +31,25 @@ function toPayload(raw: unknown): ReviewPayload {
   if (Array.isArray(p.issues)) payload.issues = p.issues.filter((i): i is string => typeof i === "string");
   if (typeof p.error === "string") payload.error = p.error;
   if (typeof p.reason === "string") payload.reason = p.reason;
+  if (Array.isArray(p.checks)) payload.checks = p.checks.filter((i): i is string => typeof i === "string");
+  if (typeof p.media === "object" && p.media !== null) {
+    const m = p.media as Record<string, unknown>;
+    const media: ReviewMedia = {};
+    if (Array.isArray(m.images)) {
+      media.images = m.images.flatMap((i) => {
+        const r = (typeof i === "object" && i !== null ? i : {}) as Record<string, unknown>;
+        if (typeof r.assetId !== "string" || !/^[0-9a-f-]{36}$/i.test(r.assetId)) return [];
+        return [{ assetId: r.assetId, shotRef: typeof r.shotRef === "string" ? r.shotRef : "", provider: typeof r.provider === "string" ? r.provider : "" }];
+      });
+    }
+    const id = (v: unknown): string | undefined => (typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
+    const audio = id(m.audioAssetId);
+    const video = id(m.videoAssetId);
+    if (audio) media.audioAssetId = audio;
+    if (video) media.videoAssetId = video;
+    if (typeof m.voiceProvider === "string") media.voiceProvider = m.voiceProvider;
+    payload.media = media;
+  }
   return payload;
 }
 

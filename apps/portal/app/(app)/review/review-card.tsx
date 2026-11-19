@@ -23,6 +23,62 @@ export interface ReviewCardView {
 
 const BTN = "min-h-12 w-full sm:w-auto";
 
+function MediaBlock({ stage, payload }: { stage: string; payload: ReviewPayload }) {
+  const media = payload.media;
+  const checks = payload.checks ?? [];
+  const images = media?.images ?? [];
+  const termsLine = [...(payload.issues ?? []), ...checks].some((l) => /commercial-use terms|provider terms/i.test(l));
+  if (!media && checks.length === 0) return null;
+  return (
+    <div className="space-y-3" data-testid="review-media">
+      {stage === "assets" && images.length > 0 && (
+        <ul className="grid grid-cols-2 gap-2" data-testid="asset-grid">
+          {images.map((img) => (
+            <li key={img.assetId} className="min-w-0 space-y-1">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={`/api/assets/${img.assetId}`} alt={`Shot ${img.shotRef}`} loading="lazy" className="aspect-[9/16] w-full rounded-lg border border-border bg-surface-2 object-cover" />
+              <p className="break-words text-xs text-muted">
+                {img.shotRef} · {img.provider || "unknown provider"}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {stage === "assets" && termsLine && (
+        <p className="break-words text-sm" data-testid="provider-terms-notice">
+          Some images come from a provider whose commercial-use terms are not confirmed.{" "}
+          <Link href="/settings" className="inline-flex min-h-11 items-center text-accent underline-offset-2 hover:underline">
+            Confirm the terms in Settings
+          </Link>
+        </p>
+      )}
+      {stage === "voice" && media?.audioAssetId && (
+        <div className="space-y-1">
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <audio controls preload="none" src={`/api/assets/${media.audioAssetId}`} className="w-full" data-testid="voice-audio" />
+          {media.voiceProvider && <p className="text-xs text-muted">Voice: {media.voiceProvider}</p>}
+        </div>
+      )}
+      {(stage === "render" || stage === "qc") && media?.videoAssetId && (
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <video controls playsInline preload="metadata" src={`/api/assets/${media.videoAssetId}`} className="aspect-[9/16] max-h-[70vh] w-full rounded-lg bg-black" data-testid="render-video" />
+      )}
+      {checks.length > 0 && (
+        <ul className="list-disc space-y-1 pl-5 text-xs text-muted" data-testid="review-checks">
+          {checks.map((line, i) => (
+            <li key={`${i}-${line}`} className="break-words">
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
+      {(stage === "render" || stage === "qc") && (
+        <p className="text-xs text-muted">The presentation check is manual in Phase 4. Watch the video before you approve.</p>
+      )}
+    </div>
+  );
+}
+
 export function ReviewCard({ item }: { item: ReviewCardView }) {
   const [state, formAction] = useActionState(decideReviewAction, undefined);
   const p = item.payload;
@@ -79,6 +135,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
           <>
             {p.summary && <p className="whitespace-pre-wrap break-words text-sm">{p.summary}</p>}
             {p.reason && <p className="text-xs text-muted">{p.reason}</p>}
+            <MediaBlock stage={item.stage} payload={p} />
             <form action={formAction}>
               <input type="hidden" name="reviewId" value={item.id} />
               <input type="hidden" name="decision" value="approve" />
@@ -101,6 +158,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
                 </li>
               ))}
             </ul>
+            <MediaBlock stage={item.stage} payload={p} />
           </>
         )}
 
