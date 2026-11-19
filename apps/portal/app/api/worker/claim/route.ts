@@ -30,10 +30,11 @@ export async function POST(req: Request) {
     const input = await parseJson(req, schema);
     if (input instanceof Response) return input;
     const capabilities = sanitizeCapabilities(input.capabilities);
+    const jobTypes = input.jobTypes ?? LEGACY_JOB_TYPES;
     const sql = db();
     await sql`
       UPDATE workers SET capabilities = ${capabilities}::text[], mode = ${input.mode}, version = ${input.version},
-        last_claim_at = now()
+        job_types = ${jobTypes}::text[], last_claim_at = now()
       WHERE id = ${worker.id}
     `;
     // Draining workers finish what they have but get nothing new.
@@ -43,7 +44,7 @@ export async function POST(req: Request) {
     const until = Date.now() + waitMs;
     let touched = Date.now();
     for (;;) {
-      const job = await claimJob(worker.id, capabilities, input.jobTypes ?? LEGACY_JOB_TYPES);
+      const job = await claimJob(worker.id, capabilities, jobTypes);
       if (job) return Response.json({ job } satisfies ClaimResponse, { headers: { "cache-control": "no-store" } });
       if (Date.now() + POLL_MS > until || req.signal.aborted) break;
       await sleep(POLL_MS);

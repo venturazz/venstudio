@@ -4,6 +4,7 @@ import { Download } from "lucide-react";
 import { requireUser, hasRole } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { JOB_TYPES, reapExpiredLeases } from "@/lib/server/jobs.ts";
+import { explainQueuedJob } from "@/lib/server/queue-reasons.ts";
 import { Card, CardBody, CardHeader, PageHeader, cn, timeAgo } from "@/components/ui.tsx";
 import { ConfirmButton, SubmitButton } from "@/components/client.tsx";
 import { JobStatus } from "@/components/status.tsx";
@@ -36,6 +37,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
   const active = job.status === "queued" || job.status === "running";
   const canEdit = hasRole(user.role, "editor");
   const label = JOB_TYPES[job.type as keyof typeof JOB_TYPES]?.label ?? job.type;
+  const waiting = job.status === "queued" ? await explainQueuedJob(id) : [];
 
   return (
     <>
@@ -65,6 +67,18 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="space-y-6">
+          {waiting.length > 0 && (
+            <Card>
+              <CardHeader title="Why it's waiting" />
+              <CardBody>
+                <ul className="list-disc space-y-1.5 pl-5 text-sm">
+                  {waiting.map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              </CardBody>
+            </Card>
+          )}
           <Card>
             <CardBody className="space-y-3">
               <div className="flex items-center justify-between gap-3">
