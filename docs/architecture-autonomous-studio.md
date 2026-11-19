@@ -56,7 +56,7 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | Stage | Executor |
 |---|---|
 | idea, research, script, storyboard | hermes |
-| assets | portal work orders: Hermes `image_gen` chain, then 9router images (only when the scan lists an image model), CC0 library through a worker `fetch-asset` job, Muse agent task only behind a flag |
+| assets | portal work orders: Hermes `image_gen` chain (Hermes picks its providers), then a 9router image model only once a real call proved it, CC0 library through a worker `fetch-asset` job, Muse agent task only behind a flag |
 | voice | portal: optional Kokoro override, then Kokoro through 9router, then Hermes asked for Kokoro, then CapCut through Hermes |
 | draft | skipped in Phase 4 (no animatic yet) |
 | render | worker (`render-video`) |
@@ -67,7 +67,7 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | publish | portal |
 | learn | portal (metrics into template stats) |
 
-## 3. Data model (migrations 0007 to 0010)
+## 3. Data model (migrations 0007 to 0011)
 
 All tables use `uuid` primary keys and `timestamptz` times, matching existing migrations. Append-only numbered SQL;
 `scripts/e2e.sh` asserts a second migrate run says "up to date".
@@ -123,6 +123,14 @@ As built in `0010_capabilities.sql` (Phase 4.5): `capability_scans` is a one-row
 `current`, `scanned_at`, `hermes` jsonb, `router` jsonb, `error`). The scan upserts it. Pages read only this row and never
 call Hermes or 9router while rendering. `scripts/e2e.sh` checks the table exists.
 
+As built in `0011_hermes_pacing.sql`: `hermes_gate` is a one-row table (`id` text primary key `hermes`, `busy_until`,
+`consecutive`, `last_status`, `last_reason`, `updated_at`) holding the shared Hermes busy time. `endpoint_health`
+(primary key `endpoint`+`model`+`kind`; `endpoint` is `9router` or `hermes`, `kind` is `image` or `tts`;
+`last_success_at`, `last_failure_at`, `failure_class` of `busy`, `auth`, `client`, `server`, `unreachable` or
+`content`, `last_error`, `quarantined_at`, `successes`, `failures`) records what real calls showed. `pipeline_stages`
+gains `not_before`, and `work_orders` gains `not_before` and `wait_reason`. `scripts/e2e.sh` checks the tables, the
+idle gate row, the columns and the failure-class check. See section 5, Pacing and endpoint health.
+
 Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
 the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and
 saves a `draft` template. A draft stays a draft; `readyForTrials` is true only with three or more samples.
@@ -175,7 +183,8 @@ CapCut backup narration must be WAV or MP3: the portal can measure those lengths
 Hermes with a request for WAV or MP3.
 
 Fallback chain per shot (`fallbackChain`), one work order at a time (`FOR UPDATE SKIP LOCKED`):
-1. Hermes image, two attempts, each asking Hermes up to 3 times with the problems fed back.
+1. Hermes image, two attempts, each asking Hermes up to 3 times with the problems fed back. (Since 0011: a rate limit
+   is not an attempt, and a 9router image model proven by a real call comes between this step and the CC0 library.)
 2. CC0 library: Hermes names a candidate (`VENSTUDIO_STAGE: cc0`), the portal checks the host allowlist and a CC0 or
    public-domain licence string, and a `fetch-asset` job downloads it. The work order waits for the job. The licence
    text is Hermes' claim, so it is stored as "Claimed ... (stated by Hermes, not verified)" with the licence or source
@@ -235,7 +244,7 @@ or nothing listed) and what to do.
 | Stage | Today |
 |---|---|
 | research, script, storyboard | Hermes, with discovered skill names added to the prompt as a DATA block (at most 5, hints only) |
-| image | Hermes `image_gen`, then 9router `POST /v1/images/generations`, then CC0 library, then Muse agent |
+| image | Hermes `image_gen`, then 9router `POST /v1/images/generations` with a proven model only, then CC0 library, then Muse agent |
 | voice | optional `KOKORO_BASE_URL` override, 9router TTS, Hermes asked for Kokoro (`VENSTUDIO_STAGE: tts-kokoro`), Hermes CapCut (`tts-capcut`) |
 | editing, subtitles | worker `render-video` (ffmpeg) |
 | video-clips, music, sfx, thumbnail, CapCut editing | listed in the map as "Found, not used yet": no stage calls them, so a listing does not prove they work. The card says so per stage. The owner (or an editor) can press **Check skills**: one Hermes chat turn (`VENSTUDIO_STAGE: skill-check`, no retry, 120 s) that gets only the skill names in a DATA block and is told to load each skill without running it. Hermes answers per skill `{name, loadable, inputs, output: file-path\|url\|base64\|text\|unknown, note}`. The answer is validated (`validateSkillCheck`: only asked names, bounded text), stored inside the Hermes part of the capability snapshot and kept across rescans. The card shows it as Hermes's own answer, not a test run: a loadable skill that returns a URL or base64 "could be used by a later phase", one that returns a file path "needs a file hand-off in Phase 5". Generation is not run from Settings: it would spend provider quota on an output contract that is not defined yet. The real first call happens in Phase 5 |
@@ -250,7 +259,7 @@ probe worked and names a Kokoro voice. Otherwise (no scan, a failed TTS probe, o
 reported.
 
 Image order. Hermes `image_gen` stays first because its provider chain is proven live. 9router images come second and
-only when the snapshot lists an image model (the first listed, or the one matching `HERMES_IMAGE_PROVIDER_ORDER`).
+only with a model a real call has proven (superseded rule: the first listed model; see Pacing and endpoint health).
 
 Provenance. `buildProvenance` records the executor that really produced each asset: `router-tts`, `hermes-kokoro`,
 `router-image` besides the existing ones, plus `metadata.via` (`9router`, `hermes` or `direct`). `asset_providers`
@@ -262,7 +271,7 @@ shown as "not verified" and are never passed back as prompt hints. A stage whose
 "Ready (unverified)", not "Ready". The scan asks Hermes once (no retry) while `hermesStatus()` runs beside it, and that
 call can fall back to a chat skills listing with a 180 s timeout, so a manual scan takes up to three minutes.
 
-Optional env. `KOKORO_*`, `TTS_BACKUP`, `HERMES_IMAGE_PROVIDER_ORDER` and `HERMES_MEDIA_ORIGINS` are overrides. Nothing
+Optional env. `KOKORO_*`, `TTS_BACKUP`, `HERMES_IMAGE_PROVIDER_ORDER`, `HERMES_MEDIA_ORIGINS` and `HERMES_MAX_CONCURRENCY` are overrides. Nothing
 beyond `NINEROUTER_*` and `HERMES_*` is required.
 
 Per-stage trade-off:
@@ -271,7 +280,7 @@ Per-stage trade-off:
 |---|---|---|
 | research, script, storyboard, CapCut editing, music, thumbnail | Hermes | Agentic work. The skills live in Hermes. The output is text, or files Hermes has to hand back as base64 or a link |
 | voice | 9router first, then Hermes | 9router direct returns raw audio bytes and deterministic HTTP errors. A Hermes chat reply can be a path or prose and costs a model turn, so it is the fallback |
-| images | Hermes first, then 9router | Hermes' `image_gen` chain is proven live. The 9router image models are unknown until a scan lists them |
+| images | Hermes first, then a proven 9router model | Hermes' `image_gen` chain is proven live and Hermes knows which of its providers work. A listed 9router model is not proof: the owner's Cloudflare model answered 400 "prompt is required" for every shot |
 | video-clips | 9router video API, listed only | No stage consumes clips yet. Creation requests bill, so they are never retried automatically |
 
 9router video API, for a later phase (reference, not wired): creation is asynchronous and returns a `request_id`. The
@@ -289,7 +298,76 @@ or failed validation the portal asks again up to 2 more times, feeding the valid
 try the stage fails with the reason and the owner sees a stage-error item with Retry. No `response_format` parameter is
 sent because the gateway may reject it; whether live Hermes keeps to the schema is measured with the "Test Hermes JSON"
 button on `/studio/runs`. Model output is data and is never executed. Prompts contain no secrets. The Hermes runs API
-for long tasks and its vision support are **unverified** and still unused.
+for long tasks and its vision support are **unverified** and still unused. Every model turn goes through the shared
+gate described next; a rate limit is not retried in this loop.
+
+### Pacing and endpoint health (migration 0011)
+
+The problem this solves: on the owner's deployment every shot of an assets stage failed within seconds with "Hermes
+answered HTTP 429", then a 9router 400, then a 429 from the CC0 search. The portal asked Hermes back to back with no
+wait, counted a 429 as a failed attempt, and sent the first listed 9router image model a request it could not take.
+
+**One gate for every Hermes model turn** (`lib/server/hermes-gate.ts`, pure rules in `lib/studio/pacing.ts`). All
+callers go through it: the director stages, images, the CC0 search, voice through Hermes, the capability scan, Check
+skills, the revision classifier, Test Hermes JSON and the chat skills fallback in `hermes.ts`. The `/v1/capabilities`
+and `/v1/skills` GETs of the status card are not model turns and stay outside.
+- Concurrency: one model turn at a time in the portal process. `HERMES_MAX_CONCURRENCY` (1 to 8) is an optional
+  override, not required. A turn waits at most 2 minutes for a slot (`GATE_QUEUE_TIMEOUT_SEC`), then it answers busy
+  with a one-minute not-before ("busy with other studio work"). Owner clicks use a shorter wait (5 s for the revision
+  classifier, which then falls back to keywords). The stuck-stage limits count this wait (`HERMES_ASK_WORST_SEC`).
+- Busy time: `hermes_gate.busy_until` in Postgres, so a restart keeps it. While it is in the future no call is made.
+  It is set on HTTP 429 or 503, and on a reply that failed validation and reads like a rate limit (429, "rate limit",
+  "too many requests", "quota exceeded", "overloaded"). The wait is `Retry-After` (delay seconds or an HTTP date, at
+  least 1 s, at most 1 h per wait), otherwise exponential backoff from 15 s doubling to 10 min. A normal answer resets
+  the backoff. The cause of a 429 (Hermes's own concurrency limit or its upstream model) does not matter: both are waits.
+
+**Busy is not failure.** `hermesJson`/`hermesText` return `cause: "busy"` and `busyUntil`. A work order goes back to
+pending with its attempt returned and `not_before`/`wait_reason` set; the stage goes back to pending with
+`not_before` and `output.hermesWait` (`deferStage`). Director stages and the voice stage (when 9router could not speak
+and Hermes is busy) do the same. `claimNext` and `claimOrder` skip anything whose not-before is in the future. The run
+page and the Review inbox show "Waiting for Hermes (rate limited), next try at HH:MM UTC, in about N min" (UTC
+because pages render on the server). `output.waitSince` marks when the wait began; a stage that has waited 3 hours
+(`HERMES_WAIT_GIVE_UP_MS`) without progress becomes a stage error with Retry.
+
+Resuming, and why both: an in-process timer (`scheduleResume`) calls `advanceRun` when the not-before passes, so a
+short wait resumes within a second. A timer dies with the process, so the worker claim route also calls
+`nudgeRecovery()` after its response: a reaper pass at most once a minute. Workers in hold mode call claim every ~25 s,
+so recovery no longer depends on someone opening `/review`, `/studio/runs` or a run page (those still reap too). The
+reaper's orphan query only restarts runs whose pending stage is due. Trade-off: with no worker polling and no page
+open, a wait that outlives a restart resumes on the next claim or page load, not at the exact minute.
+
+**Systemic pause.** If the first two orders of an assets pass fail with the same systemic cause (`auth`, `unreachable`,
+`server`; see `systemicPause` and `orderFailureCause`), the pass stops, those orders return to pending with their
+attempt, and one stage error says "Paused after the first 2 shots failed the same way: ..." with Retry. The other
+shots are not tried. A model-specific 4xx (`client`) and a bad answer (`content`) never pause: they belong to one shot.
+
+**No blind 9router.** `endpoint_health` records every real 9router image and speech call, the Settings tests, and
+Hermes's own report of which provider made a picture (endpoint `hermes`, from `provider` and the new `tried` list in the
+image reply; a self-report used for health only, never for terms). A 4xx client error (for example "prompt is
+required" or "Invalid model format") sets the model aside (`quarantined_at`) for 7 days or until a success lifts it.
+Within a stage a model that answered 4xx is excluded at once, even if the health write failed.
+- Images: the automatic chain uses a 9router model only if a real call proved it (`pickProvenImageModel`; the
+  `HERMES_IMAGE_PROVIDER_ORDER` hint wins among proven ones, else the newest success). Trade-off chosen: 9router is
+  not in the chain by default. A new image model costs one press of **Test 9router image** in Settings, which tries
+  proven, then untried, then set-aside models (at most three) and stops at the first real picture. The alternative,
+  trying listed models in production, is what failed every shot. Hermes picks its own providers anyway, so 9router is
+  only the fallback.
+- Voice: a listed Kokoro voice is still tried automatically (that is the path that already worked in the owner's Test
+  voice, and a failed voice falls through to Hermes), but proven voices come first and set-aside ones are skipped
+  (`pickRouterVoiceWithHealth`). `KOKORO_VOICE` still wins when listed. **Test voice** ignores the quarantine, so the
+  owner can lift it. A 500 or 503 never sets a voice aside.
+- Settings wording: the capability card marks 9router chips "proven by a real call", "listed, not proven yet" or
+  "set aside after a request error". A listed-only image model does not count as used, and a listed-only voice makes
+  the stage "Ready (unverified)", not "Ready". The image card lists each 9router model with its health.
+- Errors: 9router error bodies are shortened to the provider message (`shortProviderError`), e.g. "Cloudflare: prompt
+  is required (code 3030)", at most 200 characters per step and 500 per work order.
+
+**Let Hermes choose.** The image prompt tells Hermes to let its `image_gen` chain fall through its own providers
+(cloudflare, agnes, canva, qwen, minimax, sensenova ...) and report the one that succeeded in `provider` and the ones
+that failed in `tried`. A reply that says every provider is rate limited is a wait. Provenance and `asset_providers`
+still record the provider as before (`unlisted-<name>` unless it is in `HERMES_IMAGE_PROVIDER_ORDER`), and commercial
+terms are still set by the owner only. A rate limit never moves a shot to 9router: waiting keeps Hermes's choice of
+provider, at the cost of time.
 
 ## 6. Muse agent-task delivery (UNVERIFIED, needs a Muse test)
 
@@ -373,6 +451,19 @@ Not verified, because it needs the owner's live systems:
 - `G-presentation` (vision). Not built; the owner watches the video and decides.
 - Non-English Kokoro voices, and a full-length render on a Muse VM (2 vCPU, 8 GB, no GPU).
 
+### After deploying the pacing fix (migration 0011)
+1. Check the container log says migration `0011_hermes_pacing.sql` applied.
+2. Settings, Studio capabilities: press **Scan now**. 9router image chips should read "listed, not proven yet".
+3. Settings, Image providers: press **Test 9router image**. A model that refuses the request shows a short reason
+   (for example "Cloudflare: prompt is required (code 3030)") and is set aside; the first that works is proven. If none
+   works, the studio simply does not use 9router images.
+4. Press **Test voice** once so the Kokoro voice is marked proven.
+5. Retry the failed assets stage in Review. If Hermes is busy, the run page shows "Waiting for Hermes (rate limited),
+   next try at HH:MM UTC" and continues on its own; nothing should fail with HTTP 429. Keep a worker in hold mode so
+   waits resume after a restart without opening a page.
+6. If Hermes stays rate limited, look at its own log for the cause (its API server limit or its upstream model). Setting
+   `HERMES_MAX_CONCURRENCY` above 1 only helps when Hermes can take parallel turns.
+
 ### First live run checklist (owner)
 1. Open Settings, Studio capabilities, and press **Scan now**. Read the map: voice should show a Kokoro model via
    9router, images should show Hermes providers. No Kokoro variable is needed.
@@ -406,8 +497,9 @@ typecheck and build cannot run in the offline sandbox, so types are written cons
 
 ### Recovery of lost stages (Phase 3)
 
-`reapStuckStages` fails a stage that has been running longer than `STUCK_MINUTES` (15, above the 540 s worst case of
-`hermesJson`), in one transaction with the run update and the `stage-error` review. It also calls `advanceRun` for
-running runs that have a pending stage and no running one. It runs only when `/review`, `/studio/runs` or a run page
-renders; there is no periodic caller yet, so a phone that never opens those pages does not trigger recovery. A
-blocked stage (for example a retired template) opens a `stage-error` review instead of failing the run silently.
+`reapStuckStages` fails a stage that has been running longer than `STUCK_MINUTES` (21, above the 900 s worst case of
+`hermesJson` with its gate waits), in one transaction with the run update and the `stage-error` review. It also calls
+`advanceRun` for running runs that have a due pending stage and no running one. It runs when `/review`, `/studio/runs`
+or a run page renders, and, since migration 0011, from the worker claim route through `nudgeRecovery` (at most once a
+minute), so a phone that never opens those pages still gets recovery while a worker polls. A blocked stage (for
+example a retired template) opens a `stage-error` review instead of failing the run silently.

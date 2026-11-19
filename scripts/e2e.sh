@@ -118,6 +118,18 @@ echo "== migration 0009 created the production tables"
 echo "== migration 0010 created the capability scan table"
 [ "$(q "SELECT to_regclass('public.capability_scans') IS NOT NULL")" = "t" ] || fail "table capability_scans missing after migration 0010"
 
+echo "== migration 0011 created the Hermes gate, endpoint health and wait columns"
+[ "$(q "SELECT to_regclass('public.hermes_gate') IS NOT NULL")" = "t" ] || fail "table hermes_gate missing after migration 0011"
+[ "$(q "SELECT count(*) FROM hermes_gate WHERE id = 'hermes' AND busy_until IS NULL AND consecutive = 0")" = "1" ] || fail "hermes_gate should start with one idle row"
+[ "$(q "SELECT to_regclass('public.endpoint_health') IS NOT NULL")" = "t" ] || fail "table endpoint_health missing after migration 0011"
+for col in pipeline_stages.not_before work_orders.not_before work_orders.wait_reason; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '${col%%.*}' AND column_name = '${col#*.}'")" = "1" ] || fail "column $col missing after migration 0011"
+done
+# A 4xx must be storable as a quarantine, and an unknown failure class must be refused.
+q "INSERT INTO endpoint_health (endpoint, model, kind, last_failure_at, failure_class, quarantined_at, failures) VALUES ('9router', 'e2e/check', 'image', now(), 'client', now(), 1)" >/dev/null
+q "INSERT INTO endpoint_health (endpoint, model, kind, failure_class) VALUES ('9router', 'e2e/bad', 'image', 'nonsense')" >/dev/null 2>&1 && fail "endpoint_health accepted an unknown failure class"
+q "DELETE FROM endpoint_health WHERE model = 'e2e/check'" >/dev/null
+
 echo "== render-video renders generated stills and a WAV, then qc-video measures the result"
 STILLS="$WORK/stills"
 mkdir -p "$STILLS"
