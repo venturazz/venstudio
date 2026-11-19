@@ -97,7 +97,7 @@ export function makeWav(seconds, sampleRate = 24000, hz = 220) {
 // so they satisfy the script and storyboard gates for whichever template is used.
 function directorReply(messages) {
   const first = messages.find((m) => m.role === "user")?.content ?? "";
-  const stage = /^VENSTUDIO_STAGE: (\w+)/m.exec(first)?.[1] ?? "";
+  const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
   if (stage === "selftest") return '{"ok":true,"sum":5}';
   if (stage === "classify") return JSON.stringify({ stage: "idea", reason: "The owner wants different ideas" });
   if (stage === "idea") {
@@ -788,7 +788,13 @@ try {
   const calls = fakeStats.routerSpeechCalls;
   router.tts = "error";
   await page.getByRole("button", { name: "Test voice" }).click();
-  await page.getByText("Voice made by hermes-kokoro through Hermes").waitFor({ timeout: 60_000 });
+  try {
+    await page.getByText("Voice made by hermes-kokoro through Hermes").waitFor({ timeout: 60_000 });
+  } catch (err) {
+    const panel = await page.locator("form", { has: page.getByRole("button", { name: "Test voice" }) }).first().innerText().catch(() => "(voice panel not readable)");
+    console.error(`Test voice fallback did not show. Voice panel text:\n${panel}\nfakeStats: ${JSON.stringify(fakeStats)}\nrouter: ${JSON.stringify(router)}`);
+    throw err;
+  }
   router.tts = "ok";
   if (fakeStats.hermesKokoroCalls < 1) throw new Error("the voice did not fall back to Hermes Kokoro when 9router speech failed");
   if (fakeStats.routerSpeechCalls !== calls) throw new Error("the failing 9router speech endpoint was counted as a success");
