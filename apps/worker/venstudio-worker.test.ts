@@ -3,9 +3,22 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { AlreadyRunningError, enroll, handlers, loop, normalizePortalUrl, parseArgs, NonRetryableError } from "./venstudio-worker.ts";
+import {
+  AlreadyRunningError,
+  enroll,
+  handlers,
+  loop,
+  normalizePortalUrl,
+  parseArgs,
+  NonRetryableError,
+  parseLoudness,
+  parseProbe,
+  parseShowinfoTimes,
+  summarizeAnalysis,
+} from "./venstudio-worker.ts";
 
 /** In-memory fake of the portal's worker API. */
 function fakePortal() {
@@ -17,6 +30,7 @@ function fakePortal() {
     completed: new Map<string, Record<string, unknown>>(),
     failed: new Map<string, { error: string; retryable: boolean }>(),
     artifacts: new Map<string, { bytes: number; sha256: string }>(),
+    inputs: new Map<string, Buffer>(),
     heartbeats: 0,
     claims: [] as Array<{ capabilities: string[]; mode: string; waitSeconds?: number }>,
   };
@@ -62,6 +76,15 @@ function fakePortal() {
           heartbeatIntervalSeconds: 5,
         },
       });
+    }
+    const inputMatch = /^\/api\/worker\/jobs\/([^/]+)\/inputs\/([^/]+)$/.exec(url);
+    if (inputMatch && req.method === "GET") {
+      const [, jobId, assetId] = inputMatch;
+      if (!state.running.has(jobId)) return json(res, 409, { error: "not running" });
+      const data = state.inputs.get(assetId);
+      if (!data) return json(res, 404, { error: "no such asset" });
+      res.writeHead(200, { "content-type": "application/octet-stream", "x-sha256": createHash("sha256").update(data).digest("hex") });
+      return res.end(data);
     }
     const m = /^\/api\/worker\/jobs\/([^/]+)\/(heartbeat|complete|fail|artifacts\/(.+))$/.exec(url);
     if (!m) return json(res, 404, { error: "not found" });
@@ -253,4 +276,76 @@ test("hold mode stays online, picks up a job queued mid-run within seconds, and 
   assert.ok(portal.state.claims.every((c) => c.mode === "hold"));
   assert.ok(portal.state.claims.every((c) => (c.waitSeconds ?? 0) <= 2), "never waits past the cap");
   assert.ok(portal.state.claims.length <= 6, `long-poll keeps claim count low (${portal.state.claims.length})`);
+});
+
+test("analysis parsers: cut times, dedupe, loudness and probe", () => {
+  const log = "n:0 pts_time:0.000\nn:1 pts_time:2.000\nn:2 pts_time:2.033\nn:3 pts_time:4.000\nn:4 pts_time:6.9999";
+  assert.deepEqual(parseShowinfoTimes(log, 7), [2, 4]);
+  assert.equal(parseLoudness("t: 1 M: -20.1 I: -22.0 LUFS\nSummary:\n  I:  -14.2 LUFS\n  LRA: 3 LU"), -14.2);
+  assert.equal(parseLoudness("no audio here"), null);
+  const probe = parseProbe({
+    format: { duration: "7.000000" },
+    streams: [{ codec_type: "video", r_frame_rate: "30000/1001", width: 1080, height: 1920 }, { codec_type: "audio" }],
+  });
+  assert.deepEqual(probe, { durationSec: 7, width: 1080, height: 1920, fps: 29.97, hasAudio: true });
+  assert.throws(() => parseProbe({ format: { duration: "5" }, streams: [{ codec_type: "audio" }] }), NonRetryableError);
+  const doc = summarizeAnalysis({ assetId: "a", probe, cuts: [2, 4], loudnessLufs: -14 });
+  assert.equal(doc.shots.count, 3);
+  assert.equal(doc.shots.avgSeconds, 2.33);
+  assert.equal(doc.hook.firstCutSeconds, 2);
+  assert.equal(doc.pacing.cutsPerMinute, 17.14);
+});
+
+const hasFfmpeg = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+test("analyze-video downloads a reference, finds its cuts and loudness, and uploads analysis.json", { skip: !hasFfmpeg && "ffmpeg is not installed" }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Analysis worker" });
+
+  // Three flat colour shots: cuts at 2 s and 4 s, plus a sine tone for loudness.
+  const clip = path.join(home, "reference.mp4");
+  execFileSync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=red:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "color=c=green:s=320x240:d=3:r=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=7",
+    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]", "-map", "[v]", "-map", "3:a",
+    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", clip,
+  ]);
+  const assetId = "11111111-2222-4333-8444-555555555555";
+  const jobId = "22222222-3333-4444-8555-666666666666";
+  portal.state.inputs.set(assetId, await readFile(clip));
+  portal.state.queue.push({ id: jobId, type: "analyze-video", payload: { inputs: [assetId] } });
+
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+
+  const result = portal.state.completed.get(jobId) as Record<string, number | null>;
+  assert.ok(result, "analysis job completed");
+  assert.equal(result.cutCount, 2);
+  assert.equal(result.firstCutSeconds, 2);
+  assert.ok(Math.abs((result.avgShotSeconds as number) - 2.33) < 0.1, `avg shot ${result.avgShotSeconds}`);
+  assert.equal(result.width, 320);
+  assert.equal(typeof result.loudnessLufs, "number");
+  assert.ok((portal.state.artifacts.get(`${jobId}/analysis.json`)?.bytes ?? 0) > 100, "analysis.json uploaded");
+  await assert.rejects(stat(path.join(home, "work", jobId)), "work dir cleaned after completion");
+});
+
+test("analyze-video refuses a job without exactly one input asset", async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Guard worker" });
+  portal.state.queue.push({ id: "33333333-3333-4444-8555-666666666666", type: "analyze-video", payload: { inputs: [] } });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  assert.equal(portal.state.failed.get("33333333-3333-4444-8555-666666666666")?.retryable, false);
 });

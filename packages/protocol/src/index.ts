@@ -44,7 +44,7 @@ export const CAPABILITIES: readonly Capability[] = [
  */
 export type WorkerMode = "tick" | "hold" | "daemon";
 
-export type JobType = "echo" | "smoke-test";
+export type JobType = "echo" | "smoke-test" | "analyze-video";
 
 export interface EnrollRequest {
   code: string;

@@ -24,6 +24,11 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
     label: "Render smoke test",
     description: "Renders a 5-second 1080x1920 test clip with ffmpeg and uploads it. Measures render speed.",
   },
+  "analyze-video": {
+    capability: "ffmpeg",
+    label: "Analyze reference video",
+    description: "Finds cuts, pacing, hook timing and loudness. Study only: nothing from the video is copied.",
+  },
 };
 
 export async function createJob(input: {

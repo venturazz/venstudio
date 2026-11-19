@@ -83,6 +83,16 @@ Use `docker-compose.coolify.yml` (Docker Compose build pack). Step-by-step: [doc
 
 For a VPS or your own PC, use the `curl … install.sh … --mode daemon` command shown in the same dialog.
 
+## Studio and Assets (planning and library)
+
+- **Studio** (`/studio`): choose a format (short or long), a theme and a style. Suggest styles from a brief, preview the
+  stage plan, and save it as a production. Stages marked *Runs now* can run today; the rest are planned until their
+  workers are built. The style library is at `/studio/styles`.
+- **Assets** (`/assets`): every reference, image, audio file or worker output, with its source, licence and origin.
+  Publishing checks these notes. Reference videos can be analyzed for cuts, pacing, hook timing and loudness; they
+  can never appear in a published video.
+- Design and sources: [docs/research/03-production-styles-and-muse-capabilities.md](docs/research/03-production-styles-and-muse-capabilities.md).
+
 ## Roadmap
 
 1. **Foundation (this):** auth, channels, worker fleet, job queue, smoke-test rendering, 9router status.

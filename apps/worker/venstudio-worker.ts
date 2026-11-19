@@ -18,11 +18,14 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { fileURLToPath } from "node:url";
 import type {
   Capability,
@@ -147,6 +150,50 @@ export class PortalClient {
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
+  /** Downloads one input asset of this job and verifies its SHA-256 before the file is used. */
+  async download(jobId: string, assetId: string, dest: string): Promise<{ bytes: number; sha256: string }> {
+    let lastErr: unknown;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const res = await fetch(`${this.base}/api/worker/jobs/${jobId}/inputs/${assetId}`, {
+          headers: this.headers(),
+          signal: AbortSignal.timeout(30 * 60_000),
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => "");
+          const err = new HttpError(res.status, `download ${assetId} -> ${res.status}: ${text.slice(0, 200)}`);
+          if (res.status < 500) throw err;
+          lastErr = err;
+        } else {
+          const expected = res.headers.get("x-sha256") ?? "";
+          const tmp = `${dest}.part`;
+          const hash = createHash("sha256");
+          let bytes = 0;
+          const meter = new Transform({
+            transform(chunk: Buffer, _enc, cb) {
+              hash.update(chunk);
+              bytes += chunk.length;
+              cb(null, chunk);
+            },
+          });
+          await pipeline(Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>), meter, createWriteStream(tmp));
+          const sha256 = hash.digest("hex");
+          if (expected && sha256 !== expected) {
+            await rm(tmp, { force: true });
+            throw new Error(`download ${assetId}: checksum mismatch`);
+          }
+          await rename(tmp, dest);
+          return { bytes, sha256 };
+        }
+      } catch (err) {
+        if (err instanceof HttpError && err.status < 500) throw err;
+        lastErr = err;
+      }
+      await sleep(2000 * (i + 1));
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
   async upload(jobId: string, name: string, file: string, contentType: string) {
     const info = await stat(file);
     let lastErr: unknown;
@@ -211,6 +258,8 @@ export interface JobContext {
   signal: AbortSignal;
   progress: (fraction: number, message?: string) => void;
   upload: (name: string, file: string, contentType: string) => Promise<{ bytes: number; sha256: string }>;
+  /** Fetches an input asset of this job (only assets listed in the job payload are allowed). */
+  download: (assetId: string, dest: string) => Promise<{ bytes: number; sha256: string }>;
 }
 
 export class NonRetryableError extends Error {}
@@ -224,6 +273,132 @@ async function freeDiskGb(dir: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Reference analysis (study only: cuts, pacing, hook timing, loudness)
+
+export function ffmpegPath(): string {
+  return process.env.FFMPEG_PATH ?? "ffmpeg";
+}
+
+export function ffprobePath(): string {
+  if (process.env.FFPROBE_PATH) return process.env.FFPROBE_PATH;
+  if (process.env.FFMPEG_PATH) return path.join(path.dirname(process.env.FFMPEG_PATH), "ffprobe");
+  return "ffprobe";
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+export interface ProbeResult {
+  durationSec: number;
+  width: number;
+  height: number;
+  fps: number;
+  hasAudio: boolean;
+}
+
+/** Reads ffprobe's JSON. Throws a non-retryable error when the file has no video or no duration. */
+export function parseProbe(json: unknown): ProbeResult {
+  const j = json as { format?: { duration?: unknown }; streams?: Array<Record<string, unknown>> };
+  const streams = j.streams ?? [];
+  const video = streams.find((s) => s.codec_type === "video");
+  if (!video) throw new NonRetryableError("The file has no video stream");
+  const [num, den] = String(video.r_frame_rate ?? "0/1").split("/").map(Number);
+  const fps = den > 0 ? round2(num / den) : 0;
+  const durationSec = Number(j.format?.duration ?? video.duration ?? 0);
+  if (!(durationSec > 0)) throw new NonRetryableError("Could not read the video duration");
+  return {
+    durationSec: round2(durationSec),
+    width: Number(video.width) || 0,
+    height: Number(video.height) || 0,
+    fps,
+    hasAudio: streams.some((s) => s.codec_type === "audio"),
+  };
+}
+
+/** Cut times from ffmpeg's showinfo log. Detections within 0.2 s of each other are one cut. */
+export function parseShowinfoTimes(stderr: string, durationSec: number): number[] {
+  const times: number[] = [];
+  for (const m of stderr.matchAll(/pts_time:([0-9.]+)/g)) {
+    const t = Number(m[1]);
+    if (t > 0.05 && t < durationSec - 0.05) times.push(t);
+  }
+  const out: number[] = [];
+  for (const t of times.sort((a, b) => a - b)) {
+    if (out.length === 0 || t - out[out.length - 1] > 0.2) out.push(t);
+  }
+  return out;
+}
+
+/** Integrated loudness (LUFS) from ffmpeg's ebur128 summary: the last "I:" value. */
+export function parseLoudness(stderr: string): number | null {
+  const matches = [...stderr.matchAll(/\bI:\s+(-?\d+(?:\.\d+)?)\s+LUFS/g)];
+  if (matches.length === 0) return null;
+  const v = Number(matches[matches.length - 1][1]);
+  return Number.isFinite(v) ? v : null;
+}
+
+export interface AnalysisDoc {
+  schemaVersion: 1;
+  source: { assetId: string };
+  video: ProbeResult;
+  cuts: number[];
+  shots: { count: number; avgSeconds: number; medianSeconds: number; shortestSeconds: number; longestSeconds: number };
+  hook: { firstCutSeconds: number | null };
+  pacing: { cutsPerMinute: number };
+  loudnessLufs: number | null;
+}
+
+export function summarizeAnalysis(args: { assetId: string; probe: ProbeResult; cuts: number[]; loudnessLufs: number | null }): AnalysisDoc {
+  const d = args.probe.durationSec;
+  const bounds = [0, ...args.cuts, d];
+  const shots = bounds.slice(1).map((t, i) => t - bounds[i]).filter((s) => s > 0);
+  const sorted = [...shots].sort((a, b) => a - b);
+  const avg = shots.length ? shots.reduce((a, b) => a + b, 0) / shots.length : d;
+  return {
+    schemaVersion: 1,
+    source: { assetId: args.assetId },
+    video: args.probe,
+    cuts: args.cuts.map(round2),
+    shots: {
+      count: shots.length,
+      avgSeconds: round2(avg),
+      medianSeconds: round2(sorted[Math.floor(sorted.length / 2)] ?? d),
+      shortestSeconds: round2(sorted[0] ?? d),
+      longestSeconds: round2(sorted[sorted.length - 1] ?? d),
+    },
+    hook: { firstCutSeconds: args.cuts.length ? round2(args.cuts[0]) : null },
+    pacing: { cutsPerMinute: round2(args.cuts.length / (d / 60)) },
+    loudnessLufs: args.loudnessLufs === null ? null : round2(args.loudnessLufs),
+  };
+}
+
+/** Runs a command and returns its output. Rejects on a non-zero exit or when aborted. */
+export function runCapture(cmd: string, args: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const onAbort = () => child.kill("SIGTERM");
+    signal.addEventListener("abort", onAbort, { once: true });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c: string) => {
+      stdout += c;
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (c: string) => {
+      stderr += c;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) return reject(new Error("Aborted"));
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${cmd} exited with ${code}: ${stderr.trim().slice(-800)}`));
+    });
+  });
 }
 
 export const handlers: Record<string, Handler> = {
@@ -240,6 +415,50 @@ export const handlers: Record<string, Handler> = {
       behindProxy: Boolean(process.env.HTTPS_PROXY || process.env.https_proxy),
       ffmpeg: hasCommand(process.env.FFMPEG_PATH ?? "ffmpeg"),
       payload: ctx.job.payload,
+    };
+  },
+
+  async "analyze-video"(ctx) {
+    const inputs = Array.isArray(ctx.job.payload.inputs) ? ctx.job.payload.inputs.filter((v): v is string => typeof v === "string") : [];
+    const assetId = inputs[0];
+    if (!assetId || !/^[0-9a-f-]{36}$/i.test(assetId)) throw new NonRetryableError("analyze-video needs exactly one input asset");
+    const input = path.join(ctx.workDir, "input.bin");
+    if (!(await stat(input).catch(() => null))) {
+      ctx.progress(0.05, "Downloading reference");
+      await ctx.download(assetId, input);
+    }
+    ctx.progress(0.2, "Reading stream info");
+    const probe = parseProbe(
+      JSON.parse(
+        (await runCapture(ffprobePath(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input], ctx.signal)).stdout,
+      ),
+    );
+    ctx.progress(0.3, "Detecting cuts");
+    const scenes = await runCapture(
+      ffmpegPath(),
+      ["-hide_banner", "-nostats", "-i", input, "-an", "-vf", "select='gt(scene,0.3)',showinfo", "-f", "null", "-"],
+      ctx.signal,
+    );
+    const cuts = parseShowinfoTimes(scenes.stderr, probe.durationSec);
+    ctx.progress(0.8, "Measuring loudness");
+    const loudnessLufs = probe.hasAudio
+      ? parseLoudness((await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", input, "-af", "ebur128=peak=true", "-f", "null", "-"], ctx.signal)).stderr)
+      : null;
+    const doc = summarizeAnalysis({ assetId, probe, cuts, loudnessLufs });
+    const out = path.join(ctx.workDir, "analysis.json");
+    await writeFile(out, JSON.stringify(doc, null, 2));
+    await ctx.upload("analysis.json", out, "application/json");
+    return {
+      schemaVersion: 1,
+      durationSec: probe.durationSec,
+      cutCount: cuts.length,
+      avgShotSeconds: doc.shots.avgSeconds,
+      firstCutSeconds: doc.hook.firstCutSeconds,
+      cutsPerMinute: doc.pacing.cutsPerMinute,
+      loudnessLufs: doc.loudnessLufs,
+      width: probe.width,
+      height: probe.height,
+      fps: probe.fps,
     };
   },
 
@@ -378,6 +597,7 @@ export async function runJob(client: PortalClient, job: ClaimedJob, home: string
         lastProgress = f;
         if (msg) lastMessage = msg;
       },
+      download: (assetId, dest) => client.download(job.id, assetId, dest),
       upload: async (name, file, type) => {
         await beat(); // refresh the lease before a long upload
         const r = await client.upload(job.id, name, file, type);

@@ -8,8 +8,10 @@ import { pipeline } from "node:stream/promises";
 import { env } from "./env.ts";
 
 /**
- * Local-disk artifact storage (phase 1). The interface is small on purpose so it can be swapped
- * for S3/R2 presigned uploads later without touching the worker API shape.
+ * Local-disk storage (phase 1). Two scopes share one root:
+ *   <ARTIFACT_DIR>/<jobId>/<name>        worker outputs
+ *   <ARTIFACT_DIR>/assets/<assetId>/<name>  asset library files
+ * The interface is small so it can move to S3/R2 later without changing callers.
  */
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -19,27 +21,32 @@ export function isSafeArtifactName(name: string) {
   return NAME_RE.test(name) && !name.includes("..");
 }
 
-function artifactPath(jobId: string, name: string) {
-  if (!UUID_RE.test(jobId) || !isSafeArtifactName(name)) throw new Error("Invalid artifact path");
+function scopeRoot(scope: "jobs" | "assets") {
   const root = path.resolve(env().ARTIFACT_DIR);
-  const full = path.resolve(root, jobId, name);
-  if (!full.startsWith(root + path.sep)) throw new Error("Invalid artifact path");
+  return scope === "assets" ? path.join(root, "assets") : root;
+}
+
+function safePath(scope: "jobs" | "assets", id: string, name: string) {
+  if (!UUID_RE.test(id) || !isSafeArtifactName(name)) throw new Error("Invalid storage path");
+  const root = scopeRoot(scope);
+  const full = path.resolve(root, id, name);
+  if (!full.startsWith(root + path.sep)) throw new Error("Invalid storage path");
   return full;
 }
 
 export class TooLargeError extends Error {}
 
-export async function saveArtifact(jobId: string, name: string, body: ReadableStream<Uint8Array>) {
-  const full = artifactPath(jobId, name);
+async function writeBody(full: string, body: ReadableStream<Uint8Array>) {
   await mkdir(path.dirname(full), { recursive: true });
   const tmp = `${full}.upload-${process.pid}-${Date.now()}`;
-  const limit = env().MAX_ARTIFACT_MB * 1024 * 1024;
+  const limitMb = env().MAX_ARTIFACT_MB;
+  const limit = limitMb * 1024 * 1024;
   const hash = createHash("sha256");
   let bytes = 0;
   const meter = new Transform({
     transform(chunk: Buffer, _enc, cb) {
       bytes += chunk.length;
-      if (bytes > limit) return cb(new TooLargeError(`Artifact exceeds ${env().MAX_ARTIFACT_MB} MB`));
+      if (bytes > limit) return cb(new TooLargeError(`File exceeds ${limitMb} MB`));
       hash.update(chunk);
       cb(null, chunk);
     },
@@ -54,30 +61,42 @@ export async function saveArtifact(jobId: string, name: string, body: ReadableSt
   return { storagePath: full, bytes, sha256: hash.digest("hex") };
 }
 
-export async function openArtifact(storagePath: string, range?: { start: number; end: number }) {
+export async function saveArtifact(jobId: string, name: string, body: ReadableStream<Uint8Array>) {
+  return writeBody(safePath("jobs", jobId, name), body);
+}
+
+export async function saveAsset(assetId: string, name: string, body: ReadableStream<Uint8Array>) {
+  return writeBody(safePath("assets", assetId, name), body);
+}
+
+/** Opens a stored file for reading. Only files under the artifact root can be opened. */
+export async function openStored(storagePath: string, range?: { start: number; end: number }) {
   const root = path.resolve(env().ARTIFACT_DIR);
   const full = path.resolve(storagePath);
-  if (!full.startsWith(root + path.sep)) throw new Error("Invalid artifact path");
+  if (!full.startsWith(root + path.sep)) throw new Error("Invalid storage path");
   const info = await stat(full);
   return { size: info.size, stream: createReadStream(full, range ? { start: range.start, end: range.end } : undefined) };
 }
-
-export { parseRange } from "../range.ts";
 
 export function contentTypeFor(name: string, declared: string | null) {
   const ext = path.extname(name).toLowerCase();
   const known: Record<string, string> = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
+    ".mov": "video/quicktime",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".wav": "audio/wav",
     ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
     ".json": "application/json",
     ".txt": "text/plain; charset=utf-8",
     ".log": "text/plain; charset=utf-8",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".glb": "model/gltf-binary",
   };
   return known[ext] ?? (declared && /^[\w.+-]+\/[\w.+-]+$/.test(declared) ? declared : "application/octet-stream");
 }

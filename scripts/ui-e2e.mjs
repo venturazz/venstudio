@@ -196,6 +196,53 @@ try {
   await page.goto(`${APP}/`);
   await shot("07-overview-desktop");
 
+  step("studio: suggest a style from the brief, preview the plan, save it");
+  await page.goto(`${APP}/studio`);
+  await page.getByLabel("Describe the video or type keywords").fill("A history documentary about the Roman roads");
+  await page.getByRole("button", { name: "Suggest styles" }).click();
+  await page.getByText("Suggested styles").waitFor();
+  await page.getByRole("button", { name: /Narrated documentary with stills/ }).click();
+  await page.getByRole("button", { name: "Preview plan" }).click();
+  await page.getByText("Your review").waitFor();
+  await page.getByText("Muse: runs well").first().waitFor();
+  await page.getByRole("button", { name: "Save production" }).click();
+  await page.getByText("Saved as a planned production").waitFor();
+  await shot("13-studio-desktop");
+
+  step("assets: upload a reference video with its licence");
+  const refPath = path.join(OUT, "reference.mp4");
+  execFileSync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=red:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=2:r=30",
+    "-f", "lavfi", "-i", "color=c=green:s=320x240:d=3:r=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=7",
+    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]", "-map", "[v]", "-map", "3:a",
+    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", refPath,
+  ]);
+  await page.goto(`${APP}/assets`);
+  await page.setInputFiles("input[name=file]", refPath);
+  await page.fill("input[name=title]", "Test reference");
+  await page.selectOption("select[name=kind]", "reference-video");
+  await page.fill("input[name=license]", "Own test clip, study only");
+  await page.getByRole("button", { name: "Upload" }).click();
+  await page.getByText("Saved Test reference.").waitFor();
+
+  step("assets: analyze the reference, run the worker, see the cuts");
+  await page.locator("li", { hasText: "Test reference" }).getByRole("button", { name: "Analyze" }).click();
+  await page.waitForURL(/\/jobs\/[0-9a-f-]{36}$/);
+  runWorker([`${OUT}/worker/run.sh`, "tick"]);
+  await page.goto(`${APP}/assets`);
+  await page.locator("li", { hasText: "Test reference" }).getByText("2 cuts").waitFor({ timeout: 20_000 });
+  await shot("14-assets-desktop");
+
+  step("save a worker output to Assets");
+  await page.goto(`${APP}/jobs?status=succeeded`);
+  await page.getByRole("link").filter({ hasText: "Render smoke test" }).first().click();
+  await page.getByRole("button", { name: "Save to Assets" }).first().click();
+  await page.waitForURL(/\/assets$/);
+  await page.getByText("smoke-test: smoke-test.mp4").waitFor();
+
   step("mobile screenshots");
   const mobile = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -212,6 +259,9 @@ try {
     ["10-workers-mobile", "/workers"],
     ["11-jobs-mobile", "/jobs"],
     ["12-settings-mobile", "/settings"],
+    ["13-studio-mobile", "/studio"],
+    ["14-assets-mobile", "/assets"],
+    ["15-styles-mobile", "/studio/styles"],
   ]) {
     await m.goto(`${APP}${url}`);
     await m.waitForLoadState("networkidle");

@@ -9,6 +9,7 @@ import { ConfirmButton, SubmitButton } from "@/components/client.tsx";
 import { JobStatus } from "@/components/status.tsx";
 import { AutoRefresh } from "@/components/auto-refresh.tsx";
 import { cancelJobAction, retryJobAction } from "../actions.ts";
+import { promoteArtifactAction } from "../../assets/actions.ts";
 
 export const metadata = { title: "Job" };
 
@@ -109,6 +110,11 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
                         {(Number(a.bytes) / 1024 / 1024).toFixed(2)} MB <Download className="size-4" aria-hidden />
                       </span>
                     </a>
+                    {canEdit && (
+                      <form action={promoteArtifactAction.bind(null, a.id)} className="flex justify-end">
+                        <SubmitButton className="min-h-8 text-xs">Save to Assets</SubmitButton>
+                      </form>
+                    )}
                   </div>
                 ))}
               </CardBody>

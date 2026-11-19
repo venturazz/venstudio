@@ -46,21 +46,6 @@ jobs:
           name: package-lock
           path: package-lock.json
 
-      - name: Unit tests (crypto)
-        run: npm run test:unit
-
-      - name: Worker tests
-        run: npm run test:worker
-
-      - name: Typecheck worker
-        run: npm run typecheck:worker
-
-      - name: Typecheck portal
-        run: npm run typecheck -w apps/portal
-
-      - name: Build portal
-        run: npm run build
-
       - name: Install ffmpeg
         timeout-minutes: 8
         env:
@@ -75,6 +60,21 @@ jobs:
             sudo cp /tmp/ff/ffmpeg /tmp/ff/ffprobe /usr/local/bin/
           fi
           ffmpeg -version | head -1
+
+      - name: Unit tests (crypto)
+        run: npm run test:unit
+
+      - name: Worker tests
+        run: npm run test:worker
+
+      - name: Typecheck worker
+        run: npm run typecheck:worker
+
+      - name: Typecheck portal
+        run: npm run typecheck -w apps/portal
+
+      - name: Build portal
+        run: npm run build
 
       - name: End-to-end (portal + Postgres + worker)
         run: bash scripts/e2e.sh

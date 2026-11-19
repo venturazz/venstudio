@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Clapperboard, Cpu, LayoutDashboard, ListVideo, LogOut, Settings, Tv } from "lucide-react";
+import { Clapperboard, Cpu, FolderOpen, LayoutDashboard, ListVideo, LogOut, Settings, Sparkles, Tv } from "lucide-react";
 import { requireUser } from "@/lib/server/auth.ts";
 import { BottomNav, SideNav, type NavItem } from "@/components/client.tsx";
 import { signOut } from "./actions.ts";
@@ -11,6 +11,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const icon = "size-5 shrink-0";
   const items: NavItem[] = [
     { href: "/", label: "Overview", icon: <LayoutDashboard className={icon} aria-hidden /> },
+    { href: "/studio", label: "Studio", icon: <Sparkles className={icon} aria-hidden /> },
+    { href: "/assets", label: "Assets", icon: <FolderOpen className={icon} aria-hidden /> },
     { href: "/channels", label: "Channels", icon: <Tv className={icon} aria-hidden /> },
     { href: "/jobs", label: "Jobs", icon: <ListVideo className={icon} aria-hidden /> },
     { href: "/workers", label: "Workers", icon: <Cpu className={icon} aria-hidden /> },
@@ -57,7 +59,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <main className="mx-auto w-full max-w-6xl px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-10 lg:pt-8">{children}</main>
       </div>
 
-      <BottomNav items={items} />
+      {/* Overview is one tap away on phones via the logo. */}
+      <BottomNav items={items.filter((i) => i.href !== "/")} />
     </div>
   );
 }
