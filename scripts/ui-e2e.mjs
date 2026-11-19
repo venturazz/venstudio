@@ -542,7 +542,7 @@ try {
   await page.getByText("3 skills").first().waitFor({ timeout: 20_000 });
   await page.getByText("Background runs").waitFor();
   await page.locator("summary", { hasText: "video" }).click();
-  await page.getByText("write-story-script").waitFor();
+  await page.getByText("write-story-script", { exact: true }).waitFor();
   await shot("06b-settings-gateway-down");
   await page.goto(`${APP}/`);
   await shot("07-overview-desktop");
