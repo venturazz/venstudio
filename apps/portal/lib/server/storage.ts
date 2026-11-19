@@ -54,13 +54,15 @@ export async function saveArtifact(jobId: string, name: string, body: ReadableSt
   return { storagePath: full, bytes, sha256: hash.digest("hex") };
 }
 
-export async function openArtifact(storagePath: string) {
+export async function openArtifact(storagePath: string, range?: { start: number; end: number }) {
   const root = path.resolve(env().ARTIFACT_DIR);
   const full = path.resolve(storagePath);
   if (!full.startsWith(root + path.sep)) throw new Error("Invalid artifact path");
   const info = await stat(full);
-  return { size: info.size, stream: createReadStream(full) };
+  return { size: info.size, stream: createReadStream(full, range ? { start: range.start, end: range.end } : undefined) };
 }
+
+export { parseRange } from "../range.ts";
 
 export function contentTypeFor(name: string, declared: string | null) {
   const ext = path.extname(name).toLowerCase();

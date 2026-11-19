@@ -139,6 +139,27 @@ try {
   const result = await page.locator("pre").first().textContent();
   if (!/"realtimeFactor"/.test(result) || !/"seconds": 5/.test(result)) throw new Error(`unexpected result: ${result}`);
   await shot("06-job-desktop");
+
+  step("video supports range requests (needed for streaming and iPhone playback)");
+  const videoSrc = await page.locator("video").getAttribute("src");
+  const ranged = await page.request.get(`${APP}${videoSrc}`, { headers: { range: "bytes=0-99" } });
+  if (ranged.status() !== 206) throw new Error(`range request returned ${ranged.status()}, expected 206`);
+  if ((await ranged.body()).length !== 100) throw new Error("range request returned the wrong number of bytes");
+  if (!/^bytes 0-99\/\d+$/.test(ranged.headers()["content-range"] ?? "")) throw new Error("bad content-range header");
+
+  step("pages stay fast while 9router is unreachable");
+  for (const url of ["/", "/settings", "/jobs", "/workers"]) {
+    const t0 = Date.now();
+    await page.goto(`${APP}${url}`, { waitUntil: "commit" });
+    const ms = Date.now() - t0;
+    console.log(`   ${url} first byte in ${ms} ms`);
+    if (ms > 2500) throw new Error(`${url} took ${ms} ms to start rendering`);
+  }
+  await page.goto(`${APP}/settings`);
+  await page.getByText("Unreachable").waitFor({ timeout: 20_000 });
+  await page.getByText("internal address").first().waitFor();
+  await page.getByText("Server health").waitFor();
+  await shot("06b-settings-gateway-down");
   await page.goto(`${APP}/`);
   await shot("07-overview-desktop");
 

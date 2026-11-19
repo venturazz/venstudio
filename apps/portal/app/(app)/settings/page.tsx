@@ -1,6 +1,9 @@
 import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
-import { gatewayStatus } from "@/lib/server/ai-gateway.ts";
+import { Suspense } from "react";
+import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
+import { hasRole } from "@/lib/server/auth.ts";
+import { serverHealth } from "@/lib/server/diagnostics.ts";
 import { Alert, Badge, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { ConfirmButton, SubmitButton } from "@/components/client.tsx";
 import { AddUserForm, PasswordForm, TotpDisable, TotpSetup } from "./forms.tsx";
@@ -13,11 +16,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const { welcome } = await searchParams;
   const sql = db();
   const isOwner = user.role === "owner";
-  const [sessions, users, gateway] = await Promise.all([
+  const [sessions, users] = await Promise.all([
     sql`SELECT id, ip, user_agent, created_at, last_seen_at FROM sessions
         WHERE user_id = ${user.id} AND expires_at > now() AND mfa_pending = false ORDER BY last_seen_at DESC`,
     sql`SELECT id, name, email, role, totp_enabled, created_at FROM users WHERE ${isOwner}::boolean ORDER BY created_at`,
-    gatewayStatus(),
   ]);
 
   return (
@@ -69,31 +71,23 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
         <Card>
           <CardHeader title="AI gateway (9router)" description="Used for scripts, planning, images and TTS." />
-          <CardBody className="space-y-3 text-sm">
-            {!gateway.configured ? (
-              <Alert tone="warn">
-                Not configured. Set NINEROUTER_BASE_URL (e.g. http://9router:20128) and NINEROUTER_API_KEY in the server
-                environment.
-              </Alert>
-            ) : gateway.ok ? (
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="ok" dot>Connected</Badge>
-                  <span className="text-muted">{gateway.baseUrl} · {gateway.latencyMs} ms</span>
-                </div>
-                <div className="flex max-h-48 flex-wrap gap-1 overflow-y-auto">
-                  {gateway.models.map((m) => (
-                    <Badge key={m}>{m}</Badge>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <Alert tone="danger">
-                Can&apos;t reach {gateway.baseUrl}: {gateway.error}
-              </Alert>
-            )}
+          <CardBody>
+            <Suspense fallback={<GatewayPanelFallback />}>
+              <GatewayPanel showModels canRecheck={hasRole(user.role, "editor")} />
+            </Suspense>
           </CardBody>
         </Card>
+
+        {isOwner && (
+          <Card>
+            <CardHeader title="Server health" description="Helps tell a slow server from a slow app. Refresh to measure again." />
+            <CardBody>
+              <Suspense fallback={<p className="text-sm text-muted">Measuring…</p>}>
+                <HealthPanel />
+              </Suspense>
+            </CardBody>
+          </Card>
+        )}
 
         {isOwner && (
           <Card className="lg:col-span-2">
@@ -126,5 +120,35 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         )}
       </div>
     </>
+  );
+}
+
+async function HealthPanel() {
+  const h = await serverHealth();
+  const rows: Array<[string, string]> = [
+    ["Database round trip", `${h.dbRoundTripMs} ms`],
+    ["Simple query", `${h.dbQueryMs} ms`],
+    ["CPU load (1 min)", `${h.load1} on ${h.cpus} cores`],
+    ["Free RAM", `${h.memFreeGb} of ${h.memTotalGb} GB`],
+    ["Portal memory", `${h.processRssMb} MB`],
+    ["Video storage free", h.artifactsFreeGb === null ? "unknown" : `${h.artifactsFreeGb} of ${h.artifactsTotalGb} GB`],
+    ["Server uptime", `${h.uptimeHours} h`],
+  ];
+  return (
+    <div className="space-y-3 text-sm">
+      {h.verdict.map((v) => (
+        <Alert key={v.text} tone={v.tone}>
+          {v.text}
+        </Alert>
+      ))}
+      <dl className="space-y-1.5">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-3">
+            <dt className="text-muted">{k}</dt>
+            <dd className="text-right font-medium tabular-nums">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }

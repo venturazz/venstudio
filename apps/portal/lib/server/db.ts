@@ -10,7 +10,8 @@ declare global {
 export function db(): Sql {
   if (!globalThis.__venstudioSql) {
     globalThis.__venstudioSql = postgres(env().DATABASE_URL, {
-      max: 10,
+      // Long-polling workers take short transactions; leave room for page loads.
+      max: 20,
       idle_timeout: 30,
       onnotice: () => {},
     });

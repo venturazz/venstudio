@@ -4,8 +4,9 @@ import { requireUser } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { JOB_TYPES, reapExpiredLeases } from "@/lib/server/jobs.ts";
 import { presence } from "@/lib/server/workers.ts";
-import { gatewayStatus } from "@/lib/server/ai-gateway.ts";
-import { Alert, Badge, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, Stat, timeAgo } from "@/components/ui.tsx";
+import { Suspense } from "react";
+import { GatewayPanel, GatewayPanelFallback } from "@/components/gateway-panel.tsx";
+import { Alert, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, Stat, timeAgo } from "@/components/ui.tsx";
 import { JobStatus, WorkerPresence } from "@/components/status.tsx";
 
 export const metadata = { title: "Overview" };
@@ -16,7 +17,7 @@ export default async function Overview({ searchParams }: { searchParams: Promise
   await reapExpiredLeases();
   const sql = db();
 
-  const [[channels], [jobs], workers, recent, gateway] = await Promise.all([
+  const [[channels], [jobs], workers, recent] = await Promise.all([
     sql`SELECT count(*)::int AS total, count(*) FILTER (WHERE status = 'active')::int AS active FROM channels`,
     sql`
       SELECT
@@ -34,7 +35,6 @@ export default async function Overview({ searchParams }: { searchParams: Promise
       SELECT j.id, j.type, j.status, j.progress, j.created_at, c.name AS channel, w.name AS worker
       FROM jobs j LEFT JOIN channels c ON c.id = j.channel_id LEFT JOIN workers w ON w.id = j.worker_id
       ORDER BY j.created_at DESC LIMIT 8`,
-    gatewayStatus(),
   ]);
 
   const presences = workers.map((w) => presence(w.last_seen_at, w.running));
@@ -133,23 +133,10 @@ export default async function Overview({ searchParams }: { searchParams: Promise
 
           <Card>
             <CardHeader title="AI gateway (9router)" />
-            <CardBody className="space-y-2 text-sm">
-              {!gateway.configured ? (
-                <p className="text-muted">
-                  Not configured. Set <code className="font-mono text-xs">NINEROUTER_BASE_URL</code> and{" "}
-                  <code className="font-mono text-xs">NINEROUTER_API_KEY</code>.
-                </p>
-              ) : gateway.ok ? (
-                <>
-                  <Badge tone="ok" dot>Connected · {gateway.latencyMs} ms</Badge>
-                  <p className="text-muted">{gateway.models.length} models available</p>
-                </>
-              ) : (
-                <>
-                  <Badge tone="danger" dot>Unreachable</Badge>
-                  <p className="text-muted">{gateway.error}</p>
-                </>
-              )}
+            <CardBody>
+              <Suspense fallback={<GatewayPanelFallback />}>
+                <GatewayPanel />
+              </Suspense>
             </CardBody>
           </Card>
 
