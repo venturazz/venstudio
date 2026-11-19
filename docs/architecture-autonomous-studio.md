@@ -238,7 +238,7 @@ or nothing listed) and what to do.
 | image | Hermes `image_gen`, then 9router `POST /v1/images/generations`, then CC0 library, then Muse agent |
 | voice | optional `KOKORO_BASE_URL` override, 9router TTS, Hermes asked for Kokoro (`VENSTUDIO_STAGE: tts-kokoro`), Hermes CapCut (`tts-capcut`) |
 | editing, subtitles | worker `render-video` (ffmpeg) |
-| video-clips, music, sfx, thumbnail, CapCut editing | listed in the map as "Found, not used yet": no stage calls them, so a listing does not prove they work. The card says so per stage. They are first called in Phase 5, where each gets its own smoke call. A Settings "Test" button for them was left out: it would spend real provider quota on an output contract that is not defined yet |
+| video-clips, music, sfx, thumbnail, CapCut editing | listed in the map as "Found, not used yet": no stage calls them, so a listing does not prove they work. The card says so per stage. The owner (or an editor) can press **Check skills**: one Hermes chat turn (`VENSTUDIO_STAGE: skill-check`, no retry, 120 s) that gets only the skill names in a DATA block and is told to load each skill without running it. Hermes answers per skill `{name, loadable, inputs, output: file-path\|url\|base64\|text\|unknown, note}`. The answer is validated (`validateSkillCheck`: only asked names, bounded text), stored inside the Hermes part of the capability snapshot and kept across rescans. The card shows it as Hermes's own answer, not a test run: a loadable skill that returns a URL or base64 "could be used by a later phase", one that returns a file path "needs a file hand-off in Phase 5". Generation is not run from Settings: it would spend provider quota on an output contract that is not defined yet. The real first call happens in Phase 5 |
 | upload | Phase 5, not built |
 
 Voice order. The Kokoro model is picked from `/v1/models/tts` (an id containing `kokoro`, preferring `af_heart` for
@@ -258,8 +258,9 @@ gets the real provider (`kokoro` when 9router or your own server made it, `herme
 provider is unknown). It starts `unknown` and only the owner confirms it in Settings.
 
 Trust. Skills Hermes only named in its chat answer (not in `/v1/skills`), and its image providers and voice engines, are
-shown as "not verified" and are never passed back as prompt hints. The scan asks Hermes once (no retry), so a manual scan
-takes at most about two minutes.
+shown as "not verified" and are never passed back as prompt hints. A stage whose only callable names are unverified shows
+"Ready (unverified)", not "Ready". The scan asks Hermes once (no retry) while `hermesStatus()` runs beside it, and that
+call can fall back to a chat skills listing with a 180 s timeout, so a manual scan takes up to three minutes.
 
 Optional env. `KOKORO_*`, `TTS_BACKUP`, `HERMES_IMAGE_PROVIDER_ORDER` and `HERMES_MEDIA_ORIGINS` are overrides. Nothing
 beyond `NINEROUTER_*` and `HERMES_*` is required.

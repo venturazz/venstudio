@@ -11,7 +11,11 @@ import {
   parseVoiceList,
   resolveStage,
   scanStateOf,
+  skillCheckPrompt,
+  skillCheckTargets,
   skillHintsFor,
+  describeSkillEntry,
+  validateSkillCheck,
   stageStatus,
   validateHermesCapabilities,
   MAX_SKILLS,
@@ -189,4 +193,66 @@ test("scanStateOf separates sources", () => {
   assert.equal(st.router, "ok");
   assert.ok(missingCapabilityMessage("image", st).includes("Hermes could not be reached"));
   assert.deepEqual(buildCapabilities(null), []);
+});
+
+test("a stage with only Hermes-claimed executors is Ready (unverified), not Ready", () => {
+  const claimed = snap(hermes({ voiceEngines: ["capcut"], imageProviders: ["cloudflare"] }), router());
+  assert.equal(stageStatus("voice", claimed), "unverified");
+  assert.equal(stageStatus("image", claimed), "unverified");
+  const verified = snap(hermes({ voiceEngines: ["capcut"] }), router({ tts: [model("tts-1")] }));
+  assert.equal(stageStatus("voice", verified), "ready");
+});
+
+const skill = (name: string, description: string) => ({ name, description, category: "x", stages: [], listedByApi: true });
+
+test("skillCheckTargets keeps only later-stage skills, names only", () => {
+  const s = snap(hermes({ skills: [skill("song-maker", "music"), skill("web-search", "search the web"), skill("clip-gen", "video clips")] }), router());
+  assert.deepEqual(skillCheckTargets(s), ["song-maker", "clip-gen"]);
+  assert.deepEqual(skillCheckTargets(null), []);
+});
+
+test("skillCheckPrompt puts names in a DATA block and forbids running", () => {
+  const msgs = skillCheckPrompt(["a", "b"]);
+  const user = msgs[1].content;
+  assert.ok(user.startsWith("VENSTUDIO_STAGE: skill-check"));
+  assert.ok(user.includes("<<<DATA skill names\na\nb\nDATA skill names>>>"));
+  assert.ok(user.includes("do NOT run it"));
+});
+
+test("validateSkillCheck keeps asked names, bounds text and defaults output to unknown", () => {
+  const r = validateSkillCheck(
+    {
+      skills: [
+        { name: "clip-gen", loadable: true, inputs: "prompt", output: "url", note: "ok" },
+        { name: "clip-gen", loadable: false, output: "url" },
+        { name: "invented", loadable: true, output: "url" },
+        { name: "song-maker", loadable: false, output: "weird", note: "x".repeat(500) },
+        { name: "bad", loadable: "yes" },
+      ],
+    },
+    ["clip-gen", "song-maker", "bad"],
+  );
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.deepEqual(r.value.map((e) => e.name), ["clip-gen", "song-maker"]);
+  assert.equal(r.value[1].output, "unknown");
+  assert.equal(r.value[1].note.length, 200);
+});
+
+test("validateSkillCheck rejects shapes without any asked skill", () => {
+  assert.ok(!validateSkillCheck("nope", ["a"]).ok);
+  assert.ok(!validateSkillCheck({ skills: [{ name: "other", loadable: true }] }, ["a"]).ok);
+  const bad = validateSkillCheck([{ name: "a", loadable: "yes" }], ["a"]);
+  assert.ok(!bad.ok);
+  if (!bad.ok) assert.ok(bad.issues[0].includes("loadable"));
+  assert.ok(validateSkillCheck([{ name: "a", loadable: true, output: "text" }], ["a"]).ok);
+});
+
+test("describeSkillEntry words each outcome as Hermes's own claim", () => {
+  const e = { name: "a", loadable: true, inputs: "prompt", output: "url" as const, note: "" };
+  assert.ok(describeSkillEntry(e).includes("Could be used by a later phase"));
+  assert.ok(describeSkillEntry({ ...e, output: "base64" }).includes("Could be used by a later phase"));
+  assert.ok(describeSkillEntry({ ...e, output: "file-path" }).includes("Needs a file hand-off in Phase 5"));
+  assert.ok(describeSkillEntry({ ...e, loadable: false, note: "missing dep" }).startsWith("Hermes says it does not load."));
+  assert.ok(describeSkillEntry({ ...e, output: "unknown" }).includes("did not say"));
 });

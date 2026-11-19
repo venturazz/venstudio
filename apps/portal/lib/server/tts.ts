@@ -294,7 +294,7 @@ function planFor(language: string, router: { configured: boolean; models: Router
 }
 
 export interface Narration {
-  /** The provider that really made the voice, for example "kokoro", "capcut" or "unlisted-<name>". */
+  /** The provider that really made the voice, for example "kokoro", "hermes-kokoro", "capcut" or "unlisted-<name>". */
   provider: string;
   executor: ProvenanceExecutor;
   via: "9router" | "hermes" | "direct";
@@ -334,7 +334,9 @@ type HermesVoice = { audio: Uint8Array; mime: "audio/wav" | "audio/mpeg" | "audi
 
 /**
  * Narration through Hermes: asked for its Kokoro voice, or for its CapCut workflow. The reply is checked by magic
- * bytes like any other media. The provider Hermes names for Kokoro is a self-report, so only "kokoro" is kept as is.
+ * bytes like any other media. For the Kokoro engine the provider Hermes names is a self-report: resolveKokoroProvider
+ * records a claim of Kokoro as "hermes-kokoro" (never the confirmed "kokoro") and any other name as "unlisted-<name>".
+ * The CapCut engine is always recorded as "capcut".
  */
 export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, language: string, skillHints: string[] = []): Promise<SynthesisResult> {
   const what = engine === "kokoro" ? "Kokoro through Hermes" : "The backup voice (CapCut through Hermes)";

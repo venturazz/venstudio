@@ -3,23 +3,26 @@ import {
   buildCapabilities,
   CAPABILITY_STAGES,
   capabilitiesFor,
+  describeSkillEntry,
   missingCapabilityMessage,
   routerCombos,
   scanStateOf,
   stageStatus,
   STAGE_INFO,
   type Capability,
+  type HermesScan,
   type SourceStatus,
   type StageStatus,
 } from "@/lib/studio/capabilities.ts";
 import { Alert, Badge, timeAgo } from "./ui.tsx";
 import { SubmitButton } from "./client.tsx";
-import { scanCapabilitiesNow } from "@/app/(app)/settings/actions.ts";
+import { checkHermesSkills, scanCapabilitiesNow } from "@/app/(app)/settings/actions.ts";
 
 const MAX_CHIPS = 8;
 
 const BADGE: Record<StageStatus, { tone: "ok" | "info" | "warn" | "neutral"; text: string }> = {
   ready: { tone: "ok", text: "Ready" },
+  unverified: { tone: "info", text: "Ready (unverified)" },
   found: { tone: "info", text: "Found, not used yet" },
   missing: { tone: "warn", text: "Missing" },
   later: { tone: "neutral", text: "Later" },
@@ -35,7 +38,7 @@ export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean
   return (
     <div className="space-y-4 px-4 py-3 text-sm sm:px-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-muted">{snap ? `Scanned ${timeAgo(snap.scannedAt)}` : "Not scanned yet. The first scan starts by itself and takes up to two minutes."}</p>
+        <p className="text-muted">{snap ? `Scanned ${timeAgo(snap.scannedAt)}` : "Not scanned yet. The first scan starts by itself and takes up to three minutes."}</p>
         {canScan && (
           <form action={scanCapabilitiesNow}>
             <SubmitButton className="min-h-8 text-xs" pendingLabel="Scanning…">
@@ -96,7 +99,52 @@ export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean
         })}
       </ul>
 
+      {snap?.hermes && <SkillCheckBlock hermes={snap.hermes} canCheck={canScan} />}
+
       {snap?.hermes?.notes && <p className="break-words text-xs text-muted">Hermes note: {snap.hermes.notes}</p>}
+    </div>
+  );
+}
+
+function SkillCheckBlock({ hermes, canCheck }: { hermes: HermesScan; canCheck: boolean }) {
+  const check = hermes.skillCheck;
+  return (
+    <div className="space-y-2 rounded-lg border border-border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-medium">Hermes skill check</h3>
+        {canCheck && (
+          <form action={checkHermesSkills}>
+            <SubmitButton className="min-h-8 text-xs" pendingLabel="Asking Hermes…">
+              Check skills
+            </SubmitButton>
+          </form>
+        )}
+      </div>
+      <p className="break-words text-xs text-muted">
+        Asks Hermes once, without generating anything, whether it can load the video, music, sound effect, thumbnail, editing and subtitle skills it found, and what each one returns. This is Hermes&apos;s own answer, not a test run. It can take up to two minutes.
+      </p>
+      {!check && <p className="text-xs text-muted">Not checked yet.</p>}
+      {check && (
+        <>
+          <p className="text-xs text-muted">Asked {timeAgo(check.checkedAt)} about {check.asked.length} skills.</p>
+          {check.error && <Alert tone="warn">{check.error}</Alert>}
+          <ul className="space-y-1">
+            {check.entries.map((e) => (
+              <li key={e.name} className="break-words text-xs">
+                <span className="font-medium">{e.name}</span> <span className="text-muted">{describeSkillEntry(e)}</span>
+              </li>
+            ))}
+            {check.asked
+              .filter((n) => !check.entries.some((e) => e.name === n))
+              .slice(0, MAX_CHIPS)
+              .map((n) => (
+                <li key={n} className="break-words text-xs">
+                  <span className="font-medium">{n}</span> <span className="text-muted">Hermes gave no answer for it.</span>
+                </li>
+              ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }

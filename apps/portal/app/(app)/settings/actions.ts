@@ -15,7 +15,7 @@ import { randomToken } from "@/lib/crypto/tokens.ts";
 import { str, type FormState } from "@/lib/form.ts";
 import { kokoroHealth, voiceTest } from "@/lib/server/tts.ts";
 import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
-import { scanCapabilities } from "@/lib/server/capabilities.ts";
+import { runSkillCheck, scanCapabilities } from "@/lib/server/capabilities.ts";
 import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
 
 function raw(fd: FormData, key: string) {
@@ -205,9 +205,16 @@ export async function setProviderTerms(fd: FormData) {
   revalidatePath("/settings");
 }
 
-/** Asks Hermes and 9router what they can do and stores the answer. Slow (up to two minutes), so it runs on demand. */
+/** Asks Hermes and 9router what they can do and stores the answer. Slow (up to three minutes: the Hermes chat turn and the skills listing fallback run side by side), so it runs on demand. */
 export async function scanCapabilitiesNow() {
   await requireUser("editor");
   await scanCapabilities();
+  revalidatePath("/settings");
+}
+
+/** Hermes's own answer to "can you load these skills?". One chat turn, nothing is generated. The answer is stored and shown on the card. */
+export async function checkHermesSkills() {
+  await requireUser("editor");
+  await runSkillCheck();
   revalidatePath("/settings");
 }

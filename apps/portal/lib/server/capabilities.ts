@@ -11,12 +11,16 @@ import {
   emptyRouterLists,
   parseRouterList,
   parseVoiceList,
+  skillCheckPrompt,
+  skillCheckTargets,
+  validateSkillCheck,
   validateHermesCapabilities,
   type CapabilitySnapshot,
   type HermesScan,
   type HermesSkillEntry,
   type RouterLists,
   type RouterScan,
+  type SkillCheck,
   type SourceStatus,
 } from "../studio/capabilities.ts";
 
@@ -28,6 +32,7 @@ import {
 
 const ROUTER_PROBE_TIMEOUT_MS = 15_000;
 const HERMES_TIMEOUT_MS = 120_000;
+const SKILL_CHECK_TIMEOUT_MS = 120_000;
 /** A snapshot older than this is refreshed in the background when Settings is opened. */
 const FRESH_MS = 6 * 60 * 60_000;
 /** A snapshot with a source down is retried sooner. */
@@ -153,7 +158,10 @@ export function scanCapabilities(): Promise<CapabilitySnapshot> {
 }
 
 async function runScan(): Promise<CapabilitySnapshot> {
-  const [h, r] = await Promise.allSettled([scanHermes(), scanRouter()]);
+  const [h, r, prev] = await Promise.allSettled([scanHermes(), scanRouter(), getCapabilities()]);
+  // The owner's skill check answer outlives a rescan. It names skills and carries its own time stamp.
+  const kept = prev.status === "fulfilled" ? prev.value?.hermes?.skillCheck : undefined;
+  if (h.status === "fulfilled" && kept && !h.value.skillCheck) h.value.skillCheck = kept;
   const errors: string[] = [];
   const snap: CapabilitySnapshot = {
     scannedAt: new Date().toISOString(),
@@ -212,4 +220,30 @@ function isStale(snap: CapabilitySnapshot | null): boolean {
 export function ensureFreshInBackground(snap: CapabilitySnapshot | null): void {
   if (inflight || !isStale(snap)) return;
   void scanCapabilities().catch(() => {});
+}
+
+/**
+ * Asks Hermes, in one chat turn, whether it can load the skills found for the later stages. Nothing is generated
+ * and nothing is run. The answer is Hermes's own claim and is stored with the snapshot. Returns an error text for
+ * the owner when there is nothing to check or Hermes does not answer.
+ */
+export async function runSkillCheck(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const snap = await getCapabilities();
+  if (!snap?.hermes?.status.ok) return { ok: false, error: "Hermes has not been scanned successfully yet. Press Scan now first." };
+  const asked = skillCheckTargets(snap);
+  const res =
+    asked.length === 0
+      ? ({ ok: false, error: "No video, music, sound effect, thumbnail, editing or subtitle skills were found to check." } as const)
+      : await hermesJson(skillCheckPrompt(asked), (v) => validateSkillCheck(v, asked), { retries: 0, timeoutMs: SKILL_CHECK_TIMEOUT_MS });
+  const check: SkillCheck = {
+    checkedAt: new Date().toISOString(),
+    asked,
+    entries: res.ok ? res.value : [],
+    error: res.ok ? null : res.error,
+  };
+  // Re-read so a scan that finished meanwhile is not overwritten with the old skills.
+  const latest = (await getCapabilities())?.hermes;
+  if (!latest) return { ok: false, error: "The Hermes scan is gone. Press Scan now." };
+  await db()`UPDATE capability_scans SET hermes = ${JSON.stringify({ ...latest, skillCheck: check })}::text::jsonb WHERE id = 'current'`;
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
