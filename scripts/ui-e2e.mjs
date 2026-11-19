@@ -495,7 +495,8 @@ try {
     if (ms > 2500) throw new Error(`${url} took ${ms} ms to start rendering`);
   }
   await page.goto(`${APP}/settings`);
-  // The fake 9router hangs. The status check ends through its 60 s timeout, so the text can take about a minute.
+  // The fake 9router hangs. The page stops waiting after about 3 s (so "load" fires) and shows "Checking"; the card then
+  // refreshes itself, and the check ends through its 60 s timeout, so "Unreachable" can take about a minute.
   await page.getByText("Unreachable").waitFor({ timeout: 90_000 });
   await page.getByText("internal address").first().waitFor();
   await page.getByText("Server health").waitFor();

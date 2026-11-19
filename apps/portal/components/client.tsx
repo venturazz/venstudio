@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useFormStatus } from "react-dom";
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import { Check, Copy, LoaderCircle } from "lucide-react";
 import { cn, Button } from "./ui.tsx";
 
@@ -136,4 +136,14 @@ export function BottomNav({ items }: { items: NavItem[] }) {
       </ul>
     </nav>
   );
+}
+
+/** Re-reads the server components every few seconds while it is mounted. Mount it only while a result is still pending. */
+export function AutoRefresh({ everyMs = 4000 }: { everyMs?: number }) {
+  const router = useRouter();
+  useEffect(() => {
+    const t = setInterval(() => router.refresh(), everyMs);
+    return () => clearInterval(t);
+  }, [router, everyMs]);
+  return null;
 }

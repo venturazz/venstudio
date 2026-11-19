@@ -16,6 +16,8 @@ export interface GatewayStatus {
   error?: string;
   hint?: string;
   checkedAt?: string;
+  /** The first check is still running (page rendering stopped waiting for it). */
+  pending?: boolean;
 }
 
 // 9router builds /v1/models by asking its providers, which can take 10+ s. The check runs in the
@@ -133,6 +135,28 @@ export async function gatewayStatus(opts: { fresh?: boolean } = {}): Promise<Gat
   const ttl = cache.status.ok ? CACHE_OK_MS : CACHE_FAIL_MS;
   if (Date.now() - cache.at >= ttl) void refresh().catch(() => {});
   return cache.status;
+}
+
+/** How long a page render waits for the very first check before it shows "checking" and lets the page refresh itself. */
+const PAGE_WAIT_MS = 3_000;
+
+/**
+ * For page rendering. Same as gatewayStatus, but when there is no cached result yet it waits only briefly, so a
+ * 9router that hangs cannot keep the streamed page open. The check keeps running and fills the cache.
+ */
+export async function gatewayStatusForPage(waitMs = PAGE_WAIT_MS): Promise<GatewayStatus> {
+  if (cache) return gatewayStatus();
+  const check = refresh();
+  check.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<GatewayStatus>((resolve) => {
+    timer = setTimeout(() => resolve({ configured: Boolean(config()), ok: false, models: [], pending: true }), waitMs);
+  });
+  try {
+    return await Promise.race([check, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface ChatMessage {
