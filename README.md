@@ -4,6 +4,7 @@ Command center for automated YouTube production across 10 channels. The portal p
 render workers (Muse VMs, a VPS, or your own PC) pull jobs over HTTPS, render, and upload results.
 
 Research and decisions: [docs/research/01-video-automation-research.md](docs/research/01-video-automation-research.md).
+Autonomous studio workflow, templates and QC: [research](docs/research/04-autonomous-studio-workflow.md) and [architecture](docs/architecture-autonomous-studio.md).
 
 ## How it fits together
 

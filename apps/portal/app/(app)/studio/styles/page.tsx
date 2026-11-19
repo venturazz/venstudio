@@ -1,5 +1,5 @@
 import { requireUser } from "@/lib/server/auth.ts";
-import { Badge, Card, CardBody, CardHeader, PageHeader } from "@/components/ui.tsx";
+import { Badge, Card, CardBody, CardHeader, LinkButton, PageHeader } from "@/components/ui.tsx";
 import { ENGINES, FAMILY_LABELS, STYLES, THEMES, VIDEO_FORMATS, type Family, type Style } from "@/lib/studio/catalog.ts";
 
 export const metadata = { title: "Style library" };
@@ -27,6 +27,11 @@ export default async function StyleLibraryPage() {
       <PageHeader
         title="Style library"
         description="Every style the studio can plan, with the engine that renders it and what Muse can do with it."
+        actions={
+          <LinkButton href="/studio/templates" variant="secondary">
+            Templates
+          </LinkButton>
+        }
       />
       <div className="space-y-8">
         {families.map((family) => (

@@ -34,6 +34,11 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
     label: "Analyze reference video",
     description: "Finds cuts, pacing, hook timing and loudness. Study only: nothing from the video is copied.",
   },
+  "qc-video": {
+    capability: "ffmpeg",
+    label: "Quality check a video",
+    description: "Measures a finished video: size, length, loudness, black frames, silence and frozen frames. Changes nothing.",
+  },
 };
 
 export async function createJob(input: {
@@ -81,6 +86,18 @@ export async function reapExpiredLeases() {
   `;
   for (const r of rows) {
     await addJobEvent(r.id, "warn", r.status === "failed" ? "Lease expired; out of attempts" : "Lease expired; requeued");
+  }
+  if (rows.some((r) => r.status === "failed")) {
+    // A job that ran out of attempts never reaches the fail route; write its QC report now. Dynamic import
+    // because pipeline.ts imports this module. reconcileQcReports never throws.
+    // The dynamic import and the reconcile are guarded: a failure here must never break claimJob. The next
+    // reaper pass or dashboard load retries the reconcile.
+    try {
+      const { reconcileQcReports } = await import("./pipeline.ts");
+      await reconcileQcReports();
+    } catch (err) {
+      console.error("reconcileQcReports failed after lease reap", err);
+    }
   }
   return rows.length;
 }

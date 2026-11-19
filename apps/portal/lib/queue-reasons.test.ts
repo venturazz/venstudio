@@ -20,7 +20,7 @@ const worker = (over: Partial<WorkerForReasons> = {}): WorkerForReasons => ({
   status: "active",
   version: "0.2.0",
   capabilities: ["echo", "ffmpeg"],
-  jobTypes: ["echo", "smoke-test", "analyze-video", "render-preview"],
+  jobTypes: ["echo", "smoke-test", "analyze-video", "render-preview", "qc-video"],
   lastClaimAt: new Date("2026-11-19T11:59:30Z"),
   ...over,
 });

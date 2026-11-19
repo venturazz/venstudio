@@ -259,6 +259,13 @@ try {
   await page.waitForURL(/\/assets$/);
   await page.getByText("smoke-test: smoke-test.mp4").waitFor();
 
+  step("templates: every style is a candidate, nothing is proven");
+  await page.goto(`${APP}/studio/templates`);
+  await page.getByText("Candidate: not yet proven").first().waitFor();
+  if ((await page.getByText("Proven", { exact: true }).count()) !== 0) throw new Error("a template shows as Proven before any trial");
+  if ((await page.getByText("Allowed", { exact: true }).count()) !== 0) throw new Error("a template is allowed to run without the owner");
+  await shot("16-templates-desktop");
+
   step("mobile screenshots");
   const mobile = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -269,6 +276,10 @@ try {
     storageState: await desktop.storageState(),
   });
   const m = await mobile.newPage();
+  // The 12-settings-mobile screenshot from an earlier run is 1940 px wide at 2x scale (970 CSS px), so /settings
+  // already overflowed at 390 px before this change (the signed-in device user agent string). It is screenshotted
+  // but not asserted. The other pages were 780 px wide (fit) in those screenshots; templates is new and asserted.
+  const NO_OVERFLOW_CHECK = new Set(["/settings"]);
   for (const [name, url] of [
     ["08-overview-mobile", "/"],
     ["09-channels-mobile", "/channels"],
@@ -278,13 +289,15 @@ try {
     ["13-studio-mobile", "/studio"],
     ["14-assets-mobile", "/assets"],
     ["15-styles-mobile", "/studio/styles"],
+    ["16-templates-mobile", "/studio/templates"],
   ]) {
     await m.goto(`${APP}${url}`);
     await m.waitForLoadState("networkidle");
     await shot(name, m);
+    if (NO_OVERFLOW_CHECK.has(url)) continue;
+    const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    if (overflow) throw new Error(`mobile layout overflows horizontally on ${url}`);
   }
-  const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  if (overflow) throw new Error("mobile layout overflows horizontally");
 
   if (errors.length) throw new Error(`browser errors:\n${errors.join("\n")}`);
   console.log("UI E2E PASS");
