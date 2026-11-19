@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { completeJob } from "@/lib/server/jobs.ts";
+import { evaluateQcCompletion } from "@/lib/server/pipeline.ts";
 import { isUuid, jsonError, parseJson, withWorker } from "@/lib/server/worker-api.ts";
 
 const schema = z.object({
@@ -15,6 +16,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (input instanceof Response) return input;
     const ok = await completeJob(id, worker.id, input.result ?? {}, input.message);
     if (!ok) return jsonError(409, "Job is not running on this worker");
+    await evaluateQcCompletion(id);
     return Response.json({ ok: true });
   });
 }

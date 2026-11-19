@@ -34,6 +34,11 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
     label: "Analyze reference video",
     description: "Finds cuts, pacing, hook timing and loudness. Study only: nothing from the video is copied.",
   },
+  "qc-video": {
+    capability: "ffmpeg",
+    label: "Quality check a video",
+    description: "Measures a finished video: size, length, loudness, black frames, silence and frozen frames. Changes nothing.",
+  },
 };
 
 export async function createJob(input: {
