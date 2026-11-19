@@ -15,6 +15,7 @@ import {
   type DraftOptions,
 } from "./template-lab.ts";
 import type { GateResult } from "./qc.ts";
+import { promotionIssues, seedTemplates, signOff } from "./templates.ts";
 
 const TITLE = "Secret Pasta Empire Documentary";
 const CHANNEL = "ChefMaster9000";
@@ -112,6 +113,21 @@ test("scoreTrial and evidence", () => {
   const t = draftFromFingerprint(fingerprint(analysis()), "explainer-flat-vector", opts);
   assert.equal(withEvidence(t, [s1], 0).evidence.trials, 1);
   assert.equal(t.evidence.trials, 0);
+});
+
+function signed(t: ReturnType<typeof seedTemplates>[number]) {
+  let out = t;
+  for (const i of t.copyrightChecklist) out = signOff(out, i.id, "o", new Date());
+  return out;
+}
+
+test("unscored trials count as 0 in the mean presentation score", () => {
+  const scored = { passedTechnical: true, presentationScore: 90, assetFailed: false, complianceFailed: false };
+  const unscored = { ...scored, presentationScore: null };
+  const e = evidenceFrom([scored, unscored, unscored, unscored, unscored], 0);
+  assert.equal(e.meanPresentationScore, 18);
+  const t = withEvidence(seedTemplates()[0], [scored, unscored, unscored, unscored, unscored], 0);
+  assert.ok(promotionIssues(signed(t)).some((i) => /presentation/i.test(i)));
 });
 
 test("nextRevision shortens shots, tightens the hook, widens the safe area, within clamps", () => {

@@ -2,7 +2,9 @@
  * Reads the result of the worker's qc-video job (schemaVersion 1) into the measure that technicalGate expects.
  * Anything malformed returns null, so a bad result never turns into a pass.
  */
-import type { Run, TechnicalMeasure } from "./qc.ts";
+import type { Format } from "./catalog.ts";
+import { technicalGate, type GateResult, type Run, type TechnicalMeasure } from "./qc.ts";
+import type { Template } from "./templates.ts";
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
@@ -46,4 +48,24 @@ export function measureFromQcResult(result: unknown): TechnicalMeasure | null {
     freezeRuns,
     cuts: r.cuts as number[],
   };
+}
+
+const QC_EXECUTOR = "worker qc-video";
+const failedTechnical = (issue: string): GateResult => ({ gate: "G-technical", passed: false, issues: [issue], executor: QC_EXECUTOR });
+
+/**
+ * The G-technical report for one finished qc-video job. A failed job, an unreadable result and a missing
+ * template each give a failed report, never "no report", so a production always ends with a QC record.
+ */
+export function technicalReportFor(job: { status: string; error?: unknown; result?: unknown }, template: Template | null, format: Format, templateId: string): {
+  gate: GateResult;
+  measure: TechnicalMeasure | null;
+} {
+  if (job.status === "failed") {
+    return { gate: failedTechnical(`The quality check job failed: ${String(job.error ?? "no reason recorded").slice(0, 300)}`), measure: null };
+  }
+  const measure = measureFromQcResult(job.result);
+  if (!measure) return { gate: failedTechnical("The quality check result could not be read"), measure: null };
+  if (!template) return { gate: failedTechnical(`Template ${templateId} was not found, so the video could not be checked`), measure };
+  return { gate: { ...technicalGate(measure, template, format), executor: QC_EXECUTOR }, measure };
 }

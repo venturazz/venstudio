@@ -434,6 +434,10 @@ test("qc-video finds black and silent sections and feeds the technical gate", { 
   assert.equal(result.width, 320);
   assert.equal(result.hasAudio, true);
   assert.equal(typeof result.integratedLufs, "number");
+  assert.equal(typeof result.truePeakDb, "number", "true peak is measured from the ebur128 summary");
+  assert.ok(Number.isFinite(result.truePeakDb as number));
+  const freeze = result.freezeRuns as Array<{ start: number; end: number }>;
+  assert.ok(Array.isArray(freeze) && freeze.every((r) => r.end > r.start), `freeze runs are well formed: ${JSON.stringify(freeze)}`);
   const black = result.blackRuns as Array<{ start: number; end: number }>;
   assert.ok(black.some((r) => r.start < 2.5 && r.end > 3.5), `black run near 2-4 s: ${JSON.stringify(black)}`);
   const silence = result.silenceRuns as Array<{ start: number; end: number }>;
@@ -445,6 +449,12 @@ test("qc-video finds black and silent sections and feeds the technical gate", { 
   const gate = technicalGate(measure, seedTemplates()[0], "short");
   assert.equal(gate.gate, "G-technical");
   assert.equal(gate.passed, false);
+  // The gate must fail for the measured reasons, not only because the sample is 320x240.
+  const has = (re: RegExp) => gate.issues.some((i) => re.test(i));
+  assert.ok(has(/^Resolution is 320x240/), `resolution issue: ${gate.issues.join(" | ")}`);
+  assert.ok(has(/^Black frames for/), `black issue: ${gate.issues.join(" | ")}`);
+  assert.ok(has(/^Silence for/), `silence issue: ${gate.issues.join(" | ")}`);
+  assert.ok(!has(/not measured/), `loudness and true peak were measured: ${gate.issues.join(" | ")}`);
 });
 
 test("wrapText keeps lines within the limit and drops nothing", () => {

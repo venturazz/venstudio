@@ -13,7 +13,7 @@ function proven(): Template {
   return p.ok ? p.template : t;
 }
 const candidate = (): Template => seedTemplates()[0];
-const pass = (score = 90): CombinedQc => ({ passed: true, score, failedGates: [], blocking: false });
+const pass = (score = 90): CombinedQc => ({ passed: true, missingGates: [], score, failedGates: [], blocking: false });
 
 test("decision table for passing QC: level x paused x template x spot check", () => {
   const rows: Array<[AutonomyLevel, boolean, "proven" | "candidate", number, string]> = [
@@ -58,8 +58,23 @@ test("stage results auto-approve above level 0", () => {
   assert.equal(decideNext({ ...args, level: 1 }).action, "auto-approve");
 });
 
+test("level 1 asks the owner to approve ideas, other stages auto-approve", () => {
+  const args = { paused: false, template: proven(), qc: pass(), videosSincePublishSpotCheck: 0, point: "stage" as const };
+  assert.equal(decideNext({ ...args, level: 1, stage: "idea" }).action, "ask-owner");
+  assert.equal(decideNext({ ...args, level: 1, stage: "script" }).action, "auto-approve");
+  assert.equal(decideNext({ ...args, level: 2, stage: "idea" }).action, "auto-approve");
+  assert.equal(decideNext({ ...args, level: 3, paused: true, stage: "idea" }).action, "ask-owner");
+});
+
+test("a missing required gate goes to the owner, never to publish", () => {
+  const qc: CombinedQc = { passed: false, missingGates: ["G-claims"], score: 95, failedGates: [], blocking: false };
+  const d = decideNext({ level: 3, paused: false, template: proven(), qc, videosSincePublishSpotCheck: 0 });
+  assert.equal(d.action, "ask-owner");
+  assert.match(d.reason, /G-claims/);
+});
+
 test("failing gates revise twice, then ask the owner", () => {
-  const qc: CombinedQc = { passed: false, score: 60, failedGates: ["G-technical"], blocking: false };
+  const qc: CombinedQc = { passed: false, missingGates: [], score: 60, failedGates: ["G-technical"], blocking: false };
   const base = { level: 3 as const, paused: false, template: proven(), qc, videosSincePublishSpotCheck: 0 };
   assert.equal(decideNext({ ...base, attempts: 0 }).action, "revise");
   assert.equal(decideNext({ ...base, attempts: 1 }).action, "revise");
@@ -69,7 +84,7 @@ test("failing gates revise twice, then ask the owner", () => {
 
 test("assets and compliance failures get one revision and never auto-publish", () => {
   for (const gate of ["G-assets", "G-compliance"] as const) {
-    const qc: CombinedQc = { passed: false, score: 70, failedGates: [gate], blocking: true };
+    const qc: CombinedQc = { passed: false, missingGates: [], score: 70, failedGates: [gate], blocking: true };
     const base = { level: 3 as const, paused: false, template: proven(), qc, videosSincePublishSpotCheck: 0 };
     assert.equal(decideNext({ ...base, attempts: 0 }).action, "revise");
     assert.equal(decideNext({ ...base, attempts: 1 }).action, "ask-owner");
@@ -77,7 +92,7 @@ test("assets and compliance failures get one revision and never auto-publish", (
 });
 
 test("a claim blocks, and a retired template blocks", () => {
-  const qc: CombinedQc = { passed: false, score: 50, failedGates: ["G-claims"], blocking: true };
+  const qc: CombinedQc = { passed: false, missingGates: [], score: 50, failedGates: ["G-claims"], blocking: true };
   assert.equal(decideNext({ level: 3, paused: false, template: proven(), qc, videosSincePublishSpotCheck: 0 }).action, "block");
   const retired = { ...proven(), status: "retired" as const };
   assert.equal(decideNext({ level: 3, paused: false, template: retired, qc: pass(), videosSincePublishSpotCheck: 0 }).action, "block");

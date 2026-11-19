@@ -89,23 +89,36 @@ echo "== qc-video measures the smoke-test video"
 QC_SHA=$(q "SELECT sha256 FROM artifacts WHERE job_id = '$SMOKE_JOB'")
 QC_ASSET=$(q "INSERT INTO assets (title, kind, source, license, storage_path, bytes, sha256, content_type)
   VALUES ('E2E smoke clip','video','worker','self-generated','$FILE',$BYTES,'$QC_SHA','video/mp4') RETURNING id")
-QC_JOB=$(q "INSERT INTO jobs (type, capability, payload) VALUES ('qc-video','ffmpeg','{\"inputs\":[\"$QC_ASSET\"]}') RETURNING id")
+QC_PROD=$(q "INSERT INTO productions (title, channel_id, format, style_id) VALUES ('E2E QC production','$CHANNEL','short','explainer-flat-vector') RETURNING id")
+QC_JOB=$(q "INSERT INTO jobs (type, capability, payload) VALUES ('qc-video','ffmpeg','{\"inputs\":[\"$QC_ASSET\"],\"productionId\":\"$QC_PROD\"}') RETURNING id")
 "$WORK/worker/run.sh" tick || { cat "$WORK/worker/logs/worker.log"; fail "qc tick exited non-zero"; }
 [ "$(q "SELECT status FROM jobs WHERE id = '$QC_JOB'")" = "succeeded" ] || fail "qc-video job not succeeded: $(q "SELECT error FROM jobs WHERE id = '$QC_JOB'")"
 [ "$(q "SELECT result->>'width' FROM jobs WHERE id = '$QC_JOB'")" = "540" ] || fail "qc-video width is not 540"
 [ "$(q "SELECT result ? 'hasAudio' FROM jobs WHERE id = '$QC_JOB'")" = "t" ] || fail "qc-video result has no hasAudio"
 [ "$(q "SELECT result->>'integratedLufs' IS NOT NULL FROM jobs WHERE id = '$QC_JOB'")" = "t" ] || fail "qc-video integratedLufs is null"
+[ "$(q "SELECT jsonb_typeof(result->'truePeakDb') FROM jobs WHERE id = '$QC_JOB'")" = "number" ] || fail "qc-video truePeakDb is not a number"
+# The portal hook ran the technical gate on Postgres: one report, stored with the measure. The 540x960 3 s smoke clip
+# is not a valid short, so the gate must fail on resolution and duration.
+[ "$(q "SELECT count(*) FROM qc_reports WHERE job_id = '$QC_JOB' AND production_id = '$QC_PROD' AND gate = 'G-technical'")" = "1" ] || fail "G-technical report not stored for the production"
+[ "$(q "SELECT passed FROM qc_reports WHERE job_id = '$QC_JOB'")" = "f" ] || fail "540x960 smoke clip should fail the short G-technical gate"
+[ "$(q "SELECT jsonb_typeof(details->'measure'->'truePeakDb') FROM qc_reports WHERE job_id = '$QC_JOB'")" = "number" ] || fail "stored measure truePeakDb is not a number"
+[ "$(q "SELECT count(*) FROM qc_reports WHERE job_id = '$QC_JOB' AND details->'issues'->>0 LIKE 'Resolution is 540x960%'")" = "1" ] || fail "stored issues do not name the resolution"
 [ "$(q "SELECT count(*) FROM artifacts WHERE job_id = '$QC_JOB' AND name = 'qc.json'")" = "1" ] || fail "qc.json artifact missing"
 
 echo "== artifacts require a signed-in user"
 ART=$(q "SELECT id FROM artifacts WHERE job_id = '$SMOKE_JOB'")
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/artifacts/$ART")" = "401" ] || fail "artifact readable without session"
 
+echo "== a failed qc-video job gets a failed report on the next completion (reconcile)"
+FQC_JOB=$(q "INSERT INTO jobs (type, capability, status, error, finished_at, payload)
+  VALUES ('qc-video','ffmpeg','failed','ffmpeg exploded', now(), '{\"inputs\":[\"$QC_ASSET\"],\"productionId\":\"$QC_PROD\"}') RETURNING id")
+
 echo "== lease expiry requeues a job"
 LEASE_JOB=$(q "INSERT INTO jobs (type, capability, status, worker_id, attempts, lease_expires_at)
   VALUES ('echo','echo','running','$WORKER',1, now() - interval '1 minute') RETURNING id")
 "$WORK/worker/run.sh" tick
 [ "$(q "SELECT status FROM jobs WHERE id = '$LEASE_JOB'")" = "succeeded" ] || fail "expired lease job not requeued and finished"
+[ "$(q "SELECT passed FROM qc_reports WHERE job_id = '$FQC_JOB' AND gate = 'G-technical'")" = "f" ] || fail "failed qc-video job left no failed G-technical report"
 
 echo "== hold mode: long-poll picks up a new job within seconds"
 "$WORK/worker/run.sh" hold --max-minutes 0.4 &

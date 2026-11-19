@@ -26,6 +26,8 @@ export interface DecisionInput {
   attempts?: number;
   /** "stage" is an intermediate gate result, "final" is the approval before upload and publish. */
   point?: "stage" | "final";
+  /** Stage id of a "stage" result. At level 1 the owner approves the idea stage. */
+  stage?: string;
 }
 
 export interface Decision {
@@ -54,6 +56,9 @@ export function decideNext(input: DecisionInput): Decision {
   const level = effectiveLevel(input.level, input.paused, template);
 
   if (!qc.passed) {
+    if (qc.failedGates.length === 0 && (qc.missingGates ?? []).length > 0) {
+      return { action: "ask-owner", reason: `${qc.missingGates.join(", ")} has not run yet` };
+    }
     if (level === 0) return { action: "ask-owner", reason: "Manual mode: the owner reviews every result" };
     const hard = qc.failedGates.some((g) => HARD.includes(g));
     const cap = hard ? MAX_HARD_GATE_REVISIONS : MAX_AUTO_REVISIONS;
@@ -62,6 +67,7 @@ export function decideNext(input: DecisionInput): Decision {
   }
 
   if (level === 0) return { action: "ask-owner", reason: "Manual mode: the owner approves every stage" };
+  if (point === "stage" && level < 2 && input.stage === "idea") return { action: "ask-owner", reason: "At level 1 the owner approves ideas" };
   if (point === "stage") return { action: "auto-approve", reason: "All gates passed for this stage" };
   if (level < 3) return { action: "ask-owner", reason: "Final approval is the owner's at this level" };
   if (qc.score < AUTO_PUBLISH_MIN_SCORE) return { action: "ask-owner", reason: `QC score ${qc.score} is below ${AUTO_PUBLISH_MIN_SCORE}` };

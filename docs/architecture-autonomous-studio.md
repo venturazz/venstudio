@@ -84,7 +84,15 @@ As built in `0007_templates_pipeline.sql`: template ids are text (`tpl-<style id
 holds the whole template document, and `qc_reports` also carries `production_id` and `job_id` because a QC job on a
 production has no pipeline run yet. `pipeline_runs` has an optional `production_id`. `productions` gains `template_id`
 and `template_version`. The Templates page seeds the candidates on first load (`ensureSeedTemplates`, insert only, never
-overwrites a promoted row).
+overwrites a promoted row). It first counts the stored seeds and writes nothing when all are present, and a database
+error is logged and shown as a "not ready" notice. `templates.status` mirrors `template_versions.spec.status`; reads use
+the spec, so any status change must write both in one transaction.
+
+QC wiring: the job `complete` and `fail` routes call `evaluateQcCompletion`. For a `qc-video` job with a `productionId`
+it stores one `G-technical` report (a failed report for a failed job, unreadable result or missing template), then
+retries recent finished QC jobs that still lack a report. `combineGates` requires the publish gates (technical,
+presentation, assets, compliance, claims) and returns `missingGates`; a missing gate is never a pass. `decideNext` takes
+the stage id so level 1 asks the owner to approve the `idea` stage, and sends a missing gate to the owner.
 
 Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
 the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and

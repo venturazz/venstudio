@@ -290,9 +290,9 @@ try {
     await m.goto(`${APP}${url}`);
     await m.waitForLoadState("networkidle");
     await shot(name, m);
+    const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    if (overflow) throw new Error(`mobile layout overflows horizontally on ${url}`);
   }
-  const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  if (overflow) throw new Error("mobile layout overflows horizontally");
 
   if (errors.length) throw new Error(`browser errors:\n${errors.join("\n")}`);
   console.log("UI E2E PASS");

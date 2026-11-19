@@ -209,11 +209,12 @@ export function scoreTrial(results: GateResult[]): TrialScore {
 
 export function evidenceFrom(scores: TrialScore[], claims: number): TemplateEvidence {
   const n = scores.length;
-  const presented = scores.filter((s) => s.presentationScore !== null).map((s) => s.presentationScore as number);
+  // A trial without a presentation score counts as 0, so unscored trials cannot lift the mean.
+  const presented = scores.map((s) => s.presentationScore ?? 0);
   return {
     trials: n,
     passRate: n ? scores.filter((s) => s.passedTechnical).length / n : 0,
-    meanPresentationScore: presented.length ? presented.reduce((a, b) => a + b, 0) / presented.length : 0,
+    meanPresentationScore: n ? presented.reduce((a, b) => a + b, 0) / presented.length : 0,
     assetFailures: scores.filter((s) => s.assetFailed).length,
     complianceFailures: scores.filter((s) => s.complianceFailed).length,
     claims,

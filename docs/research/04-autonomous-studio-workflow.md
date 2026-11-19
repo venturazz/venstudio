@@ -70,8 +70,8 @@ Design reasons for this order:
 - **Draft before render.** An animatic of stills lets the vision check run on keyframes before a full render spends
   Muse time. `01` already recommended checking stills first. Design decision.
 - **Gate early, fix early.** A failed script gate costs one Hermes call; a failed render gate costs a render.
-  Failures route back to the stage that caused them (automatic revision, at most 2 attempts per stage, then the owner).
-  Design decision.
+  Failures route back to the stage that caused them (automatic revision, at most 2 attempts per stage, then the owner;
+  1 attempt when `G-assets` or `G-compliance` failed). Design decision.
 - **Private upload then wait.** YouTube runs copyright checks after upload, so the portal uploads private and waits
   before publishing (`01` section 3, rule 6).
 - **Learning closes the loop.** Metrics feed template statistics and demotion (section 8).
@@ -92,7 +92,7 @@ A **final template** is the unit the owner picks and the autonomy engine trusts.
 - **Audio rules:** voice provider and language support, music policy, loudness target, ducking.
 - **Asset policy:** allowed executors and sources, forbidden kinds.
 - **Copyright checklist:** written items, signed by the owner (user id and date).
-- **Stats:** trial runs, gate pass rates, mean presentation score, real productions, claim count.
+- **Stats:** trial runs, gate pass rates, mean presentation score, real productions, claim count. The mean covers every counted trial; a trial with no presentation score counts as 0, so unscored runs cannot support promotion.
 - **Version:** every change creates a new version; evidence belongs to a version.
 
 ### Lifecycle
@@ -133,7 +133,7 @@ Every gate has an id, a concrete test and a named executor. Thresholds are the c
 | `G-storyboard` | storyboard | Every template beat covered; no shot longer than template `maxShotSeconds`; first shot change inside template `hookByMs` | Portal rules |
 | `G-assets` | assets | Every shot has an asset with a provenance record; no `reference-video` kind; no asset with an empty licence; no upload or licensed asset without an origin; no real-person likeness or brand logo flagged by the vision check | Portal rules, Hermes vision |
 | `G-voice` | voice | TTS language supported, else the provider must be named; narration duration within 10 percent of script estimate; no clipped samples | Portal rules, worker measurement |
-| `G-technical` | qc | Resolution and fps equal the format; duration inside template range; has an audio stream; integrated loudness -14 LUFS plus or minus 2; true peak at or below -1 dBTP; no black run over 1.0 s outside the first and last 0.5 s; no silence over 2.5 s in narrated templates (silencedetect at -50 dB); no frozen frame over 4 s except ambient templates | Worker `qc-video` job (ffprobe, ebur128, blackdetect, silencedetect, freezedetect) |
+| `G-technical` | qc | Resolution and fps equal the format; duration inside template range; has an audio stream; integrated loudness -14 LUFS plus or minus 2; true peak at or below -1 dBTP; no black run over 1.0 s outside the first and last 0.5 s; no silence over 2.5 s in narrated templates (silencedetect at -50 dB); no frozen frame over 4 s except ambient templates; no shot longer than 1.5 times template `maxShotSeconds` (measured between cuts); on shorts other than ambient, the first cut inside template `hookByMs` | Worker `qc-video` job (ffprobe, ebur128, blackdetect, silencedetect, freezedetect) |
 | `G-presentation` | qc | Vision QC on keyframes every 3 s: captions inside the safe area and readable, no garbled text, no off-model characters, no artifacts. Score 0 to 100, pass at 75 | Hermes vision |
 | `G-compliance` | qc | Altered/synthetic disclosure flag set when realistic synthetic content; paid promotion flag set for affiliate or advertising purposes; Made for Kids set for the kids theme; template copyright checklist signed; music has a licence or is self-generated | Portal rules |
 | `G-claims` | claim-watch | After private upload wait 6 hours (configurable), then read copyright and claim status. Any claim or restriction blocks publish and demotes the template to candidate | Portal (YouTube API) |
@@ -146,7 +146,15 @@ Notes:
 - The pass mark is 75 for a single video, 80 mean for promotion, 85 for auto-publish. All are design decisions.
 - A vision model can be wrong. It is one signal inside a gate list, and the human approval stage stays until autonomy
   level 3 is earned. Unverified accuracy; measure false passes during trials and store them in `qc_reports`.
-- **Auto-revision:** a failed gate routes to the owning stage, at most 2 retries. Then it becomes a human touchpoint.
+- **Auto-revision:** a failed gate routes to the owning stage, at most 2 retries. A `G-assets` or `G-compliance`
+  failure gets 1 retry, because repeating a rights or disclosure problem does not fix it. Then it becomes a human
+  touchpoint. A `G-claims` failure or a retired template is never revised, it blocks.
+- **Required gates:** a missing result is not a pass. A video can be approved for publishing only when `G-technical`,
+  `G-presentation`, `G-assets`, `G-compliance` and `G-claims` all have a result and all passed (`combineGates`
+  returns `missingGates`). A missing gate sends the item to the owner. Stage-only checks name the gates of that stage.
+- **QC records:** a `qc-video` job tied to a production always ends with a `G-technical` report. A failed job, an
+  unreadable result or a missing template store a failed report. If the portal could not evaluate a job when it
+  finished, the next job completion or failure retries it (jobs from the last 7 days).
 
 ## 5. Asset sourcing by Hermes and Muse
 
@@ -231,7 +239,7 @@ runs, so the lab has a daily budget (design decision).
 | Level | Name | Behaviour |
 |---|---|---|
 | 0 | manual | Owner approves every stage output |
-| 1 | ideas and final approval by owner | Everything between is automatic |
+| 1 | ideas and final approval by owner | The owner approves the `idea` stage. Every other stage between is automatic |
 | 2 | final approval by owner only | Ideas are auto-picked from the channel plan |
 | 3 | auto-publish | Publishes when all gates pass, the template is `proven`, QC score is at least 85, and the channel is not paused. Every 5th video still goes to the owner as a spot check |
 

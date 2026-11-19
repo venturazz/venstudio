@@ -259,20 +259,28 @@ export function claimsGate(input: { status: ClaimStatus; waitedHours: number; mi
 
 const HARD_GATES: GateId[] = ["G-assets", "G-compliance", "G-claims"];
 
+/** Gates that must all have run, and passed, before a video can be approved for publishing. */
+export const PUBLISH_GATES: GateId[] = ["G-technical", "G-presentation", "G-assets", "G-compliance", "G-claims"];
+
 export interface CombinedQc {
   passed: boolean;
+  /** Required gates that have no result yet. A missing gate is never a pass. */
+  missingGates: GateId[];
   score: number;
   failedGates: GateId[];
   /** True when automatic revision must not run: assets, compliance or claims failed, or the template is retired. */
   blocking: boolean;
 }
 
-export function combineGates(results: GateResult[], template: Template): CombinedQc {
+/** `required` defaults to the publish set; pass the gates of an earlier stage (or none) for a stage-only check. */
+export function combineGates(results: GateResult[], template: Template, required: GateId[] = PUBLISH_GATES): CombinedQc {
+  const missingGates = required.filter((g) => !results.some((r) => r.gate === g));
   const failedGates = results.filter((r) => !r.passed).map((r) => r.gate);
   const scores = results.map((r) => r.score ?? Math.max(0, 100 - 10 * r.issues.length));
   const score = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
   return {
-    passed: results.length > 0 && failedGates.length === 0,
+    passed: results.length > 0 && failedGates.length === 0 && missingGates.length === 0,
+    missingGates,
     score,
     failedGates,
     blocking: failedGates.some((g) => HARD_GATES.includes(g)) || template.status === "retired",

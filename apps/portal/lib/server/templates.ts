@@ -9,7 +9,11 @@ import type { TrialScore } from "../studio/template-lab.ts";
  */
 export async function ensureSeedTemplates(): Promise<void> {
   const sql = db();
-  for (const t of seedTemplates()) {
+  const seeds = seedTemplates();
+  // One cheap read decides whether any seed is missing; the inserts only run on first use or after a new seed ships.
+  const [have] = await sql`SELECT count(*)::int AS n FROM templates WHERE id = ANY(${seeds.map((t) => t.id)}::text[])`;
+  if ((have?.n as number) >= seeds.length) return;
+  for (const t of seeds) {
     await sql.begin(async (tx) => {
       await tx`
         INSERT INTO templates (id, name, status, style_id, current_version)
@@ -24,6 +28,12 @@ export async function ensureSeedTemplates(): Promise<void> {
     });
   }
 }
+
+/**
+ * Note: templates.status mirrors spec.status for filtering. Reads use the spec. Any code that changes a
+ * template's status (promotion, demotion, retirement) must write the new version spec and this column in one
+ * transaction, as saveDraftTemplate does.
+ */
 
 /** Current version of every template, newest change first. */
 export async function listTemplates(): Promise<Template[]> {

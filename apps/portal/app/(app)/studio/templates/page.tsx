@@ -26,7 +26,8 @@ async function loadTemplates(): Promise<{ templates: Template[]; stored: boolean
   try {
     await ensureSeedTemplates();
     return { templates: await listTemplates(), stored: true };
-  } catch {
+  } catch (err) {
+    console.error("templates page: could not load templates", err);
     return { templates: seedTemplates(), stored: false };
   }
 }

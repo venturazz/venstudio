@@ -5,6 +5,7 @@ import {
   claimsGate,
   combineGates,
   complianceGate,
+  PUBLISH_GATES,
   ngramOverlap,
   presentationGate,
   qcSummary,
@@ -186,20 +187,44 @@ test("combineGates scores, lists failures and flags blocking", () => {
   const t = explainer();
   const ok: GateResult = { gate: "G-script", passed: true, issues: [], executor: "hermes" };
   const pres: GateResult = { gate: "G-presentation", passed: true, score: 90, issues: [], executor: "x" };
-  const all = combineGates([ok, pres], t);
+  const all = combineGates([ok, pres], t, []);
   assert.equal(all.passed, true);
   assert.equal(all.score, 95);
   assert.equal(all.blocking, false);
   const tech: GateResult = { gate: "G-technical", passed: false, issues: ["a", "b"], executor: "w" };
-  const failed = combineGates([ok, tech], t);
+  const failed = combineGates([ok, tech], t, []);
   assert.equal(failed.passed, false);
   assert.deepEqual(failed.failedGates, ["G-technical"]);
   assert.equal(failed.score, 90);
   assert.equal(failed.blocking, false);
   const comp: GateResult = { gate: "G-compliance", passed: false, issues: ["z"], executor: "p" };
-  assert.equal(combineGates([ok, comp], t).blocking, true);
+  assert.equal(combineGates([ok, comp], t, []).blocking, true);
   assert.equal(combineGates([], t).passed, false);
   assert.equal(combineGates([ok], { ...t, status: "retired" }).blocking, true);
+});
+
+test("combineGates does not pass until every publish gate has a result", () => {
+  const t = explainer();
+  const g = (gate: GateResult["gate"]): GateResult => ({ gate, passed: true, score: 90, issues: [], executor: "x" });
+  const some = combineGates([g("G-script"), g("G-presentation")], t);
+  assert.equal(some.passed, false);
+  assert.deepEqual(some.missingGates, ["G-technical", "G-assets", "G-compliance", "G-claims"]);
+  const noClaims = combineGates(PUBLISH_GATES.filter((x) => x !== "G-claims").map(g), t);
+  assert.equal(noClaims.passed, false);
+  assert.deepEqual(noClaims.missingGates, ["G-claims"]);
+  const full = combineGates(PUBLISH_GATES.map(g), t);
+  assert.equal(full.passed, true);
+  assert.deepEqual(full.missingGates, []);
+});
+
+test("technicalGate flags a long shot and a late first cut on shorts", () => {
+  const t = explainer();
+  const base = good();
+  assert.equal(technicalGate(base, t, "short").passed, true);
+  const longShot = technicalGate({ ...base, cuts: [1, 2] }, t, "short");
+  assert.ok(longShot.issues.some((i) => i.startsWith("A shot longer than allowed")));
+  const late = technicalGate({ ...base, cuts: [t.pacing.hookByMs / 1000 + 1, 5, 9, 13, 17, 21, 25, 29, 33, 37] }, t, "short");
+  assert.ok(late.issues.some((i) => i.includes("hook window")));
 });
 
 test("qcSummary is plain English", () => {
