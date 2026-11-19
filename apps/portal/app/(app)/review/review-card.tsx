@@ -44,9 +44,9 @@ function MediaBlock({ stage, payload }: { stage: string; payload: ReviewPayload 
           ))}
         </ul>
       )}
-      {stage === "assets" && termsLine && (
+      {(stage === "assets" || stage === "voice") && termsLine && (
         <p className="break-words text-sm" data-testid="provider-terms-notice">
-          Some images come from a provider whose commercial-use terms are not confirmed.{" "}
+          Some of this was made by a provider whose commercial-use terms are not confirmed.{" "}
           <Link href="/settings" className="inline-flex min-h-11 items-center text-accent underline-offset-2 hover:underline">
             Confirm the terms in Settings
           </Link>
