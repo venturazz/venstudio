@@ -272,12 +272,14 @@ export function imagePrompt(r: ImageRequest): ChatMessage[] {
       role: "user",
       content: [
         "VENSTUDIO_STAGE: image",
-        `Generate one image for shot ${r.shotRef} (${r.beatRole} beat), ${shape}. Use your image_gen tools. If one provider fails, try the next one in your chain.`,
+        `Generate one image for shot ${r.shotRef} (${r.beatRole} beat), ${shape}. Use your image_gen tools.`,
+        "You choose the provider. Let your image_gen chain fall through its own providers in your own order (for example cloudflare, agnes, canva, qwen, minimax, sensenova): if one fails or is rate limited, go on to the next one. Do not stop at the first failure.",
         order.length ? `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.` : "",
+        'If every provider is rate limited, reply with status "error" and say "rate limited" in error.',
         "The image must be at least 480 pixels on its short side. It names no real person, no brand and no copyrighted character.",
         "Do not return a file path. Return an https URL that anyone can download, or base64 image data.",
-        'Schema: {"status":"ok"|"error","provider":string,"model":string,"image":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
-        "provider is the provider that really made the image. Never guess it.",
+        'Schema: {"status":"ok"|"error","provider":string,"model":string,"image":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string,"tried":[{"provider":string,"error":string}]}',
+        "provider is the provider that really made the image. Never guess it. tried lists the providers that failed before it, with a short reason.",
         dataBlock("image description", r.prompt, MAX_IMAGE_PROMPT_CHARS),
         r.retryHint ? dataBlock("problem with the last attempt", r.retryHint, MAX_NOTE_CHARS) : "",
       ]
@@ -344,4 +346,27 @@ export function ttsCapcutPrompt(r: TtsCapcutRequest): ChatMessage[] {
         .join("\n"),
     },
   ];
+}
+
+export interface TriedProvider {
+  provider: string;
+  error: string;
+}
+
+/**
+ * The providers Hermes says failed before the one that made the image (`tried` in the image reply). Hermes' own
+ * report, bounded and normalised; used only to record endpoint health, never to decide terms.
+ */
+export function parseTriedProviders(value: unknown): TriedProvider[] {
+  const list = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as { tried?: unknown }).tried : undefined;
+  if (!Array.isArray(list)) return [];
+  const out: TriedProvider[] = [];
+  for (const item of list.slice(0, 12)) {
+    const rec = (typeof item === "object" && item !== null ? item : { provider: item }) as { provider?: unknown; name?: unknown; error?: unknown };
+    const raw = typeof rec.provider === "string" ? rec.provider : typeof rec.name === "string" ? rec.name : "";
+    const provider = raw.trim() ? normalizeProvider(raw) : "";
+    if (!provider || out.some((t) => t.provider === provider)) continue;
+    out.push({ provider, error: typeof rec.error === "string" ? rec.error.replace(/\s+/g, " ").trim().slice(0, 200) : "" });
+  }
+  return out;
 }

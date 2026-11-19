@@ -5,6 +5,7 @@
  * stage resolution and the messages shown when a capability is missing. No network, no database, no zod.
  * Spec: docs/architecture-autonomous-studio.md (Capabilities)
  */
+import { findHealth, proofOf, type EndpointHealth, type Proof } from "./endpoint-health.ts";
 import { dataBlock, type ChatMessage, type Validated } from "./director.ts";
 
 export const CAPABILITY_STAGES = [
@@ -65,7 +66,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   image: {
     label: "Images",
-    today: "Hermes image_gen first, then 9router image models.",
+    today: "Hermes image_gen first (it picks its own providers), then a 9router image model only once a real call proved it.",
     used: true,
     builtIn: false,
     later: false,
@@ -76,7 +77,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   voice: {
     label: "Voice",
-    today: "9router text to speech first, then Hermes voice skills such as CapCut.",
+    today: "9router Kokoro first (a listed voice is tried and becomes proven when it works; one that refused a request is set aside), then Hermes voice skills such as CapCut.",
     used: true,
     builtIn: false,
     later: false,
@@ -179,6 +180,11 @@ export interface Capability {
    * provider, a voice engine). Such names are shown as unverified and never reach a prompt as a hint.
    */
   verified: boolean;
+  /**
+   * For 9router image and voice models when real-call health is known: proven by a real call, only listed, or set
+   * aside after a 4xx. Absent when no health was passed (the card always passes it).
+   */
+  proof?: Proof;
 }
 
 export function isStage(v: unknown): v is CapabilityStage {
@@ -462,8 +468,20 @@ export interface CapabilitySnapshot {
   error: string | null;
 }
 
-/** Everything the studio knows, flattened per stage. */
-export function buildCapabilities(snap: CapabilitySnapshot | null): Capability[] {
+/**
+ * Adds what real calls showed to the 9router image and voice models. A 9router image model is used by the automatic
+ * chain only once proven; a voice is tried while listed, but never once set aside.
+ */
+function withProof(c: Capability, health: readonly EndpointHealth[], nowMs: number): Capability {
+  if (c.via !== "9router" || (c.stage !== "image" && c.stage !== "voice")) return c;
+  const kind = c.stage === "image" ? "image" : "tts";
+  const proof = proofOf(findHealth(health, "9router", c.id, kind), nowMs);
+  const used = c.stage === "image" ? c.used && proof === "proven" : c.used && proof !== "quarantined";
+  return { ...c, proof, used };
+}
+
+/** Everything the studio knows, flattened per stage. Pass `health` to mark 9router models proven, listed or set aside. */
+export function buildCapabilities(snap: CapabilitySnapshot | null, health?: readonly EndpointHealth[], nowMs: number = Date.now()): Capability[] {
   if (!snap) return [];
   const caps: Capability[] = [];
   const h = snap.hermes;
@@ -489,7 +507,10 @@ export function buildCapabilities(snap: CapabilitySnapshot | null): Capability[]
       caps.push({ stage: "voice", source: "hermes-tool", id: v, label: v, detail: "voice engine", via: "hermes", used: true, verified: false });
     }
   }
-  if (snap.router) caps.push(...classifyRouterModels(snap.router.lists));
+  if (snap.router) {
+    const routerCaps = classifyRouterModels(snap.router.lists);
+    caps.push(...(health ? routerCaps.map((c) => withProof(c, health, nowMs)) : routerCaps));
+  }
   return caps;
 }
 
@@ -577,11 +598,12 @@ export type StageStatus = "ready" | "unverified" | "found" | "missing" | "later"
  * Ready: the studio can call something that /v1/skills or 9router listed. Unverified: the only callable names are
  * ones Hermes claimed about itself. Found: something exists but no stage calls it yet.
  */
-export function stageStatus(stage: CapabilityStage, snap: CapabilitySnapshot | null): StageStatus {
+export function stageStatus(stage: CapabilityStage, snap: CapabilitySnapshot | null, health?: readonly EndpointHealth[], nowMs: number = Date.now()): StageStatus {
   const info = STAGE_INFO[stage];
   if (info.later) return "later";
-  const caps = capabilitiesFor(stage, buildCapabilities(snap));
-  if (info.builtIn || caps.some((c) => c.used && c.verified)) return "ready";
+  const caps = capabilitiesFor(stage, buildCapabilities(snap, health, nowMs));
+  // A 9router model that is only listed is not proof that the stage works.
+  if (info.builtIn || caps.some((c) => c.used && c.verified && (c.proof === undefined || c.proof === "proven"))) return "ready";
   if (caps.some((c) => c.used)) return "unverified";
   return caps.length > 0 ? "found" : "missing";
 }
