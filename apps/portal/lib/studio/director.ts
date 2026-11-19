@@ -332,6 +332,12 @@ function channelLines(ctx: DirectorContext): string[] {
   ].filter((l) => l !== "");
 }
 
+/** First line of every user prompt. Lets a fake or logging gateway tell the stages apart. */
+export type PromptStage = DirectorStage | "classify" | "selftest";
+export function stageMarker(stage: PromptStage): string {
+  return `VENSTUDIO_STAGE: ${stage}`;
+}
+
 function system(task: string): ChatMessage {
   return { role: "system", content: `You are the director of a YouTube channel studio. ${task} ${JSON_RULE} ${DATA_RULE}` };
 }
@@ -343,6 +349,7 @@ export function ideaPrompt(ctx: DirectorContext, retryHint?: string): ChatMessag
     {
       role: "user",
       content: [
+        stageMarker("idea"),
         `Propose ${MIN_IDEAS} to ${MAX_IDEAS} distinct video ideas that fit the channel and do not repeat past titles.`,
         ...channelLines(ctx),
         'Schema: {"ideas":[{"title":string,"hook":string,"angle":string,"score":number}]}',
@@ -366,6 +373,7 @@ export function researchPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | 
     {
       role: "user",
       content: [
+        stageMarker("research"),
         `Collect up to ${MAX_NOTES} short research notes for this idea. Each note is one claim with its source.`,
         needs ? "This theme needs sources: give a real http or https sourceUrl for every claim you can." : "Give a source link where you have one.",
         "Set sourced to true only when sourceUrl is a real link you are confident exists. Never invent links; use sourced false and an empty sourceUrl instead.",
@@ -391,6 +399,7 @@ export function scriptPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | "h
     {
       role: "user",
       content: [
+        stageMarker("script"),
         `Write ${MIN_HOOKS} or more alternative opening hooks, pick one by index, and write the full narration script that starts with it.`,
         `The script should be about ${target} words (${wpm} words per minute for ${ctx.durationSec} seconds, plus or minus 15 percent).`,
         `The first sentence must be short enough to be spoken within the first ${firstWindow} seconds.`,
@@ -418,6 +427,7 @@ export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint
     {
       role: "user",
       content: [
+        stageMarker("storyboard"),
         `Split the script into shots that together last about ${ctx.durationSec} seconds. Cover every beat of the template at least once, in order.`,
         `No shot may be longer than ${maxShot} seconds. beatRole must be one of ${BEAT_ROLES.join(", ")}.`,
         "imagePrompt describes one still image in plain words. It names no real person, no brand and no copyrighted character.",
@@ -439,6 +449,7 @@ export function classifyPrompt(note: string, currentStage: DirectorStage): ChatM
     {
       role: "user",
       content: [
+        stageMarker("classify"),
         `Stages in order: ${DIRECTOR_STAGES.join(", ")}. The owner is looking at the ${currentStage} stage.`,
         "Pick the earliest stage that has to change for the request to be met.",
         'Schema: {"stage":"idea"|"research"|"script"|"storyboard","reason":string}',
@@ -496,4 +507,29 @@ export function pickIdea(ideas: Idea[]): Idea | null {
   let best: Idea | null = null;
   for (const i of ideas) if (best === null || i.score > best.score) best = i;
   return best;
+}
+
+export interface SelfTestOutput {
+  ok: true;
+  sum: number;
+}
+
+/** A tiny structured request used by the "Test Hermes JSON" button. */
+export function selfTestPrompt(): ChatMessage[] {
+  return [
+    system("Answer a tiny self test."),
+    {
+      role: "user",
+      content: [stageMarker("selftest"), 'Reply with exactly this JSON, replacing the sum with 2 plus 3: {"ok":true,"sum":0}'].join("\n"),
+    },
+  ];
+}
+
+export function validateSelfTest(value: unknown): Validated<SelfTestOutput> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { ok: false, issues: ["The reply must be a JSON object"] };
+  const v = value as Record<string, unknown>;
+  const issues: string[] = [];
+  if (v.ok !== true) issues.push('"ok" must be true');
+  if (v.sum !== 5) issues.push('"sum" must be the number 5');
+  return issues.length > 0 ? { ok: false, issues } : { ok: true, value: { ok: true, sum: 5 } };
 }

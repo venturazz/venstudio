@@ -92,3 +92,16 @@ export function sortReviews<T extends SortableReview>(items: T[]): T[] {
 export function describeGateIssues(results: GateResult[]): string[] {
   return qcSummary(results);
 }
+
+/** What a review item carries for the phone: a summary, and the choices or problems that need the owner. */
+export interface ReviewPayload {
+  summary: string;
+  /** Idea reviews: the proposed ideas, in the order the owner picks by index. */
+  ideas?: Array<{ title: string; hook: string; angle: string; score: number }>;
+  /** Gate failures: the plain issues. */
+  issues?: string[];
+  /** Stage errors: why the stage stopped. */
+  error?: string;
+  /** Why the owner is asked (from the autonomy policy). */
+  reason?: string;
+}

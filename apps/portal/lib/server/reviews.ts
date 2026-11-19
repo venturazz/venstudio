@@ -1,0 +1,97 @@
+import "server-only";
+import { db } from "./db.ts";
+import type { GateId, GateResult } from "../studio/qc.ts";
+import type { ReviewKind, ReviewPayload, ReviewState } from "../studio/review.ts";
+
+export interface ReviewCard {
+  id: string;
+  runId: string;
+  stage: string;
+  kind: ReviewKind;
+  state: ReviewState;
+  payload: ReviewPayload;
+  note: string;
+  createdAt: Date;
+  topic: string;
+  channelName: string;
+  /** Newest result per gate for the run. */
+  gates: GateResult[];
+}
+
+function toPayload(raw: unknown): ReviewPayload {
+  const p = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  const payload: ReviewPayload = { summary: typeof p.summary === "string" ? p.summary : "" };
+  if (Array.isArray(p.ideas)) {
+    payload.ideas = p.ideas.flatMap((i) => {
+      const r = (typeof i === "object" && i !== null ? i : {}) as Record<string, unknown>;
+      if (typeof r.title !== "string" || typeof r.hook !== "string" || typeof r.angle !== "string" || typeof r.score !== "number") return [];
+      return [{ title: r.title, hook: r.hook, angle: r.angle, score: r.score }];
+    });
+  }
+  if (Array.isArray(p.issues)) payload.issues = p.issues.filter((i): i is string => typeof i === "string");
+  if (typeof p.error === "string") payload.error = p.error;
+  if (typeof p.reason === "string") payload.reason = p.reason;
+  return payload;
+}
+
+/** The newest report of each gate for the given runs, keyed by run id. */
+export async function latestGatesByRun(runIds: string[]): Promise<Map<string, GateResult[]>> {
+  const out = new Map<string, GateResult[]>();
+  if (runIds.length === 0) return out;
+  const sql = db();
+  const rows = await sql`
+    SELECT DISTINCT ON (run_id, gate) run_id, gate, passed, score, details, executor
+    FROM qc_reports WHERE run_id IN ${sql(runIds)}
+    ORDER BY run_id, gate, created_at DESC
+  `;
+  for (const r of rows) {
+    const details = (typeof r.details === "object" && r.details !== null ? r.details : {}) as { issues?: unknown };
+    const gate: GateResult = {
+      gate: r.gate as GateId,
+      passed: r.passed as boolean,
+      score: typeof r.score === "number" ? r.score : undefined,
+      issues: Array.isArray(details.issues) ? details.issues.filter((i): i is string => typeof i === "string") : [],
+      executor: (r.executor as string | null) ?? "",
+    };
+    const runId = r.run_id as string;
+    out.set(runId, [...(out.get(runId) ?? []), gate]);
+  }
+  return out;
+}
+
+/** Open review items, newest last within each kind is decided by the page with sortReviews. */
+export async function listOpenReviews(): Promise<ReviewCard[]> {
+  const rows = await db()`
+    SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name
+    FROM review_items ri
+    JOIN pipeline_runs r ON r.id = ri.run_id
+    LEFT JOIN channels c ON c.id = r.channel_id
+    WHERE ri.state = 'open'
+    ORDER BY ri.created_at
+    LIMIT 100
+  `;
+  const gates = await latestGatesByRun([...new Set(rows.map((r) => r.run_id as string))]);
+  return rows.map((r): ReviewCard => ({
+    id: r.id as string,
+    runId: r.run_id as string,
+    stage: r.stage as string,
+    kind: r.kind as ReviewKind,
+    state: r.state as ReviewState,
+    payload: toPayload(r.payload),
+    note: (r.note as string | null) ?? "",
+    createdAt: r.created_at as Date,
+    topic: (r.topic as string | null) ?? "",
+    channelName: (r.channel_name as string | null) ?? "",
+    gates: gates.get(r.run_id as string) ?? [],
+  }));
+}
+
+/** Number of items waiting for the owner, for the nav badge. Never throws: a badge must not break a page. */
+export async function countOpenReviews(): Promise<number> {
+  try {
+    const [r] = await db()`SELECT count(*)::int AS n FROM review_items WHERE state = 'open'`;
+    return (r?.n as number | undefined) ?? 0;
+  } catch {
+    return 0;
+  }
+}

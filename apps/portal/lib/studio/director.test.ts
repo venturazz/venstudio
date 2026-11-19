@@ -10,7 +10,10 @@ import {
   researchPrompt,
   retryNote,
   scriptPrompt,
+  selfTestPrompt,
+  stageMarker,
   storyboardPrompt,
+  validateSelfTest,
   validateClassification,
   validateIdeas,
   validateResearch,
@@ -264,4 +267,29 @@ test("a validated sample script and storyboard pass the gates for a seed templat
   if (!sb.ok) return;
   assert.equal(storyboardGate(template, sb.value.shots).passed, true);
   assert.equal(storyboardGate(template, sb.value.shots.slice(1)).passed, false);
+});
+
+test("each user prompt starts with its stage marker line", () => {
+  const sample = { title: "T", hook: "H", angle: "A" };
+  const cases: Array<[ChatMessage[], string]> = [
+    [ideaPrompt(ctx), "idea"],
+    [researchPrompt(ctx, sample), "research"],
+    [scriptPrompt(ctx, sample, []), "script"],
+    [storyboardPrompt(ctx, "A script."), "storyboard"],
+    [classifyPrompt("shorter", "script"), "classify"],
+    [selfTestPrompt(), "selftest"],
+  ];
+  for (const [msgs, stage] of cases) {
+    const user = msgs.find((m) => m.role === "user");
+    assert.ok(user);
+    assert.equal(user.content.split("\n")[0], `VENSTUDIO_STAGE: ${stage}`);
+    assert.equal(stageMarker(stage as "idea"), `VENSTUDIO_STAGE: ${stage}`);
+  }
+});
+
+test("validateSelfTest accepts the expected reply only", () => {
+  assert.equal(validateSelfTest({ ok: true, sum: 5 }).ok, true);
+  assert.equal(validateSelfTest({ ok: true, sum: 6 }).ok, false);
+  assert.equal(validateSelfTest([]).ok, false);
+  assert.equal(validateSelfTest(null).ok, false);
 });
