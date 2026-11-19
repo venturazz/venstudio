@@ -219,7 +219,10 @@ Discovery flow (`lib/server/capabilities.ts`, pure rules in `lib/studio/capabili
    make videos, the stage ids each serves, its `image_gen` providers and its voice engines. The reply is validated
    (lists capped, unknown stage ids dropped, strings truncated, nothing executable). `GET /v1/skills` is merged in when it
    answers.
-3. 9router is probed with 15 s per probe: `/v1/models`, `/v1/models/image`, `/v1/models/tts`, `/v1/models/web`,
+3. 9router is probed with 15 s per probe (list paths and request shapes follow the 9router SKILL.md: `GET /v1/models`,
+   `/v1/models/{image,tts,web,stt,image-to-text}`, `POST /v1/audio/speech {model,input}`, `POST /v1/images/generations
+   {model,prompt,n,size,response_format}`, 503 "All accounts unavailable" retried once after `Retry-After`, 401 means refresh
+   the key, 400 "Invalid model format"; `/v1/models/video` is not in that file and a 404 is tolerated): `/v1/models`, `/v1/models/image`, `/v1/models/tts`, `/v1/models/web`,
    `/v1/models/stt`, `/v1/models/video` (404 tolerated) and `/v1/audio/voices` only when the TTS list is empty. The base
    URL may or may not end in `/v1`.
 4. The snapshot is stored in `capability_scans`. The Settings card turns it into one section per stage with a badge
@@ -235,22 +238,28 @@ or nothing listed) and what to do.
 | image | Hermes `image_gen`, then 9router `POST /v1/images/generations`, then CC0 library, then Muse agent |
 | voice | optional `KOKORO_BASE_URL` override, 9router TTS, Hermes asked for Kokoro (`VENSTUDIO_STAGE: tts-kokoro`), Hermes CapCut (`tts-capcut`) |
 | editing, subtitles | worker `render-video` (ffmpeg) |
-| video-clips, music, sfx, thumbnail, CapCut editing | listed in the map as "Found, not used yet": no stage consumes them |
+| video-clips, music, sfx, thumbnail, CapCut editing | listed in the map as "Found, not used yet": no stage calls them, so a listing does not prove they work. The card says so per stage. They are first called in Phase 5, where each gets its own smoke call. A Settings "Test" button for them was left out: it would spend real provider quota on an output contract that is not defined yet |
 | upload | Phase 5, not built |
 
 Voice order. The Kokoro model is picked from `/v1/models/tts` (an id containing `kokoro`, preferring `af_heart` for
 English). Only Kokoro voices are used automatically, so another engine such as edge-tts is never chosen silently. The
 override is tried first only when `KOKORO_BASE_URL` is set. Each failed path is kept and shown in the voice stage
-summary and in Settings, Test voice. English is the only verified language. Without a snapshot, one 20 s probe of
-`/v1/models/tts` runs when the voice is requested, never at render.
+summary and in Settings, Test voice. English is the only verified language. The stored list is used only when its TTS
+probe worked and names a Kokoro voice. Otherwise (no scan, a failed TTS probe, or no Kokoro in the list) one 20 s probe of
+`/v1/models/tts` runs when the voice is requested, never at render, so a voice added later is found and the real cause is
+reported.
 
 Image order. Hermes `image_gen` stays first because its provider chain is proven live. 9router images come second and
 only when the snapshot lists an image model (the first listed, or the one matching `HERMES_IMAGE_PROVIDER_ORDER`).
 
 Provenance. `buildProvenance` records the executor that really produced each asset: `router-tts`, `hermes-kokoro`,
 `router-image` besides the existing ones, plus `metadata.via` (`9router`, `hermes` or `direct`). `asset_providers`
-gets the real provider (`kokoro`, `unlisted-<name>`, or `9router-combo-<id>` for a 9router combo, whose underlying
+gets the real provider (`kokoro` when 9router or your own server made it, `hermes-kokoro` when Hermes says it used Kokoro, `unlisted-<name>`, or `9router-combo-<id>` for a 9router combo, whose underlying
 provider is unknown). It starts `unknown` and only the owner confirms it in Settings.
+
+Trust. Skills Hermes only named in its chat answer (not in `/v1/skills`), and its image providers and voice engines, are
+shown as "not verified" and are never passed back as prompt hints. The scan asks Hermes once (no retry), so a manual scan
+takes at most about two minutes.
 
 Optional env. `KOKORO_*`, `TTS_BACKUP`, `HERMES_IMAGE_PROVIDER_ORDER` and `HERMES_MEDIA_ORIGINS` are overrides. Nothing
 beyond `NINEROUTER_*` and `HERMES_*` is required.

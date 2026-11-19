@@ -87,7 +87,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   music: {
     label: "Music",
-    today: "Found, not used by a stage yet.",
+    today: "Found, not used by a stage yet. Nothing has called these skills, so a listing does not prove they work; the studio first calls them in Phase 5.",
     used: false,
     builtIn: false,
     later: false,
@@ -98,7 +98,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   sfx: {
     label: "Sound effects",
-    today: "Found, not used by a stage yet.",
+    today: "Found, not used by a stage yet. Nothing has called these skills, so a listing does not prove they work; the studio first calls them in Phase 5.",
     used: false,
     builtIn: false,
     later: false,
@@ -109,7 +109,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   "video-clips": {
     label: "Video clips",
-    today: "Found, not used by a stage yet.",
+    today: "Found, not used by a stage yet. Nothing has called these skills, so a listing does not prove they work; the studio first calls them in Phase 5.",
     used: false,
     builtIn: false,
     later: false,
@@ -120,7 +120,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   editing: {
     label: "Editing",
-    today: "The worker renders the video with ffmpeg. CapCut editing through Hermes is found, not used yet.",
+    today: "The worker renders the video with ffmpeg. CapCut editing through Hermes is found, not used yet. Nothing has called it, so a listing does not prove it works.",
     used: false,
     builtIn: true,
     later: false,
@@ -142,7 +142,7 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   thumbnail: {
     label: "Thumbnail",
-    today: "Found, not used by a stage yet.",
+    today: "Found, not used by a stage yet. Nothing has called these skills, so a listing does not prove they work; the studio first calls them in Phase 5.",
     used: false,
     builtIn: false,
     later: false,
@@ -174,6 +174,11 @@ export interface Capability {
   detail: string;
   via: "hermes" | "9router";
   used: boolean;
+  /**
+   * False for what Hermes only said about itself in its chat answer (a skill /v1/skills did not list, an image
+   * provider, a voice engine). Such names are shown as unverified and never reach a prompt as a hint.
+   */
+  verified: boolean;
 }
 
 export function isStage(v: unknown): v is CapabilityStage {
@@ -374,6 +379,7 @@ function routerCap(m: RouterModel, stage: CapabilityStage, detail: string): Capa
     detail: combo ? `combo. ${detail}` : m.ownedBy ? `${m.ownedBy}. ${detail}` : detail,
     via: "9router",
     used: STAGE_INFO[stage].used && stage !== "script" && stage !== "research",
+    verified: true,
   };
 }
 
@@ -397,6 +403,7 @@ export function classifyRouterModels(lists: RouterLists): Capability[] {
       detail: "voices listed by 9router",
       via: "9router",
       used: true,
+      verified: true,
     });
   }
   for (const m of lists.web) {
@@ -469,14 +476,15 @@ export function buildCapabilities(snap: CapabilitySnapshot | null): Capability[]
           detail: s.description || s.category,
           via: "hermes",
           used: STAGE_INFO[stage].used,
+          verified: s.listedByApi,
         });
       }
     }
     for (const p of h.imageProviders) {
-      caps.push({ stage: "image", source: "hermes-tool", id: p, label: p, detail: "image_gen provider", via: "hermes", used: true });
+      caps.push({ stage: "image", source: "hermes-tool", id: p, label: p, detail: "image_gen provider", via: "hermes", used: true, verified: false });
     }
     for (const v of h.voiceEngines) {
-      caps.push({ stage: "voice", source: "hermes-tool", id: v, label: v, detail: "voice engine", via: "hermes", used: true });
+      caps.push({ stage: "voice", source: "hermes-tool", id: v, label: v, detail: "voice engine", via: "hermes", used: true, verified: false });
     }
   }
   if (snap.router) caps.push(...classifyRouterModels(snap.router.lists));
@@ -551,11 +559,11 @@ export function missingCapabilityMessage(stage: CapabilityStage, state: ScanStat
   return `${none} ${info.fix}, then press Scan on Settings > Capabilities.`;
 }
 
-/** Up to five skill names Hermes may prefer for a stage. Only a hint in the prompt, never a command. */
+/** Up to five skill names Hermes may prefer for a stage. Only skills /v1/skills listed count; a name Hermes only claimed is not passed back to it. */
 export function skillHintsFor(stage: CapabilityStage, snap: CapabilitySnapshot | null): string[] {
   const names: string[] = [];
   for (const c of capabilitiesFor(stage, buildCapabilities(snap))) {
-    if (c.source === "hermes-skill" && !names.includes(c.id)) names.push(c.id);
+    if (c.source === "hermes-skill" && c.verified && !names.includes(c.id)) names.push(c.id);
     if (names.length >= 5) break;
   }
   return names;

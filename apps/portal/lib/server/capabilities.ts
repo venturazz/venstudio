@@ -109,7 +109,7 @@ async function scanHermes(): Promise<HermesScan> {
     return { status: { configured: false, ok: false, error: "Hermes is not configured", hint: "Set HERMES_BASE_URL and HERMES_API_KEY." }, ...empty };
   }
   const [chat, api] = await Promise.all([
-    hermesJson(capabilitiesPrompt(), validateHermesCapabilities, { retries: 1, timeoutMs: HERMES_TIMEOUT_MS }),
+    hermesJson(capabilitiesPrompt(), validateHermesCapabilities, { retries: 0, timeoutMs: HERMES_TIMEOUT_MS }),
     hermesStatus().catch(() => null),
   ]);
 
@@ -202,7 +202,9 @@ export async function getCapabilities(): Promise<CapabilitySnapshot | null> {
 function isStale(snap: CapabilitySnapshot | null): boolean {
   if (!snap) return true;
   const age = Date.now() - new Date(snap.scannedAt).getTime();
-  const down = !snap.hermes?.status.ok || !snap.router?.status.ok;
+  // A source that is not configured will not come back by itself, so it does not shorten the wait.
+  const failing = (st: SourceStatus | undefined) => !st || (st.configured && !st.ok);
+  const down = failing(snap.hermes?.status) || failing(snap.router?.status);
   return age >= (down ? RETRY_MS : FRESH_MS);
 }
 

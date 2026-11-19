@@ -167,4 +167,6 @@ test("ttsKokoroPrompt carries its own stage marker, the text and the skill hints
   assert.match(user.content, /Hello world\./);
   assert.match(user.content, /kokoro-tts/);
   assert.doesNotMatch(user.content, /, f/);
+  // The schema must not hand Hermes the confirmed provider name to copy.
+  assert.doesNotMatch(user.content, /"provider":"kokoro"/);
 });

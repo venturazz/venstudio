@@ -164,6 +164,24 @@ test("builtIn stages are ready without discoveries and upload is later", () => {
   assert.deepEqual(skillHintsFor("music", s), ["song-maker"]);
 });
 
+test("a skill only Hermes claimed is unverified and never becomes a prompt hint", () => {
+  const s = snap(
+    hermes({
+      skills: [
+        { name: "song-maker", description: "music", category: "audio", stages: [], listedByApi: true },
+        { name: "invented-singer", description: "music", category: "audio", stages: [], listedByApi: false },
+      ],
+      voiceEngines: ["capcut"],
+    }),
+    router(),
+  );
+  const caps = buildCapabilities(s);
+  assert.equal(caps.find((c) => c.id === "song-maker")?.verified, true);
+  assert.equal(caps.find((c) => c.id === "invented-singer")?.verified, false);
+  assert.equal(caps.find((c) => c.id === "capcut")?.verified, false);
+  assert.deepEqual(skillHintsFor("music", s), ["song-maker"]);
+});
+
 test("scanStateOf separates sources", () => {
   assert.equal(scanStateOf(null).scanned, false);
   const st = scanStateOf(snap(hermes({ status: { configured: false, ok: false } }), router()));

@@ -305,9 +305,9 @@ export function ttsKokoroPrompt(r: TtsKokoroRequest): ChatMessage[] {
       content: [
         "VENSTUDIO_STAGE: tts-kokoro",
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with the Kokoro voice. Use your Kokoro text to speech skill or the 9router Kokoro voice you can call. Do not change the words.`,
-        "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro.",
+        "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro. In provider, name the engine that really made the audio.",
         "Prefer WAV (16-bit PCM). MP3 is accepted. Do not return a file path. Return an https URL that anyone can download, or base64 audio data.",
-        'Schema: {"status":"ok"|"error","provider":"kokoro","model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
+        'Schema: {"status":"ok"|"error","provider":string,"model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
         hints.length ? dataBlock("skills you have for narration", hints.join(", "), MAX_NOTE_CHARS) : "",
         dataBlock("narration text", r.text, MAX_TTS_PROMPT_CHARS),
         r.retryHint ? dataBlock("problem with the last attempt", r.retryHint, MAX_NOTE_CHARS) : "",

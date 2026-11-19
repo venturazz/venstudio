@@ -8,7 +8,7 @@ import { originOf } from "../../net-address.ts";
 import type { RouterModel } from "../../studio/capabilities.ts";
 import type { Format } from "../../studio/catalog.ts";
 import { imageIssues, MAX_IMAGE_BYTES, sniffImage } from "../../studio/image-result.ts";
-import { pickRouterImageModel, routerImageSize, routerProviderName } from "../../studio/router-media.ts";
+import { pickRouterImageModel, readRouterImageItem, retryWaitSec, routerImageSize, routerProviderName } from "../../studio/router-media.ts";
 import { providerOrderHint, type GeneratedImage } from "./hermes-image.ts";
 
 /**
@@ -50,30 +50,38 @@ export async function generateRouterImage(job: { prompt: string; format: Format;
   const prompt = job.note ? `${job.prompt}\n\nOwner note: ${job.note}` : job.prompt;
   let body: unknown;
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(NINEROUTER_API_KEY ? { authorization: `Bearer ${NINEROUTER_API_KEY}` } : {}) },
-      body: JSON.stringify({ model: model.id, prompt, n: 1, size: routerImageSize(job.format), response_format: "b64_json" }),
-      signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
-      cache: "no-store",
-    });
-    if (!res.ok) return { ok: false, error: messageFor(res.status, await res.text().catch(() => "")) };
-    body = await res.json().catch(() => null);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(NINEROUTER_API_KEY ? { authorization: `Bearer ${NINEROUTER_API_KEY}` } : {}) },
+        body: JSON.stringify({ model: model.id, prompt, n: 1, size: routerImageSize(job.format), response_format: "b64_json" }),
+        signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
+        cache: "no-store",
+      });
+      // A 503 (All accounts unavailable) is retried once after Retry-After, like speech.
+      if (res.status === 503 && attempt === 0) {
+        await res.arrayBuffer().catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, retryWaitSec(res.headers.get("retry-after")) * 1000));
+        continue;
+      }
+      if (!res.ok) return { ok: false, error: messageFor(res.status, await res.text().catch(() => "")) };
+      body = await res.json().catch(() => null);
+      break;
+    }
   } catch (err) {
     const e = explainFetchError(err, url, undefined, IMAGE_TIMEOUT_MS);
     return { ok: false, error: e.hint ? `${e.error}. ${e.hint}` : e.error };
   }
-  const first = (body as { data?: unknown } | null)?.data;
-  const item = (Array.isArray(first) ? first[0] : null) as { b64_json?: unknown; url?: unknown } | null;
+  const item = readRouterImageItem(body);
   let bytes: Uint8Array;
   let originUrl = "";
   try {
-    if (item && typeof item.b64_json === "string" && item.b64_json) {
-      bytes = new Uint8Array(Buffer.from(item.b64_json, "base64"));
-    } else if (item && typeof item.url === "string" && item.url) {
+    if (item?.kind === "b64") {
+      bytes = new Uint8Array(Buffer.from(item.value, "base64"));
+    } else if (item?.kind === "url") {
       const origin = originOf(base);
-      bytes = (await fetchMedia(item.url, { maxBytes: MAX_IMAGE_BYTES, timeoutMs: 60_000, trustedOrigins: origin ? [origin] : [] })).bytes;
-      originUrl = item.url;
+      bytes = (await fetchMedia(item.value, { maxBytes: MAX_IMAGE_BYTES, timeoutMs: 60_000, trustedOrigins: origin ? [origin] : [] })).bytes;
+      originUrl = item.value;
     } else {
       return { ok: false, error: "9router returned no image" };
     }

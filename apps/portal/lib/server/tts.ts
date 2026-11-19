@@ -14,7 +14,9 @@ import {
   joinAudioChunks,
   planVoice,
   resolveKokoroProvider,
+  retryWaitSec,
   routerProviderName,
+  routerVoiceSource,
   routerVoiceVerified,
   type VoiceAttempt,
 } from "../studio/router-media.ts";
@@ -38,8 +40,6 @@ const CHUNK_GAP_SEC = 0.25;
 const CACHE_OK_MS = 5 * 60_000;
 const CACHE_FAIL_MS = 60_000;
 const ROUTER_LIST_TIMEOUT_MS = 20_000;
-const ROUTER_RETRY_DEFAULT_SEC = 5;
-const ROUTER_RETRY_MAX_SEC = 20;
 
 function kokoroConfig() {
   const { KOKORO_BASE_URL, KOKORO_API_KEY, KOKORO_MODEL, KOKORO_VOICE } = env();
@@ -196,8 +196,7 @@ async function routerSpeakChunk(url: string, key: string | undefined, modelId: s
       throw new TtsError(e.hint ? `${e.error}. ${e.hint}` : e.error);
     }
     if (res.status === 503 && attempt === 0) {
-      const asked = Number.parseInt(res.headers.get("retry-after") ?? "", 10);
-      const waitSec = Math.min(ROUTER_RETRY_MAX_SEC, Number.isFinite(asked) && asked >= 0 ? asked : ROUTER_RETRY_DEFAULT_SEC);
+      const waitSec = retryWaitSec(res.headers.get("retry-after"));
       await res.arrayBuffer().catch(() => undefined);
       await sleep(waitSec * 1000);
       continue;
@@ -243,7 +242,7 @@ export async function routerSpeak(text: string, modelId: string): Promise<{ audi
   }
 }
 
-/** A one-off read of 9router's TTS list, used only when no stored capability scan exists. */
+/** A one-off read of 9router's TTS list, used when the stored scan cannot be trusted for voices. */
 async function probeRouterVoices(): Promise<{ models: RouterModel[]; error?: string }> {
   const cfg = routerConfig();
   if (!cfg) return { models: [] };
@@ -265,11 +264,19 @@ async function readSnapshot(): Promise<CapabilitySnapshot | null> {
   }
 }
 
-/** The 9router voice list: the stored scan when it has one, else one bounded probe. */
+/**
+ * The 9router voice list: the stored scan when its TTS list worked and names a Kokoro voice (see routerVoiceSource),
+ * otherwise one bounded live probe, so a stale or partly failed scan never hides a working voice. Without
+ * `probeIfUnknown` (page rendering) nothing is fetched and the reason is reported instead.
+ */
 async function routerVoiceList(snap: CapabilitySnapshot | null, probeIfUnknown: boolean): Promise<{ configured: boolean; models: RouterModel[]; error?: string }> {
   if (!routerConfig()) return { configured: false, models: [] };
-  if (snap?.router?.status.ok) return { configured: true, models: snap.router.lists.tts };
-  if (!probeIfUnknown) return { configured: true, models: [], error: snap?.router ? (snap.router.status.error ?? "unreachable") : "not scanned yet" };
+  const source = routerVoiceSource(snap?.router);
+  if (source.use === "stored") return { configured: true, models: snap!.router!.lists.tts };
+  if (!probeIfUnknown) {
+    const stored = snap?.router?.probes.tts?.ok ? snap.router.lists.tts : [];
+    return stored.length > 0 ? { configured: true, models: stored } : { configured: true, models: [], error: source.reason };
+  }
   const probed = await probeRouterVoices();
   return { configured: true, ...probed };
 }

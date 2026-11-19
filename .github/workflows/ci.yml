@@ -92,6 +92,8 @@ jobs:
           # Fake 9router started by scripts/ui-e2e.mjs. It hangs at first, like an unreachable 9router, so pages must not
           # wait for it, then it answers. The /v1 suffix also exercises the base URL handling.
           export NINEROUTER_BASE_URL=http://127.0.0.1:3297/v1
+          # The fake 9router answers 401 to any request without this key, so the Bearer header is checked on every call.
+          export NINEROUTER_API_KEY=test-router-key
           # Fake Hermes started by scripts/ui-e2e.mjs.
           export HERMES_BASE_URL=http://127.0.0.1:3299 HERMES_API_KEY=test-hermes-key HERMES_IMAGE_PROVIDER_ORDER=cloudflare,agnes,canva
           DATABASE_URL="$UI_DB" node apps/portal/scripts/migrate.mjs

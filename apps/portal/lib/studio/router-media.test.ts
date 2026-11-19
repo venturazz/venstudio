@@ -9,8 +9,11 @@ import {
   pickRouterVoice,
   planVoice,
   resolveKokoroProvider,
+  readRouterImageItem,
+  retryWaitSec,
   routerImageSize,
   routerProviderName,
+  routerVoiceSource,
   routerVoiceVerified,
 } from "./router-media.ts";
 import { makeWav, parseWav } from "./wav.ts";
@@ -57,8 +60,9 @@ test("routerProviderName uses the first path segment and isolates combos", () =>
   assert.ok(routerProviderName("x".repeat(80), "combo").length <= 49);
 });
 
-test("resolveKokoroProvider records only kokoro as is", () => {
-  assert.equal(resolveKokoroProvider("Kokoro"), "kokoro");
+test("resolveKokoroProvider never lets Hermes borrow the confirmed kokoro provider", () => {
+  assert.equal(resolveKokoroProvider("Kokoro"), "hermes-kokoro");
+  assert.notEqual(resolveKokoroProvider("kokoro"), "kokoro");
   assert.equal(resolveKokoroProvider("kokoro tts"), "unlisted-kokoro-tts");
   assert.equal(resolveKokoroProvider("capcut"), "unlisted-capcut");
   assert.equal(resolveKokoroProvider(""), "unlisted-unknown");
@@ -166,4 +170,41 @@ test("pickRouterImageModel takes the first plain model, honors the owner order, 
 test("routerImageSize follows the video shape", () => {
   assert.equal(routerImageSize("short"), "1024x1792");
   assert.equal(routerImageSize("long"), "1792x1024");
+});
+
+test("retryWaitSec honors Retry-After, defaults to 5 and caps at 20", () => {
+  assert.equal(retryWaitSec("3"), 3);
+  assert.equal(retryWaitSec("0"), 0);
+  assert.equal(retryWaitSec("600"), 20);
+  assert.equal(retryWaitSec(null), 5);
+  assert.equal(retryWaitSec("soon"), 5);
+  assert.equal(retryWaitSec("-4"), 5);
+});
+
+test("readRouterImageItem reads b64_json first, then a url, else null", () => {
+  assert.deepEqual(readRouterImageItem({ data: [{ b64_json: "AAAA", url: "https://x/y.png" }] }), { kind: "b64", value: "AAAA" });
+  assert.deepEqual(readRouterImageItem({ data: [{ url: "https://x/y.png" }] }), { kind: "url", value: "https://x/y.png" });
+  assert.equal(readRouterImageItem({ data: [] }), null);
+  assert.equal(readRouterImageItem({ data: [{ b64_json: "" }] }), null);
+  assert.equal(readRouterImageItem(null), null);
+  assert.equal(readRouterImageItem({ data: "x" }), null);
+});
+
+const scan = (over: { ok?: boolean; tts?: { ok: boolean; error?: string }; list?: ReturnType<typeof m>[] }) => ({
+  status: { ok: over.ok ?? true },
+  probes: over.tts ? { tts: over.tts } : {},
+  lists: { tts: over.list ?? [] },
+});
+
+test("routerVoiceSource trusts a stored list only when the TTS probe worked and a Kokoro voice is in it", () => {
+  assert.equal(routerVoiceSource(scan({ tts: { ok: true }, list: [m("kokoro/af_heart")] })).use, "stored");
+  assert.equal(routerVoiceSource(null).use, "probe");
+  // The router as a whole answered, but the TTS probe failed: the empty list is not an answer.
+  const failed = routerVoiceSource(scan({ tts: { ok: false, error: "HTTP 503" } }));
+  assert.equal(failed.use, "probe");
+  assert.match(failed.reason, /HTTP 503/);
+  // A voice added after the last scan: the stored list has none, so look live.
+  assert.equal(routerVoiceSource(scan({ tts: { ok: true }, list: [m("edge-tts/x")] })).use, "probe");
+  assert.equal(routerVoiceSource(scan({ tts: { ok: true }, list: [] })).use, "probe");
+  assert.equal(routerVoiceSource(scan({ ok: false, list: [m("kokoro/af_heart")] })).use, "probe");
 });

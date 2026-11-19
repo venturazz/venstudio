@@ -25,8 +25,8 @@ so Coolify reads the file again. Then fill in:
 | `POSTGRES_PASSWORD` | random | `openssl rand -hex 16` |
 | `ENCRYPTION_KEY` | random, **back it up** | `openssl rand -base64 32` (44 characters) or `openssl rand -hex 32` (64 characters) |
 | `SETUP_TOKEN` | random | `openssl rand -hex 16` |
-| `NINEROUTER_BASE_URL` | needed (with the key) | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
-| `NINEROUTER_API_KEY` | needed | your 9router key |
+| `NINEROUTER_BASE_URL` | recommended (with the key) | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
+| `NINEROUTER_API_KEY` | recommended | your 9router key |
 | `KOKORO_BASE_URL` | optional override | Leave empty. The studio finds Kokoro through 9router and Hermes using `NINEROUTER_*` and `HERMES_*`. Set it (e.g. `http://kokoro:8880`, see below) only to force your own Kokoro server to be tried first |
 | `KOKORO_API_KEY` | optional override | Only if your Kokoro server asks for a key |
 | `KOKORO_MODEL` | optional override | `kokoro` |
@@ -56,7 +56,7 @@ networks:
 Give it no public domain. The portal reaches it at `http://kokoro:8880` (the usual Kokoro-FastAPI port; verify). Only
 English voices are treated as verified. Other languages show a warning, and the portal asks Hermes to use CapCut when Kokoro does not cover a language.
 
-Only `NINEROUTER_*` and `HERMES_*` (plus the four required rows above) are needed. Everything else in the table is an
+Only `NINEROUTER_*` and `HERMES_*` (plus the four required rows above) are recommended. Without 9router the studio still works through Hermes (voice falls to Hermes Kokoro, then CapCut; images go to Hermes `image_gen`). Everything else in the table is an
 optional override: the studio finds Kokoro, image models and Hermes skills by itself.
 
 Run the `openssl` commands in **Servers → your server → Terminal** (or over SSH). If the list still doesn't show a

@@ -77,11 +77,18 @@ export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean
                 <div className="mt-2 flex flex-wrap gap-1">
                   {chips.slice(0, MAX_CHIPS).map((c) => (
                     <span key={`${c.via}:${c.id}`} className="max-w-full break-all rounded-md bg-surface-2 px-2 py-0.5 text-xs">
-                      {c.label} <span className="text-muted">via {c.via === "hermes" ? "Hermes" : "9router"}</span>
+                      {c.label}{" "}
+                      <span className="text-muted">via {c.via === "hermes" ? "Hermes" : "9router"}
+                        {!c.verified && ", not verified"}
+                      </span>
                     </span>
                   ))}
                   {chips.length > MAX_CHIPS && <span className="px-1 py-0.5 text-xs text-muted">+{chips.length - MAX_CHIPS} more</span>}
                 </div>
+              )}
+              {status === "found" && !info.used && <p className="mt-2 break-words text-xs text-muted">Listed only. No stage has called it, so it is not proven to work.</p>}
+              {chips.some((c) => !c.verified) && (
+                <p className="mt-2 break-words text-xs text-muted">Not verified means Hermes named it in its own answer and /v1/skills did not list it.</p>
               )}
               {status === "missing" && <p className="mt-2 break-words text-xs text-warn">{missingCapabilityMessage(stage, state)}</p>}
             </li>

@@ -165,6 +165,11 @@ function directorReply(messages) {
       fakeStats.errorAnswers++;
       return JSON.stringify({ status: "error", provider: "cloudflare", error: "Fake provider chain is down" });
     }
+    if (shot === "shot-04") {
+      // Hermes never makes this one, so the studio falls through to the 9router image model.
+      fakeStats.hermesImageRefusals++;
+      return JSON.stringify({ status: "error", provider: "cloudflare", error: "Fake Hermes has no image for this shot" });
+    }
     if (shot === "shot-03") {
       fakeStats.urlAnswers++;
       return ok({ type: "url", value: `http://127.0.0.1:${HERMES_PORT}/fake-image/${seed}.png`, mimeType: "image/png" });
@@ -201,7 +206,7 @@ function directorReply(messages) {
   }
   return "{}";
 }
-const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, hermesKokoroCalls: 0, capabilityScans: 0 };
+const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0 };
 const fakeHermes = createServer((req, res) => {
   const json = (code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -751,6 +756,10 @@ try {
   if (fakeStats.pathAnswers < 1) throw new Error("the path answer variant never ran");
   if (fakeStats.errorAnswers < 3) throw new Error("the failing image variant never ran its first attempt");
   if (fakeStats.urlAnswers < 1) throw new Error("the download link variant never ran");
+  // shot-04 is refused by Hermes every time, so 9router made it: it was asked, and the grid names its provider.
+  if (fakeStats.hermesImageRefusals < 1) throw new Error("the Hermes image refusal variant never ran");
+  if (fakeStats.routerImageCalls < 1) throw new Error("9router was never asked for an image after Hermes refused");
+  if (!(await grid.textContent()).includes("fake-img")) throw new Error("the image grid does not show the 9router image provider (fake-img)");
   const assetsRunHref = await m.getByRole("link", { name: "Open run" }).first().getAttribute("href");
 
   // The owner confirms a provider in Settings. Nothing else can set this.
@@ -770,6 +779,7 @@ try {
 
   step("settings: the owner confirms the image provider terms, Kokoro is healthy, Test Hermes image works");
   await confirmProvider("cloudflare");
+  await confirmProvider("fake-img");
   // No KOKORO_BASE_URL is set: the voice comes from the Kokoro model 9router lists, and Hermes is only the fallback.
   await page.getByText("9router voice kokoro/af_heart").first().waitFor();
   await page.getByRole("button", { name: "Test voice" }).click();
@@ -777,7 +787,7 @@ try {
   const calls = fakeStats.routerSpeechCalls;
   router.tts = "error";
   await page.getByRole("button", { name: "Test voice" }).click();
-  await page.getByText("Voice made by kokoro through Hermes").waitFor({ timeout: 60_000 });
+  await page.getByText("Voice made by hermes-kokoro through Hermes").waitFor({ timeout: 60_000 });
   router.tts = "ok";
   if (fakeStats.hermesKokoroCalls < 1) throw new Error("the voice did not fall back to Hermes Kokoro when 9router speech failed");
   if (fakeStats.routerSpeechCalls !== calls) throw new Error("the failing 9router speech endpoint was counted as a success");

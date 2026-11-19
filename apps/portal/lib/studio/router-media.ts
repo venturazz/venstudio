@@ -57,11 +57,49 @@ export function routerProviderName(modelId: string, ownedBy: string): string {
   return normalizeProvider(head);
 }
 
-/** Hermes may claim any provider name for Kokoro. Only "kokoro" is recorded as is; anything else is its own unconfirmed provider. */
+/**
+ * What Hermes claims is a self-report, so a Hermes voice never borrows the terms the owner confirmed for the real
+ * "kokoro" provider (the one 9router or the owner's own server made). A claim of Kokoro is recorded as "hermes-kokoro",
+ * any other name as its own "unlisted-<name>". The owner confirms those terms separately.
+ */
 export function resolveKokoroProvider(claimed: string | null | undefined): string {
   const name = normalizeProvider(claimed);
-  if (name === "kokoro") return "kokoro";
+  if (name === "kokoro") return "hermes-kokoro";
   return `unlisted-${name}`.slice(0, PROVIDER_NAME_MAX);
+}
+
+/** Seconds to wait before retrying a 503, from the Retry-After header: its value, 5 s without one, never more than 20. */
+export function retryWaitSec(header: string | null | undefined): number {
+  const asked = Number.parseInt(header ?? "", 10);
+  return Math.min(20, Number.isFinite(asked) && asked >= 0 ? asked : 5);
+}
+
+/** The image 9router returned: base64 data or a URL, from {data: [{b64_json | url}]}. Null when there is none. */
+export function readRouterImageItem(body: unknown): { kind: "b64"; value: string } | { kind: "url"; value: string } | null {
+  const data = (body as { data?: unknown } | null)?.data;
+  const item = (Array.isArray(data) ? data[0] : null) as { b64_json?: unknown; url?: unknown } | null;
+  if (!item) return null;
+  if (typeof item.b64_json === "string" && item.b64_json) return { kind: "b64", value: item.b64_json };
+  if (typeof item.url === "string" && item.url) return { kind: "url", value: item.url };
+  return null;
+}
+
+/**
+ * Where the 9router voice list comes from. The stored scan is used only when its TTS probe worked and it lists a Kokoro
+ * voice. An empty list, a failed TTS probe or a list without Kokoro is checked live, so a voice added in 9router after
+ * the last scan is found, and a failed probe reports its real cause.
+ */
+export function routerVoiceSource(scan: { status: { ok: boolean; error?: string }; probes: Record<string, { ok: boolean; error?: string }>; lists: { tts: readonly RouterModel[] } } | null | undefined): {
+  use: "stored" | "probe";
+  /** Why the stored list cannot be used. Empty when it can. */
+  reason: string;
+} {
+  if (!scan) return { use: "probe", reason: "not scanned yet" };
+  const tts = scan.probes.tts;
+  if (tts && !tts.ok) return { use: "probe", reason: `the last scan could not list voices: ${tts.error ?? "no answer"}` };
+  if (!scan.status.ok) return { use: "probe", reason: scan.status.error ?? "unreachable" };
+  if (!scan.lists.tts.some(isKokoro)) return { use: "probe", reason: "the last scan found no Kokoro voice" };
+  return { use: "stored", reason: "" };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
