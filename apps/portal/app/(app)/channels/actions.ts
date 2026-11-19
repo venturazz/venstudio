@@ -26,6 +26,7 @@ const schema = z.object({
   videosPerDay: z.coerce.number().int().min(0).max(24),
   homeWorkerId: z.union([z.uuid(), z.literal("")]),
   notes: z.string().max(4000),
+  plan: z.string().max(4000),
 });
 
 function read(fd: FormData) {
@@ -41,6 +42,7 @@ function read(fd: FormData) {
     videosPerDay: str(fd, "videosPerDay", 3) || "2",
     homeWorkerId: str(fd, "homeWorkerId", 40),
     notes: str(fd, "notes", 4000),
+    plan: str(fd, "plan", 4000),
   });
 }
 
@@ -50,9 +52,9 @@ export async function createChannel(_prev: FormState, fd: FormData): Promise<For
   if (!p.success) return { error: p.error.issues[0]?.message ?? "Invalid input" };
   const d = p.data;
   const [row] = await db()`
-    INSERT INTO channels (name, handle, niche, category, format, language, google_account, status, videos_per_day, home_worker_id, notes)
+    INSERT INTO channels (name, handle, niche, category, format, language, google_account, status, videos_per_day, home_worker_id, notes, plan)
     VALUES (${d.name}, ${d.handle || null}, ${d.niche}, ${d.category}, ${d.format}, ${d.language}, ${d.googleAccount},
-            ${d.status}, ${d.videosPerDay}, ${d.homeWorkerId || null}, ${d.notes})
+            ${d.status}, ${d.videosPerDay}, ${d.homeWorkerId || null}, ${d.notes}, ${d.plan})
     RETURNING id
   `;
   await audit({ userId: user.id, action: "channel.create", target: row.id, detail: { name: d.name, category: d.category }, ip: (await requestMeta()).ip });
@@ -69,7 +71,7 @@ export async function updateChannel(id: string, _prev: FormState, fd: FormData):
   await db()`
     UPDATE channels SET name = ${d.name}, handle = ${d.handle || null}, niche = ${d.niche}, category = ${d.category},
       format = ${d.format}, language = ${d.language}, google_account = ${d.googleAccount}, status = ${d.status},
-      videos_per_day = ${d.videosPerDay}, home_worker_id = ${d.homeWorkerId || null}, notes = ${d.notes},
+      videos_per_day = ${d.videosPerDay}, home_worker_id = ${d.homeWorkerId || null}, notes = ${d.notes}, plan = ${d.plan},
       updated_at = now()
     WHERE id = ${id}
   `;

@@ -48,6 +48,7 @@ export default async function ChannelPage({ params }: { params: Promise<{ id: st
                   videosPerDay: c.videos_per_day,
                   homeWorkerId: c.home_worker_id ?? "",
                   notes: c.notes,
+                  plan: c.plan ?? "",
                 }}
               />
             ) : (

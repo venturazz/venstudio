@@ -23,6 +23,57 @@ const PASSWORD = "correct horse battery staple";
 // Fake Hermes API server (same shapes as the real /v1/capabilities and /v1/skills).
 const { createServer } = await import("node:http");
 const HERMES_KEY = process.env.HERMES_API_KEY ?? "test-hermes-key";
+// Fake director replies. Every prompt starts with a `VENSTUDIO_STAGE: <stage>` line; retries append more messages, so the
+// marker is read from the first user message. A topic hint containing BREAK-JSON makes the idea stage answer with text
+// that is not JSON, to prove the failure path. The script and storyboard are sized from numbers in the prompt itself,
+// so they satisfy the script and storyboard gates for whichever template is used.
+function directorReply(messages) {
+  const first = messages.find((m) => m.role === "user")?.content ?? "";
+  const stage = /^VENSTUDIO_STAGE: (\w+)/m.exec(first)?.[1] ?? "";
+  if (stage === "selftest") return '{"ok":true,"sum":5}';
+  if (stage === "classify") return JSON.stringify({ stage: "idea", reason: "The owner wants different ideas" });
+  if (stage === "idea") {
+    if (first.includes("BREAK-JSON")) return "Sorry, I cannot put that into JSON right now.";
+    const note = /<<<DATA owner revision note\n([\s\S]*?)\nDATA owner revision note>>>/.exec(first)?.[1] ?? "";
+    const tag = note ? " (revised)" : "";
+    return JSON.stringify({
+      ideas: ["Orpheus and the silent road", "Why the Norns weave", "The wolf that swallowed the sun", "A bridge made of rainbow", "Persephone's last bargain"].map((t, i) => ({
+        title: `${t}${tag}`,
+        hook: `What if ${t.toLowerCase()} was never a myth?`,
+        angle: "Retell it as a short mystery",
+        score: 90 - i * 5,
+      })),
+    });
+  }
+  if (stage === "research") {
+    return JSON.stringify({
+      notes: [1, 2, 3].map((n) => ({ claim: `Marker claim number ${n} about old tales`, sourceUrl: "", sourced: false, summary: `Plain background fact ${n} for the writer` })),
+    });
+  }
+  if (stage === "script") {
+    const target = Number(/about (\d+) words/.exec(first)?.[1] ?? 112);
+    const opening = "Here is a strange true tale.";
+    const filler = "Long ago a traveller crossed the hills and listened closely to every voice along the winding road before the night fell.";
+    const words = [];
+    while (words.length < target) words.push(...filler.split(" "));
+    const body = words.slice(0, Math.max(0, target - opening.split(" ").length)).join(" ");
+    return JSON.stringify({ hooks: ["Here is a strange true tale.", "Nobody tells this part.", "You were told the wrong ending."], chosenHook: 0, script: `${opening} ${body}.` });
+  }
+  if (stage === "storyboard") {
+    const roles = [...(/Beats in order: (.*)/.exec(first)?.[1] ?? "hook (x), body (x)").matchAll(/(\w+) \(/g)].map((m) => m[1]);
+    const maxShot = Number(/Maximum shot length: ([\d.]+) seconds/.exec(first)?.[1] ?? 3);
+    const hookMs = Number(/within (\d+) ms/.exec(first)?.[1] ?? 3000);
+    return JSON.stringify({
+      shots: roles.map((role, i) => ({
+        beatRole: role,
+        seconds: Math.min(maxShot, 3, i === 0 ? hookMs / 1000 : 3),
+        description: `A calm scene for the ${role} beat`,
+        imagePrompt: `Flat illustration of an old stone road at dusk, ${role} moment`,
+      })),
+    });
+  }
+  return "{}";
+}
 const fakeHermes = createServer((req, res) => {
   const json = (code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -42,6 +93,21 @@ const fakeHermes = createServer((req, res) => {
       { name: "consistent-character-image", description: "Image workflow with a fixed character", category: "image" },
       { name: "deep-research", description: "Researches a topic with sources", category: "research" },
     ]);
+  }
+  if (req.method === "POST" && req.url === "/v1/chat/completions") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let messages = [];
+      try {
+        messages = JSON.parse(raw).messages ?? [];
+      } catch {
+        return json(400, { error: "bad json" });
+      }
+      const content = directorReply(messages);
+      json(200, { id: "chatcmpl-fake", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] });
+    });
+    return;
   }
   json(404, { error: "not found" });
 });
@@ -112,6 +178,7 @@ try {
   await page.fill("#name", "Myth Stories");
   await page.fill("#handle", "@mythstories");
   await page.fill("#niche", "Greek and Norse myths, retold");
+  await page.fill("#plan", "Retell one myth per video as a short mystery. Two videos a week. No gore.");
   await page.selectOption("#format", "animated-story");
   await page.fill("#googleAccount", "studio.one@example.com");
   await page.selectOption("#status", "active");
@@ -298,6 +365,89 @@ try {
     const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     if (overflow) throw new Error(`mobile layout overflows horizontally on ${url}`);
   }
+
+  step("director: Test Hermes JSON passes against the fake Hermes");
+  await page.goto(`${APP}/studio/runs`);
+  await page.getByRole("button", { name: "Test Hermes JSON" }).click();
+  await page.getByText("Hermes returned valid JSON").waitFor();
+
+  step("director: start a run and wait for the idea review item");
+  await page.selectOption("#channelId", { label: "Myth Stories" });
+  await page.selectOption("#templateId", "tpl-explainer-flat-vector");
+  await page.selectOption("#format", "short");
+  await page.getByRole("button", { name: "Ask Hermes for ideas" }).click();
+  await page.getByText("Run started.").waitFor();
+
+  // Polls a page until a locator shows. The server works in the background after the click returns.
+  async function waitShown(p, url, locator, what, ms = 45_000) {
+    const end = Date.now() + ms;
+    for (;;) {
+      await p.goto(`${APP}${url}`);
+      if (await locator(p).first().isVisible().catch(() => false)) return;
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what} on ${url}`);
+      await p.waitForTimeout(1500);
+    }
+  }
+  async function assertTapTargets(p, locators) {
+    for (const [label, loc] of locators) {
+      const box = await loc.first().boundingBox();
+      if (!box) throw new Error(`${label} is not visible`);
+      if (box.height < 44) throw new Error(`${label} is ${box.height}px tall, under 44px`);
+    }
+  }
+  async function assertNoOverflow(p, url) {
+    const wide = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    if (wide) throw new Error(`mobile layout overflows horizontally on ${url}`);
+  }
+
+  step("director: the Review inbox works at 390 px");
+  await waitShown(m, "/review", (p) => p.getByRole("button", { name: "Approve this idea" }), "the idea review item");
+  await m.waitForLoadState("networkidle");
+  await assertNoOverflow(m, "/review");
+  await assertTapTargets(m, [
+    ["Approve this idea", m.getByRole("button", { name: "Approve this idea" })],
+    ["revision note", m.getByLabel("What should change?")],
+    ["Send revision", m.getByRole("button", { name: "Send revision" })],
+    ["Reject", m.getByRole("button", { name: "Reject" })],
+  ]);
+  await shot("17-review-mobile", m);
+  const runHref = await m.getByRole("link", { name: "Open run" }).first().getAttribute("href");
+  if (!runHref) throw new Error("review card has no link to its run");
+
+  step("director: request a revision with a note and see a new attempt");
+  await m.getByLabel("What should change?").first().fill("Only Norse myths, please");
+  await m.getByRole("button", { name: "Send revision" }).first().click();
+  await waitShown(m, "/review", (p) => p.getByText("(revised)"), "the revised ideas");
+  await m.goto(`${APP}${runHref}`);
+  await m.getByText("attempt 2").first().waitFor();
+
+  step("director: approve an idea and reach a ready storyboard");
+  await m.goto(`${APP}/review`);
+  await m.getByRole("button", { name: "Approve this idea" }).first().click();
+  await waitShown(m, runHref, (p) => p.getByText("Storyboard ready").first(), "the storyboard", 60_000);
+  await m.getByText("Asset sourcing arrives in Phase 4").first().waitFor();
+  await assertNoOverflow(m, runHref);
+  await shot("18-run-mobile", m);
+  await m.goto(`${APP}/review`);
+  await m.getByText("Nothing waiting for you.").waitFor();
+
+  step("director: invalid JSON from Hermes shows a stage error with Retry");
+  await page.goto(`${APP}/studio/runs`);
+  await page.selectOption("#channelId", { label: "Myth Stories" });
+  await page.selectOption("#templateId", "tpl-explainer-flat-vector");
+  await page.fill("#topic", "BREAK-JSON please");
+  await page.getByRole("button", { name: "Ask Hermes for ideas" }).click();
+  await page.getByText("Run started.").waitFor();
+  await waitShown(m, "/review", (p) => p.locator('[data-kind="stage-error"]'), "the stage error card");
+  await m.getByRole("button", { name: "Retry" }).first().waitFor();
+  await m.waitForLoadState("networkidle");
+  await assertNoOverflow(m, "/review");
+  await assertTapTargets(m, [["Retry", m.getByRole("button", { name: "Retry" })]]);
+  await shot("19-review-error-mobile", m);
+
+  step("director: reject cancels the run and empties the inbox");
+  await m.getByRole("button", { name: "Reject" }).first().click();
+  await m.getByText("Nothing waiting for you.").waitFor();
 
   if (errors.length) throw new Error(`browser errors:\n${errors.join("\n")}`);
   console.log("UI E2E PASS");

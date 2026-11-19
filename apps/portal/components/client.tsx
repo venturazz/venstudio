@@ -54,6 +54,20 @@ export interface NavItem {
   href: string;
   label: string;
   icon: ReactNode;
+  /** Number shown as a small badge, for example open review items. Hidden when 0. */
+  badge?: number;
+}
+
+function NavBadge({ count }: { count?: number }) {
+  if (!count) return null;
+  return (
+    <span
+      className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-5 text-accent-fg"
+      aria-label={`${count} waiting`}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
 }
 
 function isActive(pathname: string, href: string) {
@@ -78,6 +92,7 @@ export function SideNav({ items }: { items: NavItem[] }) {
           >
             {item.icon}
             {item.label}
+            {item.badge ? <span className="ml-auto"><NavBadge count={item.badge} /></span> : null}
           </Link>
         );
       })}
@@ -105,7 +120,14 @@ export function BottomNav({ items }: { items: NavItem[] }) {
                   active ? "text-accent" : "text-muted",
                 )}
               >
-                {item.icon}
+                <span className="relative">
+                  {item.icon}
+                  {item.badge ? (
+                    <span className="absolute -right-3 -top-2">
+                      <NavBadge count={item.badge} />
+                    </span>
+                  ) : null}
+                </span>
                 {item.label}
               </Link>
             </li>

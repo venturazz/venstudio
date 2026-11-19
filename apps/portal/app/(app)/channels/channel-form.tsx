@@ -19,6 +19,7 @@ export interface ChannelValues {
   videosPerDay: number;
   homeWorkerId: string;
   notes: string;
+  plan: string;
 }
 
 /** Category and worker are set by the owner. Nothing here is assigned automatically. */
@@ -103,6 +104,13 @@ export function ChannelForm({
           </Select>
         </Field>
       </div>
+      <Field
+        label="Channel plan (what Hermes should make)"
+        htmlFor="plan"
+        hint="Themes, cadence and rules in your own words. Hermes reads this when it proposes ideas."
+      >
+        <Textarea id="plan" name="plan" defaultValue={v.plan} maxLength={4000} rows={6} />
+      </Field>
       <Field label="Notes" htmlFor="notes">
         <Textarea id="notes" name="notes" defaultValue={v.notes} maxLength={4000} rows={4} />
       </Field>
