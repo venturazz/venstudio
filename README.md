@@ -65,6 +65,10 @@ docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
 Open `https://$DOMAIN/setup`, create the owner, turn on two-factor in Settings, then remove `SETUP_TOKEN`
 and restart.
 
+### Coolify
+
+Use `docker-compose.coolify.yml` (Docker Compose build pack). Step-by-step: [docs/deploy-coolify.md](docs/deploy-coolify.md).
+
 ## Add a Muse worker
 
 1. Portal → **Workers** → *Add a worker*. Pick the home channel.
