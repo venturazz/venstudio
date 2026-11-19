@@ -23,6 +23,74 @@ const PASSWORD = "correct horse battery staple";
 // Fake Hermes API server (same shapes as the real /v1/capabilities and /v1/skills).
 const { createServer } = await import("node:http");
 const HERMES_KEY = process.env.HERMES_API_KEY ?? "test-hermes-key";
+const HERMES_PORT = Number(process.env.FAKE_HERMES_PORT ?? 3299);
+const KOKORO_PORT = Number(process.env.FAKE_KOKORO_PORT ?? 3298);
+
+// Generators for fake media. No dependencies: PNG through node:zlib, WAV as raw PCM16.
+import { deflateSync } from "node:zlib";
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function pngChunk(type, data) {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(data.length, 0);
+  head.write(type, 4, "ascii");
+  const tail = Buffer.alloc(4);
+  tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])), 0);
+  return Buffer.concat([head, data, tail]);
+}
+/** A valid RGB PNG with a diagonal gradient. 540x960 passes the portal minimum size check. */
+export function makePng(width = 540, height = 960, seed = 0) {
+  const row = width * 3 + 1;
+  const raw = Buffer.alloc(row * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * row] = 0;
+    for (let x = 0; x < width; x++) {
+      const at = y * row + 1 + x * 3;
+      raw[at] = (40 + seed * 50 + (x * 120) / width) & 255;
+      raw[at + 1] = (60 + (y * 140) / height) & 255;
+      raw[at + 2] = (150 + seed * 20 + ((x + y) * 50) / (width + height)) & 255;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+/** A mono 16-bit PCM WAV with a quiet sine wave (peak 0.3, so it never clips). */
+export function makeWav(seconds, sampleRate = 24000, hz = 220) {
+  const n = Math.max(1, Math.round(seconds * sampleRate));
+  const pcm = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / sampleRate) * 0.3 * 32767), i * 2);
+  const head = Buffer.alloc(44);
+  head.write("RIFF", 0, "ascii");
+  head.writeUInt32LE(36 + pcm.length, 4);
+  head.write("WAVEfmt ", 8, "ascii");
+  head.writeUInt32LE(16, 16);
+  head.writeUInt16LE(1, 20);
+  head.writeUInt16LE(1, 22);
+  head.writeUInt32LE(sampleRate, 24);
+  head.writeUInt32LE(sampleRate * 2, 28);
+  head.writeUInt16LE(2, 32);
+  head.writeUInt16LE(16, 34);
+  head.write("data", 36, "ascii");
+  head.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([head, pcm]);
+}
 // Fake director replies. Every prompt starts with a `VENSTUDIO_STAGE: <stage>` line; retries append more messages, so the
 // marker is read from the first user message. A topic hint containing BREAK-JSON makes the idea stage answer with text
 // that is not JSON, to prove the failure path. The script and storyboard are sized from numbers in the prompt itself,
@@ -72,13 +140,59 @@ function directorReply(messages) {
       })),
     });
   }
+
+  // Phase 4 stages. Image variants are chosen by the shot number named in the prompt (`for shot shot-NN`):
+  //   shot-01 first answers with a file path (the portal must feed that back and Hermes then sends base64),
+  //   shot-02 answers with an error for its first three asks (one whole attempt), so the second attempt runs,
+  //   shot-03 answers with a download link on this fake server, every other shot with base64.
+  // Hermes reports the provider `cloudflare`, which the owner has not confirmed, so the provider-terms flow runs.
+  if (stage === "providers") {
+    return JSON.stringify({ providers: ["cloudflare", "agnes", "canva", "qwen", "minimax", "sensenova"].map((name) => ({ name, note: "fake" })) });
+  }
+  if (stage === "image") {
+    const shot = /for shot ([\w-]+)/.exec(first)?.[1] ?? "test";
+    const seed = Number(/(\d+)$/.exec(shot)?.[1] ?? 0);
+    const asks = (fakeStats.imageAsks[shot] = (fakeStats.imageAsks[shot] ?? 0) + 1);
+    const ok = (image) => JSON.stringify({ status: "ok", provider: "cloudflare", model: "fake-flux", image });
+    if (shot === "shot-01" && messages.length <= 2) {
+      fakeStats.pathAnswers++;
+      return ok({ type: "path", value: "/tmp/hermes/out.png", mimeType: "image/png" });
+    }
+    if (shot === "shot-02" && asks <= 3) {
+      fakeStats.errorAnswers++;
+      return JSON.stringify({ status: "error", provider: "cloudflare", error: "Fake provider chain is down" });
+    }
+    if (shot === "shot-03") {
+      fakeStats.urlAnswers++;
+      return ok({ type: "url", value: `http://127.0.0.1:${HERMES_PORT}/fake-image/${seed}.png`, mimeType: "image/png" });
+    }
+    return ok({ type: "base64", value: makePng(540, 960, seed).toString("base64"), mimeType: "image/png" });
+  }
+  if (stage === "tts-capcut") {
+    return JSON.stringify({ status: "ok", provider: "capcut", model: "fake-capcut", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
+  }
+  if (stage === "cc0") {
+    return JSON.stringify({
+      url: "https://upload.wikimedia.org/wikipedia/commons/fake-cc0.png",
+      title: "Fake CC0 road",
+      licence: "CC0 1.0 Public Domain Dedication",
+      licenceUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
+    });
+  }
   return "{}";
 }
+const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, speechCalls: 0 };
 const fakeHermes = createServer((req, res) => {
   const json = (code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
+  // The fake image link is public, like a real image host. It answers before the key check.
+  const link = /^\/fake-image\/(\d+)\.png$/.exec(req.url ?? "");
+  if (link) {
+    res.writeHead(200, { "content-type": "image/png" });
+    return res.end(makePng(540, 960, Number(link[1])));
+  }
   if (req.headers.authorization !== `Bearer ${HERMES_KEY}`) return json(401, { error: { code: "gateway_auth_failed" } });
   if (req.url === "/v1/capabilities") {
     return json(200, {
@@ -111,7 +225,36 @@ const fakeHermes = createServer((req, res) => {
   }
   json(404, { error: "not found" });
 });
-await new Promise((r) => fakeHermes.listen(Number(process.env.FAKE_HERMES_PORT ?? 3299), "127.0.0.1", r));
+await new Promise((r) => fakeHermes.listen(HERMES_PORT, "127.0.0.1", r));
+
+// Fake Kokoro (OpenAI-compatible speech API). Speaks 0.4 s per word, the pace the portal estimates (150 words a minute).
+const fakeKokoro = createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/v1/audio/voices") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ voices: ["af_heart", "af_bella", "am_adam"] }));
+  }
+  if (req.method === "POST" && req.url === "/v1/audio/speech") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let input = "";
+      try {
+        input = String(JSON.parse(raw).input ?? "");
+      } catch {
+        res.writeHead(400);
+        return res.end("bad json");
+      }
+      fakeStats.speechCalls++;
+      const words = input.split(/\s+/).filter(Boolean).length;
+      res.writeHead(200, { "content-type": "audio/wav" });
+      res.end(makeWav(Math.max(0.5, words * 0.4)));
+    });
+    return;
+  }
+  res.writeHead(404);
+  res.end("not found");
+});
+await new Promise((r) => fakeKokoro.listen(KOKORO_PORT, "127.0.0.1", r));
 
 const browser = await chromium.launch();
 const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
@@ -421,13 +564,132 @@ try {
   await m.goto(`${APP}${runHref}`);
   await m.getByText("attempt 2").first().waitFor();
 
-  step("director: approve an idea and reach a ready storyboard");
+  step("production: approve the idea and reach the assets review (thumbnails, provider terms notice)");
   await m.goto(`${APP}/review`);
   await m.getByRole("button", { name: "Approve this idea" }).first().click();
-  await waitShown(m, runHref, (p) => p.getByText("Storyboard ready").first(), "the storyboard", 60_000);
-  await m.getByText("Asset sourcing arrives in Phase 4").first().waitFor();
-  await assertNoOverflow(m, runHref);
-  await shot("18-run-mobile", m);
+  {
+    // The storyboard may ask for approval at this autonomy level, or pass on its own. Either way the assets review follows.
+    const end = Date.now() + 120_000;
+    for (;;) {
+      await m.goto(`${APP}/review`);
+      if (await m.getByTestId("asset-grid").first().isVisible().catch(() => false)) break;
+      const board = m.locator('[data-testid="review-card"]', { hasText: "Approve the storyboard" });
+      if (await board.first().isVisible().catch(() => false)) await board.first().getByRole("button", { name: "Approve", exact: true }).click();
+      if (Date.now() > end) throw new Error("timed out waiting for the assets review");
+      await m.waitForTimeout(2000);
+    }
+  }
+  await m.waitForLoadState("networkidle");
+  const grid = m.getByTestId("asset-grid").first();
+  const thumbs = grid.locator("img");
+  if ((await thumbs.count()) < 3) throw new Error(`expected at least 3 thumbnails, got ${await thumbs.count()}`);
+  await m.waitForFunction(() => [...document.querySelectorAll('[data-testid="asset-grid"] img')].every((i) => i.complete && i.naturalWidth > 0));
+  await m.getByTestId("provider-terms-notice").first().waitFor();
+  if (!(await grid.textContent()).includes("cloudflare")) throw new Error("the image grid does not name the provider");
+  await assertNoOverflow(m, "/review (assets)");
+  await assertTapTargets(m, [
+    ["Confirm the terms in Settings", m.getByRole("link", { name: "Confirm the terms in Settings" })],
+    ["Retry", m.getByRole("button", { name: "Retry" })],
+  ]);
+  await shot("20-review-assets-mobile", m);
+  await page.goto(`${APP}/review`);
+  await page.getByTestId("asset-grid").first().waitFor();
+  await shot("20-review-assets-desktop");
+  if (fakeStats.pathAnswers < 1) throw new Error("the path answer variant never ran");
+  if (fakeStats.errorAnswers < 3) throw new Error("the failing image variant never ran its first attempt");
+  if (fakeStats.urlAnswers < 1) throw new Error("the download link variant never ran");
+  const assetsRunHref = await m.getByRole("link", { name: "Open run" }).first().getAttribute("href");
+
+  // The owner confirms a provider in Settings. Nothing else can set this.
+  async function confirmProvider(name) {
+    await page.goto(`${APP}/settings`);
+    const select = page.getByLabel(`Commercial use for ${name}`).first();
+    await select.waitFor();
+    await select.selectOption("yes");
+    await select.locator("xpath=ancestor::form").getByRole("button", { name: "Save" }).click();
+    for (let i = 0; i < 15; i++) {
+      await page.goto(`${APP}/settings`);
+      if ((await page.getByLabel(`Commercial use for ${name}`).first().inputValue()) === "yes") return;
+      await page.waitForTimeout(1000);
+    }
+    throw new Error(`the terms for ${name} were not saved`);
+  }
+
+  step("settings: the owner confirms the image provider terms, Kokoro is healthy, Test Hermes image works");
+  await confirmProvider("cloudflare");
+  await page.getByText("Connected ·").first().waitFor();
+  await page.getByRole("button", { name: "Test voice" }).click();
+  await page.getByText("Voice af_heart").waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Test Hermes image" }).click();
+  await page.getByText("Providers Hermes reports: cloudflare, agnes").waitFor({ timeout: 60_000 });
+  await page.getByText("Image made by cloudflare").waitFor();
+  await shot("21-settings-media-desktop");
+
+  step("production: retry the assets, then approve them");
+  await m.goto(`${APP}/review`);
+  await m.getByRole("button", { name: "Retry" }).first().click();
+  await waitShown(m, "/review", (p) => p.locator('[data-kind="approval"]', { hasText: "Approve the assets" }), "the assets approval", 90_000);
+  await m.waitForFunction(() => [...document.querySelectorAll('[data-testid="asset-grid"] img')].every((i) => i.complete && i.naturalWidth > 0));
+  await assertNoOverflow(m, "/review (assets approved terms)");
+  await m.getByRole("button", { name: "Approve", exact: true }).first().click();
+
+  step("production: voice review with an audio player");
+  await waitShown(m, "/review", (p) => p.getByTestId("voice-audio"), "the voice review", 120_000);
+  await m.waitForLoadState("networkidle");
+  const audioSrc = await m.getByTestId("voice-audio").first().getAttribute("src");
+  if (!/^\/api\/assets\/[0-9a-f-]{36}$/.test(audioSrc ?? "")) throw new Error(`unexpected audio source ${audioSrc}`);
+  const audioRes = await m.request.get(`${APP}${audioSrc}`);
+  if (audioRes.status() !== 200 || !(audioRes.headers()["content-type"] ?? "").startsWith("audio/")) throw new Error("the narration asset is not served as audio");
+  if (fakeStats.speechCalls < 1) throw new Error("the fake Kokoro was never asked to speak");
+  await assertNoOverflow(m, "/review (voice)");
+  await assertTapTargets(m, [["Reject", m.getByRole("button", { name: "Reject" })]]);
+  await shot("22-review-voice-mobile", m);
+  await page.goto(`${APP}/review`);
+  await page.getByTestId("voice-audio").first().waitFor();
+  await shot("22-review-voice-desktop");
+
+  // Kokoro is also a provider whose terms the owner confirms. If the voice already passed, there is nothing to retry.
+  if (await m.getByRole("button", { name: "Retry" }).first().isVisible().catch(() => false)) {
+    step("settings: the owner confirms the voice provider terms, then the voice is retried");
+    await confirmProvider("kokoro");
+    await m.goto(`${APP}/review`);
+    await m.getByRole("button", { name: "Retry" }).first().click();
+  } else {
+    await m.getByRole("button", { name: "Approve", exact: true }).first().click();
+  }
+
+  step("production: render with the real worker, then the quality check");
+  let qcCard = false;
+  for (let i = 0; i < 14 && !qcCard; i++) {
+    runWorker([`${OUT}/worker/run.sh`, "tick"]);
+    await m.goto(`${APP}/review`);
+    const video = m.getByTestId("render-video").first();
+    const approveVideo = m.locator('[data-kind="approval"]', { hasText: "Approve the video" });
+    if (await approveVideo.first().isVisible().catch(() => false)) {
+      await video.waitFor();
+      await assertNoOverflow(m, "/review (render)");
+      await shot("23-review-render-mobile", m);
+      await approveVideo.first().getByRole("button", { name: "Approve", exact: true }).click();
+    }
+    qcCard = await m.locator('[data-testid="review-card"]', { hasText: "Quality check" }).first().isVisible().catch(() => false);
+    if (!qcCard) await m.waitForTimeout(3000);
+  }
+  if (!qcCard) throw new Error("the quality check review never appeared");
+  await m.waitForLoadState("networkidle");
+  await assertNoOverflow(m, "/review (quality check)");
+  await shot("24-review-qc-mobile", m);
+  const qc = m.locator('[data-testid="review-card"]', { hasText: "Quality check" }).first();
+  const approveQc = qc.getByRole("button", { name: "Approve", exact: true });
+  if (await approveQc.isVisible().catch(() => false)) await approveQc.click();
+  else await qc.getByRole("button", { name: "Reject" }).click();
+
+  step("production: the run page lists each work order");
+  await m.goto(`${APP}${assetsRunHref ?? runHref}`);
+  await m.getByTestId("work-orders").waitFor();
+  if ((await m.getByTestId("work-order").count()) < 3) throw new Error("the run page shows fewer than 3 work orders");
+  if (!(await m.getByTestId("work-orders").textContent()).includes("cloudflare")) throw new Error("the run page does not name the provider");
+  await assertNoOverflow(m, "run page");
+  await shot("25-run-production-mobile", m);
   await m.goto(`${APP}/review`);
   await m.getByText("Nothing waiting for you.").waitFor();
 
@@ -458,4 +720,5 @@ try {
 } finally {
   await browser.close();
   fakeHermes.close();
+  fakeKokoro.close();
 }
