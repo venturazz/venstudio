@@ -3,6 +3,7 @@ import { env } from "../env.ts";
 import { createJob } from "../jobs.ts";
 import { hermesJson } from "../hermes-json.ts";
 import { cc0Issues, CC0_HOSTS } from "../../studio/asset-plan.ts";
+import type { FailureClass } from "../../studio/pacing.ts";
 import { dataBlock, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 
 /**
@@ -61,12 +62,12 @@ function validateCandidate(value: unknown): Validated<Cc0Candidate> {
   return issues.length > 0 ? { ok: false, issues } : { ok: true, value: candidate };
 }
 
-export type CandidateResult = { ok: true; candidate: Cc0Candidate } | { ok: false; error: string };
+export type CandidateResult = { ok: true; candidate: Cc0Candidate } | { ok: false; error: string; cause: FailureClass; busyUntil?: Date };
 
 /** Asks Hermes for a CC0 candidate. The reply is checked against the host allowlist and the licence wording. */
 export async function findCc0Candidate(prompt: string): Promise<CandidateResult> {
   const result = await hermesJson<Cc0Candidate>(cc0Prompt(prompt), validateCandidate, { retries: 1 });
-  return result.ok ? { ok: true, candidate: result.value } : { ok: false, error: result.error };
+  return result.ok ? { ok: true, candidate: result.value } : { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
 }
 
 export type JobResult = { ok: true; jobId: string } | { ok: false; error: string };

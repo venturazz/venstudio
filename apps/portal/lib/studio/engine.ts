@@ -2,6 +2,7 @@
  * Run engine helpers, pure. Stage order, which stage a revision restarts, stuck-stage detection and the
  * one-line summary of a stage result. The database side lives in lib/server/director.ts.
  */
+import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
 import { guessRevisionStage, type DirectorStage, type Idea, type ResearchNote, type RevisableStage, type Shot } from "./director.ts";
 
 export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "script", "storyboard"];
@@ -11,8 +12,8 @@ export const PRODUCTION_STAGES: readonly ProductionStage[] = ["assets", "voice",
 export type RunStage = DirectorStage | ProductionStage;
 /** Every stage the run engine executes, in order. */
 export const RUN_STAGES: readonly RunStage[] = [...ENGINE_STAGES, ...PRODUCTION_STAGES];
-/** Worst case for one stage: hermesJson makes up to 3 attempts of 180 s each. */
-export const HERMES_WORST_CASE_SEC = 3 * 180;
+/** Worst case for one stage: hermesJson makes up to 3 asks, each up to 180 s plus its wait for a gate slot. */
+export const HERMES_WORST_CASE_SEC = 3 * HERMES_ASK_WORST_SEC;
 /** A stage that has been running this long is treated as lost (restart, crash) and failed: worst case plus 6 minutes for the gate and DB work. */
 export const STUCK_MINUTES = Math.ceil(HERMES_WORST_CASE_SEC / 60) + 6;
 /** Default video length when the owner does not pick one: inside the catalog range for each format. */

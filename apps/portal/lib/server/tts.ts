@@ -21,6 +21,9 @@ import {
   type VoiceAttempt,
 } from "../studio/router-media.ts";
 import type { Validated } from "../studio/director.ts";
+import { failureFromStatus, findHealth, proofOf, proofText, shortProviderError, type EndpointHealth } from "../studio/endpoint-health.ts";
+import type { FailureClass } from "../studio/pacing.ts";
+import { listEndpointHealth, recordEndpointResult } from "./endpoint-health.ts";
 import { audioIssues, capcutAudioIssues, decodeInlineSource, MAX_AUDIO_BYTES, parseAudioReply, sniffAudio } from "../studio/image-result.ts";
 import { chunkScript, kokoroVoiceFor } from "../studio/voice.ts";
 import { concatWav, isClipped, padWithSilence, parseWav } from "../studio/wav.ts";
@@ -105,7 +108,14 @@ export async function kokoroHealth(opts: { fresh?: boolean } = {}): Promise<Koko
   return status;
 }
 
-export class TtsError extends Error {}
+export class TtsError extends Error {
+  /** Why the call failed, for endpoint health. Unset means the call worked but the audio was not usable. */
+  failureClass?: FailureClass;
+  constructor(message: string, failureClass?: FailureClass) {
+    super(message);
+    this.failureClass = failureClass;
+  }
+}
 
 /** One Kokoro call per chunk, joined into one WAV. Throws TtsError with a plain message. */
 export async function kokoroSpeak(text: string, voice: string): Promise<Uint8Array> {
@@ -170,13 +180,13 @@ async function routerAudioBytes(res: Response): Promise<Uint8Array> {
   return new Uint8Array(Buffer.from(body.audio, "base64"));
 }
 
-function routerHttpMessage(status: number, detail: string): string {
+function routerHttpMessage(status: number, detail: string, modelId = ""): string {
   if (status === 401 || status === 403) return "9router rejected the API key. Copy a key from the 9router dashboard into NINEROUTER_API_KEY.";
   if (status === 400 && /invalid model format/i.test(detail)) {
     return "9router said Invalid model format. The voice model id it listed was not accepted; press Scan now on Settings > Capabilities.";
   }
   if (status === 503) return "9router said All accounts unavailable for this voice. Try again in a minute or connect another account in 9router.";
-  return `9router answered HTTP ${status}${detail ? `: ${detail.slice(0, 160)}` : ""}.`;
+  return `${shortProviderError(status, detail, modelId ? routerProviderName(modelId, "") : "")}.`;
 }
 
 /** One POST per chunk. A 503 is retried once after Retry-After (at most 20 s). Nothing else is retried. */
@@ -193,7 +203,7 @@ async function routerSpeakChunk(url: string, key: string | undefined, modelId: s
       });
     } catch (err) {
       const e = explainFetchError(err, url, { name: "9router", internal: ROUTER_INTERNAL }, SPEAK_TIMEOUT_MS);
-      throw new TtsError(e.hint ? `${e.error}. ${e.hint}` : e.error);
+      throw new TtsError(e.hint ? `${e.error}. ${e.hint}` : e.error, "unreachable");
     }
     if (res.status === 503 && attempt === 0) {
       const waitSec = retryWaitSec(res.headers.get("retry-after"));
@@ -203,7 +213,7 @@ async function routerSpeakChunk(url: string, key: string | undefined, modelId: s
     }
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      throw new TtsError(routerHttpMessage(res.status, detail));
+      throw new TtsError(routerHttpMessage(res.status, detail, modelId), failureFromStatus(res.status));
     }
     try {
       return await routerAudioBytes(res);
@@ -212,7 +222,7 @@ async function routerSpeakChunk(url: string, key: string | undefined, modelId: s
       throw new TtsError("The audio from 9router could not be read");
     }
   }
-  throw new TtsError(routerHttpMessage(503, ""));
+  throw new TtsError(routerHttpMessage(503, ""), "busy");
 }
 
 /**
@@ -281,7 +291,7 @@ async function routerVoiceList(snap: CapabilitySnapshot | null, probeIfUnknown: 
   return { configured: true, ...probed };
 }
 
-function planFor(language: string, router: { configured: boolean; models: RouterModel[]; error?: string }) {
+function planFor(language: string, router: { configured: boolean; models: RouterModel[]; error?: string }, health?: readonly EndpointHealth[]) {
   const { KOKORO_BASE_URL, KOKORO_VOICE, HERMES_BASE_URL, TTS_BACKUP } = env();
   return planVoice({
     languageCode: language,
@@ -290,6 +300,8 @@ function planFor(language: string, router: { configured: boolean; models: Router
     hermesConfigured: Boolean(HERMES_BASE_URL),
     backupOn: TTS_BACKUP !== "off",
     kokoroVoice: KOKORO_VOICE,
+    health,
+    nowMs: Date.now(),
   });
 }
 
@@ -315,7 +327,7 @@ export interface Narration {
   skipped: string[];
 }
 
-export type SynthesisResult = { ok: true; narration: Narration } | { ok: false; error: string };
+export type SynthesisResult = { ok: true; narration: Narration } | { ok: false; error: string; busyUntil?: Date };
 
 function measure(audio: Uint8Array): { durationSec: number | null; clipped: boolean | null; deferredCheck: boolean } {
   try {
@@ -363,7 +375,10 @@ export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, l
     const provider = engine === "kokoro" ? resolveKokoroProvider(parsed.provider) : "capcut";
     return { ok: true, value: { audio, mime: info.mime, model: parsed.model, provider } };
   });
-  if (!result.ok) return { ok: false, error: `${what} failed. ${result.error}` };
+  if (!result.ok) {
+    if (result.cause === "busy") return { ok: false, error: `${what} is waiting. ${result.error}`, busyUntil: result.busyUntil };
+    return { ok: false, error: `${what} failed. ${result.error}` };
+  }
   const { audio, mime, model, provider } = result.value;
   return {
     ok: true,
@@ -419,6 +434,7 @@ async function runAttempt(a: VoiceAttempt, text: string, language: string, snap:
   if (a.engine === "router" && a.model) {
     try {
       const out = await routerSpeak(text, a.model.id);
+      await recordEndpointResult("9router", a.model.id, "tts", { ok: true });
       return {
         ok: true,
         narration: {
@@ -437,7 +453,10 @@ async function runAttempt(a: VoiceAttempt, text: string, language: string, snap:
         },
       };
     } catch (err) {
-      return { ok: false, error: err instanceof TtsError ? err.message : "9router voice failed." };
+      const error = err instanceof TtsError ? err.message : "9router voice failed.";
+      const failureClass: FailureClass = err instanceof TtsError && err.failureClass ? err.failureClass : "content";
+      await recordEndpointResult("9router", a.model.id, "tts", { ok: false, failureClass, error });
+      return { ok: false, error };
     }
   }
   if (a.engine === "hermes-kokoro") return hermesSpeak("kokoro", text, language, skillHintsFor("voice", snap));
@@ -448,7 +467,7 @@ async function runAttempt(a: VoiceAttempt, text: string, language: string, snap:
  * Tries the voice paths in order (see planVoice). Every skipped path and every failure is kept and reported, so a
  * failed narration says what was tried and why. With nothing to try the message says what is missing.
  */
-export async function synthesize(script: string, language: string): Promise<SynthesisResult> {
+export async function synthesize(script: string, language: string, opts: { ignoreQuarantine?: boolean } = {}): Promise<SynthesisResult> {
   const text = script.trim();
   if (!text) return { ok: false, error: "The script is empty, so there is nothing to narrate." };
   const snap = await readSnapshot();
@@ -461,19 +480,27 @@ export async function synthesize(script: string, language: string): Promise<Synt
     failures.push(r.error);
   }
   const router = await routerVoiceList(snap, true);
-  const plan = planFor(language, router);
+  // Proven voices first and set-aside voices skipped. The owner's Test voice may try a set-aside voice again: a success lifts it.
+  const stored = await listEndpointHealth("tts");
+  const health = opts.ignoreQuarantine ? stored.map((h) => ({ ...h, quarantinedAt: null })) : stored;
+  const plan = planFor(language, router, health);
   const notes = [...failures, ...plan.skipped];
   const attempts = plan.attempts.filter((a) => a.engine !== "kokoro-override");
   if (attempts.length === 0) {
     return { ok: false, error: [missingCapabilityMessage("voice", scanStateOf(snap)), ...notes].join(" ") };
   }
+  let busyUntil: Date | undefined;
   for (const a of attempts) {
+    // Hermes is rate limited: its other voice path would only wait too, so the stage waits instead of failing.
+    if (busyUntil && (a.engine === "hermes-kokoro" || a.engine === "hermes-capcut")) continue;
     const r = await runAttempt(a, text, language, snap);
     if (r.ok) {
       return { ok: true, narration: { ...r.narration, skipped: notes, note: notes.length > 0 ? `Other voice paths: ${notes.join(" ")}` : "" } };
     }
     notes.push(r.error);
+    if (r.busyUntil) busyUntil = r.busyUntil;
   }
+  if (busyUntil) return { ok: false, error: `No voice yet. ${notes.join(" ")}`.slice(0, 900), busyUntil };
   return { ok: false, error: `No voice path worked. ${notes.join(" ")}`.slice(0, 900) };
 }
 
@@ -488,10 +515,15 @@ export interface VoicePathInfo {
 export async function describeVoicePath(): Promise<VoicePathInfo> {
   const snap = await readSnapshot();
   const router = await routerVoiceList(snap, false);
-  const plan = planFor("en", router);
+  const health = await listEndpointHealth("tts");
+  const plan = planFor("en", router, health);
+  const now = Date.now();
   const paths = plan.attempts.map((a) => {
     if (a.engine === "kokoro-override") return "Your Kokoro server (KOKORO_BASE_URL override)";
-    if (a.engine === "router") return `9router voice ${a.model?.id ?? ""}`.trim();
+    if (a.engine === "router") {
+      const id = a.model?.id ?? "";
+      return `9router voice ${id} (${proofText(proofOf(findHealth(health, "9router", id, "tts"), now))})`;
+    }
     if (a.engine === "hermes-kokoro") return "Hermes, asked for Kokoro";
     return "Hermes, CapCut workflow";
   });
@@ -504,7 +536,7 @@ export async function voiceTest(): Promise<
   | { ok: false; error: string }
 > {
   const started = Date.now();
-  const r = await synthesize("This is a VenStudio voice test.", "en");
+  const r = await synthesize("This is a VenStudio voice test.", "en", { ignoreQuarantine: true });
   if (!r.ok) return { ok: false, error: r.error };
   const n = r.narration;
   return { ok: true, provider: n.provider, via: n.via, model: n.model, durationSec: n.durationSec, bytes: n.audio.length, ms: Date.now() - started, skipped: n.skipped };

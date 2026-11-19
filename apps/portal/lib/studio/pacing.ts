@@ -30,6 +30,10 @@ export const MAX_RETRY_AFTER_MS = 60 * 60_000;
 export const MIN_WAIT_MS = 1_000;
 /** A stage that has waited on Hermes this long becomes a stage error the owner can Retry. */
 export const HERMES_WAIT_GIVE_UP_MS = 3 * 60 * 60_000;
+/** A model turn waits at most this long for a free gate slot, then answers busy (and the stage waits a minute). */
+export const GATE_QUEUE_TIMEOUT_SEC = 120;
+/** One Hermes ask in the worst case: the gate queue plus the 180 s call timeout. */
+export const HERMES_ASK_WORST_SEC = 180 + GATE_QUEUE_TIMEOUT_SEC;
 /** How many first orders of a stage pass must fail the same systemic way before the stage pauses. */
 export const SYSTEMIC_PAUSE_AFTER = 2;
 
