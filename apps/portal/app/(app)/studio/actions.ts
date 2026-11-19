@@ -8,7 +8,7 @@ import { db } from "@/lib/server/db.ts";
 import { audit } from "@/lib/server/audit.ts";
 import { getAssetRow, VIDEO_KINDS } from "@/lib/server/assets.ts";
 import { getProduction, insertProduction, setPreviewJob } from "@/lib/server/productions.ts";
-import { createJob } from "@/lib/server/jobs.ts";
+import { createJob, URGENT_PRIORITY } from "@/lib/server/jobs.ts";
 import { previewSpec } from "@/lib/studio/preview.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { fail, str, valuesFrom, type FormValues } from "@/lib/form.ts";
@@ -136,6 +136,8 @@ export async function queuePreviewAction(productionId: string) {
     type: "render-preview",
     payload: { ...spec, productionId, fontAssetId, inputs: fontAssetId ? [fontAssetId] : [] },
     channelId: production.channel_id,
+    // Urgent: a test render starts on the first free worker instead of waiting for the channel's home worker.
+    priority: URGENT_PRIORITY,
     createdBy: user.id,
   });
   await setPreviewJob(productionId, jobId);
