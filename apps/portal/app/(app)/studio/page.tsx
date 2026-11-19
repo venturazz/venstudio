@@ -35,9 +35,14 @@ export default async function StudioPage() {
         title="Studio"
         description="Pick a format and a style, describe the video, and preview its plan. Then queue a test render to check the whole path."
         actions={
-          <LinkButton href="/studio/styles" variant="secondary">
-            Style library
-          </LinkButton>
+          <div className="flex flex-wrap gap-2">
+            <LinkButton href="/studio/templates" variant="secondary">
+              Templates
+            </LinkButton>
+            <LinkButton href="/studio/styles" variant="secondary">
+              Style library
+            </LinkButton>
+          </div>
         }
       />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">

@@ -259,6 +259,13 @@ try {
   await page.waitForURL(/\/assets$/);
   await page.getByText("smoke-test: smoke-test.mp4").waitFor();
 
+  step("templates: every style is a candidate, nothing is proven");
+  await page.goto(`${APP}/studio/templates`);
+  await page.getByText("Candidate: not yet proven").first().waitFor();
+  if ((await page.getByText("Proven", { exact: true }).count()) !== 0) throw new Error("a template shows as Proven before any trial");
+  if ((await page.getByText("Allowed", { exact: true }).count()) !== 0) throw new Error("a template is allowed to run without the owner");
+  await shot("16-templates-desktop");
+
   step("mobile screenshots");
   const mobile = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -278,6 +285,7 @@ try {
     ["13-studio-mobile", "/studio"],
     ["14-assets-mobile", "/assets"],
     ["15-styles-mobile", "/studio/styles"],
+    ["16-templates-mobile", "/studio/templates"],
   ]) {
     await m.goto(`${APP}${url}`);
     await m.waitForLoadState("networkidle");

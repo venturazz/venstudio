@@ -80,6 +80,16 @@ All tables use `uuid` primary keys and `timestamptz` times, matching existing mi
 
 Seed styles from `03` are inserted as `candidate` templates, never `proven`.
 
+As built in `0007_templates_pipeline.sql`: template ids are text (`tpl-<style id>`) so seeds are stable, `template_versions.spec`
+holds the whole template document, and `qc_reports` also carries `production_id` and `job_id` because a QC job on a
+production has no pipeline run yet. `pipeline_runs` has an optional `production_id`. `productions` gains `template_id`
+and `template_version`. The Templates page seeds the candidates on first load (`ensureSeedTemplates`, insert only, never
+overwrites a promoted row).
+
+Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
+the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and
+saves a `draft` template. A draft stays a draft; `readyForTrials` is true only with three or more samples.
+
 ## 4. Job types
 
 | Job type | Phase | Runs on | Purpose |

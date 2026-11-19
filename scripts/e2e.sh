@@ -78,6 +78,25 @@ q "SELECT result FROM jobs WHERE id = '$SMOKE_JOB'"
 [ "$(q "SELECT jsonb_typeof(result) FROM jobs WHERE id = '$SMOKE_JOB'")" = "object" ] || fail "job result stored as $(q "SELECT jsonb_typeof(result) FROM jobs WHERE id = '$SMOKE_JOB'"), not object"
 [ "$(q "SELECT result->>'resolution' FROM jobs WHERE id = '$SMOKE_JOB'")" = "540x960" ] || fail "result fields missing"
 
+echo "== migration 0007 created the template and pipeline tables"
+for T in templates template_versions template_trials pipeline_runs pipeline_stages work_orders qc_reports; do
+  [ "$(q "SELECT to_regclass('public.$T') IS NOT NULL")" = "t" ] || fail "table $T missing after migration 0007"
+done
+[ "$(q "SELECT count(*) FROM templates")" = "0" ] || fail "templates should be empty until the Templates page seeds them"
+[ "$(q "SELECT autonomy_level FROM channels WHERE id = '$CHANNEL'")" = "1" ] || fail "channel autonomy default is not 1"
+
+echo "== qc-video measures the smoke-test video"
+QC_SHA=$(q "SELECT sha256 FROM artifacts WHERE job_id = '$SMOKE_JOB'")
+QC_ASSET=$(q "INSERT INTO assets (title, kind, source, license, storage_path, bytes, sha256, content_type)
+  VALUES ('E2E smoke clip','video','worker','self-generated','$FILE',$BYTES,'$QC_SHA','video/mp4') RETURNING id")
+QC_JOB=$(q "INSERT INTO jobs (type, capability, payload) VALUES ('qc-video','ffmpeg','{\"inputs\":[\"$QC_ASSET\"]}') RETURNING id")
+"$WORK/worker/run.sh" tick || { cat "$WORK/worker/logs/worker.log"; fail "qc tick exited non-zero"; }
+[ "$(q "SELECT status FROM jobs WHERE id = '$QC_JOB'")" = "succeeded" ] || fail "qc-video job not succeeded: $(q "SELECT error FROM jobs WHERE id = '$QC_JOB'")"
+[ "$(q "SELECT result->>'width' FROM jobs WHERE id = '$QC_JOB'")" = "540" ] || fail "qc-video width is not 540"
+[ "$(q "SELECT result ? 'hasAudio' FROM jobs WHERE id = '$QC_JOB'")" = "t" ] || fail "qc-video result has no hasAudio"
+[ "$(q "SELECT result->>'integratedLufs' IS NOT NULL FROM jobs WHERE id = '$QC_JOB'")" = "t" ] || fail "qc-video integratedLufs is null"
+[ "$(q "SELECT count(*) FROM artifacts WHERE job_id = '$QC_JOB' AND name = 'qc.json'")" = "1" ] || fail "qc.json artifact missing"
+
 echo "== artifacts require a signed-in user"
 ART=$(q "SELECT id FROM artifacts WHERE job_id = '$SMOKE_JOB'")
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/api/artifacts/$ART")" = "401" ] || fail "artifact readable without session"
