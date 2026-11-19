@@ -1,5 +1,5 @@
 import "server-only";
-import type { Sql } from "postgres";
+import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { audit } from "./audit.ts";
 import { saveQcReport } from "./qc.ts";
@@ -42,7 +42,7 @@ import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type Rev
  */
 
 /** A transaction handle is accepted wherever a connection is. */
-type Q = Sql;
+type Q = Sql | TransactionSql;
 
 interface RunConfig {
   format: Format;
