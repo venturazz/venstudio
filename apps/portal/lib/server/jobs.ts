@@ -87,6 +87,12 @@ export async function reapExpiredLeases() {
   for (const r of rows) {
     await addJobEvent(r.id, "warn", r.status === "failed" ? "Lease expired; out of attempts" : "Lease expired; requeued");
   }
+  if (rows.some((r) => r.status === "failed")) {
+    // A job that ran out of attempts never reaches the fail route; write its QC report now. Dynamic import
+    // because pipeline.ts imports this module. reconcileQcReports never throws.
+    const { reconcileQcReports } = await import("./pipeline.ts");
+    await reconcileQcReports();
+  }
   return rows.length;
 }
 

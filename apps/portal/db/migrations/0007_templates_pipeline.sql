@@ -84,6 +84,10 @@ CREATE TABLE qc_reports (
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX qc_reports_production_idx ON qc_reports(production_id, created_at DESC);
+-- One report per job and gate. A retried job replaces its earlier report (INSERT ... ON CONFLICT DO UPDATE).
+CREATE UNIQUE INDEX qc_reports_job_gate_uniq ON qc_reports(job_id, gate) WHERE job_id IS NOT NULL;
+-- Keeps the QC reconcile query cheap: it only looks at finished qc-video jobs.
+CREATE INDEX jobs_qc_video_finished_idx ON jobs(finished_at DESC) WHERE type = 'qc-video';
 
 CREATE TABLE template_trials (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),

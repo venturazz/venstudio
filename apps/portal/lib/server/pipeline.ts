@@ -25,6 +25,7 @@ export async function createQcJob(assetId: string, productionId: string, created
 /**
  * Stores the G-technical report for one finished qc-video job tied to a production. A failed job, an unreadable
  * result and a missing template each store a failed report, so a production never ends without a QC record.
+ * The write is an upsert on (job_id, gate), so concurrent or repeated evaluations and retried jobs are safe.
  * Throws on database errors; callers log them and reconcileQcReports retries later.
  */
 async function evaluateQcJob(jobId: string): Promise<void> {
@@ -33,8 +34,6 @@ async function evaluateQcJob(jobId: string): Promise<void> {
   if (!job || job.type !== "qc-video" || (job.status !== "succeeded" && job.status !== "failed")) return;
   const productionId = typeof job.payload?.productionId === "string" ? (job.payload.productionId as string) : null;
   if (!productionId) return;
-  const [existing] = await sql`SELECT id FROM qc_reports WHERE job_id = ${jobId} AND gate = 'G-technical'`;
-  if (existing) return;
   const [p] = await sql`SELECT format, style_id, template_id FROM productions WHERE id = ${productionId}`;
   if (!p) return;
   const assetId = Array.isArray(job.payload?.inputs) && typeof job.payload.inputs[0] === "string" ? (job.payload.inputs[0] as string) : null;
@@ -54,16 +53,22 @@ async function evaluateQcJob(jobId: string): Promise<void> {
 
 /**
  * Retries QC evaluation for recent finished qc-video jobs that still have no G-technical report. This covers
- * evaluations that threw, and jobs that failed by lease expiry. Never throws.
+ * evaluations that threw, and jobs that failed by lease expiry (the lease reaper also calls this). Never throws.
  */
 export async function reconcileQcReports(): Promise<void> {
   try {
+    // Only jobs that can get a report: a uuid productionId that still exists. A report older than the job's
+    // finish (a retried job) counts as missing. The CASE keeps the uuid cast from running on other values.
     const rows = await db()`
       SELECT j.id FROM jobs j
       WHERE j.type = 'qc-video' AND j.status IN ('succeeded', 'failed')
-        AND j.payload ? 'productionId' AND j.finished_at > now() - interval '7 days'
-        AND NOT EXISTS (SELECT 1 FROM qc_reports q WHERE q.job_id = j.id AND q.gate = 'G-technical')
-      ORDER BY j.finished_at LIMIT 20
+        AND j.finished_at > now() - interval '7 days'
+        AND EXISTS (
+          SELECT 1 FROM productions p
+          WHERE p.id = CASE WHEN j.payload->>'productionId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                            THEN (j.payload->>'productionId')::uuid END)
+        AND NOT EXISTS (SELECT 1 FROM qc_reports q WHERE q.job_id = j.id AND q.gate = 'G-technical' AND q.created_at >= j.finished_at)
+      ORDER BY j.finished_at DESC LIMIT 20
     `;
     for (const r of rows) {
       try {

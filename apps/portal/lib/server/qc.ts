@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "./db.ts";
 import type { GateResult } from "../studio/qc.ts";
 
+/** Idempotent per (job, gate): a second write for the same job, such as a retried job, replaces the first. */
 export async function saveQcReport(input: {
   result: GateResult;
   productionId?: string | null;
@@ -16,6 +17,10 @@ export async function saveQcReport(input: {
     VALUES (${input.runId ?? null}, ${input.productionId ?? null}, ${input.jobId ?? null}, ${input.assetId ?? null},
             ${r.gate}, ${r.passed}, ${r.score === undefined ? null : Math.round(r.score)},
             ${JSON.stringify({ issues: r.issues, ...(input.details ?? {}) })}::text::jsonb, ${r.executor})
+    ON CONFLICT (job_id, gate) WHERE job_id IS NOT NULL DO UPDATE SET
+      run_id = EXCLUDED.run_id, production_id = EXCLUDED.production_id, asset_id = EXCLUDED.asset_id,
+      passed = EXCLUDED.passed, score = EXCLUDED.score, details = EXCLUDED.details, executor = EXCLUDED.executor,
+      created_at = now()
     RETURNING id
   `;
   return row.id as string;

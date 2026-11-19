@@ -15,7 +15,7 @@ export const MAX_AUTO_REVISIONS = 2;
 /** Assets or compliance failures get one automatic revision, then go to the owner. */
 export const MAX_HARD_GATE_REVISIONS = 1;
 
-export interface DecisionInput {
+interface DecisionBase {
   level: AutonomyLevel;
   paused: boolean;
   template: Template;
@@ -24,11 +24,13 @@ export interface DecisionInput {
   videosSincePublishSpotCheck: number;
   /** Automatic revisions already made at this point. */
   attempts?: number;
-  /** "stage" is an intermediate gate result, "final" is the approval before upload and publish. */
-  point?: "stage" | "final";
-  /** Stage id of a "stage" result. At level 1 the owner approves the idea stage. */
-  stage?: string;
 }
+
+/**
+ * "stage" is an intermediate gate result and needs its stage id (at level 1 the owner approves the idea stage).
+ * "final" (the default) is the approval before upload and publish.
+ */
+export type DecisionInput = DecisionBase & ({ point?: "final"; stage?: undefined } | { point: "stage"; stage: string });
 
 export interface Decision {
   action: AutonomyAction;
@@ -67,6 +69,7 @@ export function decideNext(input: DecisionInput): Decision {
   }
 
   if (level === 0) return { action: "ask-owner", reason: "Manual mode: the owner approves every stage" };
+  if (point === "stage" && !input.stage) return { action: "ask-owner", reason: "The stage of this result is unknown" };
   if (point === "stage" && level < 2 && input.stage === "idea") return { action: "ask-owner", reason: "At level 1 the owner approves ideas" };
   if (point === "stage") return { action: "auto-approve", reason: "All gates passed for this stage" };
   if (level < 3) return { action: "ask-owner", reason: "Final approval is the owner's at this level" };

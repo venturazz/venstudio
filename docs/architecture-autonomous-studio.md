@@ -89,8 +89,12 @@ error is logged and shown as a "not ready" notice. `templates.status` mirrors `t
 the spec, so any status change must write both in one transaction.
 
 QC wiring: the job `complete` and `fail` routes call `evaluateQcCompletion`. For a `qc-video` job with a `productionId`
-it stores one `G-technical` report (a failed report for a failed job, unreadable result or missing template), then
-retries recent finished QC jobs that still lack a report. `combineGates` requires the publish gates (technical,
+it stores one `G-technical` report (a failed report for a failed job, unreadable result or missing template). Writes
+are an upsert on the unique index `qc_reports(job_id, gate) WHERE job_id IS NOT NULL`, so concurrent evaluations store
+one row and a retried job replaces its stale report. A reconcile pass then re-evaluates the 20 newest finished QC jobs
+(last 7 days) whose production exists and that have no report newer than their finish time. `reapExpiredLeases` runs
+the same pass when it fails a job for good, so lease-expiry failures get their report on the next claim or dashboard
+load instead of waiting for another job to finish. `combineGates` requires the publish gates (technical,
 presentation, assets, compliance, claims) and returns `missingGates`; a missing gate is never a pass. `decideNext` takes
 the stage id so level 1 asks the owner to approve the `idea` stage, and sends a missing gate to the owner.
 
