@@ -420,6 +420,16 @@ export function wrapText(text: string, maxChars: number): string {
 
 const CARD_COLORS = ["0x1d3557", "0x2a9d8f", "0x264653", "0x457b9d", "0x6d597a"];
 
+/** True when this ffmpeg build has the named filter (drawtext needs freetype). */
+export function ffmpegHasFilter(name: string): boolean {
+  try {
+    const r = spawnSync(ffmpegPath(), ["-hide_banner", "-filters"], { encoding: "utf8", timeout: 15_000 });
+    return typeof r.stdout === "string" && new RegExp(`\\s${name}\\s`).test(r.stdout);
+  } catch {
+    return false;
+  }
+}
+
 export const handlers: Record<string, Handler> = {
   async echo(ctx) {
     ctx.progress(0.5, "Collecting environment");
@@ -491,9 +501,11 @@ export const handlers: Record<string, Handler> = {
     const fps = clampInt(p.fps, 1, 60, 30);
     const fontAssetId = typeof p.fontAssetId === "string" && /^[0-9a-f-]{36}$/i.test(p.fontAssetId) ? p.fontAssetId : null;
 
-    // Text needs a font. Without one the cards are plain colour and the result says so.
-    const textRendered = fontAssetId !== null;
-    if (fontAssetId) {
+    // Text needs a font and a drawtext filter. Without either, the cards are plain colour and the result says why.
+    const canDrawText = ffmpegHasFilter("drawtext");
+    const textRendered = fontAssetId !== null && canDrawText;
+    const textNote = fontAssetId === null ? "no font in Assets" : canDrawText ? null : "this ffmpeg build has no drawtext filter";
+    if (textRendered) {
       ctx.progress(0.05, "Downloading font");
       if (!(await stat(path.join(ctx.workDir, "font.ttf")).catch(() => null))) {
         await ctx.download(fontAssetId, path.join(ctx.workDir, "font.ttf"));
@@ -538,6 +550,7 @@ export const handlers: Record<string, Handler> = {
       fps,
       cards: cards.length,
       textRendered,
+      textNote,
       renderSeconds: Math.round(renderSeconds * 10) / 10,
       bytes: up.bytes,
       sha256: up.sha256,

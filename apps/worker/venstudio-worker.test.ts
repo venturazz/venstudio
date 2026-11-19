@@ -384,7 +384,8 @@ test("render-preview renders placeholder cards and uploads preview.mp4", { skip:
 });
 
 const DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-test("render-preview draws the text when a font asset is supplied", { skip: !hasFfmpeg || !existsSync(DEJAVU) ? "needs ffmpeg and DejaVu Sans" : false }, async (t) => {
+const hasDrawtext = hasFfmpeg && spawnSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8" }).stdout.includes(" drawtext ");
+test("render-preview draws the text when a font asset is supplied and ffmpeg has drawtext", { skip: !hasDrawtext || !existsSync(DEJAVU) ? "needs ffmpeg with drawtext and DejaVu Sans" : false }, async (t) => {
   const portal = fakePortal();
   const base = await portal.start();
   const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
@@ -404,4 +405,21 @@ test("render-preview draws the text when a font asset is supplied", { skip: !has
   await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
   const result = portal.state.completed.get(jobId) as Record<string, unknown>;
   assert.equal(result?.textRendered, true);
+});
+
+test("render-preview says why text is missing when ffmpeg has no drawtext", { skip: !hasFfmpeg && "ffmpeg is not installed" }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "No-text worker" });
+  const jobId = "77777777-3333-4444-8555-666666666666";
+  portal.state.queue.push({ id: jobId, type: "render-preview", payload: { cards: ["Plain card"], durationSec: 5, width: 320, height: 568, fps: 15, fontAssetId: null, inputs: [] } });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  const result = portal.state.completed.get(jobId) as Record<string, unknown>;
+  assert.equal(result?.textRendered, false);
+  assert.equal(result?.textNote, "no font in Assets");
 });
