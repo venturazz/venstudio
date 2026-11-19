@@ -18,7 +18,11 @@ export interface GatewayStatus {
   checkedAt?: string;
 }
 
-const STATUS_TIMEOUT_MS = 10_000;
+// 9router builds /v1/models by asking its providers, which can take 10+ s. The check runs in the
+// background and is cached, so a long limit never slows pages down.
+const STATUS_TIMEOUT_MS = 60_000;
+/** Above this the card shows "slow" so the owner knows why the first check takes a while. */
+export const SLOW_MS = 5_000;
 const CACHE_OK_MS = 5 * 60_000;
 const CACHE_FAIL_MS = 60_000;
 
@@ -107,15 +111,7 @@ async function checkGateway(): Promise<GatewayStatus> {
   }
 }
 
-/**
- * Cached gateway status: 5 min when healthy, 1 min after a failure. Concurrent page loads share one check,
- * so an unreachable gateway never slows every page down.
- */
-export async function gatewayStatus(opts: { fresh?: boolean } = {}): Promise<GatewayStatus> {
-  if (!opts.fresh && cache) {
-    const ttl = cache.status.ok ? CACHE_OK_MS : CACHE_FAIL_MS;
-    if (Date.now() - cache.at < ttl) return cache.status;
-  }
+function refresh(): Promise<GatewayStatus> {
   inflight ??= checkGateway()
     .then((status) => {
       cache = { at: Date.now(), status };
@@ -125,6 +121,18 @@ export async function gatewayStatus(opts: { fresh?: boolean } = {}): Promise<Gat
       inflight = undefined;
     });
   return inflight;
+}
+
+/**
+ * Cached gateway status: fresh for 5 min when healthy, 1 min after a failure. After that the last result is
+ * still returned at once while a new check runs in the background (stale-while-revalidate), so only the very
+ * first check after a restart is waited for. Concurrent page loads share one check.
+ */
+export async function gatewayStatus(opts: { fresh?: boolean } = {}): Promise<GatewayStatus> {
+  if (opts.fresh || !cache) return refresh();
+  const ttl = cache.status.ok ? CACHE_OK_MS : CACHE_FAIL_MS;
+  if (Date.now() - cache.at >= ttl) void refresh().catch(() => {});
+  return cache.status;
 }
 
 export interface ChatMessage {

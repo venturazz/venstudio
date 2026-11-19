@@ -29,7 +29,7 @@ export interface HermesStatus {
   checkedAt?: string;
 }
 
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 30_000;
 const CACHE_OK_MS = 5 * 60_000;
 const CACHE_FAIL_MS = 60_000;
 const INTERNAL = "http://<hermes container name>:8642";
@@ -111,12 +111,7 @@ async function checkHermes(): Promise<HermesStatus> {
 let cache: { at: number; status: HermesStatus } | undefined;
 let inflight: Promise<HermesStatus> | undefined;
 
-/** Cached like the 9router status: pages never wait on a slow or missing Hermes. */
-export async function hermesStatus(opts: { fresh?: boolean } = {}): Promise<HermesStatus> {
-  if (!opts.fresh && cache) {
-    const ttl = cache.status.ok ? CACHE_OK_MS : CACHE_FAIL_MS;
-    if (Date.now() - cache.at < ttl) return cache.status;
-  }
+function refresh(): Promise<HermesStatus> {
   inflight ??= checkHermes()
     .then((status) => {
       cache = { at: Date.now(), status };
@@ -126,4 +121,12 @@ export async function hermesStatus(opts: { fresh?: boolean } = {}): Promise<Herm
       inflight = undefined;
     });
   return inflight;
+}
+
+/** Cached like the 9router status (stale-while-revalidate): pages never wait on a slow or missing Hermes. */
+export async function hermesStatus(opts: { fresh?: boolean } = {}): Promise<HermesStatus> {
+  if (opts.fresh || !cache) return refresh();
+  const ttl = cache.status.ok ? CACHE_OK_MS : CACHE_FAIL_MS;
+  if (Date.now() - cache.at >= ttl) void refresh().catch(() => {});
+  return cache.status;
 }

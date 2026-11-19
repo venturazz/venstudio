@@ -1,4 +1,4 @@
-import { gatewayStatus } from "@/lib/server/ai-gateway.ts";
+import { gatewayStatus, SLOW_MS } from "@/lib/server/ai-gateway.ts";
 import { Alert, Badge } from "./ui.tsx";
 import { SubmitButton } from "./client.tsx";
 import { recheckGateway } from "@/app/(app)/gateway-actions.ts";
@@ -27,10 +27,16 @@ export async function GatewayPanel({ showModels = false, canRecheck = false }: {
       <div className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="ok" dot>
-            Connected · {g.latencyMs} ms
+            Connected · {formatMs(g.latencyMs)}
           </Badge>
           <span className="text-muted">{g.models.length} models</span>
         </div>
+        {(g.latencyMs ?? 0) > SLOW_MS && (
+          <p className="text-xs text-muted">
+            9router took {formatMs(g.latencyMs)} to list its models. That&apos;s normal for 9router with many providers and
+            doesn&apos;t slow the portal: the result is cached and refreshed in the background.
+          </p>
+        )}
         {showModels && (
           <div className="flex max-h-48 flex-wrap gap-1 overflow-y-auto">
             {g.models.map((m) => (
@@ -62,4 +68,9 @@ export async function GatewayPanel({ showModels = false, canRecheck = false }: {
 
 export function GatewayPanelFallback() {
   return <p className="text-sm text-muted">Checking 9router…</p>;
+}
+
+function formatMs(ms: number | undefined) {
+  if (ms === undefined) return "";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`;
 }

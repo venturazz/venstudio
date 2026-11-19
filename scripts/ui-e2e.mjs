@@ -183,7 +183,7 @@ try {
     if (ms > 2500) throw new Error(`${url} took ${ms} ms to start rendering`);
   }
   await page.goto(`${APP}/settings`);
-  await page.getByText("Unreachable").waitFor({ timeout: 20_000 });
+  await page.getByText("Unreachable").waitFor({ timeout: 40_000 });
   await page.getByText("internal address").first().waitFor();
   await page.getByText("Server health").waitFor();
 
