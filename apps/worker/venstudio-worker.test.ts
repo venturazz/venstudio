@@ -9,8 +9,18 @@ import os from "node:os";
 import path from "node:path";
 import {
   AlreadyRunningError,
+  advertisedJobTypes,
+  buildRenderArgs,
   enroll,
   handlers,
+  joinWav,
+  makeWavPcm16,
+  parseAstatsPeak,
+  parseRenderSpec,
+  parseWavPcm16,
+  sniffMedia,
+  type JobContext,
+  type RenderSpec,
   loop,
   normalizePortalUrl,
   parseArgs,
@@ -527,4 +537,355 @@ test("render-preview says why text is missing when ffmpeg has no drawtext", { sk
   const result = portal.state.completed.get(jobId) as Record<string, unknown>;
   assert.equal(result?.textRendered, false);
   assert.equal(result?.textNote, "no font in Assets");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 handlers
+
+const A1 = "aaaaaaaa-1111-4111-8111-000000000001";
+const A2 = "aaaaaaaa-1111-4111-8111-000000000002";
+const NARR = "aaaaaaaa-1111-4111-8111-0000000000ff";
+
+function renderPayload(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    format: "shorts",
+    width: 320,
+    height: 568,
+    fps: 15,
+    shots: [
+      { shotRef: "s1", assetId: A1, seconds: 2, motion: "zoom-in" },
+      { shotRef: "s2", assetId: A2, seconds: 2.5, motion: "pan-left" },
+    ],
+    narrationAssetId: NARR,
+    narrationSec: 4.5,
+    durationSec: 4.5,
+    captions: [{ start: 0, end: 2, text: "Hello there" }],
+    targetLufs: -16,
+    inputs: [A1, A2, NARR],
+    ...over,
+  };
+}
+
+function sinePcm(seconds: number, rate: number, amp = 0.3): Uint8Array {
+  const n = Math.round(seconds * rate);
+  const pcm = new Uint8Array(n * 2);
+  const dv = new DataView(pcm.buffer);
+  for (let i = 0; i < n; i++) dv.setInt16(i * 2, Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * amp * 32767), true);
+  return pcm;
+}
+
+const PNG_BYTES = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+
+/** A JobContext for calling a handler directly. */
+function fakeCtx(workDir: string, job: { id?: string; type: string; payload: Record<string, unknown> }) {
+  const uploads: Array<{ name: string; bytes: number; type: string }> = [];
+  const ctx: JobContext = {
+    job: { id: job.id ?? "bbbbbbbb-1111-4111-8111-000000000001", type: job.type, payload: job.payload, capability: "echo", attempt: 1, leaseExpiresAt: "", heartbeatIntervalSeconds: 30 } as unknown as JobContext["job"],
+    workDir,
+    signal: new AbortController().signal,
+    progress: () => {},
+    upload: async (name, file, type) => {
+      const buf = await readFile(file);
+      uploads.push({ name, bytes: buf.length, type });
+      return { bytes: buf.length, sha256: createHash("sha256").update(buf).digest("hex") };
+    },
+    download: async () => {
+      throw new Error("no downloads in this test");
+    },
+  };
+  return { ctx, uploads };
+}
+
+test("parseRenderSpec accepts the portal payload", () => {
+  const spec = parseRenderSpec(renderPayload());
+  assert.equal(spec.shots.length, 2);
+  assert.equal(spec.width, 320);
+  assert.equal(spec.durationSec, 4.5);
+  assert.equal(spec.targetLufs, -16);
+  assert.equal(spec.captions.length, 1);
+  assert.equal(spec.fontAssetId, null);
+});
+
+test("parseRenderSpec refuses too many shots, unlisted or missing assets and bad timing", () => {
+  const many = Array.from({ length: 61 }, (_, i) => ({ shotRef: `s${i}`, assetId: A1, seconds: 1, motion: "zoom-in" }));
+  assert.throws(() => parseRenderSpec(renderPayload({ shots: many, narrationSec: 61 })), NonRetryableError);
+  assert.throws(() => parseRenderSpec(renderPayload({ inputs: [A1, NARR] })), /not listed in inputs/);
+  assert.throws(() => parseRenderSpec(renderPayload({ shots: [{ shotRef: "s1", seconds: 2 }] })), /no valid image asset/);
+  assert.throws(() => parseRenderSpec(renderPayload({ narrationAssetId: undefined })), /no narration/);
+  assert.throws(() => parseRenderSpec(renderPayload({ narrationSec: 20 })), /add up to/);
+  assert.throws(() => parseRenderSpec(renderPayload({ width: 321 })), /width/);
+  assert.throws(() => parseRenderSpec(renderPayload({ targetLufs: 3 })), /targetLufs/);
+  assert.throws(() => parseRenderSpec(renderPayload({ shots: [] })), /no shots/);
+});
+
+function specOf(over: Record<string, unknown> = {}): RenderSpec {
+  return parseRenderSpec(renderPayload(over));
+}
+
+test("buildRenderArgs without drawtext skips captions and says why", () => {
+  const spec = specOf();
+  const plan = buildRenderArgs(spec, { images: ["a.png", "b.png"], narration: "n.wav", output: "out.mp4" }, { drawtext: false });
+  const joined = plan.args.join(" ");
+  assert.equal(plan.captionsBurned, false);
+  assert.equal(plan.captionNote, "this ffmpeg build has no drawtext filter");
+  assert.equal(plan.captionFiles.length, 0);
+  assert.ok(!joined.includes("drawtext"));
+  assert.ok(joined.includes("-map [v] -map [a]"));
+  assert.ok(joined.includes("loudnorm=I=-16"));
+  assert.ok(joined.includes("-movflags +faststart"));
+  assert.ok(joined.includes("-threads 2"));
+  assert.ok(joined.includes("-pix_fmt yuv420p"));
+  assert.equal(plan.args[plan.args.length - 1], "out.mp4");
+  // Narration is the last input, after the two pictures.
+  assert.ok(joined.includes("[2:a]loudnorm"));
+});
+
+test("buildRenderArgs sizes each shot from its seconds and the format", () => {
+  const plan = buildRenderArgs(specOf(), { images: ["a.png", "b.png"], narration: "n.wav", output: "o.mp4" }, { drawtext: false });
+  const graph = plan.args[plan.args.indexOf("-filter_complex") + 1];
+  assert.ok(graph.includes("d=30:s=320x568:fps=15"), "2 s at 15 fps is 30 frames");
+  assert.ok(graph.includes("d=38:s=320x568:fps=15"), "2.5 s at 15 fps is 38 frames (rounded)");
+  assert.ok(graph.includes("concat=n=2:v=1:a=0[v]"));
+  assert.ok(graph.includes("apad=whole_dur=4.5"));
+  assert.equal(plan.args[plan.args.indexOf("-t") + 1], "4.5");
+  assert.throws(() => buildRenderArgs(specOf(), { images: ["a.png"], narration: "n.wav", output: "o.mp4" }, { drawtext: false }), NonRetryableError);
+});
+
+test("buildRenderArgs burns captions only with drawtext and a font", () => {
+  const spec = specOf();
+  const noFont = buildRenderArgs(spec, { images: ["a", "b"], narration: "n", output: "o" }, { drawtext: true });
+  assert.equal(noFont.captionsBurned, false);
+  assert.equal(noFont.captionNote, "no font in Assets");
+  const withFont = buildRenderArgs(spec, { images: ["a", "b"], narration: "n", output: "o", font: "in/f.ttf" }, { drawtext: true });
+  assert.equal(withFont.captionsBurned, true);
+  assert.equal(withFont.captionFiles.length, 1);
+  assert.equal(withFont.captionFiles[0].text, "Hello there");
+  assert.ok(withFont.args.join(" ").includes("drawtext=fontfile=in/f.ttf:textfile=cap0.txt"));
+});
+
+test("sniffMedia names files by their bytes", () => {
+  assert.equal(sniffMedia(PNG_BYTES)?.mime, "image/png");
+  assert.equal(sniffMedia(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]))?.ext, "jpg");
+  assert.equal(sniffMedia(makeWavPcm16(24000, 1, sinePcm(0.1, 24000)))?.mime, "audio/wav");
+  assert.equal(sniffMedia(Buffer.from("<html>nope</html>")), null);
+});
+
+test("parseAstatsPeak reads the last peak level", () => {
+  assert.equal(parseAstatsPeak("Peak level dB: -6.5\nPeak level dB: -3.01\n"), -3.01);
+  assert.equal(parseAstatsPeak("Peak level dB: -inf"), null);
+  assert.equal(parseAstatsPeak("nothing"), null);
+});
+
+test("joinWav joins parts with a pause and rejects mismatched rates", () => {
+  const a = makeWavPcm16(24000, 1, sinePcm(1, 24000));
+  const b = makeWavPcm16(24000, 1, sinePcm(0.5, 24000));
+  const joined = parseWavPcm16(joinWav([a, b], 0.25));
+  assert.ok(Math.abs(joined.durationSec - 1.75) < 0.001);
+  assert.equal(joined.clippedRatio, 0);
+  const other = makeWavPcm16(16000, 1, sinePcm(0.5, 16000));
+  assert.throws(() => joinWav([a, other], 0), NonRetryableError);
+});
+
+test("tts and agent-task are advertised only when their flags are set", () => {
+  const base = advertisedJobTypes({});
+  assert.ok(!base.includes("tts") && !base.includes("agent-task"));
+  for (const t of ["render-video", "fetch-asset", "echo", "qc-video"]) assert.ok(base.includes(t), t);
+  const kokoro = advertisedJobTypes({ VENSTUDIO_KOKORO_URL: "http://127.0.0.1:8880" });
+  assert.ok(kokoro.includes("tts") && !kokoro.includes("agent-task"));
+  const agent = advertisedJobTypes({ VENSTUDIO_AGENT_TASKS: "1" }, "hold");
+  assert.ok(agent.includes("agent-task"));
+  assert.ok(!advertisedJobTypes({ VENSTUDIO_AGENT_TASKS: "1" }, "tick").includes("agent-task"), "hold mode only");
+  assert.ok(!advertisedJobTypes({ VENSTUDIO_AGENT_TASKS: "0" }).includes("agent-task"));
+  assert.ok("tts" in handlers && "agent-task" in handlers, "handlers stay exported for tests");
+});
+
+/** A tiny HTTP server for the fetch-asset and tts tests. */
+async function localServer(handler: (req: IncomingMessage, res: ServerResponse, body: string) => void) {
+  const requests: Array<{ url: string; body: string }> = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = Buffer.concat(chunks).toString();
+    requests.push({ url: req.url ?? "", body });
+    handler(req, res, body);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const addr = server.address();
+  if (!addr || typeof addr === "string") throw new Error("no port");
+  return { base: `http://127.0.0.1:${addr.port}`, requests, stop: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test("fetch-asset is strict by default: http, unlisted hosts and a missing allowlist are refused before any request", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "vs-fetch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const run = (payload: Record<string, unknown>) => handlers["fetch-asset"](fakeCtx(dir, { type: "fetch-asset", payload: { inputs: [], kind: "image", ...payload } }).ctx);
+  await assert.rejects(run({ url: "http://upload.wikimedia.org/a.png", allowedHosts: ["upload.wikimedia.org"] }), /https/);
+  await assert.rejects(run({ url: "https://example.com/a.png", allowedHosts: ["example.com"] }), /not an approved/);
+  await assert.rejects(run({ url: "https://upload.wikimedia.org/a.png", allowedHosts: ["example.com"] }), /not an approved/);
+  await assert.rejects(run({ url: "https://upload.wikimedia.org/a.png" }), /allowedHosts/);
+  await assert.rejects(run({ url: "https://user:pw@upload.wikimedia.org/a.png", allowedHosts: ["upload.wikimedia.org"] }), /login/);
+  await assert.rejects(run({ url: "not a url", allowedHosts: ["upload.wikimedia.org"] }), /valid url/);
+});
+
+test("fetch-asset downloads, sniffs and uploads; refuses cross-host redirects, wrong types and oversize files", async (t) => {
+  const srv = await localServer((req, res) => {
+    if (req.url === "/ok.png") {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      return void res.end(PNG_BYTES);
+    }
+    if (req.url === "/hop") {
+      res.writeHead(302, { location: "/ok.png" });
+      return void res.end();
+    }
+    if (req.url === "/away") {
+      res.writeHead(302, { location: srv.base.replace("127.0.0.1", "localhost") + "/ok.png" });
+      return void res.end();
+    }
+    if (req.url === "/page") {
+      res.writeHead(200, { "content-type": "image/png" });
+      return void res.end("<html>not an image</html>");
+    }
+    if (req.url === "/big") {
+      res.writeHead(200);
+      return void res.end(Buffer.concat([PNG_BYTES, Buffer.alloc(5000)]));
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const dir = await mkdtemp(path.join(os.tmpdir(), "vs-fetch-"));
+  process.env.VENSTUDIO_TEST_INSECURE_FETCH = "1";
+  t.after(async () => {
+    delete process.env.VENSTUDIO_TEST_INSECURE_FETCH;
+    await srv.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const run = (p: string, extra: Record<string, unknown> = {}) => {
+    const { ctx, uploads } = fakeCtx(dir, { type: "fetch-asset", payload: { inputs: [], kind: "image", url: srv.base + p, allowedHosts: ["127.0.0.1"], ...extra } });
+    return handlers["fetch-asset"](ctx).then((r) => ({ r, uploads }));
+  };
+  const ok = await run("/ok.png");
+  assert.equal(ok.r.mime, "image/png");
+  assert.equal(ok.r.bytes, PNG_BYTES.length);
+  assert.equal(ok.r.sha256, createHash("sha256").update(PNG_BYTES).digest("hex"));
+  assert.equal(ok.uploads[0].name, "asset.png");
+  const hop = await run("/hop");
+  assert.equal(hop.r.finalUrl, `${srv.base}/ok.png`, "same-host redirect is followed");
+  await assert.rejects(run("/away"), /different site/);
+  await assert.rejects(run("/page"), /not a PNG/);
+  await assert.rejects(run("/big", { maxBytes: 1000 }), /larger than|limit/);
+  await assert.rejects(run("/missing"), /HTTP 404/);
+  await assert.rejects(run("/ok.png", { kind: "audio" }), /Expected audio/);
+});
+
+test("tts posts every chunk to the local Kokoro, joins the WAV and uploads narration.wav", async (t) => {
+  const srv = await localServer((req, res, body) => {
+    if (req.url !== "/v1/audio/speech") {
+      res.writeHead(404);
+      return void res.end();
+    }
+    const asked = JSON.parse(body) as { input: string };
+    const wav = makeWavPcm16(24000, 1, sinePcm(asked.input.length / 10, 24000));
+    res.writeHead(200, { "content-type": "audio/wav" });
+    res.end(Buffer.from(wav));
+  });
+  const dir = await mkdtemp(path.join(os.tmpdir(), "vs-tts-"));
+  process.env.VENSTUDIO_KOKORO_URL = srv.base + "/";
+  t.after(async () => {
+    delete process.env.VENSTUDIO_KOKORO_URL;
+    await srv.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const { ctx, uploads } = fakeCtx(dir, { type: "tts", payload: { inputs: [], chunks: ["0123456789", "01234567890123456789"], voice: "af_heart", pauseSec: 0.5 } });
+  const r = await handlers.tts(ctx);
+  assert.equal(srv.requests.length, 2);
+  const sent = JSON.parse(srv.requests[0].body) as Record<string, unknown>;
+  assert.equal(sent.voice, "af_heart");
+  assert.equal(sent.response_format, "wav");
+  assert.ok(Math.abs((r.durationSec as number) - 3.5) < 0.01, `1 s + 0.5 s pause + 2 s, got ${String(r.durationSec)}`);
+  assert.equal(r.clipped, false);
+  assert.equal(uploads[0].name, "narration.wav");
+  assert.equal(uploads[0].type, "audio/wav");
+});
+
+test("tts refuses bad payloads and a worker with no Kokoro URL", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "vs-tts-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  delete process.env.VENSTUDIO_KOKORO_URL;
+  await assert.rejects(handlers.tts(fakeCtx(dir, { type: "tts", payload: { chunks: ["hi"], voice: "af_heart" } }).ctx), /VENSTUDIO_KOKORO_URL/);
+  process.env.VENSTUDIO_KOKORO_URL = "http://127.0.0.1:1";
+  t.after(() => {
+    delete process.env.VENSTUDIO_KOKORO_URL;
+  });
+  await assert.rejects(handlers.tts(fakeCtx(dir, { type: "tts", payload: { chunks: [], voice: "af_heart" } }).ctx), /1 to 60/);
+  await assert.rejects(handlers.tts(fakeCtx(dir, { type: "tts", payload: { chunks: ["hi"], voice: "../x" } }).ctx), /voice/);
+});
+
+test("agent-task is off without its flag and refuses non-hold payloads", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "vs-agent-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  delete process.env.VENSTUDIO_AGENT_TASKS;
+  const work = path.join(dir, "work", "bbbbbbbb-1111-4111-8111-000000000001");
+  await assert.rejects(handlers["agent-task"](fakeCtx(work, { type: "agent-task", payload: { mode: "hold", prompt: "x" } }).ctx), /off/);
+  process.env.VENSTUDIO_AGENT_TASKS = "1";
+  t.after(() => {
+    delete process.env.VENSTUDIO_AGENT_TASKS;
+  });
+  await assert.rejects(handlers["agent-task"](fakeCtx(work, { type: "agent-task", payload: { mode: "tick", prompt: "x" } }).ctx), /hold mode/);
+});
+
+test("agent-task writes TASK.md inside the worker home, then uploads what the agent left in out/", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "vs-agent-"));
+  t.after(async () => {
+    delete process.env.VENSTUDIO_AGENT_TASKS;
+    await rm(dir, { recursive: true, force: true });
+  });
+  process.env.VENSTUDIO_AGENT_TASKS = "1";
+  const id = "bbbbbbbb-1111-4111-8111-000000000002";
+  const work = path.join(dir, "work", id);
+  const out = path.join(dir, "inbox", id, "out");
+  const { mkdir: mk, symlink } = await import("node:fs/promises");
+  await mk(out, { recursive: true });
+  await writeFile(path.join(out, "shot1.png"), PNG_BYTES);
+  await symlink("/etc/hostname", path.join(out, "link.png")).catch(() => {});
+  await writeFile(path.join(out, "notes.txt"), "not media");
+  await writeFile(path.join(out, "DONE"), "");
+  const { ctx, uploads } = fakeCtx(work, { id, type: "agent-task", payload: { mode: "hold", prompt: "Draw a Roman road", shotRef: "s1", pollMs: 200 } });
+  await assert.rejects(handlers["agent-task"](ctx), /notes.txt is not a PNG/);
+  await rm(path.join(out, "notes.txt"));
+  await rm(path.join(out, "link.png"), { force: true });
+  const r = await handlers["agent-task"](ctx);
+  assert.equal(r.unverifiedDelivery, true);
+  assert.deepEqual(uploads.map((u) => u.name), ["agent-shot1.png"]);
+  const task = await readFile(path.join(dir, "inbox", id, "TASK.md"), "utf8");
+  assert.ok(task.includes("Draw a Roman road"));
+  assert.ok(task.includes("UNVERIFIED"));
+});
+
+test("render-video renders two stills and a narration into a checked mp4", { skip: !hasFfmpeg && "ffmpeg is not installed" }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  for (const [id, color] of [[A1, "red"], [A2, "blue"]] as const) {
+    const f = path.join(home, `${id}.png`);
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=${color}:s=200x120`, "-frames:v", "1", f]);
+    portal.state.inputs.set(id, readFileSync(f));
+  }
+  portal.state.inputs.set(NARR, Buffer.from(makeWavPcm16(24000, 1, sinePcm(4.5, 24000))));
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Render worker" });
+  const jobId = "88888888-3333-4444-8555-666666666666";
+  portal.state.queue.push({ id: jobId, type: "render-video", payload: renderPayload() });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  assert.equal(portal.state.failed.get(jobId)?.error, undefined);
+  const result = portal.state.completed.get(jobId) as Record<string, unknown>;
+  assert.ok(result, "render completed");
+  assert.equal(result.width, 320);
+  assert.equal(result.height, 568);
+  assert.ok(Math.abs((result.durationSec as number) - 4.5) < 0.3, `duration ${String(result.durationSec)}`);
+  assert.equal(result.narrationClipped, false);
+  assert.equal(result.captionsBurned, false, "no font was supplied");
+  assert.ok((portal.state.artifacts.get(`${jobId}/video.mp4`)?.bytes ?? 0) > 1000);
 });

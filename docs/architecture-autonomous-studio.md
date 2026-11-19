@@ -155,7 +155,7 @@ for long tasks and its vision support are **unverified** and still unused.
    `/home/hatch/venstudio/inbox/<jobId>/out/`.
 4. The agent runs `run.sh submit <jobId>`, which uploads the artifacts and completes the job.
 
-Needs tests 12 to 16 in the research doc before any code. Task text comes only from the authenticated portal channel
+Worker 0.4.0 has a handler for this (`agent-task`, off unless `VENSTUDIO_AGENT_TASKS=1`, hold mode only). It uses an `out/DONE` marker instead of `run.sh submit`. It stays UNVERIFIED: tests 12 to 16 in the research doc are still needed. Task text comes only from the authenticated portal channel
 (prompt-injection control). If it fails, work orders use Hermes image generation and worker tools only.
 
 ## 7. Review screens (mobile first)
