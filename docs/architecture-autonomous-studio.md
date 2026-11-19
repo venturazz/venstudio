@@ -17,10 +17,15 @@ autonomy levels and template statuses here must match the research doc exactly.
          │ HTTP (coolify net)    │ HTTP (coolify net)           │ HTTPS, outbound-only from workers
          ▼                       ▼                              ▼
    Hermes (brain,          9router (cheap            Pull workers (Muse VMs, VPS, PC)
-   skills, images,         models, TTS)              claim -> heartbeat -> complete
-   vision QC)                                         ffmpeg draft/render, qc-video,
+   skills, images,         models, TTS,              claim -> heartbeat -> complete
+   vision QC)              images)                    ffmpeg draft/render, qc-video,
                                                       agent-task inbox (Muse agent)
 ```
+
+Hermes is the first place the studio looks for any capability (research, script, storyboard, images, CapCut editing,
+music, thumbnails). 9router is called directly where raw bytes and deterministic errors matter (narration today, images
+as the second choice). The portal finds out what exists by asking both (the capability scan, section 5) and needs no
+variables beyond `NINEROUTER_*` and `HERMES_*`.
 
 Rules: workers never receive YouTube tokens, `ENCRYPTION_KEY` or 9router keys. Muse is never contacted inbound.
 Hermes and 9router are reached by container name on the Docker `coolify` network, never exposed publicly.
@@ -51,8 +56,8 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | Stage | Executor |
 |---|---|
 | idea, research, script, storyboard | hermes |
-| assets | portal work orders: Hermes `image_gen` chain, CC0 library through a worker `fetch-asset` job, Muse agent task only behind a flag |
-| voice | portal: Kokoro primary, CapCut through Hermes as backup |
+| assets | portal work orders: Hermes `image_gen` chain, then 9router images (only when the scan lists an image model), CC0 library through a worker `fetch-asset` job, Muse agent task only behind a flag |
+| voice | portal: optional Kokoro override, then Kokoro through 9router, then Hermes asked for Kokoro, then CapCut through Hermes |
 | draft | skipped in Phase 4 (no animatic yet) |
 | render | worker (`render-video`) |
 | qc | worker `qc-video` plus portal rules; vision (`G-presentation`) not built, the owner decides |
@@ -62,7 +67,7 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | publish | portal |
 | learn | portal (metrics into template stats) |
 
-## 3. Data model (migrations 0007, 0008 and 0009)
+## 3. Data model (migrations 0007 to 0010)
 
 All tables use `uuid` primary keys and `timestamptz` times, matching existing migrations. Append-only numbered SQL;
 `scripts/e2e.sh` asserts a second migrate run says "up to date".
@@ -113,6 +118,10 @@ is inserted as `unknown` the first time an asset from it is saved, and only the 
 `G-voice` fail with "Confirm the commercial-use terms for <provider> in Settings" while a provider is `unknown`, and
 with a "cannot be published" issue when it is `no`. `scripts/e2e.sh` checks the tables exist, that no provider starts
 cleared, and that a second migrate run says "up to date".
+
+As built in `0010_capabilities.sql` (Phase 4.5): `capability_scans` is a one-row table (`id` text primary key default
+`current`, `scanned_at`, `hermes` jsonb, `router` jsonb, `error`). The scan upserts it. Pages read only this row and never
+call Hermes or 9router while rendering. `scripts/e2e.sh` checks the table exists.
 
 Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
 the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and
@@ -174,7 +183,7 @@ Fallback chain per shot (`fallbackChain`), one work order at a time (`FOR UPDATE
 3. Muse agent task, only when `MUSE_AGENT_TASKS=1` on the portal.
 A shot that fails the whole chain fails its work order with the reasons. Retry in Review resets only failed orders.
 
-Voice: Kokoro is the primary narration (OpenAI-compatible `POST /v1/audio/speech` with `response_format: wav`, `GET
+Voice (superseded in part by Phase 4.5 below; the optional override still behaves like this): Kokoro is narration (OpenAI-compatible `POST /v1/audio/speech` with `response_format: wav`, `GET
 /v1/audio/voices`; env `KOKORO_BASE_URL`, `KOKORO_API_KEY`, `KOKORO_MODEL`, `KOKORO_VOICE`). The portal splits the
 script, speaks each chunk, and joins the WAV pieces in pure JS (the portal image has no ffmpeg). The backup is CapCut
 through Hermes (`VENSTUDIO_STAGE: tts-capcut`, same reply contract with an `audio` field), used when Kokoro is not
@@ -197,6 +206,68 @@ Provenance is automatic: `buildProvenance` writes source, licence text and origi
 follow section 3. At autonomy level 1 the owner approves `idea` and `assets`; later production stages continue on their
 own when their gates pass and ask the owner when they fail. Production stages never revise automatically and never
 publish. Nothing here writes the channel category, the worker mapping or the autonomy level.
+
+### As built in Phase 4.5: Hermes first, no extra env
+The owner already has Kokoro, `image_gen`, CapCut and other skills reachable through Hermes and 9router, so the studio
+discovers them instead of asking for more variables.
+
+Discovery flow (`lib/server/capabilities.ts`, pure rules in `lib/studio/capabilities.ts`):
+1. A scan runs when the owner presses **Scan now** (Settings, Studio capabilities), or in the background when the stored
+   snapshot is missing, older than 6 hours, or older than 10 minutes with a source down. It never runs synchronously
+   while a page renders, and the scan never fails as a whole: each source records its own status and hint.
+2. Hermes is asked (`VENSTUDIO_STAGE: capabilities`, 120 s) to list, from its own skill listing, the skills that help
+   make videos, the stage ids each serves, its `image_gen` providers and its voice engines. The reply is validated
+   (lists capped, unknown stage ids dropped, strings truncated, nothing executable). `GET /v1/skills` is merged in when it
+   answers.
+3. 9router is probed with 15 s per probe: `/v1/models`, `/v1/models/image`, `/v1/models/tts`, `/v1/models/web`,
+   `/v1/models/stt`, `/v1/models/video` (404 tolerated) and `/v1/audio/voices` only when the TTS list is empty. The base
+   URL may or may not end in `/v1`.
+4. The snapshot is stored in `capability_scans`. The Settings card turns it into one section per stage with a badge
+   (Ready, Found not used yet, Missing, Later) and chips that say whether the executor is Hermes or 9router. No skill
+   name or model id is hardcoded: classification uses Hermes' own stage tags first, then keyword rules for gaps.
+
+Stage map. A stage with no executor fails with a message that says what was checked (not scanned, a source unreachable,
+or nothing listed) and what to do.
+
+| Stage | Today |
+|---|---|
+| research, script, storyboard | Hermes, with discovered skill names added to the prompt as a DATA block (at most 5, hints only) |
+| image | Hermes `image_gen`, then 9router `POST /v1/images/generations`, then CC0 library, then Muse agent |
+| voice | optional `KOKORO_BASE_URL` override, 9router TTS, Hermes asked for Kokoro (`VENSTUDIO_STAGE: tts-kokoro`), Hermes CapCut (`tts-capcut`) |
+| editing, subtitles | worker `render-video` (ffmpeg) |
+| video-clips, music, sfx, thumbnail, CapCut editing | listed in the map as "Found, not used yet": no stage consumes them |
+| upload | Phase 5, not built |
+
+Voice order. The Kokoro model is picked from `/v1/models/tts` (an id containing `kokoro`, preferring `af_heart` for
+English). Only Kokoro voices are used automatically, so another engine such as edge-tts is never chosen silently. The
+override is tried first only when `KOKORO_BASE_URL` is set. Each failed path is kept and shown in the voice stage
+summary and in Settings, Test voice. English is the only verified language. Without a snapshot, one 20 s probe of
+`/v1/models/tts` runs when the voice is requested, never at render.
+
+Image order. Hermes `image_gen` stays first because its provider chain is proven live. 9router images come second and
+only when the snapshot lists an image model (the first listed, or the one matching `HERMES_IMAGE_PROVIDER_ORDER`).
+
+Provenance. `buildProvenance` records the executor that really produced each asset: `router-tts`, `hermes-kokoro`,
+`router-image` besides the existing ones, plus `metadata.via` (`9router`, `hermes` or `direct`). `asset_providers`
+gets the real provider (`kokoro`, `unlisted-<name>`, or `9router-combo-<id>` for a 9router combo, whose underlying
+provider is unknown). It starts `unknown` and only the owner confirms it in Settings.
+
+Optional env. `KOKORO_*`, `TTS_BACKUP`, `HERMES_IMAGE_PROVIDER_ORDER` and `HERMES_MEDIA_ORIGINS` are overrides. Nothing
+beyond `NINEROUTER_*` and `HERMES_*` is required.
+
+Per-stage trade-off:
+
+| Stage | Executor | Why |
+|---|---|---|
+| research, script, storyboard, CapCut editing, music, thumbnail | Hermes | Agentic work. The skills live in Hermes. The output is text, or files Hermes has to hand back as base64 or a link |
+| voice | 9router first, then Hermes | 9router direct returns raw audio bytes and deterministic HTTP errors. A Hermes chat reply can be a path or prose and costs a model turn, so it is the fallback |
+| images | Hermes first, then 9router | Hermes' `image_gen` chain is proven live. The 9router image models are unknown until a scan lists them |
+| video-clips | 9router video API, listed only | No stage consumes clips yet. Creation requests bill, so they are never retried automatically |
+
+9router video API, for a later phase (reference, not wired): creation is asynchronous and returns a `request_id`. The
+response carries an `x-9router-connection-id` header. Poll for the result with that value sent as `x-connection-id`.
+HTTP 403 means the account has no video access. Do not retry the creation POST on a timeout, because it may have
+billed.
 
 ### Calling Hermes
 The portal posts to `/v1/chat/completions` (model `hermes-agent`, `stream: false`, 180 s timeout) from
@@ -269,7 +340,7 @@ owner-only Asset providers list. `scripts/ui-e2e.mjs` drives the whole path agai
 | 1 | Pure domain engine: templates, QC gates, autonomy, Template Lab, provenance v2, in `apps/portal/lib/studio` with unit tests | Implemented in this task (FEAT-003) |
 | 2 | Migration 0007, `qc-video` worker job, read-only Templates page, e2e | Implemented in this task (FEAT-004) |
 | 3 | Hermes director: idea, research, script, storyboard stages as work orders; Review inbox on mobile | Implemented. Unverified against a real Hermes: JSON reliability, vision, runs API |
-| 4 | Asset work orders (Hermes `image_gen` chain, CC0 library, flagged Muse agent tasks), Kokoro voice with CapCut backup, `render-video` and `qc-video` | Implemented. Offline tests pass; CI e2e covers it against fakes. Not verified against live services, see below |
+| 4 | Asset work orders (Hermes `image_gen` chain, 9router images, CC0 library, flagged Muse agent tasks), voice through 9router Kokoro, Hermes Kokoro and CapCut, capability scan, `render-video` and `qc-video` | Implemented. Offline tests pass; CI e2e covers it against fakes. Not verified against live services, see below |
 | 5 | YouTube upload, copyright claim wait, metrics | Planned |
 | 6 | Autonomous publishing with demotion | Planned |
 | 7 | Template Lab UI and trial runner | Planned |
@@ -293,9 +364,9 @@ Not verified, because it needs the owner's live systems:
 - Non-English Kokoro voices, and a full-length render on a Muse VM (2 vCPU, 8 GB, no GPU).
 
 ### First live run checklist (owner)
-1. Set `KOKORO_BASE_URL` (and `KOKORO_API_KEY` if needed) on the portal. Kokoro is the primary voice; CapCut through
-   Hermes is the backup. Open Settings and confirm the Kokoro card says Connected.
-2. Press **Test voice**. It should report the voice name and the seconds of audio.
+1. Open Settings, Studio capabilities, and press **Scan now**. Read the map: voice should show a Kokoro model via
+   9router, images should show Hermes providers. No Kokoro variable is needed.
+2. Press **Test voice**. It should report the provider, whether it went through 9router or Hermes, and the seconds of audio.
 3. Press **Test Hermes image**. Check the providers listed (for example cloudflare, agnes, canva, qwen, minimax,
    sensenova) and that a picture appears. If it reports a path or an error, tell the developer the exact text.
 4. After the first run makes assets, open Settings, Asset providers. Read each provider's commercial terms and set

@@ -24,7 +24,7 @@ const PASSWORD = "correct horse battery staple";
 const { createServer } = await import("node:http");
 const HERMES_KEY = process.env.HERMES_API_KEY ?? "test-hermes-key";
 const HERMES_PORT = Number(process.env.FAKE_HERMES_PORT ?? 3299);
-const KOKORO_PORT = Number(process.env.FAKE_KOKORO_PORT ?? 3298);
+const ROUTER_PORT = Number(process.env.FAKE_ROUTER_PORT ?? 3297);
 
 // Generators for fake media. No dependencies: PNG through node:zlib, WAV as raw PCM16.
 import { deflateSync } from "node:zlib";
@@ -171,6 +171,23 @@ function directorReply(messages) {
     }
     return ok({ type: "base64", value: makePng(540, 960, seed).toString("base64"), mimeType: "image/png" });
   }
+  if (stage === "capabilities") {
+    fakeStats.capabilityScans++;
+    return JSON.stringify({
+      skills: [
+        { name: "clip-animator", description: "Turns a still picture into a short moving clip", category: "video", stages: ["video-clips"] },
+        { name: "voice-bridge", description: "Speaks text with a chosen voice engine", category: "audio", stages: ["voice"] },
+        { name: "pic-forge", description: "Makes pictures from a prompt", category: "image", stages: ["image"] },
+      ],
+      imageProviders: ["cloudflare", "agnes"],
+      voiceEngines: ["kokoro", "capcut"],
+      notes: "fake capability report",
+    });
+  }
+  if (stage === "tts-kokoro") {
+    fakeStats.hermesKokoroCalls++;
+    return JSON.stringify({ status: "ok", provider: "kokoro", model: "fake-hermes-kokoro", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
+  }
   if (stage === "tts-capcut") {
     return JSON.stringify({ status: "ok", provider: "capcut", model: "fake-capcut", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
   }
@@ -184,7 +201,7 @@ function directorReply(messages) {
   }
   return "{}";
 }
-const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, speechCalls: 0 };
+const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, hermesKokoroCalls: 0, capabilityScans: 0 };
 const fakeHermes = createServer((req, res) => {
   const json = (code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -230,25 +247,54 @@ const fakeHermes = createServer((req, res) => {
 });
 await new Promise((r) => fakeHermes.listen(HERMES_PORT, "127.0.0.1", r));
 
-// Fake Kokoro (OpenAI-compatible speech API). Speaks 0.4 s per word, the pace the portal estimates (150 words a minute).
-const fakeKokoro = createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/v1/audio/voices") {
-    res.writeHead(200, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ voices: ["af_heart", "af_bella", "am_adam"] }));
+// Fake 9router. In "hang" mode it accepts connections and never answers, like an unroutable address, so the pages-stay-fast
+// check is meaningful. In "ok" mode it lists models and speaks 0.4 s per word (the pace the portal estimates, 150 words a
+// minute). routerTts "error" makes only the speech endpoint fail, to prove the fallback to Hermes.
+const router = { mode: "hang", tts: "ok" };
+const routerSockets = new Set();
+const ROUTER_KEY = process.env.NINEROUTER_API_KEY ?? "";
+const fakeRouter = createServer((req, res) => {
+  if (router.mode === "hang") return; // never answer
+  const json = (code, body) => {
+    res.writeHead(code, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  if (ROUTER_KEY && req.headers.authorization !== `Bearer ${ROUTER_KEY}`) return json(401, { error: "bad key" });
+  const list = (data) => json(200, { object: "list", data });
+  const url = (req.url ?? "").split("?")[0];
+  if (req.method === "GET") {
+    if (url === "/api/health") return json(200, { ok: true });
+    if (url === "/v1/models") return list([{ id: "fake/chat-small", owned_by: "fake" }, { id: "fake/chat-large", owned_by: "fake" }]);
+    if (url === "/v1/models/image") return list([{ id: "fake-img/flux-lite", owned_by: "fake-img" }]);
+    if (url === "/v1/models/tts") {
+      return list([
+        { id: "kokoro/af_heart", owned_by: "kokoro" },
+        { id: "kokoro/af_bella", owned_by: "kokoro" },
+        { id: "edge-tts/en-US-AriaNeural", owned_by: "edge-tts" },
+      ]);
+    }
+    if (url === "/v1/models/web") return list([{ id: "fake-search/web", owned_by: "fake-search", kind: "webSearch" }]);
+    if (url === "/v1/models/stt") return list([{ id: "fake-stt/small", owned_by: "fake-stt" }]);
+    res.writeHead(404);
+    return res.end("not found");
   }
-  if (req.method === "POST" && req.url === "/v1/audio/speech") {
+  if (req.method === "POST" && (url === "/v1/audio/speech" || url === "/v1/images/generations")) {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
-      let input = "";
+      let body = {};
       try {
-        input = String(JSON.parse(raw).input ?? "");
+        body = JSON.parse(raw);
       } catch {
-        res.writeHead(400);
-        return res.end("bad json");
+        return json(400, { error: "bad json" });
       }
-      fakeStats.speechCalls++;
-      const words = input.split(/\s+/).filter(Boolean).length;
+      if (url === "/v1/images/generations") {
+        fakeStats.routerImageCalls++;
+        return json(200, { created: 1, data: [{ b64_json: makePng(540, 960, 7).toString("base64") }] });
+      }
+      if (router.tts === "error") return json(500, { error: "fake speech failure" });
+      fakeStats.routerSpeechCalls++;
+      const words = String(body.input ?? "").split(/\s+/).filter(Boolean).length;
       res.writeHead(200, { "content-type": "audio/wav" });
       res.end(makeWav(Math.max(0.5, words * 0.4)));
     });
@@ -257,7 +303,11 @@ const fakeKokoro = createServer((req, res) => {
   res.writeHead(404);
   res.end("not found");
 });
-await new Promise((r) => fakeKokoro.listen(KOKORO_PORT, "127.0.0.1", r));
+fakeRouter.on("connection", (sock) => {
+  routerSockets.add(sock);
+  sock.on("close", () => routerSockets.delete(sock));
+});
+await new Promise((r) => fakeRouter.listen(ROUTER_PORT, "127.0.0.1", r));
 
 const browser = await chromium.launch();
 const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
@@ -440,9 +490,47 @@ try {
     if (ms > 2500) throw new Error(`${url} took ${ms} ms to start rendering`);
   }
   await page.goto(`${APP}/settings`);
-  await page.getByText("Unreachable").waitFor({ timeout: 40_000 });
+  // The fake 9router hangs. The status check ends through its 60 s timeout, so the text can take about a minute.
+  await page.getByText("Unreachable").waitFor({ timeout: 90_000 });
   await page.getByText("internal address").first().waitFor();
   await page.getByText("Server health").waitFor();
+
+  step("9router comes back: check again, then scan the studio capabilities");
+  router.mode = "ok";
+  await page.goto(`${APP}/settings`);
+  await page.getByRole("button", { name: "Check again" }).last().click();
+  await page.getByText(/^\d+ models$/).waitFor({ timeout: 30_000 });
+  const capCard = page.locator("ul.gap-3 > li");
+  const stageItem = (p, label) => p.locator("ul.gap-3 > li").filter({ has: p.getByRole("heading", { name: label, exact: true }) });
+  // A scan that the page started in the background while 9router hung may still be running. Press Scan now until the
+  // new answer is shown (each press waits for the running scan, then the next one sees the working 9router).
+  let scanned = false;
+  for (let i = 0; i < 4 && !scanned; i++) {
+    await page.goto(`${APP}/settings`);
+    await page.getByRole("button", { name: "Scan now" }).click();
+    scanned = await stageItem(page, "Voice")
+      .getByText("kokoro/af_heart")
+      .first()
+      .waitFor({ timeout: 90_000 })
+      .then(() => true, () => false);
+  }
+  if (!scanned) throw new Error("the capabilities scan never listed the 9router voice");
+  if ((await capCard.count()) < 5) throw new Error("the capabilities card shows too few stages");
+  if (!(await stageItem(page, "Voice").innerText()).includes("via 9router")) throw new Error("the voice stage does not show a 9router executor");
+  if (!(await stageItem(page, "Images").innerText()).includes("via Hermes")) throw new Error("the image stage does not show a Hermes executor");
+  const videoText = await stageItem(page, "Video clips").innerText();
+  if (!videoText.includes("Found, not used yet")) throw new Error(`video clips should be found but not used yet, saw: ${videoText.replace(/\s+/g, " ")}`);
+  if (fakeStats.capabilityScans < 1) throw new Error("the fake Hermes never answered the capabilities stage");
+  // The page reads only the stored scan: starting to render must stay fast with the snapshot present.
+  for (const url of ["/settings", "/"]) {
+    const t0 = Date.now();
+    await page.goto(`${APP}${url}`, { waitUntil: "commit" });
+    const ms = Date.now() - t0;
+    console.log(`   ${url} first byte in ${ms} ms after the scan`);
+    if (ms > 2500) throw new Error(`${url} took ${ms} ms to start rendering after the capabilities scan`);
+  }
+  await page.goto(`${APP}/settings`);
+  await shot("06c-settings-capabilities-desktop");
 
   step("Hermes connection shows features and skills");
   await page.getByText("3 skills").first().waitFor({ timeout: 20_000 });
@@ -556,6 +644,24 @@ try {
     if (overflow) throw new Error(`mobile layout overflows horizontally on ${url}`);
   }
 
+  step("mobile: the capabilities card fits in 390 px");
+  await m.goto(`${APP}/settings`);
+  await m.waitForLoadState("networkidle");
+  await m.locator("ul.gap-3 > li").first().waitFor();
+  const wide = await m.evaluate(() => {
+    const list = document.querySelector("ul.gap-3");
+    const card = list?.closest("section") ?? list?.parentElement;
+    if (!list || !card) return "the capabilities card was not found";
+    for (const el of [card, ...card.querySelectorAll("*")]) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.right > window.innerWidth + 1) return `${el.tagName.toLowerCase()} ends at ${Math.round(r.right)} px`;
+    }
+    return "";
+  });
+  if (wide) throw new Error(`the capabilities card overflows at 390 px: ${wide}`);
+  await m.locator("ul.gap-3").first().scrollIntoViewIfNeeded();
+  await shot("16-capabilities-mobile", m);
+
   step("director: Test Hermes JSON passes against the fake Hermes");
   await page.goto(`${APP}/studio/runs`);
   await page.getByRole("button", { name: "Test Hermes JSON" }).click();
@@ -664,9 +770,17 @@ try {
 
   step("settings: the owner confirms the image provider terms, Kokoro is healthy, Test Hermes image works");
   await confirmProvider("cloudflare");
-  await page.getByText("Kokoro override connected").first().waitFor();
+  // No KOKORO_BASE_URL is set: the voice comes from the Kokoro model 9router lists, and Hermes is only the fallback.
+  await page.getByText("9router voice kokoro/af_heart").first().waitFor();
   await page.getByRole("button", { name: "Test voice" }).click();
-  await page.getByText("Voice made by kokoro straight from your Kokoro server").waitFor({ timeout: 30_000 });
+  await page.getByText("Voice made by kokoro through 9router").waitFor({ timeout: 30_000 });
+  const calls = fakeStats.routerSpeechCalls;
+  router.tts = "error";
+  await page.getByRole("button", { name: "Test voice" }).click();
+  await page.getByText("Voice made by kokoro through Hermes").waitFor({ timeout: 60_000 });
+  router.tts = "ok";
+  if (fakeStats.hermesKokoroCalls < 1) throw new Error("the voice did not fall back to Hermes Kokoro when 9router speech failed");
+  if (fakeStats.routerSpeechCalls !== calls) throw new Error("the failing 9router speech endpoint was counted as a success");
   await page.getByRole("button", { name: "Test Hermes image" }).click();
   await page.getByText("Providers Hermes reports: cloudflare, agnes").waitFor({ timeout: 60_000 });
   await page.getByText("Image made by cloudflare").waitFor();
@@ -687,7 +801,7 @@ try {
   if (!/^\/api\/assets\/[0-9a-f-]{36}$/.test(audioSrc ?? "")) throw new Error(`unexpected audio source ${audioSrc}`);
   const audioRes = await m.request.get(`${APP}${audioSrc}`);
   if (audioRes.status() !== 200 || !(audioRes.headers()["content-type"] ?? "").startsWith("audio/")) throw new Error("the narration asset is not served as audio");
-  if (fakeStats.speechCalls < 1) throw new Error("the fake Kokoro was never asked to speak");
+  if (fakeStats.routerSpeechCalls < 1) throw new Error("the fake 9router was never asked to speak");
   await assertNoOverflow(m, "/review (voice)");
   await assertTapTargets(m, [["Reject", m.getByRole("button", { name: "Reject" })]]);
   await shot("22-review-voice-mobile", m);
@@ -695,10 +809,10 @@ try {
   await page.getByTestId("voice-audio").first().waitFor();
   await shot("22-review-voice-desktop");
 
-  // Kokoro is also a provider whose terms the owner confirms. If the voice already passed, there is nothing to retry.
+  // The voice provider is registered as unconfirmed by the voice stage (Kokoro through 9router). The owner confirms it in Settings.
+  step("settings: the owner confirms the voice provider terms");
+  await confirmProvider("kokoro");
   if (await m.getByRole("button", { name: "Retry" }).first().isVisible().catch(() => false)) {
-    step("settings: the owner confirms the voice provider terms, then the voice is retried");
-    await confirmProvider("kokoro");
     await m.goto(`${APP}/review`);
     await m.getByRole("button", { name: "Retry" }).first().click();
   } else {
@@ -781,5 +895,6 @@ try {
 } finally {
   await browser.close();
   fakeHermes.close();
-  fakeKokoro.close();
+  fakeRouter.close();
+  for (const sock of routerSockets) sock.destroy();
 }
