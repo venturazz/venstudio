@@ -44,6 +44,11 @@ services:
       NINEROUTER_API_KEY: ${NINEROUTER_API_KEY}
     volumes:
       - venstudio-artifacts:/data/artifacts
+    networks:
+      - default
+      # Coolify's shared network: lets the portal reach other apps on this server (Hermes, 9router)
+      # by container name, e.g. http://hermes-<id>:8642. Nothing on it is public unless given a domain.
+      - coolify
     # Lets the portal reach 9router running on the same server outside Docker.
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -57,3 +62,8 @@ services:
 volumes:
   venstudio-db:
   venstudio-artifacts:
+
+networks:
+  coolify:
+    # Created by Coolify on every server it manages.
+    external: true
