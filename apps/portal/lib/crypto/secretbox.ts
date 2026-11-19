@@ -6,10 +6,17 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
  * `aad` binds a ciphertext to its context (e.g. "totp:<userId>") so it can't be swapped between rows.
  */
 
-export function parseKey(keyB64: string | undefined): Buffer {
-  if (!keyB64) throw new Error("ENCRYPTION_KEY is not set");
-  const key = Buffer.from(keyB64, "base64");
-  if (key.length !== 32) throw new Error("ENCRYPTION_KEY must be 32 bytes, base64-encoded (openssl rand -base64 32)");
+/** Accepts 32 random bytes as base64 (openssl rand -base64 32) or as 64 hex characters (openssl rand -hex 32). */
+export function parseKey(value: string | undefined): Buffer {
+  const v = value?.trim();
+  if (!v) throw new Error("ENCRYPTION_KEY is not set");
+  const key = /^[0-9a-fA-F]{64}$/.test(v) ? Buffer.from(v, "hex") : Buffer.from(v, "base64");
+  if (key.length !== 32) {
+    throw new Error(
+      `ENCRYPTION_KEY must be 32 random bytes: run "openssl rand -base64 32" (44 characters) ` +
+        `or "openssl rand -hex 32" (64 characters). The current value is ${v.length} characters.`,
+    );
+  }
   return key;
 }
 

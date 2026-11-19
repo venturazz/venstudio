@@ -1,51 +1,42 @@
 # Deploy VenStudio on Coolify
 
-Uses `docker-compose.coolify.yml` in the repository root: Postgres + the portal. Coolify's proxy gives the domain
-and HTTPS, so the Caddy container from `deploy/docker-compose.yml` is not used.
+Uses `docker-compose.coolify.yml` in the repository root: Postgres + the portal. Coolify's proxy provides the
+domain and HTTPS.
 
 ## 1. Add the app
 
-1. In Coolify: your project → **+ New** → **Private Repository (with GitHub App)** (or with a deploy key) →
-   pick `venturazz/venstudio`, branch `feat/portal-foundation`.
-2. **Build pack:** Docker Compose.
-   - **Base Directory:** `/`
-   - **Docker Compose Location:** `/docker-compose.coolify.yml`
-3. Save. Coolify loads the file and shows two services, `db` and `portal`.
+1. **Sources → + Add → GitHub App**, install it on `venturazz/venstudio` (one time).
+2. Project → **+ New → Private Repository (with GitHub App)** → `venstudio`, branch `feat/portal-foundation`.
+3. **Build Pack:** Docker Compose · **Base Directory:** `/` · **Docker Compose Location:** `/docker-compose.coolify.yml`.
 
 ## 2. Domain
 
-Under **Domains**, set the `portal` service to your domain **with port 3000**:
-
-```
-https://studio.yourdomain.com:3000
-```
-
-The `:3000` only tells Coolify which container port to use; visitors use normal HTTPS. Point the domain's DNS
-A record at the Coolify server. Leave `db` without a domain.
+Set the `portal` service domain to `https://studio.yourdomain.com:3000` (the `:3000` is the container port; visitors
+don't type it). Point the DNS A record at the server. No domain for `db`.
 
 ## 3. Environment variables
 
-Coolify generates these on first load (shown under **Environment Variables**):
+Open **Environment Variables**. If the list is empty, click **Reload Compose File** (or save the General settings)
+so Coolify reads the file again. Then fill in:
 
-| Variable | What it is |
-|---|---|
-| `SERVICE_PASSWORD_POSTGRES` | Database password |
-| `SERVICE_REALBASE64_PORTAL` | `ENCRYPTION_KEY`. **Copy it somewhere safe.** |
-| `SERVICE_HEX_32_SETUP` | `SETUP_TOKEN` for the first sign-up |
+| Variable | Value | How to make it |
+|---|---|---|
+| `APP_URL` | `https://studio.yourdomain.com` | Your domain, **without** `:3000` and without `/` at the end |
+| `POSTGRES_PASSWORD` | random | `openssl rand -hex 16` |
+| `ENCRYPTION_KEY` | random, **back it up** | `openssl rand -base64 32` (44 characters) or `openssl rand -hex 32` (64 characters) |
+| `SETUP_TOKEN` | random | `openssl rand -hex 16` |
+| `NINEROUTER_BASE_URL` | optional | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
+| `NINEROUTER_API_KEY` | optional | your 9router key |
 
-Fill in yourself:
+Run the `openssl` commands in **Servers → your server → Terminal** (or over SSH). If the list still doesn't show a
+variable, add it yourself with **+ Add** using exactly the name above.
 
-| Variable | Value |
-|---|---|
-| `NINEROUTER_BASE_URL` | 9router on the same server outside Docker: `http://host.docker.internal:20128`. 9router deployed in Coolify: its internal URL, e.g. `http://<container-name>:20128`, with **Connect to Predefined Network** enabled on both resources |
-| `NINEROUTER_API_KEY` | your 9router key |
+Don't change `POSTGRES_PASSWORD` after the first deploy: the database keeps the first one.
 
 ## 4. Allow long video uploads (once per server)
 
-Coolify's Traefik proxy cuts off a request after **60 seconds** by default
-([Coolify docs](https://coolify.io/docs/troubleshoot/applications/gateway-timeout)). Workers upload rendered videos
-that can take longer. Go to **Servers → your server → Proxy → Configuration** and add to the `command:` list of the
-`traefik` service:
+Coolify's Traefik proxy stops requests after 60 seconds by default. In **Servers → your server → Proxy**, add to the
+`traefik` `command:` list, then **Save** and **Restart Proxy**:
 
 ```yaml
       - '--entrypoints.https.transport.respondingTimeouts.readTimeout=30m'
@@ -53,23 +44,18 @@ that can take longer. Go to **Servers → your server → Proxy → Configuratio
       - '--entrypoints.https.transport.respondingTimeouts.idleTimeout=30m'
 ```
 
-Save, then **Restart Proxy**. This affects all apps on the server; 30 minutes is a ceiling, not a delay.
-
 ## 5. Deploy and create the owner
 
-1. **Deploy** and wait for both containers to be healthy. The portal runs database migrations on start.
-2. Check `https://studio.yourdomain.com/api/health` returns `{"ok":true}`.
-3. Open `https://studio.yourdomain.com/setup`, enter the `SERVICE_HEX_32_SETUP` value as the setup token,
-   and create your account.
-4. In **Settings**, turn on two-factor.
+1. **Deploy**. `https://studio.yourdomain.com/api/health` should show `{"ok":true}`.
+2. Open `/setup`, paste `SETUP_TOKEN`, create your account, then turn on two-factor in **Settings**.
+   The setup page locks once the owner exists.
 
-The setup page closes by itself once the owner account exists, so the token can't be reused.
+## Troubleshooting
 
-## Updates, backups, logs
-
-- **Updates:** enable **Auto Deploy** (GitHub App) or click **Redeploy** after pushing. Migrations run automatically.
-- **Backups:** the database and rendered videos are in the volumes `venstudio-db` and `venstudio-artifacts`.
-  Back up the database from the server with
-  `docker exec $(docker ps -qf name=db- | head -1) pg_dump -U venstudio venstudio > backup-$(date +%F).sql`
-  (check the container name with `docker ps` first), for example from a daily cron job.
-- **Logs:** the `portal` service's **Logs** tab.
+| Problem | Fix |
+|---|---|
+| Deploy refuses to start, mentions a required variable | Fill in `APP_URL`, `POSTGRES_PASSWORD` and `ENCRYPTION_KEY`. |
+| `/api/health` shows `{"ok":false}` | Read the **portal** logs; the message names the wrong variable. |
+| Logs: `ENCRYPTION_KEY must be 32 random bytes` | Make a new key with one of the two commands above and redeploy. |
+| Logs: password authentication failed | `POSTGRES_PASSWORD` was changed after the first deploy. Set it back, or (only if there's no data yet) delete the `venstudio-db` volume and redeploy. |
+| Video uploads fail after ~1 minute | Step 4 wasn't applied or the proxy wasn't restarted. |

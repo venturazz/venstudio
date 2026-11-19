@@ -114,22 +114,20 @@ jobs:
         run: docker build -f apps/portal/Dockerfile -t venstudio-portal:ci .
       - name: Validate compose files
         env:
-          SERVICE_PASSWORD_POSTGRES: ci
-          SERVICE_URL_PORTAL_3000: https://studio.example.com/
-          SERVICE_REALBASE64_PORTAL: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-          SERVICE_HEX_32_SETUP: abcdef
           POSTGRES_PASSWORD: ci
+          APP_URL: https://studio.example.com
+          ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          SETUP_TOKEN: abcdef
           DOMAIN: studio.example.com
-          ENCRYPTION_KEY: ci
         run: |
           docker compose -f docker-compose.coolify.yml config -q
           docker compose -f deploy/docker-compose.yml config -q
       - name: Coolify stack starts and serves /setup
         env:
-          SERVICE_PASSWORD_POSTGRES: cipassword
-          SERVICE_URL_PORTAL_3000: https://studio.example.com/
-          SERVICE_REALBASE64_PORTAL: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-          SERVICE_HEX_32_SETUP: abcdef
+          POSTGRES_PASSWORD: cipassword
+          APP_URL: https://studio.example.com
+          ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          SETUP_TOKEN: abcdef
         run: |
           cat > /tmp/ports.yml <<'YML'
           services:

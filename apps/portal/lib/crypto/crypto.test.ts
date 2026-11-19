@@ -60,7 +60,10 @@ test("secretbox encrypts, binds AAD and detects tampering", () => {
   const parts = box.split(".");
   parts[3] = Buffer.from("tampered").toString("base64url");
   assert.throws(() => decrypt(parts.join("."), key, "yt:channel-1"));
-  assert.throws(() => parseKey(Buffer.alloc(16).toString("base64")));
+  assert.throws(() => parseKey(Buffer.alloc(16).toString("base64")), /32 random bytes/);
+  assert.throws(() => parseKey("abcdefghijklmnopqrstuvwxyz012345"), /32 characters/);
+  assert.deepEqual(parseKey("ab".repeat(32)), Buffer.alloc(32, 0xab));
+  assert.deepEqual(parseKey(` ${Buffer.alloc(32, 7).toString("base64")}\n`), Buffer.alloc(32, 7));
 });
 
 test("tokens and enrollment codes", () => {
