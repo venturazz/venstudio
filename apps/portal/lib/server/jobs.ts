@@ -10,6 +10,8 @@ export const HEARTBEAT_SECONDS = 30;
  * Hourly Muse wakes + margin.
  */
 export const HOME_WORKER_GRACE_MINUTES = 75;
+/** Jobs at or above this priority skip the home-worker wait: the first free worker takes them. */
+export const URGENT_PRIORITY = 10;
 
 export const JOB_TYPES: Record<JobType, { capability: Capability; label: string; description: string }> = {
   echo: {
@@ -86,10 +88,12 @@ export async function claimJob(workerId: string, capabilities: Capability[]): Pr
           AND (
             j.preferred_worker_id IS NULL
             OR j.preferred_worker_id = ${workerId}
+            OR j.priority >= ${URGENT_PRIORITY}
             OR j.created_at < now() - make_interval(mins => ${HOME_WORKER_GRACE_MINUTES})
             OR NOT EXISTS (SELECT 1 FROM workers w WHERE w.id = j.preferred_worker_id AND w.status = 'active')
           )
-        ORDER BY (j.preferred_worker_id = ${workerId}) DESC NULLS LAST, j.priority DESC, j.created_at
+        ORDER BY (j.priority >= ${URGENT_PRIORITY}) DESC, (j.preferred_worker_id = ${workerId}) DESC NULLS LAST,
+                 j.priority DESC, j.created_at
         FOR UPDATE SKIP LOCKED
         LIMIT 1
       )

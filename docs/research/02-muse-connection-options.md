@@ -57,3 +57,8 @@ The portal keeps one job queue. How fast a job starts depends on which triggers 
 9. Hold mode: does a scheduled task running a 55-minute foreground command finish, or is it cut off? After how long?
 10. Usage: how much of the plan's weekly usage do 24 hold-mode runs per day use? (muse2api reads this from Settings → Usage; you can read it by hand.)
 11. After `POST /api/hatch/vm/wake`, is the VM a fresh boot (no processes) or a resumed one (old processes still running)? Only relevant if option G is ever tried.
+
+## Built (2026-11-18)
+
+- Hold mode (B), long-poll claims (C), urgent lane (L) and the "Needs attention" run-now message (E).
+- Not built: muse2api-style wake (G), WhatsApp automation (H), MCP connector (F).

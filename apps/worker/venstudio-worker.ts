@@ -6,7 +6,8 @@
  * Talks to the portal only through outbound HTTPS, so it works on Muse VMs (no public IP, egress proxy).
  *
  *   node venstudio-worker.ts enroll --portal https://studio.example.com --code VS-XXXX-XXXX-XXXX --name "Muse 01"
- *   node venstudio-worker.ts tick     # claim and run jobs until the queue is empty, then exit (Muse hourly wake)
+ *   node venstudio-worker.ts tick     # claim and run jobs until the queue is empty, then exit
+ *   node venstudio-worker.ts hold     # stay online ~55 min, starting jobs within seconds (Muse hourly task)
  *   node venstudio-worker.ts daemon   # poll forever (VPS / GPU box)
  *   node venstudio-worker.ts status   # show config and check the portal is reachable
  *
@@ -433,18 +434,37 @@ async function acquireLock(home: string): Promise<() => Promise<void>> {
           alive = true;
         } catch {}
       }
-      if (alive) throw new Error(`Another worker is running (pid ${pid}).`);
+      if (alive) throw new AlreadyRunningError(`Another worker is running (pid ${pid}).`);
       await rm(file, { force: true }); // stale lock from a recycled VM
     }
   }
   throw new Error("Could not acquire worker lock");
 }
 
-export async function loop(opts: { home: string; mode: WorkerMode; maxMinutes: number; pollSeconds: number }) {
+export class AlreadyRunningError extends Error {}
+
+/** Long-poll window: the portal holds a claim request open this long waiting for a job. */
+export const CLAIM_WAIT_SECONDS = 25;
+
+/**
+ * Main loop.
+ *   tick   - run until the queue is empty, then exit.
+ *   hold   - stay online until the time budget is used, picking up jobs within seconds (Muse hourly task).
+ *   daemon - run forever.
+ * A job that starts before the budget ends always runs to completion.
+ */
+export async function loop(opts: {
+  home: string;
+  mode: WorkerMode;
+  maxMinutes: number;
+  pollSeconds: number;
+  claimWaitSeconds?: number;
+}) {
   const cfg = await loadConfig(opts.home);
   const client = new PortalClient(cfg.portalUrl, cfg.token);
   const release = await acquireLock(opts.home);
   const deadline = Date.now() + opts.maxMinutes * 60_000;
+  const timeLeft = () => deadline - Date.now();
   let stopping = false;
   const stop = () => {
     stopping = true;
@@ -454,38 +474,52 @@ export async function loop(opts: { home: string; mode: WorkerMode; maxMinutes: n
 
   try {
     const capabilities = await detectCapabilities();
-    log(`${cfg.name} v${VERSION} ${opts.mode} mode, capabilities: ${capabilities.join(", ")}`);
+    const budget = opts.mode === "daemon" ? "" : `, budget ${opts.maxMinutes} min`;
+    log(`${cfg.name} v${VERSION} ${opts.mode} mode${budget}, capabilities: ${capabilities.join(", ")}`);
     let ran = 0;
     let idleBackoff = opts.pollSeconds;
     while (!stopping) {
-      if (opts.mode === "tick" && Date.now() > deadline) {
-        log(`time budget (${opts.maxMinutes} min) used; exiting until next wake`);
+      if (opts.mode !== "daemon" && timeLeft() <= 0) {
+        log(`time budget used after ${ran} job(s); exiting until next wake`);
         break;
       }
+      // Never hold a claim open past the budget.
+      const maxWait = opts.claimWaitSeconds ?? CLAIM_WAIT_SECONDS;
+      const waitSeconds =
+        opts.mode === "tick" ? 0 : Math.max(0, Math.min(maxWait, Math.floor(opts.mode === "hold" ? timeLeft() / 1000 : maxWait)));
       let res: ClaimResponse | null;
       try {
-        res = await client.json<ClaimResponse>("POST", "/api/worker/claim", { capabilities, mode: opts.mode, version: VERSION });
+        res = await client.json<ClaimResponse>("POST", "/api/worker/claim", {
+          capabilities,
+          mode: opts.mode,
+          version: VERSION,
+          waitSeconds,
+        });
       } catch (err) {
         if (err instanceof HttpError && err.status === 401) throw new Error("Portal rejected the worker token (revoked?). Enroll again.");
         log(`claim failed: ${(err as Error).message}`);
         if (opts.mode === "tick") break;
-        await sleep(Math.min(300_000, idleBackoff * 1000));
+        const pause = Math.min(idleBackoff * 1000, opts.mode === "hold" ? Math.max(0, timeLeft()) : 300_000);
+        await sleep(pause);
         idleBackoff = Math.min(300, idleBackoff * 2);
         continue;
       }
+      idleBackoff = opts.pollSeconds;
       if (!res) {
         if (opts.mode === "tick") {
           log(ran === 0 ? "queue empty" : `queue empty after ${ran} job(s)`);
           break;
         }
-        await sleep(opts.pollSeconds * 1000);
+        // Long-poll already waited; only pause if the portal answered instantly (old portal or drained worker).
+        if (waitSeconds === 0) await sleep(Math.min(opts.pollSeconds * 1000, Math.max(0, timeLeft())));
         continue;
       }
-      idleBackoff = opts.pollSeconds;
       await runJob(client, res.job, opts.home);
       ran++;
     }
   } finally {
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGINT", stop);
     await release();
   }
 }
@@ -535,7 +569,8 @@ export function parseArgs(argv: string[]) {
 const HELP = `venstudio-worker ${VERSION}
 Usage:
   node venstudio-worker.ts enroll --portal <url> --code <code> [--name <name>]
-  node venstudio-worker.ts tick   [--max-minutes 50]
+  node venstudio-worker.ts tick   [--max-minutes 50]   run until the queue is empty
+  node venstudio-worker.ts hold   [--max-minutes 55]   stay online for the budget (Muse hourly task)
   node venstudio-worker.ts daemon [--poll 30]
   node venstudio-worker.ts status
 Env: VENSTUDIO_HOME, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
@@ -564,6 +599,8 @@ export async function main(argv: string[]) {
       return enroll({ home, portal: flags.portal, code: flags.code, name: flags.name ?? os.hostname() });
     case "tick":
       return loop({ home, mode: "tick", maxMinutes: Number(flags["max-minutes"] ?? 50), pollSeconds: 30 });
+    case "hold":
+      return loop({ home, mode: "hold", maxMinutes: Number(flags["max-minutes"] ?? 55), pollSeconds: 20 });
     case "daemon":
       return loop({ home, mode: "daemon", maxMinutes: Infinity, pollSeconds: Number(flags.poll ?? 30) });
     case "status":
@@ -577,6 +614,11 @@ const isEntry = process.argv[1] && path.resolve(process.argv[1]) === path.resolv
 if (isEntry) {
   ensureProxyEnv();
   main(process.argv.slice(2)).catch((err) => {
+    if (err instanceof AlreadyRunningError) {
+      // The previous scheduled run is still working (e.g. a long render). Not an error.
+      console.log(`${new Date().toISOString()} already running: ${err.message} Nothing to do.`);
+      process.exit(0);
+    }
     console.error(`${new Date().toISOString()} fatal: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   });

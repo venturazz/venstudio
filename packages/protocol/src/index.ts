@@ -5,7 +5,7 @@
  * /api/worker and, except /enroll, require `Authorization: Bearer <token>`.
  *
  *   POST /api/worker/enroll                      EnrollRequest  -> EnrollResponse
- *   POST /api/worker/claim                       ClaimRequest   -> ClaimResponse | 204
+ *   POST /api/worker/claim                       ClaimRequest   -> ClaimResponse | 204 (long-polls up to waitSeconds)
  *   POST /api/worker/jobs/:id/heartbeat          HeartbeatRequest -> HeartbeatResponse
  *   PUT  /api/worker/jobs/:id/artifacts/:name    raw body       -> ArtifactResponse
  *   POST /api/worker/jobs/:id/complete           CompleteRequest -> { ok: true }
@@ -37,8 +37,12 @@ export const CAPABILITIES: readonly Capability[] = [
   "manim",
 ];
 
-/** `tick`: run until the queue is empty, then exit (Muse hourly wake). `daemon`: poll forever (VPS / GPU box). */
-export type WorkerMode = "tick" | "daemon";
+/**
+ * `tick`: run until the queue is empty, then exit.
+ * `hold`: stay online for a time budget (~55 min), then exit (Muse hourly task).
+ * `daemon`: run forever (VPS / GPU box).
+ */
+export type WorkerMode = "tick" | "hold" | "daemon";
 
 export type JobType = "echo" | "smoke-test";
 
@@ -59,6 +63,8 @@ export interface ClaimRequest {
   capabilities: Capability[];
   mode: WorkerMode;
   version: string;
+  /** Long-poll: the portal may hold the request up to this many seconds (max 25) waiting for a job. */
+  waitSeconds?: number;
 }
 
 export interface ClaimedJob {

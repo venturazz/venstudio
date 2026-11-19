@@ -42,6 +42,15 @@ export function JobForm({
           ))}
         </Select>
       </Field>
+      <label className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
+        <input type="checkbox" name="urgent" className="mt-0.5 size-4 accent-[var(--vs-accent)]" />
+        <span>
+          <span className="font-medium">Urgent</span>
+          <span className="block text-xs text-muted">
+            Skip the home worker and go to the first free worker, e.g. an always-on VPS. Use for revisions and previews.
+          </span>
+        </span>
+      </label>
       <SubmitButton variant="primary" className="w-full" pendingLabel="Queuing…">
         Queue job
       </SubmitButton>

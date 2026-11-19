@@ -96,3 +96,15 @@ export function presence(lastSeen: Date | string | null, running: number): Prese
   if (ageMin < 75) return "sleeping";
   return "offline";
 }
+
+/** Message the owner sends to a Muse agent (app or WhatsApp) to run the worker right away. */
+export const RUN_NOW_MESSAGE =
+  "Run /home/hatch/venstudio/run.sh tick and wait until it exits. Then send me the last 5 lines of " +
+  "/home/hatch/venstudio/logs/worker.log. If the hourly VenStudio task is missing or paused, recreate it as described in " +
+  "the VenStudio setup guide.";
+
+/** A Muse worker needs a person when it has missed its hourly runs, or jobs are waiting for it. */
+export function needsAttention(w: { host: string; status: string }, p: Presence, waitingJobs: number) {
+  if (w.status !== "active" || w.host !== "muse") return false;
+  return p === "offline" || p === "never" || (waitingJobs > 0 && p === "sleeping");
+}

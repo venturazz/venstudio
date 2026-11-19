@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { enroll, handlers, loop, normalizePortalUrl, parseArgs, NonRetryableError } from "./venstudio-worker.ts";
+import { AlreadyRunningError, enroll, handlers, loop, normalizePortalUrl, parseArgs, NonRetryableError } from "./venstudio-worker.ts";
 
 /** In-memory fake of the portal's worker API. */
 function fakePortal() {
@@ -18,7 +18,7 @@ function fakePortal() {
     failed: new Map<string, { error: string; retryable: boolean }>(),
     artifacts: new Map<string, { bytes: number; sha256: string }>(),
     heartbeats: 0,
-    claims: [] as Array<{ capabilities: string[]; mode: string }>,
+    claims: [] as Array<{ capabilities: string[]; mode: string; waitSeconds?: number }>,
   };
 
   async function body(req: IncomingMessage): Promise<Buffer> {
@@ -42,7 +42,11 @@ function fakePortal() {
     if (req.headers.authorization !== `Bearer ${state.token}`) return json(res, 401, { error: "unauthorized" });
 
     if (url === "/api/worker/claim") {
-      state.claims.push(JSON.parse((await body(req)).toString()));
+      const claim = JSON.parse((await body(req)).toString());
+      state.claims.push(claim);
+      // Long-poll like the real portal: wait up to waitSeconds for a job.
+      const until = Date.now() + (claim.waitSeconds ?? 0) * 1000;
+      while (state.queue.length === 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
       const job = state.queue.shift();
       if (!job) {
         res.writeHead(204);
@@ -209,7 +213,44 @@ test("a second worker process can't run while the lock is held", async (t) => {
   });
   await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Test worker" });
   await writeFile(path.join(home, "worker.lock"), String(process.pid)); // our own live pid
-  await assert.rejects(loop({ home, mode: "tick", maxMinutes: 1, pollSeconds: 1 }), /Another worker is running/);
+  await assert.rejects(loop({ home, mode: "tick", maxMinutes: 1, pollSeconds: 1 }), AlreadyRunningError);
   await writeFile(path.join(home, "worker.lock"), "999999"); // stale pid
   await loop({ home, mode: "tick", maxMinutes: 1, pollSeconds: 1 });
+});
+
+test("hold mode stays online, picks up a job queued mid-run within seconds, and exits at the budget", async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Hold worker" });
+
+  let queuedAt = 0;
+  setTimeout(() => {
+    queuedAt = Date.now();
+    portal.state.queue.push({ id: "job-late", type: "echo", payload: {} });
+  }, 2500);
+  const done = new Promise<number>((resolve) => {
+    const iv = setInterval(() => {
+      if (portal.state.completed.has("job-late")) {
+        clearInterval(iv);
+        resolve(Date.now());
+      }
+    }, 50);
+  });
+
+  const started = Date.now();
+  // 0.1 min = 6 s budget, 2 s long-poll window.
+  await loop({ home, mode: "hold", maxMinutes: 0.1, pollSeconds: 1, claimWaitSeconds: 2 });
+  const elapsed = Date.now() - started;
+  const finishedAt = await done;
+
+  assert.ok(finishedAt - queuedAt < 1500, `job started ${finishedAt - queuedAt} ms after queueing`);
+  assert.ok(elapsed >= 5500 && elapsed < 10_000, `exited after ${elapsed} ms`);
+  assert.ok(portal.state.claims.every((c) => c.mode === "hold"));
+  assert.ok(portal.state.claims.every((c) => (c.waitSeconds ?? 0) <= 2), "never waits past the cap");
+  assert.ok(portal.state.claims.length <= 6, `long-poll keeps claim count low (${portal.state.claims.length})`);
 });

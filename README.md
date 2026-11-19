@@ -12,18 +12,21 @@ Research and decisions: [docs/research/01-video-automation-research.md](docs/res
                                               │        ▲
                               9router ◀───────┘        │  claim / heartbeat / upload (outbound HTTPS only)
                     (scripts, images, TTS)             │
-                                     Muse VM workers ──┘  hourly scheduled task: run.sh tick
+                                     Muse VM workers ──┘  hourly scheduled task: run.sh hold (~55 min online)
 ```
 
 - **Portal** (`apps/portal`): Next.js 16 + PostgreSQL. Channels, workers, jobs, settings, worker API.
 - **Worker** (`apps/worker/venstudio-worker.ts`): one TypeScript file, no npm dependencies, runs on Node ≥ 22.18.
-  `tick` mode for Muse (run until the queue is empty, then exit), `daemon` mode for always-on machines.
+  Modes: `hold` for Muse (the hourly task keeps it online ~55 min, picking up jobs within seconds), `tick`
+  (run until the queue is empty, then exit; used for manual "run now"), `daemon` for always-on machines.
 - **Protocol** (`packages/protocol`): shared types for the worker API.
 
 ### Job routing
 - Each channel can have a **home worker**. Its jobs go there first.
 - If the home worker hasn't taken a job within 75 minutes (it missed its hourly wake) or is drained/revoked,
   any idle worker with the right capability takes it.
+- **Urgent** jobs skip the home-worker wait and go to the first free worker (e.g. an always-on VPS).
+- Claims **long-poll**: the portal holds a worker's request up to 25 s, so a job starts as soon as it is queued.
 - Workers hold a 2-minute **lease** renewed by heartbeats every 30 s. If a VM is recycled mid-job, the lease
   expires and the job returns to the queue (up to 3 attempts).
 
@@ -67,7 +70,9 @@ and restart.
 1. Portal → **Workers** → *Add a worker*. Pick the home channel.
 2. Copy the generated message and send it to the Muse agent of that account (browser profile or app).
 3. The agent follows `/install/AGENT_DEPLOY.md` (served by your portal): installs Node.js + ffmpeg under
-   `/home/hatch/venstudio`, enrolls, and creates an hourly scheduled task running `run.sh tick`.
+   `/home/hatch/venstudio`, enrolls, and creates an hourly scheduled task running `run.sh hold`.
+   If a Muse worker misses its runs, the Workers page marks it **Needs attention** with a "run now" message
+   you can send to that Muse from the app or WhatsApp.
 4. Queue an **Echo** job, then a **Render smoke test**, to check connectivity and render speed.
 
 For a VPS or your own PC, use the `curl … install.sh … --mode daemon` command shown in the same dialog.

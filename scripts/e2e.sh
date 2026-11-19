@@ -87,6 +87,36 @@ LEASE_JOB=$(q "INSERT INTO jobs (type, capability, status, worker_id, attempts, 
 "$WORK/worker/run.sh" tick
 [ "$(q "SELECT status FROM jobs WHERE id = '$LEASE_JOB'")" = "succeeded" ] || fail "expired lease job not requeued and finished"
 
+echo "== hold mode: long-poll picks up a new job within seconds"
+"$WORK/worker/run.sh" hold --max-minutes 0.4 &
+HOLD_PID=$!
+sleep 5
+# A second scheduled run while the first is still holding must exit cleanly.
+"$WORK/worker/run.sh" hold || fail "overlapping hold run exited non-zero"
+tail -n 3 "$WORK/worker/logs/worker.log" | grep -q "already running" || fail "overlapping run not reported as already running"
+[ "$(q "SELECT mode FROM workers WHERE id = '$WORKER'")" = "hold" ] || fail "worker mode not recorded as hold"
+QUEUED_AT=$(date +%s%N)
+HOLD_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','echo') RETURNING id")
+for i in $(seq 1 50); do
+  [ "$(q "SELECT status FROM jobs WHERE id = '$HOLD_JOB'")" = "succeeded" ] && break
+  sleep 0.2
+done
+[ "$(q "SELECT status FROM jobs WHERE id = '$HOLD_JOB'")" = "succeeded" ] || fail "held worker did not pick up the job"
+LATENCY_MS=$(( ($(date +%s%N) - QUEUED_AT) / 1000000 ))
+echo "hold pickup latency: ${LATENCY_MS} ms"
+[ "$LATENCY_MS" -lt 6000 ] || fail "hold pickup too slow (${LATENCY_MS} ms)"
+wait $HOLD_PID || fail "hold run exited non-zero"
+grep -q "time budget used" "$WORK/worker/logs/worker.log" || fail "hold run did not end on its budget"
+
+echo "== urgent jobs skip another worker's home queue"
+OTHER=$(q "INSERT INTO workers (name, host, status, last_seen_at) VALUES ('Other Muse','muse','active', now()) RETURNING id")
+NORMAL_JOB=$(q "INSERT INTO jobs (type, capability, preferred_worker_id) VALUES ('echo','echo','$OTHER') RETURNING id")
+URGENT_JOB=$(q "INSERT INTO jobs (type, capability, preferred_worker_id, priority) VALUES ('echo','echo','$OTHER', 10) RETURNING id")
+"$WORK/worker/run.sh" tick
+[ "$(q "SELECT status FROM jobs WHERE id = '$URGENT_JOB'")" = "succeeded" ] || fail "urgent job not taken by a free worker"
+[ "$(q "SELECT status FROM jobs WHERE id = '$NORMAL_JOB'")" = "queued" ] || fail "normal job jumped the home-worker wait"
+q "DELETE FROM jobs WHERE id = '$NORMAL_JOB'" >/dev/null
+
 echo "== drained worker gets no new jobs; revoked worker is rejected"
 q "UPDATE workers SET status = 'draining' WHERE id = '$WORKER'" >/dev/null
 DRAIN_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','echo') RETURNING id")

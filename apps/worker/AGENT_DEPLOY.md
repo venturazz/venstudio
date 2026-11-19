@@ -6,8 +6,8 @@ The owner sent you this link together with an **enrollment code** and a **worker
 ## What this is
 
 VenStudio is the owner's own video production portal at {{PORTAL_URL}}. The worker is a small program that,
-when started, asks the portal for render jobs over HTTPS, renders them with ffmpeg, uploads the result,
-and exits when there is nothing left to do. It does not open ports, accept inbound connections, or need any
+when started, stays online for up to 55 minutes asking the portal for render jobs over HTTPS, renders them with
+ffmpeg, uploads the results, and then exits. It does not open ports, accept inbound connections, or need any
 of the owner's passwords. Its only secret is a worker token, stored in `/home/hatch/venstudio/config.json`.
 
 This VM is recycled when idle and only `/home/hatch` survives, so everything installs under `/home/hatch/venstudio`.
@@ -20,7 +20,7 @@ This VM is recycled when idle and only `/home/hatch` survives, so everything ins
 2. **Install and enroll.** Run, replacing the two values:
 
    ```bash
-   curl -fsSL {{PORTAL_URL}}/install/install.sh | bash -s -- --code "VS-XXXX-XXXX-XXXX" --name "Muse 01" --mode tick
+   curl -fsSL {{PORTAL_URL}}/install/install.sh | bash -s -- --code "VS-XXXX-XXXX-XXXX" --name "Muse 01" --mode hold
    ```
 
    The script installs Node.js 24 and ffmpeg into `/home/hatch/venstudio` if the VM lacks them (downloads are
@@ -37,20 +37,32 @@ This VM is recycled when idle and only `/home/hatch` survives, so everything ins
 
    The log should end with `queue empty` (or a finished job). Errors about the token mean enrollment failed; go back to step 2.
 
-4. **Create the hourly scheduled task.** Create a recurring scheduled task that runs **every hour**:
+4. **Create the hourly scheduled task.** Title it `VenStudio worker` and make it run **every hour**:
 
-   > Run `/home/hatch/venstudio/run.sh tick` and wait until it exits. Then run
+   > Run `/home/hatch/venstudio/run.sh hold` and wait until it exits (up to about 55 minutes). Then run
    > `tail -n 5 /home/hatch/venstudio/logs/worker.log`. If the log shows `fatal`, tell the owner the error.
    > Otherwise finish silently, without messaging the owner.
 
    Important details:
-   - Run the command **in the foreground and wait for it**. It returns by itself when the queue is empty, or
-     after at most 50 minutes. Waiting keeps this VM on while a video renders.
+   - Run the command **in the foreground and wait for it**. It stays online for about 55 minutes so new jobs
+     start within seconds, then returns by itself. A render that started before then is finished first.
+     Waiting keeps this VM on.
+   - If the previous run is still busy with a long render, the command prints `already running` and returns
+     at once. That is normal, not an error.
    - Don't add a loop or `sleep`; the hourly schedule does that.
    - Don't message the owner on success. Only report errors.
+   - If the scheduled task can't run that long and gets cut off, use `/home/hatch/venstudio/run.sh hold --max-minutes 25`
+     instead, and tell the owner the limit you saw.
 
 5. **Tell the owner it's done** with: the worker name, the last 5 log lines, and confirmation that the hourly task
    exists. The owner will see the worker appear in the portal under **Workers**.
+
+## When the owner says "run VenStudio now"
+
+The owner may message you (in the app or WhatsApp) to run the worker right away. Run
+`/home/hatch/venstudio/run.sh tick`, wait until it exits, and reply with the last 5 lines of
+`/home/hatch/venstudio/logs/worker.log`. If the hourly `VenStudio worker` task is missing or paused, recreate it
+as in step 4 and say so.
 
 ## Rules
 
