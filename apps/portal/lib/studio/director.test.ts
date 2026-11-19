@@ -307,3 +307,18 @@ test("the storyboard prompt states how many shots the narration needs, and enoug
     assert.equal(gate.passed, true, `${t.id}: ${gate.issues.join("; ")}`);
   }
 });
+
+test("skill hints appear in a DATA block for research, script and storyboard, capped at five short names", () => {
+  const hints = ["deep-research", "b", "c", "d", "e", "ignored-sixth", "x".repeat(200)];
+  const idea = { title: "T", hook: "H", angle: "A" };
+  const prompts = [researchPrompt(ctx, idea, undefined, hints), scriptPrompt(ctx, idea, [], undefined, hints), storyboardPrompt(ctx, "A script.", undefined, hints)];
+  for (const p of prompts) {
+    const text = p.map((m) => m.content).join("\n");
+    assert.match(text, /<<<DATA skills the owner has, use them when they fit\ndeep-research, b, c, d, e\nDATA skills the owner has, use them when they fit>>>/);
+    assert.doesNotMatch(text, /ignored-sixth/);
+  }
+  const long = researchPrompt(ctx, idea, undefined, ["x".repeat(200)]).map((m) => m.content).join("\n");
+  assert.ok(!long.includes("x".repeat(81)));
+  assert.ok(!researchPrompt(ctx, idea).map((m) => m.content).join("\n").includes("skills the owner has"));
+  assert.ok(!researchPrompt(ctx, idea, undefined, []).map((m) => m.content).join("\n").includes("skills the owner has"));
+});

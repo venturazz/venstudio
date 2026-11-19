@@ -5,6 +5,8 @@ import { audit } from "./audit.ts";
 import { saveQcReport } from "./qc.ts";
 import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
+import { getCapabilities } from "./capabilities.ts";
+import { skillHintsFor } from "../studio/capabilities.ts";
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
@@ -310,6 +312,8 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     topicHint: run.config.topicHint || undefined,
   };
   const hint = feedback || undefined;
+  // Skill names Hermes reported in the last scan. No scan, or a failed read, means no hint.
+  const snap = await getCapabilities().catch(() => null);
 
   if (st.stage === "idea") {
     const r = fromHermes(await hermesJson(ideaPrompt(ctx, hint), validateIdeas));
@@ -321,7 +325,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   if (!idea) return { ok: false, error: "No idea has been chosen for this run" };
 
   if (st.stage === "research") {
-    const r = fromHermes(await hermesJson(researchPrompt(ctx, idea, hint), validateResearch));
+    const r = fromHermes(await hermesJson(researchPrompt(ctx, idea, hint, skillHintsFor("research", snap)), validateResearch));
     return r.ok ? { ok: true, result: r.value, gate: null } : r;
   }
 
@@ -330,7 +334,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   const notes: ResearchNote[] = checkedNotes.ok ? checkedNotes.value.notes : [];
 
   if (st.stage === "script") {
-    const r = fromHermes(await hermesJson(scriptPrompt(ctx, idea, notes, hint), validateScript));
+    const r = fromHermes(await hermesJson(scriptPrompt(ctx, idea, notes, hint, skillHintsFor("script", snap)), validateScript));
     if (!r.ok) return r;
     const needs = requiresSources(run.config.themeId, run.config.purposes);
     // When sources are required only sourced notes count as sources; otherwise every note is checked for copying.
@@ -350,7 +354,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   const scriptOut = await latestPassedOutput(sql, run.id, "script");
   const checkedScript = validateScript(scriptOut?.result);
   if (!checkedScript.ok) return { ok: false, error: "The approved script is missing" };
-  const r = fromHermes(await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint), validateStoryboard));
+  const r = fromHermes(await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap)), validateStoryboard));
   if (!r.ok) return r;
   return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wordsPerMinuteFor(template))) };
 }

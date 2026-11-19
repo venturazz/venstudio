@@ -27,13 +27,13 @@ so Coolify reads the file again. Then fill in:
 | `SETUP_TOKEN` | random | `openssl rand -hex 16` |
 | `NINEROUTER_BASE_URL` | optional | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
 | `NINEROUTER_API_KEY` | optional | your 9router key |
-| `KOKORO_BASE_URL` | optional | Address of your Kokoro server on the coolify network, e.g. `http://kokoro:8880` (see below). Empty means narration is not configured |
-| `KOKORO_API_KEY` | optional | Only if your Kokoro server asks for a key |
-| `KOKORO_MODEL` | optional | `kokoro` |
-| `KOKORO_VOICE` | optional | `af_heart` (a US English voice) |
-| `TTS_BACKUP` | optional | `hermes-capcut` (default): if Kokoro cannot do a language or is down, Hermes runs its CapCut workflow. `off` disables the backup |
-| `HERMES_IMAGE_PROVIDER_ORDER` | optional | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. Also the list of provider names the portal records as is. Any other name, and every name when this is empty, is stored as `unlisted-<name>` and needs owner confirmation in Settings. While this is unset, confirming `cloudflare` in Settings does not clear `unlisted-cloudflare`; confirm that name too |
-| `HERMES_MEDIA_ORIGINS` | optional | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only. The first request may use plain http and private hosts, so list only origins you control |
+| `KOKORO_BASE_URL` | optional override | Leave empty. The studio finds Kokoro through 9router and Hermes using `NINEROUTER_*` and `HERMES_*`. Set it (e.g. `http://kokoro:8880`, see below) only to force your own Kokoro server to be tried first |
+| `KOKORO_API_KEY` | optional override | Only if your Kokoro server asks for a key |
+| `KOKORO_MODEL` | optional override | `kokoro` |
+| `KOKORO_VOICE` | optional override | `af_heart` (a US English voice). Also picks the English voice among the Kokoro voices 9router lists |
+| `TTS_BACKUP` | optional | `hermes-capcut` (default): the last voice fallback is Hermes' CapCut workflow. Voice order: your Kokoro override (if set), Kokoro through 9router, Hermes asked for Kokoro, then CapCut. `off` removes the CapCut step |
+| `HERMES_IMAGE_PROVIDER_ORDER` | optional override | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. Also the list of provider names the portal records as is. Any other name, and every name when this is empty, is stored as `unlisted-<name>` and needs owner confirmation in Settings. While this is unset, confirming `cloudflare` in Settings does not clear `unlisted-cloudflare`; confirm that name too |
+| `HERMES_MEDIA_ORIGINS` | optional override | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only. The first request may use plain http and private hosts, so list only origins you control |
 | `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows the unverified Muse agent task fallback |
 
 ### Kokoro server (example, verify before relying on it)

@@ -13,7 +13,7 @@ import { decrypt, encrypt } from "@/lib/crypto/secretbox.ts";
 import { generateTotpSecret, otpauthUri, verifyTotp } from "@/lib/crypto/totp.ts";
 import { randomToken } from "@/lib/crypto/tokens.ts";
 import { str, type FormState } from "@/lib/form.ts";
-import { kokoroHealth, kokoroTest } from "@/lib/server/tts.ts";
+import { kokoroHealth, voiceTest } from "@/lib/server/tts.ts";
 import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
 import { scanCapabilities } from "@/lib/server/capabilities.ts";
 import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
@@ -127,12 +127,20 @@ export type TestState =
   | { ok: false; error: string }
   | undefined;
 
-/** Makes a short test clip with Kokoro and reports how long it took. Nothing is saved. */
-export async function testKokoroVoice(_prev: TestState, _fd: FormData): Promise<TestState> {
+/** Makes a short test clip the same way the voice stage does and reports which path made it. Nothing is saved. */
+export async function testVoice(_prev: TestState, _fd: FormData): Promise<TestState> {
   await requireUser("editor");
-  const r = await kokoroTest();
+  const r = await voiceTest();
   if (!r.ok) return { ok: false, error: r.error };
-  return { ok: true, lines: [`Voice ${r.voice}`, `${r.durationSec} s of audio, ${Math.round(r.bytes / 1024)} KB`, `Made in ${(r.ms / 1000).toFixed(1)} s`] };
+  const how = r.via === "9router" ? "through 9router" : r.via === "hermes" ? "through Hermes" : "straight from your Kokoro server";
+  const lines = [
+    `Voice made by ${r.provider} ${how}`,
+    `Model ${r.model}`,
+    `${r.durationSec === null ? "Length not known" : `${r.durationSec} s of audio`}, ${Math.round(r.bytes / 1024)} KB`,
+    `Made in ${(r.ms / 1000).toFixed(1)} s`,
+  ];
+  if (r.skipped.length > 0) lines.push(`Not used: ${r.skipped.join(" ")}`);
+  return { ok: true, lines };
 }
 
 const PREVIEW_MAX_BYTES = 400_000;

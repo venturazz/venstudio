@@ -664,9 +664,9 @@ try {
 
   step("settings: the owner confirms the image provider terms, Kokoro is healthy, Test Hermes image works");
   await confirmProvider("cloudflare");
-  await page.getByText("Connected ·").first().waitFor();
+  await page.getByText("Kokoro override connected").first().waitFor();
   await page.getByRole("button", { name: "Test voice" }).click();
-  await page.getByText("Voice af_heart").waitFor({ timeout: 30_000 });
+  await page.getByText("Voice made by kokoro straight from your Kokoro server").waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "Test Hermes image" }).click();
   await page.getByText("Providers Hermes reports: cloudflare, agnes").waitFor({ timeout: 60_000 });
   await page.getByText("Image made by cloudflare").waitFor();

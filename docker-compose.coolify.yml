@@ -45,16 +45,17 @@ services:
       # Hermes Agent API (internal address only, e.g. http://hermes-<id>:8642). Never a public domain.
       HERMES_BASE_URL: ${HERMES_BASE_URL}
       HERMES_API_KEY: ${HERMES_API_KEY}
-      # Kokoro TTS (OpenAI-compatible, e.g. http://kokoro:8880). Unset means narration is not configured.
+      # Optional override. Leave empty: the portal finds Kokoro through 9router and Hermes by itself using NINEROUTER_* and HERMES_*.
+      # Set KOKORO_BASE_URL (for example http://kokoro:8880) only to force your own Kokoro server first.
       KOKORO_BASE_URL: ${KOKORO_BASE_URL:-}
       KOKORO_API_KEY: ${KOKORO_API_KEY:-}
       KOKORO_MODEL: ${KOKORO_MODEL:-}
       KOKORO_VOICE: ${KOKORO_VOICE:-}
-      # hermes-capcut (default) or off: whether Hermes' CapCut workflow is the voice backup.
+      # Optional. hermes-capcut (default) or off: whether Hermes' CapCut workflow is the last voice fallback. Leave as is.
       TTS_BACKUP: ${TTS_BACKUP:-hermes-capcut}
-      # Optional comma list of Hermes image_gen providers to prefer, e.g. cloudflare,qwen. A hint only.
+      # Optional override. Leave empty: Hermes and 9router are asked what they have. Comma list of image providers to prefer, e.g. cloudflare,qwen. A hint only.
       HERMES_IMAGE_PROVIDER_ORDER: ${HERMES_IMAGE_PROVIDER_ORDER:-}
-      # Optional comma list of extra full origins Hermes serves files from, e.g. http://hermes-files:8000. Only needed when file URLs differ from HERMES_BASE_URL.
+      # Optional override. Leave empty unless file URLs differ from HERMES_BASE_URL. Comma list of extra full origins Hermes serves files from, e.g. http://hermes-files:8000. Only needed when file URLs differ from HERMES_BASE_URL.
       HERMES_MEDIA_ORIGINS: ${HERMES_MEDIA_ORIGINS:-}
       # 1 lets the studio create unverified Muse agent tasks. Leave 0 until they are tested.
       MUSE_AGENT_TASKS: ${MUSE_AGENT_TASKS:-0}

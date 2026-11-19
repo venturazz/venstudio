@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { Alert } from "@/components/ui.tsx";
 import { SubmitButton } from "@/components/client.tsx";
-import { testHermesImage, testKokoroVoice, type TestState } from "./actions.ts";
+import { testHermesImage, testVoice, type TestState } from "./actions.ts";
 
 function Result({ state }: { state: TestState }) {
   if (!state) return null;
@@ -30,9 +30,10 @@ function Result({ state }: { state: TestState }) {
 }
 
 export function TestVoiceForm() {
-  const [state, action] = useActionState(testKokoroVoice, undefined);
+  const [state, action] = useActionState(testVoice, undefined);
   return (
     <form action={action} className="space-y-3">
+      <p className="text-sm text-muted">Makes a short clip the way the voice stage would and shows which path made it. Nothing is saved.</p>
       <SubmitButton className="min-h-11 text-sm" pendingLabel="Making a clip…">
         Test voice
       </SubmitButton>
