@@ -7,6 +7,7 @@ import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
 import { getCapabilities } from "./capabilities.ts";
 import { skillHintsFor } from "../studio/capabilities.ts";
+import { giveUpMessage, waitExpired, type FailureClass } from "../studio/pacing.ts";
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
@@ -277,10 +278,11 @@ export async function startRun(input: {
 
 async function claimNext(runId: string): Promise<StageRow | null> {
   const rows = await db()`
-    UPDATE pipeline_stages s SET state = 'running', started_at = now(), error = NULL
+    UPDATE pipeline_stages s SET state = 'running', started_at = now(), error = NULL, not_before = NULL, output = s.output - 'hermesWait'
     WHERE s.id = (
       SELECT p.id FROM pipeline_stages p JOIN pipeline_runs r ON r.id = p.run_id
       WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc')
+        AND (p.not_before IS NULL OR p.not_before <= now())
       ORDER BY p.attempt, p.id LIMIT 1 FOR UPDATE OF p SKIP LOCKED
     ) AND s.state = 'pending'
     RETURNING s.id, s.stage, s.attempt, s.output
@@ -290,10 +292,13 @@ async function claimNext(runId: string): Promise<StageRow | null> {
   return { id: r.id as string, stage: r.stage as RunStage, attempt: r.attempt as number, output: toObject(r.output) };
 }
 
-type StageOutcome = { ok: true; result: unknown; gate: GateResult | null } | { ok: false; error: string };
+type StageOutcome = { ok: true; result: unknown; gate: GateResult | null } | { ok: false; error: string; busyUntil?: Date };
 
-function fromHermes<T>(r: { ok: true; value: T } | { ok: false; error: string }): { ok: true; value: T } | { ok: false; error: string } {
-  return r.ok ? { ok: true, value: r.value } : { ok: false, error: r.error };
+function fromHermes<T>(
+  r: { ok: true; value: T } | { ok: false; error: string; cause: FailureClass; busyUntil?: Date },
+): { ok: true; value: T } | { ok: false; error: string; busyUntil?: Date } {
+  if (r.ok) return { ok: true, value: r.value };
+  return r.cause === "busy" ? { ok: false, error: r.error, busyUntil: r.busyUntil } : { ok: false, error: r.error };
 }
 
 async function runModel(run: RunInfo, st: StageRow, template: Template, feedback: string): Promise<StageOutcome> {
@@ -397,6 +402,52 @@ async function approveStage(tx: Q, runId: string, stageId: string, stage: RunSta
     }
   }
   await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId} AND state = 'waiting-human'`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Waiting for a busy Hermes
+
+declare global {
+  /** Run id to the time its resume timer fires. Duplicates are harmless (advanceRun is idempotent), so none is cancelled. */
+  var __venstudioResumeAt: Map<string, number> | undefined;
+}
+
+/**
+ * Wakes a run when its not-before time has passed, in this process. A restart loses the timer; the persisted
+ * not_before then lets the worker claim route (nudgeRecovery) or any reaping page pick the run up.
+ */
+function scheduleResume(runId: string, until: Date): void {
+  globalThis.__venstudioResumeAt ??= new Map();
+  const planned = globalThis.__venstudioResumeAt;
+  const at = until.getTime() + 250;
+  const existing = planned.get(runId);
+  // A timer already set for this moment covers it.
+  if (existing !== undefined && existing > Date.now() && Math.abs(existing - at) < 1000) return;
+  planned.set(runId, at);
+  setTimeout(() => {
+    if (planned.get(runId) === at) planned.delete(runId);
+    void advanceRun(runId);
+  }, Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1));
+}
+
+/**
+ * Returns a running stage to pending with a not-before time because Hermes is rate limited, and schedules the resume.
+ * The stage keeps its attempt. `waitSince` in the output marks when the wait began (kept across resumes, restarted
+ * when the stage made progress), so a wait that lasts past HERMES_WAIT_GIVE_UP_MS becomes a stage error.
+ */
+export async function deferStage(runId: string, stageId: string, until: Date, text: string, opts: { restartClock?: boolean } = {}): Promise<void> {
+  const wait = { until: until.toISOString(), text: text.slice(0, 300) };
+  const restart = opts.restartClock === true;
+  const rows = await db()`
+    UPDATE pipeline_stages SET state = 'pending', started_at = NULL, not_before = ${until},
+      output = (output - 'finalizingAt') || jsonb_build_object(
+        'hermesWait', ${json(wait)}::text::jsonb,
+        'waitSince', CASE WHEN ${restart ? 1 : 0}::int = 1 OR output->>'waitSince' IS NULL THEN to_jsonb(now()) ELSE output->'waitSince' END
+      )
+    WHERE id = ${stageId} AND state = 'running'
+    RETURNING id
+  `;
+  if (rows.length > 0) scheduleResume(runId, until);
 }
 
 export async function recordStageError(runId: string, stageId: string, stage: RunStage, message: string): Promise<void> {
@@ -533,6 +584,12 @@ async function executeStage(runId: string, st: StageRow): Promise<void> {
   const feedback = typeof st.output.feedback === "string" ? st.output.feedback : "";
   const outcome = await runModel(run, st, template, feedback);
   if (!outcome.ok) {
+    // A rate-limited Hermes is not a failed stage: it waits and keeps its attempt, up to the give-up cap.
+    if (outcome.busyUntil) {
+      if (waitExpired(st.output.waitSince, Date.now())) await recordStageError(runId, st.id, st.stage, `${giveUpMessage()} ${outcome.error}`);
+      else await deferStage(runId, st.id, outcome.busyUntil, outcome.error);
+      return;
+    }
     await recordStageError(runId, st.id, st.stage, outcome.error);
     return;
   }
@@ -601,7 +658,8 @@ export async function reapStuckStages(): Promise<string[]> {
     const orphaned = await sql`
       SELECT r.id FROM pipeline_runs r
       WHERE r.state = 'running'
-        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc'))
+        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc')
+          AND (p.not_before IS NULL OR p.not_before <= now()))
         AND NOT EXISTS (SELECT 1 FROM pipeline_stages q WHERE q.run_id = r.id AND q.state = 'running')
     `;
     for (const r of orphaned) {
@@ -614,6 +672,29 @@ export async function reapStuckStages(): Promise<string[]> {
     console.error("reapStuckStages failed", err);
   }
   return runIds;
+}
+
+declare global {
+  var __venstudioLastNudge: number | undefined;
+}
+
+/** At most one background recovery pass per this many milliseconds from nudgeRecovery. */
+const NUDGE_EVERY_MS = 60_000;
+
+/**
+ * A throttled reaper call for places that run often without a page (the worker claim route, every ~25 s per held
+ * worker). It resumes stages whose wait for Hermes is over and repairs stuck work even when nobody opens a page.
+ * Returns at once when a pass ran in the last minute. Never throws.
+ */
+export async function nudgeRecovery(): Promise<void> {
+  const now = Date.now();
+  if (globalThis.__venstudioLastNudge !== undefined && now - globalThis.__venstudioLastNudge < NUDGE_EVERY_MS) return;
+  globalThis.__venstudioLastNudge = now;
+  try {
+    await reapStuckStages();
+  } catch (err) {
+    console.error("nudgeRecovery failed", err);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -674,7 +755,7 @@ export async function decideReview(input: {
         // The Hermes classifier only knows the four director stages, so production notes are sorted by keywords.
         target = revisionTarget(null, note, stage);
       } else {
-        const c = await hermesJson(classifyPrompt(note, stage), validateClassification, { retries: 1, timeoutMs: 45_000 });
+        const c = await hermesJson(classifyPrompt(note, stage), validateClassification, { retries: 1, timeoutMs: 45_000, queueTimeoutMs: 5_000 });
         target = revisionTarget(c.ok ? c.value.stage : null, note, stage);
       }
     }
@@ -773,7 +854,7 @@ export async function cancelRun(runId: string, userId: string): Promise<DecideRe
 /** Runs a tiny structured prompt so the owner can see whether this Hermes returns usable JSON. */
 export async function testHermesJson(): Promise<{ ok: boolean; detail: string }> {
   try {
-    const r = await hermesJson(selfTestPrompt(), validateSelfTest, { retries: 1, timeoutMs: 60_000 });
+    const r = await hermesJson(selfTestPrompt(), validateSelfTest, { retries: 1, timeoutMs: 60_000, queueTimeoutMs: 30_000 });
     if (r.ok) return { ok: true, detail: `Hermes returned valid JSON (${r.attempts === 1 ? "first try" : `after ${r.attempts} tries`}).` };
     return { ok: false, detail: r.error };
   } catch (err) {

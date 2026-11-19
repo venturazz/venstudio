@@ -1,10 +1,13 @@
+import Link from "next/link";
 import { Inbox } from "lucide-react";
 import { requireUser } from "@/lib/server/auth.ts";
 import { reapStuckStages } from "@/lib/server/director.ts";
 import { listOpenReviews } from "@/lib/server/reviews.ts";
+import { listWaitingRuns, type WaitingRun } from "@/lib/server/runs.ts";
+import { waitingText } from "@/lib/studio/pacing.ts";
 import { AutoRefresh } from "@/components/auto-refresh.tsx";
 import { Alert, Card, EmptyState, PageHeader, timeAgo } from "@/components/ui.tsx";
-import { describeGateIssues, sortReviews } from "@/lib/studio/review.ts";
+import { describeGateIssues, sortReviews, stageLabel } from "@/lib/studio/review.ts";
 import { ReviewCard, type ReviewCardView } from "./review-card.tsx";
 
 export const metadata = { title: "Review" };
@@ -19,6 +22,13 @@ export default async function ReviewPage() {
   }
   let loadError = "";
   let views: ReviewCardView[] = [];
+  let waiting: WaitingRun[] = [];
+  try {
+    waiting = await listWaitingRuns();
+  } catch (err) {
+    console.error("review page: could not load waiting runs", err);
+  }
+  const now = Date.now();
   try {
     const items = sortReviews(await listOpenReviews());
     views = items.map(
@@ -47,6 +57,22 @@ export default async function ReviewPage() {
         <div className="mb-4">
           <Alert tone="warn">{loadError}</Alert>
         </div>
+      )}
+      {waiting.length > 0 && (
+        <ul className="mx-auto mb-4 flex max-w-2xl flex-col gap-2" data-testid="hermes-waiting">
+          {waiting.map((w) => (
+            <li key={`${w.runId}:${w.stage}`} className="min-w-0 rounded-lg border border-border bg-surface px-4 py-3 text-sm">
+              <p className="break-words font-medium">
+                {stageLabel(w.stage)} · {w.topic || "Untitled run"}
+                {w.channelName ? ` · ${w.channelName}` : ""}
+              </p>
+              <p className="mt-1 break-words text-muted">{waitingText(w.until.getTime(), now)}. Nothing to do; it continues on its own.</p>
+              <Link href={`/studio/runs/${w.runId}`} className="inline-flex min-h-11 items-center text-accent underline-offset-2 hover:underline">
+                Open the run
+              </Link>
+            </li>
+          ))}
+        </ul>
       )}
       {views.length === 0 && !loadError ? (
         <Card>

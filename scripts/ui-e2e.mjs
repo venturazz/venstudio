@@ -206,7 +206,17 @@ function directorReply(messages) {
   }
   return "{}";
 }
-const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0 };
+const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0 };
+// The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
+// not fail, and the wait must not use up their attempts.
+const HERMES_429_BURST = 3;
+const HERMES_RETRY_AFTER_SEC = 2;
+// The fake 9router lists this image model first and refuses every request for it with the Cloudflare 400 the owner saw.
+const ROUTER_BAD_IMAGE_MODEL = "cf/@cf/fake-flux-2";
+function cloudflarePromptRequired() {
+  const inner = JSON.stringify({ errors: [{ message: "AiError: AiError: prompt is required (fdbccbd5-0000-4000-8000-000000000000)", code: 3030 }], success: false });
+  return { error: { message: `[400]: ${inner}` } };
+}
 const fakeHermes = createServer((req, res) => {
   const json = (code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -243,6 +253,13 @@ const fakeHermes = createServer((req, res) => {
       } catch {
         return json(400, { error: "bad json" });
       }
+      const first = messages.find((m) => m.role === "user")?.content ?? "";
+      const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
+      if (stage === "image" && fakeStats.hermes429 < HERMES_429_BURST) {
+        fakeStats.hermes429++;
+        res.writeHead(429, { "content-type": "application/json", "retry-after": String(HERMES_RETRY_AFTER_SEC) });
+        return res.end(JSON.stringify({ error: { message: "Rate limit reached for the image provider", type: "rate_limit" } }));
+      }
       const content = directorReply(messages);
       json(200, { id: "chatcmpl-fake", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] });
     });
@@ -270,7 +287,7 @@ const fakeRouter = createServer((req, res) => {
   if (req.method === "GET") {
     if (url === "/api/health") return json(200, { ok: true });
     if (url === "/v1/models") return list([{ id: "fake/chat-small", owned_by: "fake" }, { id: "fake/chat-large", owned_by: "fake" }]);
-    if (url === "/v1/models/image") return list([{ id: "fake-img/flux-lite", owned_by: "fake-img" }]);
+    if (url === "/v1/models/image") return list([{ id: ROUTER_BAD_IMAGE_MODEL, owned_by: "cf" }, { id: "fake-img/flux-lite", owned_by: "fake-img" }]);
     if (url === "/v1/models/tts") {
       return list([
         { id: "kokoro/af_heart", owned_by: "kokoro" },
@@ -294,6 +311,10 @@ const fakeRouter = createServer((req, res) => {
         return json(400, { error: "bad json" });
       }
       if (url === "/v1/images/generations") {
+        if (body.model === ROUTER_BAD_IMAGE_MODEL) {
+          fakeStats.routerBadImageCalls++;
+          return json(400, cloudflarePromptRequired());
+        }
         fakeStats.routerImageCalls++;
         return json(200, { created: 1, data: [{ b64_json: makePng(540, 960, 7).toString("base64") }] });
       }
@@ -354,13 +375,16 @@ async function dumpPipeline(p, runHref, why) {
     psql("stages", `SELECT stage, state, attempt, left(coalesce(error, ''), 300) AS error, left((output - 'result')::text, 400) AS output FROM pipeline_stages WHERE run_id = '${runId}' ORDER BY coalesce(started_at, finished_at, now()), attempt`);
     psql("jobs of this run, and the latest render and qc jobs", `SELECT type, status, attempts || '/' || max_attempts AS tries, priority, capability, worker_id, preferred_worker_id, run_after <= now() AS runnable, progress, left(coalesce(message, ''), 120) AS message, left(coalesce(error, ''), 400) AS error FROM jobs WHERE payload->>'runId' = '${runId}' OR type IN ('render-video', 'qc-video') ORDER BY created_at DESC LIMIT 10`);
     psql("job events of the latest render and qc jobs", `SELECT j.type, e.level, left(e.message, 200) AS message FROM job_events e JOIN jobs j ON j.id = e.job_id WHERE j.payload->>'runId' = '${runId}' AND j.type IN ('render-video', 'qc-video') ORDER BY e.id DESC LIMIT 20`);
-    psql("work orders", `SELECT shot_ref, executor, state, attempts, job_id, asset_id IS NOT NULL AS has_asset, left(coalesce(to_jsonb(w)->>'error', ''), 200) AS error FROM work_orders w WHERE run_id = '${runId}' ORDER BY shot_ref`);
+    psql("work orders", `SELECT shot_ref, executor, state, attempts, job_id, asset_id IS NOT NULL AS has_asset, to_jsonb(w)->>'not_before' AS not_before, left(coalesce(to_jsonb(w)->>'wait_reason', ''), 120) AS wait_reason, left(coalesce(to_jsonb(w)->>'error', ''), 200) AS error FROM work_orders w WHERE run_id = '${runId}' ORDER BY shot_ref`);
+    psql("hermes gate", `SELECT * FROM hermes_gate`);
+    psql("endpoint health", `SELECT endpoint, model, kind, last_success_at IS NOT NULL AS worked, failure_class, quarantined_at IS NOT NULL AS set_aside, successes, failures, left(last_error, 160) AS last_error FROM endpoint_health ORDER BY updated_at DESC LIMIT 20`);
     psql("review items", `SELECT stage, kind, state, left(payload::text, 300) AS payload FROM review_items WHERE run_id = '${runId}' ORDER BY created_at`);
     psql("qc reports", `SELECT gate, passed, score, executor, left(details::text, 300) AS details FROM qc_reports WHERE run_id = '${runId}' ORDER BY created_at`);
     psql("workers", `SELECT name, status, mode, capabilities, job_types, last_claim_at FROM workers`);
   } else {
     console.error("## no database access (UI_DB and DATABASE_URL unset or no run id); the run page below is the only source");
   }
+  console.error(`## fake counters\n${JSON.stringify(fakeStats)}`);
   try {
     await p.goto(`${APP}${runHref}`);
     console.error(`## run page text\n${((await p.locator("body").innerText()) || "").slice(0, 3000)}`);
@@ -537,6 +561,28 @@ try {
   }
   await page.goto(`${APP}/settings`);
   await shot("06c-settings-capabilities-desktop");
+
+  step("settings: the capability card says the 9router models are listed, not proven");
+  const imagesCard = await stageItem(page, "Images").innerText();
+  if (!/listed, not proven yet/i.test(imagesCard)) throw new Error(`the image stage should show 9router models as listed, not proven: ${imagesCard.replace(/\s+/g, " ")}`);
+
+  step("settings: Test 9router image sets the refusing model aside and proves the working one");
+  await page.goto(`${APP}/settings`);
+  await page.getByText("none is proven by a real call yet").first().waitFor();
+  await page.getByRole("button", { name: "Test 9router image" }).click();
+  // The raw 9router JSON is shortened to the provider's own message.
+  await page.getByText("Cloudflare: prompt is required (code 3030)").first().waitFor({ timeout: 60_000 });
+  await page.getByText("fake-img/flux-lite: worked").first().waitFor({ timeout: 60_000 });
+  if (fakeStats.routerBadImageCalls !== 1) throw new Error(`the refusing 9router model was asked ${fakeStats.routerBadImageCalls} times, expected 1`);
+  await page.goto(`${APP}/settings`);
+  const routerHealth = page.getByTestId("router-image-health");
+  await routerHealth.locator('[data-proof="quarantined"]', { hasText: ROUTER_BAD_IMAGE_MODEL }).waitFor();
+  await routerHealth.locator('[data-proof="proven"]', { hasText: "fake-img/flux-lite" }).waitFor();
+  const imagesProven = await stageItem(page, "Images").innerText();
+  if (!imagesProven.includes("set aside after a request error") || !imagesProven.includes("proven by a real call")) {
+    throw new Error(`the image stage should show one model set aside and one proven: ${imagesProven.replace(/\s+/g, " ")}`);
+  }
+  const routerImageCallsBeforeRun = fakeStats.routerImageCalls;
 
   step("Hermes connection shows features and skills");
   await page.getByText("3 skills").first().waitFor({ timeout: 20_000 });
@@ -726,18 +772,36 @@ try {
   step("production: approve the idea and reach the assets review (thumbnails, provider terms notice)");
   await m.goto(`${APP}/review`);
   await m.getByRole("button", { name: "Approve this idea" }).first().click();
+  let sawHermesWait = false;
   {
     // The storyboard may ask for approval at this autonomy level, or pass on its own. Either way the assets review follows.
-    const end = Date.now() + 120_000;
+    // Hermes answers the first image asks with 429, so the assets stage waits a few seconds on the way.
+    const end = Date.now() + 150_000;
     for (;;) {
       await m.goto(`${APP}/review`);
+      if (!sawHermesWait) sawHermesWait = await m.getByTestId("hermes-waiting").first().isVisible().catch(() => false);
       if (await m.getByTestId("asset-grid").first().isVisible().catch(() => false)) break;
+      if (await m.locator('[data-kind="stage-error"]').first().isVisible().catch(() => false)) {
+        await dumpPipeline(m, runHref, "a stage error appeared while the assets were being made");
+        throw new Error(`a stage error appeared instead of the assets review: ${(await m.locator('[data-kind="stage-error"]').first().innerText()).replace(/\s+/g, " ").slice(0, 500)}`);
+      }
+      if (!sawHermesWait) {
+        await page.goto(`${APP}${runHref}`);
+        sawHermesWait = await page.getByTestId("hermes-wait").isVisible().catch(() => false);
+      }
       const board = m.locator('[data-testid="review-card"]', { hasText: "Approve the storyboard" });
       if (await board.first().isVisible().catch(() => false)) await board.first().getByRole("button", { name: "Approve", exact: true }).click();
-      if (Date.now() > end) throw new Error("timed out waiting for the assets review");
-      await m.waitForTimeout(2000);
+      if (Date.now() > end) {
+        await dumpPipeline(m, runHref, "the assets review never appeared");
+        throw new Error("timed out waiting for the assets review");
+      }
+      await m.waitForTimeout(sawHermesWait ? 2000 : 700);
     }
   }
+  // The 429 burst was served and the shots still finished (no stage error, the grid is there). The wait itself lasts
+  // only a few seconds here, so seeing it on a page is logged, not required.
+  if (fakeStats.hermes429 !== HERMES_429_BURST) throw new Error(`the fake Hermes answered 429 ${fakeStats.hermes429} times, expected ${HERMES_429_BURST}`);
+  console.log(`   Hermes 429 burst of ${HERMES_429_BURST} absorbed; waiting status ${sawHermesWait ? "was" : "was not"} caught on a page`);
   await m.waitForLoadState("networkidle");
   const grid = m.getByTestId("asset-grid").first();
   const thumbs = grid.locator("img");
@@ -761,6 +825,8 @@ try {
   if (fakeStats.hermesImageRefusals < 1) throw new Error("the Hermes image refusal variant never ran");
   if (fakeStats.routerImageCalls < 1) throw new Error("9router was never asked for an image after Hermes refused");
   if (!(await grid.textContent()).includes("fake-img")) throw new Error("the image grid does not show the 9router image provider (fake-img)");
+  if (fakeStats.routerImageCalls <= routerImageCallsBeforeRun) throw new Error("the run never used the proven 9router image model");
+  if (fakeStats.routerBadImageCalls !== 1) throw new Error(`the set-aside 9router model was used again by the run (${fakeStats.routerBadImageCalls} calls)`);
   const assetsRunHref = await m.getByRole("link", { name: "Open run" }).first().getAttribute("href");
 
   // The owner confirms a provider in Settings. Nothing else can set this.
@@ -880,6 +946,11 @@ try {
   await m.getByTestId("work-orders").waitFor();
   if ((await m.getByTestId("work-order").count()) < 3) throw new Error("the run page shows fewer than 3 work orders");
   if (!(await m.getByTestId("work-orders").textContent()).includes("cloudflare")) throw new Error("the run page does not name the provider");
+  // shot-01 got every 429 of the burst. Waiting for Hermes must not have used up its attempts.
+  const firstOrder = await m.getByTestId("work-order").filter({ hasText: "shot-01" }).first().innerText();
+  if (!/\b1 attempt\b(?!s)/.test(firstOrder)) throw new Error(`shot-01 should show 1 attempt after the 429 burst, saw: ${firstOrder.replace(/\s+/g, " ")}`);
+  if ((await m.locator('[data-testid="work-order"][data-state="failed"]').count()) !== 0) throw new Error("a work order failed during the run");
+  if (fakeStats.routerBadImageCalls !== 1) throw new Error("the set-aside 9router image model was asked again later in the run");
   await assertNoOverflow(m, "run page");
   await shot("25-run-production-mobile", m);
   await m.goto(`${APP}/review`);

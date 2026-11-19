@@ -9,17 +9,21 @@ import type { GateId, GateResult } from "./qc.ts";
 import type { BeatRole } from "./templates.ts";
 import type { ProductionStage, RunStage } from "./engine.ts";
 import type { ReviewKind } from "./review.ts";
+import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
 
 /** Hermes image attempts per shot before the CC0 library (each attempt already re-asks Hermes up to 2 times). */
 export const HERMES_IMAGE_ATTEMPTS = 2;
 /** A work order is given up after this many claims (a crash or restart consumes one). */
 export const ORDER_MAX_ATTEMPTS = 3;
-/** One work order's worst case: 2 Hermes attempts of 3 asks at 180 s, plus the CC0 search. */
-export const ORDER_WORST_CASE_SEC = HERMES_IMAGE_ATTEMPTS * 3 * 180 + 2 * 180;
+/** One work order's worst case: 2 Hermes attempts of 3 asks, plus the 2 asks of the CC0 search, each with its gate wait. */
+export const ORDER_WORST_CASE_SEC = (HERMES_IMAGE_ATTEMPTS * 3 + 2) * HERMES_ASK_WORST_SEC;
 /** A work order or assets stage with no activity this long is treated as lost. */
 export const ORDER_STUCK_MINUTES = Math.ceil(ORDER_WORST_CASE_SEC / 60) + 6;
-/** Voice, render-without-job and qc-without-job stages are lost after this long. */
-export const PRODUCTION_STUCK_MINUTES = 20;
+/**
+ * Voice, render-without-job and qc-without-job stages are lost after this long. Voice may ask Hermes twice (Kokoro,
+ * then CapCut), 3 asks each, after 9router.
+ */
+export const PRODUCTION_STUCK_MINUTES = Math.ceil((6 * HERMES_ASK_WORST_SEC) / 60) + 6;
 /** Most captions the worker accepts is 300; lines are cut at this many characters. */
 export const CAPTION_LINE_CHARS = 90;
 export const MAX_CAPTION_LINES = 300;

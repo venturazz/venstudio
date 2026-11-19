@@ -14,6 +14,7 @@ import { createAgentTaskJob, createFetchAssetJob, findCc0Candidate } from "./exe
 import { ensureProvider, listProviderTerms, safeFileName, saveGeneratedAsset } from "./executors/persist.ts";
 import {
   concludeStage,
+  deferStage,
   latestPassedOutput,
   loadRun,
   recordStageError,
@@ -21,6 +22,7 @@ import {
   type StageConclusion,
   type StageRow,
 } from "./director.ts";
+import { giveUpMessage, orderFailureCause, pauseMessage, systemicPause, waitExpired, type FailureClass } from "../studio/pacing.ts";
 import { assetsGate, combineGates, PUBLISH_GATES, qcSummary, voiceGate, type GateId, type GateResult } from "../studio/qc.ts";
 import { aiDisclosureRequired, type ProvenanceRecord } from "../studio/provenance.ts";
 import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind } from "../studio/asset-plan.ts";
@@ -89,11 +91,18 @@ interface OrderRow {
 }
 
 async function claimOrder(runId: string): Promise<OrderRow | null> {
+  // Wait marks whose time has passed are stale once the stage runs again.
+  await db()`
+    UPDATE work_orders SET not_before = NULL, wait_reason = NULL
+    WHERE run_id = ${runId} AND stage = 'assets' AND state = 'pending' AND not_before IS NOT NULL AND not_before <= now()
+  `;
   const rows = await db()`
-    UPDATE work_orders w SET state = 'running', attempts = w.attempts + 1, started_at = now(), updated_at = now(), error = NULL
+    UPDATE work_orders w SET state = 'running', attempts = w.attempts + 1, started_at = now(), updated_at = now(), error = NULL,
+      not_before = NULL, wait_reason = NULL
     WHERE w.id = (
       SELECT o.id FROM work_orders o JOIN pipeline_runs r ON r.id = o.run_id
       WHERE o.run_id = ${runId} AND o.stage = 'assets' AND o.state = 'pending' AND r.state = 'running'
+        AND (o.not_before IS NULL OR o.not_before <= now())
       ORDER BY o.shot_ref, o.id LIMIT 1 FOR UPDATE OF o SKIP LOCKED
     ) AND w.state = 'pending'
     RETURNING w.id, w.shot_ref, w.attempts, w.spec
@@ -125,20 +134,53 @@ async function waitOnJob(orderId: string, jobId: string, executor: string): Prom
   `;
 }
 
-type Produced = { kind: "done" } | { kind: "waiting" } | { kind: "failed"; reason: string };
+type Produced =
+  | { kind: "done" }
+  | { kind: "waiting" }
+  /** Hermes is rate limited. Not a failure: the order goes back to pending and keeps its attempt budget. */
+  | { kind: "busy"; until: Date; text: string }
+  | { kind: "failed"; reason: string; cause: FailureClass };
 
 /**
- * Makes one shot's image along the fallback chain: Hermes image_gen (which walks its own provider chain), then
- * 9router images (only when 9router lists image models), then a CC0 file fetched by a worker job, then a Muse agent task when the owner switched those on.
+ * Puts a claimed order back to pending without spending an attempt, and marks every pending order of the run with
+ * the same not-before time and status, so the run page shows why nothing moves.
  */
-async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
-  const routerImage = await routerImageModel();
+async function returnOrderBusy(runId: string, orderId: string, until: Date, text: string): Promise<void> {
+  const sql = db();
+  await sql`
+    UPDATE work_orders SET state = 'pending', attempts = GREATEST(attempts - 1, 0), not_before = ${until}, wait_reason = ${text.slice(0, 300)},
+      error = NULL, updated_at = now()
+    WHERE id = ${orderId} AND state = 'running' AND job_id IS NULL
+  `;
+  await sql`
+    UPDATE work_orders SET not_before = ${until}, wait_reason = ${text.slice(0, 300)}
+    WHERE run_id = ${runId} AND stage = 'assets' AND state = 'pending'
+  `;
+}
+
+/** A paused order goes back to pending with the attempt it used returned, so Retry starts it fresh. */
+async function returnOrderPaused(orderId: string): Promise<void> {
+  await db()`
+    UPDATE work_orders SET state = 'pending', attempts = GREATEST(attempts - 1, 0), error = NULL, updated_at = now()
+    WHERE id = ${orderId} AND state IN ('running', 'failed') AND job_id IS NULL
+  `;
+}
+
+/**
+ * Makes one shot's image along the fallback chain: Hermes image_gen (which walks its own provider chain), then a
+ * 9router image model a real call has proven (a listed model alone is never used), then a CC0 file fetched by a worker
+ * job, then a Muse agent task when the owner switched those on. A rate-limited Hermes returns "busy", not a failure.
+ */
+async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>): Promise<Produced> {
+  // Only a 9router model a real call has proven, and not one that refused a request earlier in this stage.
+  const routerImage = await routerImageModel(excluded);
   const chain = fallbackChain({
     hermesConfigured: Boolean(env().HERMES_BASE_URL),
     museAgentTasks: env().MUSE_AGENT_TASKS === "1",
     routerImageAvailable: routerImage !== null,
   });
   const reasons: string[] = [];
+  const causes: FailureClass[] = [];
   const spec = order.spec;
   const ref = { workOrderId: order.id, runId: run.id, shotRef: order.shotRef, prompt: spec.prompt, channelId: run.channelId };
   for (const step of chain) {
@@ -152,7 +194,11 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
           note: spec.note || undefined,
         });
         if (!r.ok) {
+          if (r.cause === "busy" && r.busyUntil) return { kind: "busy", until: r.busyUntil, text: r.error };
           reasons.push(`Hermes image attempt ${attempt}: ${r.error}`);
+          causes.push(r.cause);
+          // A refused key or an unreachable Hermes will not change on the next attempt.
+          if (r.cause === "auth" || r.cause === "unreachable") break;
           continue;
         }
         const img = r.image;
@@ -173,13 +219,22 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
           channelId: run.channelId,
           createdBy: null,
         });
-        await finishOrder(order.id, saved.assetId, saved.provider, { executor: "hermes-image", model: img.model, hermesAsks: r.attempts, claim: order.attempts });
+        await finishOrder(order.id, saved.assetId, saved.provider, {
+          executor: "hermes-image",
+          model: img.model,
+          hermesAsks: r.attempts,
+          claim: order.attempts,
+          ...(r.tried.length > 0 ? { hermesTried: r.tried.map((t) => t.provider) } : {}),
+        });
         return { kind: "done" };
       }
     } else if (step === "router-image") {
-      const r = await generateRouterImage({ prompt: spec.prompt, format: run.config.format, note: spec.note || undefined });
+      const r = await generateRouterImage({ prompt: spec.prompt, format: run.config.format, note: spec.note || undefined }, excluded);
       if (!r.ok) {
         reasons.push(`9router image: ${r.error}`);
+        causes.push(r.cause);
+        // Never send the same request to a model that refused it, for the rest of this stage.
+        if (r.cause === "client" && r.model) excluded.add(r.model);
         continue;
       }
       const img = r.image;
@@ -205,12 +260,15 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
     } else if (step === "library") {
       const found = await findCc0Candidate(spec.prompt);
       if (!found.ok) {
+        if (found.cause === "busy" && found.busyUntil) return { kind: "busy", until: found.busyUntil, text: found.error };
         reasons.push(`Public-domain search: ${found.error}`);
+        causes.push(found.cause);
         continue;
       }
       const queued = await createFetchAssetJob(ref, found.candidate, null);
       if (!queued.ok) {
         reasons.push(`Public-domain download: ${queued.error}`);
+        causes.push("content");
         continue;
       }
       await waitOnJob(order.id, queued.jobId, "fetch-asset");
@@ -222,6 +280,7 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
         return { kind: "waiting" };
       } catch (err) {
         reasons.push(`Muse agent task: ${errorText(err)}`);
+        causes.push("server");
       }
     }
   }
@@ -230,7 +289,7 @@ async function produceOrder(run: RunInfo, order: OrderRow): Promise<Produced> {
     const snap = await getCapabilities().catch(() => null);
     reasons.unshift(missingCapabilityMessage("image", scanStateOf(snap)));
   }
-  return { kind: "failed", reason: reasons.join(" | ").slice(0, 480) || "No image source is configured" };
+  return { kind: "failed", reason: reasons.join(" | ").slice(0, 480) || "No image source is configured", cause: orderFailureCause(causes) };
 }
 
 /** Counts work orders by state for one run. */
@@ -239,18 +298,62 @@ async function orderCounts(sql: Q, runId: string) {
   return countOrders(rows.map((r) => r.state as string));
 }
 
-async function runAssetsStage(run: RunInfo): Promise<void> {
-  // One pass over the pending orders. A pass is bounded so a bad run cannot loop forever; the reaper resumes it.
+/**
+ * One pass over the pending orders. A pass is bounded so a bad run cannot loop forever; the reaper resumes it.
+ * - A rate-limited Hermes ends the pass: the order goes back to pending (its attempt is not spent) and the stage waits
+ *   with a not-before time (deferStage), to be resumed by a timer, the worker claim route or a page. After
+ *   HERMES_WAIT_GIVE_UP_MS of waiting without progress it becomes a stage error the owner can Retry.
+ * - When the first shots of a pass fail with the same systemic cause (auth, unreachable, server), the stage pauses
+ *   once with one stage error instead of failing every shot. Those shots go back to pending.
+ * - A 9router model that answered with a 4xx is not used again in this stage.
+ */
+async function runAssetsStage(run: RunInfo, st: StageRow): Promise<void> {
+  const excluded = new Set<string>();
+  const outcomes: Array<FailureClass | "ok"> = [];
+  const pausable: Array<{ id: string; reason: string }> = [];
+  let progressed = false;
   for (let i = 0; i < 200; i++) {
     const order = await claimOrder(run.id);
     if (!order) break;
+    let out: Produced;
     try {
-      const out = await produceOrder(run, order);
-      if (out.kind === "failed") await failOrder(order.id, out.reason);
+      out = await produceOrder(run, order, excluded);
     } catch (err) {
       console.error("work order failed", run.id, order.shotRef, err);
-      await failOrder(order.id, `Unexpected error: ${errorText(err)}`).catch(() => {});
+      out = { kind: "failed", reason: `Unexpected error: ${errorText(err)}`, cause: "content" };
     }
+    if (out.kind === "busy") {
+      await returnOrderBusy(run.id, order.id, out.until, out.text);
+      if (!progressed && waitExpired(st.output.waitSince, Date.now())) {
+        await recordStageError(run.id, st.id, "assets", `${giveUpMessage()} ${out.text}`);
+        return;
+      }
+      await deferStage(run.id, st.id, out.until, out.text, { restartClock: progressed });
+      return;
+    }
+    if (out.kind === "failed") {
+      await failOrder(order.id, out.reason).catch(() => {});
+      outcomes.push(out.cause);
+      pausable.push({ id: order.id, reason: out.reason });
+      const decision = systemicPause(outcomes);
+      if (decision.pause) {
+        for (const p of pausable) await returnOrderPaused(p.id);
+        await recordStageError(run.id, st.id, "assets", pauseMessage(decision.cause, pausable.length, pausable[pausable.length - 1].reason));
+        return;
+      }
+    } else {
+      outcomes.push("ok");
+      progressed = true;
+    }
+  }
+  // Orders another pass put on hold for Hermes are not claimable yet: wait with them instead of idling as running.
+  const [held] = await db()`
+    SELECT min(not_before) AS until, max(wait_reason) AS reason FROM work_orders
+    WHERE run_id = ${run.id} AND stage = 'assets' AND state = 'pending' AND not_before > now()
+  `;
+  if (held && held.until instanceof Date) {
+    await deferStage(run.id, st.id, held.until, typeof held.reason === "string" ? held.reason : "Waiting for Hermes", { restartClock: progressed });
+    return;
   }
   await finalizeAssets(run.id);
 }
@@ -371,7 +474,12 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
   const script = checked.value.script;
   const tts = await synthesize(script, run.config.language);
   if (!tts.ok) {
-    await recordStageError(run.id, st.id, "voice", tts.error);
+    // 9router could not speak and Hermes is rate limited: wait for Hermes instead of failing the voice.
+    if (tts.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
+      await deferStage(run.id, st.id, tts.busyUntil, tts.error);
+      return;
+    }
+    await recordStageError(run.id, st.id, "voice", tts.busyUntil ? `${giveUpMessage()} ${tts.error}` : tts.error);
     return;
   }
   const n = tts.narration;
@@ -735,7 +843,7 @@ async function completeQc(jobId: string): Promise<boolean> {
 
 /** Runs one claimed production stage. Render and qc only start their job and leave the stage running. */
 export async function runProductionStage(run: RunInfo, st: StageRow, template: Template): Promise<void> {
-  if (st.stage === "assets") return runAssetsStage(run);
+  if (st.stage === "assets") return runAssetsStage(run, st);
   if (st.stage === "voice") return runVoiceStage(run, st, template);
   if (st.stage === "render") return runRenderStage(run, st, template);
   if (st.stage === "qc") return runQcStage(run, st);
@@ -866,8 +974,13 @@ export async function cancelRunWork(tx: Q, runId: string): Promise<void> {
 /** Retry: only the failed orders run again. Finished shots are kept. */
 export async function resetFailedOrders(tx: Q, runId: string): Promise<void> {
   await tx`
-    UPDATE work_orders SET state = 'pending', attempts = 0, error = NULL, job_id = NULL, result = NULL, updated_at = now()
+    UPDATE work_orders SET state = 'pending', attempts = 0, error = NULL, job_id = NULL, result = NULL, not_before = NULL, wait_reason = NULL, updated_at = now()
     WHERE run_id = ${runId} AND stage = 'assets' AND state = 'failed'
+  `;
+  // Orders a pause or a rate limit left pending start fresh too.
+  await tx`
+    UPDATE work_orders SET not_before = NULL, wait_reason = NULL, updated_at = now()
+    WHERE run_id = ${runId} AND stage = 'assets' AND state = 'pending'
   `;
 }
 
@@ -875,6 +988,7 @@ export async function resetFailedOrders(tx: Q, runId: string): Promise<void> {
 export async function resetOrdersForRevision(tx: Q, runId: string, note: string): Promise<void> {
   await tx`
     UPDATE work_orders SET state = 'pending', attempts = 0, error = NULL, job_id = NULL, asset_id = NULL, provider = NULL, result = NULL,
+      not_before = NULL, wait_reason = NULL,
       spec = spec || jsonb_build_object('note', ${note.slice(0, 1000)}::text), updated_at = now()
     WHERE run_id = ${runId} AND stage = 'assets' AND state IN ('pending', 'running', 'done', 'failed')
   `;

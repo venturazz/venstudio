@@ -7,6 +7,7 @@ import {
   claimedLicence,
   fallbackChain,
   imagePrompt,
+  parseTriedProviders,
   normalizeProvider,
   resolveImageProvider,
   PROVIDER_NAME_MAX,
@@ -169,4 +170,24 @@ test("ttsKokoroPrompt carries its own stage marker, the text and the skill hints
   assert.doesNotMatch(user.content, /, f/);
   // The schema must not hand Hermes the confirmed provider name to copy.
   assert.doesNotMatch(user.content, /"provider":"kokoro"/);
+});
+
+test("imagePrompt lets Hermes choose and fall through its own providers, and asks which ones failed", () => {
+  const [, user] = imagePrompt({ prompt: "a fox", beatRole: "body", format: "long", shotRef: "shot-02" });
+  assert.match(user.content, /for shot shot-02/);
+  assert.match(user.content, /You choose the provider/);
+  assert.match(user.content, /fall through its own providers/);
+  assert.match(user.content, /"tried"/);
+  assert.doesNotMatch(user.content, /Preferred provider order/);
+});
+
+test("parseTriedProviders keeps bounded, normalised names from Hermes' report", () => {
+  assert.deepEqual(parseTriedProviders({ tried: [{ provider: "Cloudflare", error: "rate limited" }, { name: "agnes" }, "canva", { provider: "cloudflare" }, { provider: "" }] }), [
+    { provider: "cloudflare", error: "rate limited" },
+    { provider: "agnes", error: "" },
+    { provider: "canva", error: "" },
+  ]);
+  assert.deepEqual(parseTriedProviders(null), []);
+  assert.deepEqual(parseTriedProviders({ tried: "cloudflare" }), []);
+  assert.equal(parseTriedProviders({ tried: Array.from({ length: 30 }, (_, i) => `p${i}`) }).length, 12);
 });

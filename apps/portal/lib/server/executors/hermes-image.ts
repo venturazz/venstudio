@@ -4,8 +4,10 @@ import { hermesJson, hermesText } from "../hermes-json.ts";
 import { fetchMedia } from "../safe-fetch.ts";
 import { normalizeGatewayBase } from "../../gateway-url.ts";
 import { originOf } from "../../net-address.ts";
-import { imagePrompt, resolveImageProvider } from "../../studio/asset-plan.ts";
-import { dataBlock, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
+import { imagePrompt, normalizeProvider, parseTriedProviders, resolveImageProvider, type TriedProvider } from "../../studio/asset-plan.ts";
+import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
+import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
+import { recordEndpointResult } from "../endpoint-health.ts";
 import type { Format } from "../../studio/catalog.ts";
 import type { BeatRole } from "../../studio/templates.ts";
 import {
@@ -36,7 +38,30 @@ export interface GeneratedImage {
   originUrl: string;
 }
 
-export type ImageResult = { ok: true; image: GeneratedImage; attempts: number } | { ok: false; error: string };
+export type ImageResult =
+  | { ok: true; image: GeneratedImage; attempts: number; tried: TriedProvider[] }
+  | { ok: false; error: string; cause: FailureClass; busyUntil?: Date };
+
+function triedIn(reply: string): TriedProvider[] {
+  try {
+    return parseTriedProviders(extractJson(reply));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Health rows for Hermes's own chain: the provider that made the picture worked, the ones it says failed before it did
+ * not. These names are Hermes's report, so they are stored under endpoint "hermes" and never decide provider terms.
+ */
+async function recordHermesChain(provider: string, tried: readonly TriedProvider[]): Promise<void> {
+  const made = normalizeProvider(provider);
+  if (made !== "unknown") await recordEndpointResult("hermes", made, "image", { ok: true });
+  for (const t of tried) {
+    if (t.provider === made) continue;
+    await recordEndpointResult("hermes", t.provider, "image", { ok: false, failureClass: looksRateLimited(t.error) ? "busy" : "server", error: t.error || "Hermes said this provider failed" });
+  }
+}
 
 /** The Hermes origin (scheme, host, port). The portal may fetch from exactly this origin over http on the internal network. */
 export function hermesOrigin(): string | null {
@@ -83,7 +108,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     shotRef: job.shotRef,
     providerOrder: providerOrderHint(),
   });
-  const result = await hermesText<GeneratedImage>(messages, async (reply): Promise<Validated<GeneratedImage>> => {
+  const result = await hermesText<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>> => {
     const parsed = parseImageReply(reply);
     if (!parsed.ok) return { ok: false, issues: parsed.issues };
     let bytes: Uint8Array;
@@ -103,10 +128,23 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     const info = sniffImage(bytes);
     const issues = imageIssues(info, job.format);
     if (issues.length > 0 || !info) return { ok: false, issues };
-    return { ok: true, value: { bytes, info, provider: resolveImageProvider(parsed.provider, providerOrderHint()), model: parsed.model, originUrl } };
-  });
-  if (!result.ok) return { ok: false, error: result.error };
-  return { ok: true, image: result.value, attempts: result.attempts };
+    return {
+      ok: true,
+      value: {
+        bytes,
+        info,
+        provider: resolveImageProvider(parsed.provider, providerOrderHint()),
+        model: parsed.model,
+        originUrl,
+        rawProvider: parsed.provider,
+        tried: triedIn(reply),
+      },
+    };
+  }, { busyFromReply: true });
+  if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
+  const { rawProvider, tried, ...image } = result.value;
+  await recordHermesChain(rawProvider, tried);
+  return { ok: true, image, attempts: result.attempts, tried };
 }
 
 function providersPrompt(): ChatMessage[] {

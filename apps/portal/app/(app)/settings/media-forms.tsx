@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { Alert } from "@/components/ui.tsx";
 import { SubmitButton } from "@/components/client.tsx";
-import { testHermesImage, testVoice, type TestState } from "./actions.ts";
+import { testHermesImage, testRouterImage, testVoice, type TestState } from "./actions.ts";
 
 function Result({ state }: { state: TestState }) {
   if (!state) return null;
@@ -52,6 +52,22 @@ export function TestImageForm() {
       </p>
       <SubmitButton className="min-h-11 text-sm" pendingLabel="Asking Hermes…">
         Test Hermes image
+      </SubmitButton>
+      <Result state={state} />
+    </form>
+  );
+}
+
+export function TestRouterImageForm() {
+  const [state, action] = useActionState(testRouterImage, undefined);
+  return (
+    <form action={action} className="space-y-3">
+      <p className="text-sm text-muted">
+        Tries the 9router image models one at a time until one makes a real picture. A model that works becomes proven and may be used after
+        Hermes; one that refuses the request is set aside. Nothing is saved.
+      </p>
+      <SubmitButton className="min-h-11 text-sm" pendingLabel="Asking 9router…">
+        Test 9router image
       </SubmitButton>
       <Result state={state} />
     </form>

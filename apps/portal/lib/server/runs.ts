@@ -26,6 +26,8 @@ export interface StageView {
   error: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
+  /** Set while the stage waits for a rate-limited Hermes. */
+  notBefore: Date | null;
 }
 
 export interface WorkOrderView {
@@ -39,6 +41,9 @@ export interface WorkOrderView {
   provider: string;
   error: string;
   jobId: string;
+  /** Why a pending order is waiting (for example Hermes is rate limited), and until when. */
+  waitReason: string;
+  notBefore: Date | null;
 }
 
 export interface RunReviewView {
@@ -102,8 +107,8 @@ export async function getRun(id: string): Promise<RunDetail | null> {
   `;
   if (!r) return null;
   const [stageRows, orderRows, reviewRows, gates] = await Promise.all([
-    sql`SELECT id, stage, attempt, state, output, error, started_at, finished_at FROM pipeline_stages WHERE run_id = ${id} ORDER BY attempt`,
-    sql`SELECT id, stage, shot_ref, executor, state, spec, attempts, provider, error, job_id FROM work_orders WHERE run_id = ${id} ORDER BY shot_ref`,
+    sql`SELECT id, stage, attempt, state, output, error, started_at, finished_at, not_before FROM pipeline_stages WHERE run_id = ${id} ORDER BY attempt`,
+    sql`SELECT id, stage, shot_ref, executor, state, spec, attempts, provider, error, job_id, wait_reason, not_before FROM work_orders WHERE run_id = ${id} ORDER BY shot_ref`,
     sql`SELECT id, stage, kind, state, payload, note, created_at FROM review_items WHERE run_id = ${id} ORDER BY created_at DESC`,
     latestGatesByRun([id]),
   ]);
@@ -118,6 +123,7 @@ export async function getRun(id: string): Promise<RunDetail | null> {
       error: (s.error as string | null) ?? null,
       startedAt: (s.started_at as Date | null) ?? null,
       finishedAt: (s.finished_at as Date | null) ?? null,
+      notBefore: (s.not_before as Date | null) ?? null,
     };
     const prev = newest.get(view.stage);
     if (!prev || view.attempt > prev.attempt) newest.set(view.stage, view);
@@ -139,6 +145,8 @@ export async function getRun(id: string): Promise<RunDetail | null> {
       provider: (w.provider as string | null) ?? "",
       error: (w.error as string | null) ?? "",
       jobId: (w.job_id as string | null) ?? "",
+      waitReason: (w.wait_reason as string | null) ?? "",
+      notBefore: (w.not_before as Date | null) ?? null,
     })),
     reviews: reviewRows.map((v): RunReviewView => {
       const p = obj(v.payload);
@@ -154,4 +162,38 @@ export async function getRun(id: string): Promise<RunDetail | null> {
     }),
     gates: gates.get(id) ?? [],
   };
+}
+
+export interface WaitingRun {
+  runId: string;
+  topic: string;
+  channelName: string;
+  stage: string;
+  until: Date;
+}
+
+/** Runs whose current stage waits for a rate-limited Hermes, for the Review inbox. Database only, no network. */
+export async function listWaitingRuns(limit = 20): Promise<WaitingRun[]> {
+  const rows = await db()`
+    SELECT r.id, r.topic, c.name AS channel_name, s.stage, s.not_before
+    FROM pipeline_stages s
+    JOIN pipeline_runs r ON r.id = s.run_id
+    LEFT JOIN channels c ON c.id = r.channel_id
+    WHERE s.state = 'pending' AND s.not_before IS NOT NULL AND r.state = 'running'
+    ORDER BY s.not_before
+    LIMIT ${limit}
+  `;
+  const out: WaitingRun[] = [];
+  for (const r of rows) {
+    const until = r.not_before instanceof Date ? r.not_before : null;
+    if (!until) continue;
+    out.push({
+      runId: r.id as string,
+      topic: (r.topic as string | null) ?? "",
+      channelName: (r.channel_name as string | null) ?? "",
+      stage: r.stage as string,
+      until,
+    });
+  }
+  return out;
 }

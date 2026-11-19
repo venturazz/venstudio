@@ -1,9 +1,11 @@
+import { after } from "next/server";
 import { z } from "zod";
 import type { ClaimResponse } from "@venstudio/protocol";
 import { db } from "@/lib/server/db.ts";
 import { claimJob } from "@/lib/server/jobs.ts";
 import { sanitizeCapabilities } from "@/lib/server/workers.ts";
 import { parseJson, withWorker } from "@/lib/server/worker-api.ts";
+import { nudgeRecovery } from "@/lib/server/director.ts";
 
 export const dynamic = "force-dynamic";
 // Long-poll requests stay open up to MAX_WAIT_SECONDS.
@@ -37,6 +39,9 @@ export async function POST(req: Request) {
         job_types = ${jobTypes}::text[], last_claim_at = now()
       WHERE id = ${worker.id}
     `;
+    // Workers in hold mode call here every ~25 s, so this is the studio's heartbeat when no page is open: it resumes
+    // stages whose wait for Hermes is over and repairs stuck work. Throttled to one pass a minute, after the response.
+    after(() => nudgeRecovery());
     // Draining workers finish what they have but get nothing new.
     if (worker.status !== "active") return new Response(null, { status: 204 });
 

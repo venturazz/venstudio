@@ -2,6 +2,8 @@ import "server-only";
 import { env } from "./env.ts";
 import { explainFetchError } from "./ai-gateway.ts";
 import { normalizeGatewayBase } from "../gateway-url.ts";
+import { reportHermesBusy, reportHermesOk, withHermesSlot } from "./hermes-gate.ts";
+import { classifyStatus } from "../studio/pacing.ts";
 
 /**
  * Client for the Hermes Agent API server (the studio's "brain": skills, workflows, memory).
@@ -161,25 +163,37 @@ function startChatSkills(cfg: { base: string; key?: string }) {
 }
 
 async function skillsViaChat(cfg: { base: string; key?: string }): Promise<HermesSkill[]> {
-  try {
-    const res = await fetch(`${cfg.base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(cfg.key ? { authorization: `Bearer ${cfg.key}` } : {}) },
-      body: JSON.stringify({
-        model: "hermes-agent",
-        stream: false,
-        messages: [{ role: "user", content: CHAT_SKILLS_PROMPT }],
-      }),
-      signal: AbortSignal.timeout(180_000),
-    });
-    if (!res.ok) return [];
-    const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const skills = skillsFromChatReply(body.choices?.[0]?.message?.content ?? "");
-    if (skills.length > 0) chatSkillsCache = { at: Date.now(), skills };
-    return skills;
-  } catch {
-    return [];
-  }
+  // A model turn like any other, so it goes through the shared gate: never while Hermes is rate limited.
+  const slot = await withHermesSlot(async (): Promise<HermesSkill[]> => {
+    try {
+      const res = await fetch(`${cfg.base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(cfg.key ? { authorization: `Bearer ${cfg.key}` } : {}) },
+        body: JSON.stringify({
+          model: "hermes-agent",
+          stream: false,
+          messages: [{ role: "user", content: CHAT_SKILLS_PROMPT }],
+        }),
+        signal: AbortSignal.timeout(180_000),
+      });
+      if (classifyStatus(res.status) === "busy") {
+        await res.arrayBuffer().catch(() => undefined);
+        await reportHermesBusy({ status: res.status, retryAfter: res.headers.get("retry-after"), detail: `HTTP ${res.status} (skills list)` });
+        return [];
+      }
+      if (!res.ok) return [];
+      const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const skills = skillsFromChatReply(body.choices?.[0]?.message?.content ?? "");
+      if (skills.length > 0) {
+        chatSkillsCache = { at: Date.now(), skills };
+        await reportHermesOk();
+      }
+      return skills;
+    } catch {
+      return [];
+    }
+  });
+  return slot.ok ? slot.value : [];
 }
 
 function refresh(): Promise<HermesStatus> {

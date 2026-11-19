@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { EndpointHealth } from "./endpoint-health.ts";
 import {
   buildCapabilities,
   capabilitiesPrompt,
@@ -255,4 +256,27 @@ test("describeSkillEntry words each outcome as Hermes's own claim", () => {
   assert.ok(describeSkillEntry({ ...e, output: "file-path" }).includes("Needs a file hand-off in Phase 5"));
   assert.ok(describeSkillEntry({ ...e, loadable: false, note: "missing dep" }).startsWith("Hermes says it does not load."));
   assert.ok(describeSkillEntry({ ...e, output: "unknown" }).includes("did not say"));
+});
+
+test("with real-call health, a 9router model that is only listed does not make a stage Ready", () => {
+  const now = Date.UTC(2026, 10, 21);
+  const s = snap(hermes(), router({ tts: [model("kokoro/af_heart")], image: [model("cf/flux", "cf")] }));
+  const none: EndpointHealth[] = [];
+  assert.equal(stageStatus("voice", s, none, now), "unverified");
+  // A listed image model is not used by the automatic chain until proven, so the stage only shows it as found.
+  assert.equal(stageStatus("image", s, none, now), "found");
+  const caps = buildCapabilities(s, none, now);
+  assert.equal(caps.find((c) => c.id === "cf/flux")?.proof, "listed");
+  assert.equal(caps.find((c) => c.id === "cf/flux")?.used, false);
+  const proven: EndpointHealth[] = [
+    { endpoint: "9router", model: "kokoro/af_heart", kind: "tts", lastSuccessAt: now - 1000, lastFailureAt: null, failureClass: null, lastError: "", quarantinedAt: null, successes: 1, failures: 0 },
+    { endpoint: "9router", model: "cf/flux", kind: "image", lastSuccessAt: null, lastFailureAt: now - 500, failureClass: "client", lastError: "Cloudflare: prompt is required (code 3030)", quarantinedAt: now - 500, successes: 0, failures: 1 },
+  ];
+  assert.equal(stageStatus("voice", s, proven, now), "ready");
+  const after = buildCapabilities(s, proven, now);
+  assert.equal(after.find((c) => c.id === "kokoro/af_heart")?.proof, "proven");
+  assert.equal(after.find((c) => c.id === "cf/flux")?.proof, "quarantined");
+  assert.equal(stageStatus("image", s, proven, now), "found");
+  // Without health the old behaviour stays (callers that do not know health).
+  assert.equal(stageStatus("voice", s), "ready");
 });

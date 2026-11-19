@@ -1,3 +1,5 @@
+import { listEndpointHealth } from "@/lib/server/endpoint-health.ts";
+import { proofText } from "@/lib/studio/endpoint-health.ts";
 import { ensureFreshInBackground, getCapabilities } from "@/lib/server/capabilities.ts";
 import {
   buildCapabilities,
@@ -32,7 +34,10 @@ const BADGE: Record<StageStatus, { tone: "ok" | "info" | "warn" | "neutral"; tex
 export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean }) {
   const snap = await getCapabilities();
   ensureFreshInBackground(snap);
-  const caps = buildCapabilities(snap);
+  // What real calls showed: a 9router model that is only listed is not shown as working.
+  const health = await listEndpointHealth();
+  const now = Date.now();
+  const caps = buildCapabilities(snap, health, now);
   const state = scanStateOf(snap);
 
   return (
@@ -63,7 +68,7 @@ export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean
       <ul className="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
         {CAPABILITY_STAGES.map((stage) => {
           const info = STAGE_INFO[stage];
-          const status = stageStatus(stage, snap);
+          const status = stageStatus(stage, snap, health, now);
           const badge = BADGE[status];
           const found = capabilitiesFor(stage, caps);
           const chips = uniqueChips(found);
@@ -83,6 +88,7 @@ export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean
                       {c.label}{" "}
                       <span className="text-muted">via {c.via === "hermes" ? "Hermes" : "9router"}
                         {!c.verified && ", not verified"}
+                        {c.proof && `, ${proofText(c.proof)}`}
                       </span>
                     </span>
                   ))}
@@ -90,6 +96,11 @@ export async function CapabilitiesPanel({ canScan = false }: { canScan?: boolean
                 </div>
               )}
               {status === "found" && !info.used && <p className="mt-2 break-words text-xs text-muted">Listed only. No stage has called it, so it is not proven to work.</p>}
+              {chips.some((c) => c.proof === "listed") && (
+                <p className="mt-2 break-words text-xs text-muted">
+                  Listed, not proven yet: 9router lists it, but no real call has worked. {stage === "image" ? "Images use it only after Test 9router image works." : "Test voice proves it."}
+                </p>
+              )}
               {chips.some((c) => !c.verified) && (
                 <p className="mt-2 break-words text-xs text-muted">Not verified means Hermes named it in its own answer and /v1/skills did not list it.</p>
               )}
