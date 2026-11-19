@@ -44,7 +44,16 @@ export const CAPABILITIES: readonly Capability[] = [
  */
 export type WorkerMode = "tick" | "hold" | "daemon";
 
-export type JobType = "echo" | "smoke-test" | "analyze-video" | "render-preview" | "qc-video";
+export type JobType =
+  | "echo"
+  | "smoke-test"
+  | "analyze-video"
+  | "render-preview"
+  | "qc-video"
+  | "tts"
+  | "render-video"
+  | "fetch-asset"
+  | "agent-task";
 
 export interface EnrollRequest {
   code: string;
@@ -60,7 +69,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.3.0";
+export const WORKER_VERSION = "0.4.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];

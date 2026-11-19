@@ -18,6 +18,13 @@ const schema = z.object({
   NINEROUTER_API_KEY: optional(z.string()),
   HERMES_BASE_URL: optional(z.string().url()),
   HERMES_API_KEY: optional(z.string()),
+  KOKORO_BASE_URL: optional(z.string().url()),
+  KOKORO_API_KEY: optional(z.string()),
+  KOKORO_MODEL: optional(z.string()),
+  KOKORO_VOICE: optional(z.string()),
+  TTS_BACKUP: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["hermes-capcut", "off"]).default("hermes-capcut")),
+  HERMES_IMAGE_PROVIDER_ORDER: optional(z.string()),
+  MUSE_AGENT_TASKS: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["1", "0"]).default("0")),
 });
 
 export type Env = z.infer<typeof schema>;

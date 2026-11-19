@@ -27,6 +27,33 @@ so Coolify reads the file again. Then fill in:
 | `SETUP_TOKEN` | random | `openssl rand -hex 16` |
 | `NINEROUTER_BASE_URL` | optional | `http://host.docker.internal:20128` if 9router runs on the same server outside Coolify |
 | `NINEROUTER_API_KEY` | optional | your 9router key |
+| `KOKORO_BASE_URL` | optional | Address of your Kokoro server on the coolify network, e.g. `http://kokoro:8880` (see below). Empty means narration is not configured |
+| `KOKORO_API_KEY` | optional | Only if your Kokoro server asks for a key |
+| `KOKORO_MODEL` | optional | `kokoro` |
+| `KOKORO_VOICE` | optional | `af_heart` (a US English voice) |
+| `TTS_BACKUP` | optional | `hermes-capcut` (default): if Kokoro cannot do a language or is down, Hermes runs its CapCut workflow. `off` disables the backup |
+| `HERMES_IMAGE_PROVIDER_ORDER` | optional | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. A hint only |
+| `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows the unverified Muse agent task fallback |
+
+### Kokoro server (example, verify before relying on it)
+
+Kokoro is not part of this compose file. One way to run it is as its own Coolify app from a Kokoro-FastAPI image
+(an OpenAI-compatible server). This is an example to check against the project's own instructions, not a tested recipe:
+
+```yaml
+services:
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest   # verify the image name and tag
+    restart: unless-stopped
+    networks:
+      - coolify
+networks:
+  coolify:
+    external: true
+```
+
+Give it no public domain. The portal reaches it at `http://kokoro:8880` (the usual Kokoro-FastAPI port; verify). Only
+English voices are treated as verified. Other languages show a warning, and the portal asks Hermes to use CapCut when Kokoro does not cover a language.
 
 Run the `openssl` commands in **Servers → your server → Terminal** (or over SSH). If the list still doesn't show a
 variable, add it yourself with **+ Add** using exactly the name above.

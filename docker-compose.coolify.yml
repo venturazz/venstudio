@@ -45,6 +45,17 @@ services:
       # Hermes Agent API (internal address only, e.g. http://hermes-<id>:8642). Never a public domain.
       HERMES_BASE_URL: ${HERMES_BASE_URL}
       HERMES_API_KEY: ${HERMES_API_KEY}
+      # Kokoro TTS (OpenAI-compatible, e.g. http://kokoro:8880). Unset means narration is not configured.
+      KOKORO_BASE_URL: ${KOKORO_BASE_URL:-}
+      KOKORO_API_KEY: ${KOKORO_API_KEY:-}
+      KOKORO_MODEL: ${KOKORO_MODEL:-}
+      KOKORO_VOICE: ${KOKORO_VOICE:-}
+      # hermes-capcut (default) or off: whether Hermes' CapCut workflow is the voice backup.
+      TTS_BACKUP: ${TTS_BACKUP:-hermes-capcut}
+      # Optional comma list of Hermes image_gen providers to prefer, e.g. cloudflare,qwen. A hint only.
+      HERMES_IMAGE_PROVIDER_ORDER: ${HERMES_IMAGE_PROVIDER_ORDER:-}
+      # 1 lets the studio create unverified Muse agent tasks. Leave 0 until they are tested.
+      MUSE_AGENT_TASKS: ${MUSE_AGENT_TASKS:-0}
     volumes:
       - venstudio-artifacts:/data/artifacts
     networks:
