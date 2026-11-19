@@ -1,16 +1,22 @@
 import Link from "next/link";
-import { Clapperboard, Cpu, FolderOpen, LayoutDashboard, ListVideo, LogOut, Settings, Sparkles, Tv } from "lucide-react";
+import { Clapperboard, Cpu, FolderOpen, Inbox, LayoutDashboard, ListVideo, LogOut, Settings, Sparkles, Tv } from "lucide-react";
 import { requireUser } from "@/lib/server/auth.ts";
 import { BottomNav, SideNav, type NavItem } from "@/components/client.tsx";
+import { countOpenReviews } from "@/lib/server/reviews.ts";
 import { signOut } from "./actions.ts";
+
+const BOTTOM_NAV = ["/review", "/studio", "/channels", "/jobs", "/settings"];
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const icon = "size-5 shrink-0";
+  // The badge must never break a page: countOpenReviews returns 0 when the table is missing.
+  const open = await countOpenReviews();
   const items: NavItem[] = [
     { href: "/", label: "Overview", icon: <LayoutDashboard className={icon} aria-hidden /> },
+    { href: "/review", label: "Review", icon: <Inbox className={icon} aria-hidden />, badge: open },
     { href: "/studio", label: "Studio", icon: <Sparkles className={icon} aria-hidden /> },
     { href: "/assets", label: "Assets", icon: <FolderOpen className={icon} aria-hidden /> },
     { href: "/channels", label: "Channels", icon: <Tv className={icon} aria-hidden /> },
@@ -59,8 +65,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <main className="mx-auto w-full max-w-6xl px-4 pb-28 pt-5 sm:px-6 lg:px-8 lg:pb-10 lg:pt-8">{children}</main>
       </div>
 
-      {/* Overview is one tap away on phones via the logo. */}
-      <BottomNav items={items.filter((i) => i.href !== "/")} />
+      {/* Overview is one tap away via the logo. Assets and Workers are linked from Studio and Overview, and stay in the side nav. */}
+      <BottomNav items={items.filter((i) => BOTTOM_NAV.includes(i.href))} />
     </div>
   );
 }

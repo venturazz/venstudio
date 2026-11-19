@@ -36,6 +36,15 @@ export default async function StudioPage() {
         description="Pick a format and a style, describe the video, and preview its plan. Then queue a test render to check the whole path."
         actions={
           <div className="flex flex-wrap gap-2">
+            <LinkButton href="/studio/runs" variant="primary">
+              Hermes runs
+            </LinkButton>
+            <LinkButton href="/assets" variant="secondary">
+              Assets
+            </LinkButton>
+            <LinkButton href="/workers" variant="secondary">
+              Workers
+            </LinkButton>
             <LinkButton href="/studio/templates" variant="secondary">
               Templates
             </LinkButton>
