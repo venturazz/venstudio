@@ -1,0 +1,31 @@
+# VenStudio media host for Coolify: publishes the files Hermes generates so the portal can download them.
+# Steps: docs/deploy-hermes-media.md, section "Coolify".
+#
+# - Builds nginx with deploy/hermes-files.nginx.conf baked in (no bind-mounted config file).
+# - Mounts the Hermes data directory read-only. Only /img/, /tts/, /audio/ and /clip/ are served; everything
+#   else, including cache/canva_tokens/, is a 404.
+# - Runs as the Hermes user, so it reads exactly what Hermes can read, and nothing runs as root.
+# - Joins the coolify network, so the portal reaches it as http://hermes-files:8000. Never give it a domain.
+services:
+  hermes-files:
+    build:
+      context: .
+      dockerfile: hermes-files.Dockerfile
+    container_name: hermes-files
+    restart: unless-stopped
+    user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ${HERMES_DATA_DIR:?set HERMES_DATA_DIR to the host path of the Hermes /opt/data directory}:/srv:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [coolify]
+
+networks:
+  coolify:
+    external: true

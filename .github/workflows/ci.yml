@@ -156,3 +156,31 @@ jobs:
           docker rm -f fake-hermes-abc >/dev/null
           docker compose -f docker-compose.coolify.yml logs portal | tail -20
           docker compose -f docker-compose.coolify.yml down -v
+      - name: Media host serves only the four prefixes, read-only, as the Hermes user
+        run: |
+          # A fake Hermes data directory owned by uid 10000, with a decoy token next to the published dirs.
+          D=$(mktemp -d)
+          mkdir -p "$D/cache/generated/images" "$D/cache/tts" "$D/cache/audio" "$D/cache/generated/videos" "$D/cache/canva_tokens"
+          printf 'PNGDATA' > "$D/cache/generated/images/a.png"
+          printf 'MP3DATA' > "$D/cache/tts/v.mp3"
+          printf 'WAVDATA' > "$D/cache/audio/m.wav"
+          printf 'MP4DATA' > "$D/cache/generated/videos/c.mp4"
+          printf 'SECRET' > "$D/cache/canva_tokens/canva_token_0.json"
+          sudo chown -R 10000:10000 "$D"
+          docker network create coolify >/dev/null 2>&1 || true
+          HERMES_DATA_DIR="$D" docker compose -f deploy/hermes-files.coolify.yml config -q
+          HERMES_DATA_DIR="$D" docker compose -f deploy/hermes-files.coolify.yml up -d --build
+          code() { docker run --rm --network coolify curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' "$@"; }
+          for i in $(seq 1 30); do [ "$(code http://hermes-files:8000/healthz)" = 200 ] && break; sleep 1; done
+          fail() { echo "MEDIA FAIL: $*"; docker logs hermes-files 2>&1 | tail -30; exit 1; }
+          [ "$(code http://hermes-files:8000/healthz)" = 200 ] || fail "healthz"
+          for p in img/a.png tts/v.mp3 audio/m.wav clip/c.mp4; do [ "$(code http://hermes-files:8000/$p)" = 200 ] || fail "/$p not served"; done
+          [ "$(docker run --rm --network coolify curlimages/curl:8.11.1 -s http://hermes-files:8000/clip/c.mp4)" = MP4DATA ] || fail "clip bytes differ"
+          [ "$(code http://hermes-files:8000/)" = 404 ] || fail "/ is not 404"
+          [ "$(code http://hermes-files:8000/canva_tokens/canva_token_0.json)" = 404 ] || fail "canva token reachable"
+          [ "$(code --path-as-is http://hermes-files:8000/img/../canva_tokens/canva_token_0.json)" = 404 ] || fail "traversal reachable"
+          [ "$(code http://hermes-files:8000/img/)" = 404 ] || [ "$(code http://hermes-files:8000/img/)" = 403 ] || fail "directory listing"
+          [ "$(code -X POST http://hermes-files:8000/img/a.png)" = 405 ] || fail "POST accepted"
+          [ "$(docker inspect -f '{{.Config.User}}' hermes-files)" = "10000:10000" ] || fail "not running as the Hermes user"
+          echo "media host ok"
+          HERMES_DATA_DIR="$D" docker compose -f deploy/hermes-files.coolify.yml down
