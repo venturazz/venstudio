@@ -362,3 +362,57 @@ That is the difference between a studio that makes *pictures* and one that makes
    stronger model for that surface only, via `platforms.api_server.extra.model_routes`.
 4. **9:16** — Canva returns 1200×1200 through the tool. Either let the studio crop/pad, or switch the
    Canva tier to `craft_v1_2k` (native 1536×2720).
+
+## Reference-image chain — implemented 2026-11-20
+
+The plugin no longer routes every reference to SenseNova. `generate()` calls `_i2i_chain`, ordered by
+measured latency:
+
+| order | backend | measured | notes |
+| --- | --- | --- | --- |
+| 1 | **Agnes** | **11.4 s** | `image: [data-uri]` on the same generations endpoint; URL under `/images/i2i/` |
+| 2 | **SenseNova U1.5** | **40.7 s** | `/v1/images/edits`, 4K |
+| 3 | **ModelScope `Qwen/Qwen-Image-Edit-2509`** | **256 s — timed out** | async task; sat pending through every probe window, so it is last |
+
+Four cases measured end-to-end through `generate()`:
+
+| call | result |
+| --- | --- |
+| no tag, one reference | `agnes-edit`, 11.4 s, 864×1152, pixel diff 74.2/255 |
+| `[sensenova]` + reference | `sensenova-edit`, 40.7 s, 1024×1536, diff 56.9/255 |
+| `[modelscope]` + reference | modelscope timed out → **fell back to `agnes-edit`**, `tried=[{provider: modelscope, error: timed out}]` |
+| `[agnes:]` + reference | `agnes-edit` only, 12.0 s, no fallback |
+
+Two traps worth keeping in mind, both now handled in code:
+
+- **A plugin model id is not a backend model id.** `generate()` carries `nb/nanobanana-pro`;
+  forwarding that to Agnes returns `404`. Only a model that really names the backend is honoured,
+  then the configured id, then the verified default.
+- **`image_url` vs `image` on ModelScope.** `Qwen/Qwen-Image-Edit-2509` requires `image_url`; the
+  older `Qwen/Qwen-Image-Edit` takes `image`. The wrong field is a `400`, not a quiet fallback.
+
+Forcing `[canva]`, `[cloudflare]` or `[minimax]` with a reference still means text-to-image: those
+backends cannot edit. Forcing `[agnes]`/`[sensenova]`/`[modelscope]` now selects the edit backend.
+
+## TTS chain — audited 2026-11-20
+
+`config.yaml` names only `tts.provider: capcut`, but the plugin is a five-layer chain. Each layer was
+exercised by failing the ones above it:
+
+```
+capcut (3.5 s, 129 voices) -> kokoro (6.1 s) -> gemini via 9Router (4.0 s) -> edge (1.3 s) -> google_translate
+```
+
+Two defects found and fixed in `/opt/data/plugins/tts/capcut/__init__.py`:
+
+- **`import yaml` inside the Gemini layer.** PyYAML is not importable in the Hermes runtime, so
+  layer 3 of 5 died with `ModuleNotFoundError`. It also silently killed the config lookup for the
+  9Router base. Both now scan `config.yaml` as text.
+- **Kokoro was not in the chain at all.** It is a separate model family on the same gateway
+  (`selfhosted-tts/kokoro/<voice>`), reachable at `http://9router/v1` from inside the network and
+  `https://jehezkiel.venturabyte.com/v1` from outside — but the https alias sits behind Cloudflare,
+  which answers `403 code 1010` to urllib and accepts curl. Added as layer 2 with a
+  urllib-then-curl fallback and voice-id mapping (a CapCut id sent to Kokoro is a `400`).
+
+Loudness differs per layer and must not be assumed: Kokoro returns 24 kHz **mono** MP3 and is much
+quieter than CapCut's output, so normalize before mixing.
