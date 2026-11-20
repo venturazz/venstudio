@@ -416,3 +416,30 @@ Two defects found and fixed in `/opt/data/plugins/tts/capcut/__init__.py`:
 
 Loudness differs per layer and must not be assumed: Kokoro returns 24 kHz **mono** MP3 and is much
 quieter than CapCut's output, so normalize before mixing.
+
+## Agnes video — measured 2026-11-20, and why the media host is not optional
+
+`POST /v1/videos` (not under `/v1`? it is: `/v1/videos`) accepts `mode: reference` with up to 5
+`images`, `seconds` 4-12, `size: 720P`, `aspect_ratio: 9:16`. Two behaviours decide the design:
+
+**1. Output URLs expire.** A character image returned by `/v1/images/generations` is public *when
+created* and **gone later** — measured `404` with an XML body `NoSuchKey` about 40 minutes after
+generation. Submitting a video with that stale URL is accepted, then fails:
+
+```json
+{"status": "failed", "progress": 100,
+ "error": {"code": "media_download_failed", "message": "failed to download input media"}}
+```
+
+`progress: 100` accompanies `status: failed`, so progress is not a success signal. Consequence:
+either generate the reference and submit the video back-to-back, or serve the reference from our own
+media host. This is the same reason the studio needs `hermes-files` for the portal — and it applies to
+video references, not just image delivery.
+
+**2. A task is visible only to the key that submitted it.** Polling one `video_id` with 13 sibling
+keys returned `404 task not found` every time; the submitting key returned `200`. With a rotating key
+pool this is indistinguishable from a broken endpoint, so the submitting key must be recorded
+alongside the `video_id`.
+
+**Queue is the bottleneck, not accounts.** Submit answered `503 {"code":"video_queue_full"}` on every
+key for 40+ consecutive attempts. Adding keys does not add render slots.
