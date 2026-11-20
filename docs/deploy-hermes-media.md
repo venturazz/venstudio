@@ -33,23 +33,35 @@ Find that host path with:
 docker volume inspect <hermes data volume> --format '{{ .Mountpoint }}'
 ```
 
-Coolify: create a new service from this repository, Docker Compose location
-`/deploy/hermes-files.compose.yml`, and set `HERMES_DATA_DIR` in its environment to the mountpoint above.
-It must join the same Coolify network as `portal` and the Hermes container — that is how
-`http://hermes-files:8000` resolves. Do **not** give it a public domain.
+### Coolify
+
+Use `deploy/hermes-files.coolify.yml`. It builds nginx with the config baked in, mounts the Hermes data
+read-only, runs as the Hermes user (uid 10000), and joins the `coolify` network as `hermes-files`. CI starts
+it and checks the four prefixes, the 404s and the user on every push.
+
+1. On the VPS, find the host path of the Hermes `/opt/data`:
+   `docker inspect hermes-<id> --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}'`
+2. Coolify: **+ New → Resource → Public/Private Repository** → this repo, branch `feat/portal-foundation`,
+   Build Pack **Docker Compose**, Base Directory `/deploy`, Docker Compose Location `/hermes-files.coolify.yml`.
+3. Environment: `HERMES_DATA_DIR` = the path from step 1. Leave the domain empty. Deploy.
+4. Portal environment: `HERMES_MEDIA_ORIGINS=http://hermes-files:8000`. Redeploy the portal.
+
+Do **not** give it a domain. If the Hermes user is not 10000, set `HERMES_UID` and `HERMES_GID`.
 
 ## 2. Point the portal at it
 
+One variable is enough:
+
 | variable | value | notes |
 |---|---|---|
-| `HERMES_IMAGE_MEDIA_ORIGIN` | `http://hermes-files:8000/img` | a path is allowed; the agent appends the bare file name |
-| `HERMES_TTS_MEDIA_ORIGIN` | `http://hermes-files:8000/tts` | same host, different directory |
-| `HERMES_MEDIA_ORIGINS` | `http://hermes-files:8000` | the fetch **allowlist** — origins only, any path stripped |
+| `HERMES_MEDIA_ORIGINS` | `http://hermes-files:8000` | origin only. It is the fetch allowlist, and the portal adds `/img`, `/tts` and `/clip` to it to tell Hermes where each kind is published |
 
-`HERMES_MEDIA_ORIGINS` is what makes `fetchMedia()` agree to download; the two `*_MEDIA_ORIGIN` values are
-what Hermes is told to build its reply from. Miss the allowlist and the agent's URL is rejected even though
-the server is fine. Both `*_MEDIA_ORIGIN` values fall back to the first `HERMES_MEDIA_ORIGINS` entry, so a
-single flat origin also works.
+Optional overrides, only when one kind is served somewhere else: `HERMES_IMAGE_MEDIA_ORIGIN`,
+`HERMES_TTS_MEDIA_ORIGIN`, `HERMES_VIDEO_MEDIA_ORIGIN` (full URL with path, e.g. `http://x:9000/pics`). An
+override wins, and a `HERMES_MEDIA_ORIGINS` entry that already has a path is used as is. An override on a
+different host must also be listed in `HERMES_MEDIA_ORIGINS`, or the download is refused.
+
+Use the container or service name, never an IP: container IPs change on restart.
 
 ## 3. Check it
 

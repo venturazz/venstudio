@@ -55,8 +55,12 @@ services:
       TTS_BACKUP: ${TTS_BACKUP:-hermes-capcut}
       # Optional override. Leave empty: Hermes and 9router are asked what they have. Comma list of image providers to prefer, e.g. cloudflare,qwen. A hint only.
       HERMES_IMAGE_PROVIDER_ORDER: ${HERMES_IMAGE_PROVIDER_ORDER:-}
-      # Optional override. Leave empty unless file URLs differ from HERMES_BASE_URL. Comma list of extra full origins Hermes serves files from, e.g. http://hermes-files:8000. Only needed when file URLs differ from HERMES_BASE_URL.
+      # The media host that publishes Hermes-made files, origin only, e.g. http://hermes-files:8000. Needed for images, voice and clips made through Hermes. The portal adds /img, /tts and /clip itself.
       HERMES_MEDIA_ORIGINS: ${HERMES_MEDIA_ORIGINS:-}
+      # Optional overrides, only when a kind is served somewhere else. Leave empty.
+      HERMES_IMAGE_MEDIA_ORIGIN: ${HERMES_IMAGE_MEDIA_ORIGIN:-}
+      HERMES_TTS_MEDIA_ORIGIN: ${HERMES_TTS_MEDIA_ORIGIN:-}
+      HERMES_VIDEO_MEDIA_ORIGIN: ${HERMES_VIDEO_MEDIA_ORIGIN:-}
       # Optional override. Hermes model turns the portal runs at once. Empty means 1. Raise only if Hermes takes parallel turns.
       HERMES_MAX_CONCURRENCY: ${HERMES_MAX_CONCURRENCY:-}
       # 1 lets the studio create unverified Muse agent tasks. Leave 0 until they are tested.

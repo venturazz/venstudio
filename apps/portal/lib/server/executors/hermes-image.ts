@@ -4,6 +4,7 @@ import { hermesJson, hermesText } from "../hermes-json.ts";
 import { fetchMedia } from "../safe-fetch.ts";
 import { normalizeGatewayBase } from "../../gateway-url.ts";
 import { originOf } from "../../net-address.ts";
+import { mediaUrlBase } from "../../media-url.ts";
 import { imagePrompt, normalizeProvider, parseTriedProviders, resolveImageProvider, type TriedProvider } from "../../studio/asset-plan.ts";
 import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
@@ -97,19 +98,13 @@ export function hermesTrustedOrigins(): string[] {
  * (http://hermes-files:8000/img), because the agent appends the bare file name to it. hermesTrustedOrigins()
  * strips the path for the fetch allowlist; this one must not.
  *
- * Images and narration live in different directories under the same media host, so each kind gets its own
- * override and both fall back to the first HERMES_MEDIA_ORIGINS entry.
+ * Images, narration and clips live in different directories under the same media host. The owner sets one
+ * origin (HERMES_MEDIA_ORIGINS) and the portal adds /img, /tts or /clip; the per-kind variables are optional
+ * overrides. See lib/media-url.ts.
  */
 export function hermesMediaUrlBase(kind: "image" | "audio" | "video" = "image"): string | null {
-  const specific =
-    (kind === "audio" ? env().HERMES_TTS_MEDIA_ORIGIN : kind === "video" ? env().HERMES_VIDEO_MEDIA_ORIGIN : env().HERMES_IMAGE_MEDIA_ORIGIN) ?? "";
-  const first = specific.trim() || ((env().HERMES_MEDIA_ORIGINS ?? "").split(",")[0] ?? "").trim();
-  if (!first) return null;
-  try {
-    return new URL(first).toString().replace(/\/+$/, "");
-  } catch {
-    return null;
-  }
+  const override = kind === "audio" ? env().HERMES_TTS_MEDIA_ORIGIN : kind === "video" ? env().HERMES_VIDEO_MEDIA_ORIGIN : env().HERMES_IMAGE_MEDIA_ORIGIN;
+  return mediaUrlBase(kind, { override, origins: env().HERMES_MEDIA_ORIGINS });
 }
 
 export function providerOrderHint(): string[] {
