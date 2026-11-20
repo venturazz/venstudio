@@ -325,7 +325,24 @@ downtime**. The same 11 keys return `200` on a realistic prompt (`sk-fOyCvP…` 
 63.3 s). Contentless probes ("a red circle on a white background") get rejected as low content; scene
 prompts pass. Treat a `sensitive image` 400 as "retry with a richer prompt", never as "backend down".
 
-Raising `max_reference_images` above zero exposes all of these paths through the same Hermes door.
+**Both blockers are now gone.** `_sn_edit` hardcoded `data:image/png;base64,…` for local files, so every
+reference whose bytes were JPEG — which is every `cloudflare_*.png` — was rejected with
+`400 … "data URL media type does not match the image content" (code 3)`. The edit path had never worked for
+those files. The MIME is now sniffed from the magic bytes.
+
+Measured after the fix, on that same JPEG-as-PNG file:
+
+| call | result |
+| --- | --- |
+| `_sn_edit(prompt, [ref], aspect="portrait")` | **24.7 s**, `sensenova-u1.5-lite`, 1024×1536 PNG, 1.8 MB |
+| `generate(…, reference_image_urls=[ref])` | **49.5 s**, `source: sensenova-edit`, `reference_images: 1` |
+| pixel diff vs reference (64×64 grey) | **156.7 / 255** — the edit really landed |
+
+`capabilities()` now returns `{"modalities": ["text", "image"], "max_reference_images": 5}` (the API caps one
+edit call at 5 images), and the rebuilt tool schema carries `image_url` and `reference_image_urls`
+(*"Up to 5 additional reference images"*). Nothing else had to change: for a plugin provider
+`_active_image_capabilities()` returns `max_reference_images` straight from `capabilities()` — the `can_edit`
+gate at `image_generation_tool.py:876` only applies to the in-tree FAL path.
 
 That is the difference between a studio that makes *pictures* and one that makes *scenes with the same cast*
 — i.e. the missing capability for consistent characters across shots. The plugin lives in
