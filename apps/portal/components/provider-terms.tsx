@@ -3,7 +3,7 @@ import { Badge, Input, Select } from "./ui.tsx";
 import { SubmitButton } from "./client.tsx";
 import { setProviderTerms } from "@/app/(app)/settings/actions.ts";
 
-const KIND_LABEL = { image: "Image", tts: "Voice", library: "Library" } as const;
+const KIND_LABEL = { image: "Image", tts: "Voice", library: "Library", video: "Video" } as const;
 const STATUS_LABEL = { unknown: "Not confirmed", yes: "Commercial use OK", no: "Not for commercial use" } as const;
 const TONE = { unknown: "warn", yes: "ok", no: "danger" } as const;
 

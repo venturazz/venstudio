@@ -123,7 +123,8 @@ async function callModel(model: RouterModel, job: { prompt: string; format: Form
   const issues = imageIssues(info, job.format);
   if (issues.length > 0 || !info) return fail("content", issues.join(". ") || "The image from 9router could not be read");
   await recordEndpointResult("9router", model.id, "image", { ok: true });
-  return { ok: true, image: { bytes, info, provider, model: model.id, originUrl } };
+  // A direct 9router call has no Hermes chain in front, so there is no backend report: empty, as GeneratedImage documents.
+  return { ok: true, image: { bytes, info, provider, model: model.id, backend: "", originUrl } };
 }
 
 /** One image from a proven 9router model, for the automatic chain. Never calls a model that is only listed. */

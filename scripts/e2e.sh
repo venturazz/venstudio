@@ -130,6 +130,19 @@ q "INSERT INTO endpoint_health (endpoint, model, kind, last_failure_at, failure_
 q "INSERT INTO endpoint_health (endpoint, model, kind, failure_class) VALUES ('9router', 'e2e/bad', 'image', 'nonsense')" >/dev/null 2>&1 && fail "endpoint_health accepted an unknown failure class"
 q "DELETE FROM endpoint_health WHERE model = 'e2e/check'" >/dev/null
 
+echo "== migration 0012 widened both kind CHECKs to video, leaving exactly one CHECK on kind per table"
+for tbl in asset_providers endpoint_health; do
+  DEFS=$(q "SELECT conname || ': ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = '$tbl'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) ~* '\\mkind\\M' ORDER BY conname")
+  echo "$tbl CHECK on kind:"; echo "$DEFS" | sed 's/^/   /'
+  [ "$(echo "$DEFS" | grep -c .)" = "1" ] || fail "$tbl should have exactly one CHECK on kind after 0012, found: $DEFS"
+  echo "$DEFS" | grep -q "'video'" || fail "$tbl CHECK on kind does not allow video: $DEFS"
+done
+q "INSERT INTO asset_providers (name, kind) VALUES ('e2e-video', 'video')" >/dev/null || fail "asset_providers refused kind video"
+q "INSERT INTO endpoint_health (endpoint, model, kind) VALUES ('hermes', 'e2e/video', 'video')" >/dev/null || fail "endpoint_health refused kind video"
+q "INSERT INTO endpoint_health (endpoint, model, kind) VALUES ('hermes', 'e2e/bad-kind', 'audio')" >/dev/null 2>&1 && fail "endpoint_health accepted an unknown kind"
+q "DELETE FROM asset_providers WHERE name = 'e2e-video'" >/dev/null
+q "DELETE FROM endpoint_health WHERE model = 'e2e/video'" >/dev/null
+
 echo "== render-video renders generated stills and a WAV, then qc-video measures the result"
 STILLS="$WORK/stills"
 mkdir -p "$STILLS"
