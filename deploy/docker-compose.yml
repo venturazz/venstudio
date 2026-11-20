@@ -42,6 +42,11 @@ services:
       NINEROUTER_API_KEY: ${NINEROUTER_API_KEY:-}
       HERMES_BASE_URL: ${HERMES_BASE_URL:-}
       HERMES_API_KEY: ${HERMES_API_KEY:-}
+      # Where the studio reads the files Hermes generates (see docs/deploy-hermes-media.md). A path is allowed.
+      HERMES_IMAGE_MEDIA_ORIGIN: ${HERMES_IMAGE_MEDIA_ORIGIN:-}
+      HERMES_TTS_MEDIA_ORIGIN: ${HERMES_TTS_MEDIA_ORIGIN:-}
+      # Allowlist for downloading those URLs: full origins, comma list, any path stripped by the portal.
+      HERMES_MEDIA_ORIGINS: ${HERMES_MEDIA_ORIGINS:-}
     volumes:
       - artifacts:/data/artifacts
     networks: [internal]
