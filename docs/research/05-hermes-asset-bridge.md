@@ -297,10 +297,35 @@ if _refs and not _other_forced and _sn_parse_keys():
     extra={"source": "sensenova-edit", "reference_images": len(_refs)}
 ```
 
-**SenseNova U1.5 is the only editing backend in the chain** (`POST /v1/images/edits`), it accepts
-`images: [{"image_url": "data:image/png;base64,..."}]`, it is rated "generate + edit with reference images,
-4K, best text rendering", and there are 11 keys at 1,500 req/5 h each. Raising `max_reference_images` above
-zero exposes that path through the same Hermes door.
+**Measured 2026-11-20 — one point of the paragraph above is wrong: SenseNova is not the only editing
+backend.** Three backends in this account accept a reference image. All three were exercised with the same
+56 KB PNG and the same instruction (*"keep the same subject, rainy neon alley at night"*):
+
+| backend | call | result | latency |
+| --- | --- | --- | --- |
+| **Agnes** | `POST /v1/images/generations` + `image: [data-uri]` | `200`, `data[0].url` → `.../images/i2i/task_…` | **7.8 s** |
+| **ModelScope** `Qwen/Qwen-Image-Edit-2509` | same endpoint, field **`image_url`** | task accepted (`task_status: SUCCEED`) | 0.5 s submit |
+| **ModelScope** `Qwen/Qwen-Image-Edit` | same endpoint, field `image` | task accepted | 0.4 s submit |
+| **SenseNova U1.5** | `POST /v1/images/edits` + `images:[{image_url}]` | works, 63–105 s per image | slow |
+
+So character consistency has a *chain*, not a single point: **Agnes (7.8 s, returns an `/images/i2i/` URL) →
+ModelScope Qwen-Image-Edit (task-based, needs polling) → SenseNova U1.5 (4K, slow)**. Agnes is the one to
+wire first — 7.8 s fits inside a shot loop; 105 s does not.
+
+Two details that cost time to find:
+
+- ModelScope names the field `image_url` on `Qwen/Qwen-Image-Edit-2509` but `image` on the older
+  `Qwen/Qwen-Image-Edit`. The wrong name returns `400 {"errors":{"message":"image_url is required for
+  model: …"}}`.
+- ModelScope answers with a task, not bytes: `task_id` + `task_status`, the file has to be polled. Agnes
+  answers with a usable URL immediately.
+
+SenseNova's earlier `400 {"error":{"message":"sensitive image","code":"18"}}` was **moderation, not
+downtime**. The same 11 keys return `200` on a realistic prompt (`sk-fOyCvP…` 104.5 s, `sk-IkcZQR…`
+63.3 s). Contentless probes ("a red circle on a white background") get rejected as low content; scene
+prompts pass. Treat a `sensitive image` 400 as "retry with a richer prompt", never as "backend down".
+
+Raising `max_reference_images` above zero exposes all of these paths through the same Hermes door.
 
 That is the difference between a studio that makes *pictures* and one that makes *scenes with the same cast*
 — i.e. the missing capability for consistent characters across shots. The plugin lives in
