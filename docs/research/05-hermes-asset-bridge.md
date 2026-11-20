@@ -260,6 +260,52 @@ the chain and are currently dead), and re-check Cloudflare after 00:00 UTC.
 > **1–4 s** (Nano Banana fails instantly; the seven Cloudflare models fail in ~3.8 s). Canva is not being
 > starved — it is simply where the chain lands. Send `[canva]` only if that ~4 s matters.
 
+### Steering, proven by call order
+
+Monkeypatching every `_try_*` tier and calling `provider.generate()` records which backend is attempted
+first. Measured:
+
+```
+(no tag)        -> nanobanana -> cloudflare -> canva -> sensenova -> ...
+[agnes]         -> agnes      -> canva      -> sensenova -> cloudflare -> ...
+[canva]         -> canva      -> sensenova  -> cloudflare -> nanobanana -> ...
+[modelscope]    -> modelscope -> nanobanana -> cloudflare -> canva -> ...
+[canva:]        -> canva      (stop — no fallback)
+```
+
+So a tag moves one backend to the front and **leaves the whole chain behind it**. Only the `[x:]` form
+disables fallback. This is what lets the skill choose per content without losing the safety net.
+
+### Reference images / character consistency — present in the plugin, hidden from the tool
+
+`NineRouterImageGenProvider.capabilities()` returns:
+
+```python
+{"modalities": ["text"], "max_reference_images": 0}
+```
+
+That `0` is why the core image tool describes itself as *"text-to-image only — the active model cannot edit
+existing images"*. But `generate()` does implement it:
+
+```python
+_ref_arg = kwargs.get("reference_image_urls") or []
+if not _refs and kwargs.get("image_url"):
+    _refs = [str(kwargs["image_url"])]
+if _refs and not _other_forced and _sn_parse_keys():
+    image_ref, sn_used = _sn_edit(prompt, _refs, model=model, aspect=aspect)
+    ...
+    extra={"source": "sensenova-edit", "reference_images": len(_refs)}
+```
+
+**SenseNova U1.5 is the only editing backend in the chain** (`POST /v1/images/edits`), it accepts
+`images: [{"image_url": "data:image/png;base64,..."}]`, it is rated "generate + edit with reference images,
+4K, best text rendering", and there are 11 keys at 1,500 req/5 h each. Raising `max_reference_images` above
+zero exposes that path through the same Hermes door.
+
+That is the difference between a studio that makes *pictures* and one that makes *scenes with the same cast*
+— i.e. the missing capability for consistent characters across shots. The plugin lives in
+`/opt/data/plugins/` and is writable, so this is a one-line change once SenseNova's keys answer.
+
 ## Still open (Hermes side, needs root or a config change)
 
 1. **`/v1/skills` 500** — `find_all_skills()` called with an unknown `include_editorial=` kwarg. Blocks the
