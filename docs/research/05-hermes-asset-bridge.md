@@ -179,13 +179,97 @@ with `<media origin>/<file name>`, and `parseAudioReply()` + `fetchMedia()` pick
 - **Do not raise the timeout past ~180 s and expect stability.** Prefer one image per turn and treat a
   turn over ~150 s as expected, not as a hang.
 
+## The chain, verified from the plugin source
+
+`/opt/data/plugins/image_gen/9router/__init__.py` (a user plugin — outside packaged Hermes, so it can be
+edited). `generate()` builds the order explicitly:
+
+```python
+_TAIL = ["agnes", "modelscope", "minimax", "9router"]
+...
+else:
+    order = ["nanobanana", "cloudflare", "canva", "sensenova"] + _TAIL
+```
+
+So the default is: **Nano Banana → Cloudflare → Canva → SenseNova → Agnes → ModelScope → Minimax →
+9router → free (Pollinations → Horde)**. That is the intended chain. A backend with no credential is
+skipped silently, and a failing 9Router account is skipped for 30 minutes
+(`_COOLDOWN_SECONDS = 1800`).
+
+**Chain steering is not a config setting.** In `generate()`:
+
+```python
+picked = <prompt tag>  or  str(kwargs.get("model") or "")
+model  = picked or _resolve_model()
+```
+
+`_resolve_model()` reads `NINEROUTER_IMAGE_MODEL` → `image_gen.9router.model` → the plugin default
+(`gemini/gemini-3.1-flash-image-preview`). The config default feeds the *model id* for the generic tiers —
+it does **not** reorder anything. Only an explicit picker model or a prompt tag reorders. The core image
+tool exposes no `model` field, so the **prompt tag is the only lever the studio has**:
+
+| tag on the first line | effect |
+|---|---|
+| *(none)* | the default order above |
+| `[canva]` `[agnes]` `[modelscope]` `[sensenova]` `[cloudflare]` `[minimax]` | that backend **first**, then the rest of the chain |
+| `[canva:]` `[agnes:]` `[modelscope:]` `[sensenova:]` `[cloudflare:]` `[minimax:]` | that backend **only**, no fallback |
+| `[canva:batch]` `[cloudflare:batch]` … | the parallel variant (Canva ≤ 3 keys, Cloudflare ≤ 4) |
+
+The tag is stripped from the prompt before any backend sees it.
+
+> **Correction to the first draft of this file.** It said to set `image_gen.model: canva` so Canva leads
+> the chain. That is wrong twice over. (a) The `image_gen/9router` plugin reads
+> `image_gen.9router.model`, not the top-level `image_gen.model`. (b) Neither value reorders the chain —
+> only a picker id or a prompt tag does. Worse, a backend name left in `...9router.model` is passed to the
+> generic tiers as a model id (`_try_9router(..., model=…)`, `_try_sensenova(model=…)`) and fails there.
+> **Leave the model setting alone; steer with the prompt tag if you steer at all.**
+
+Sizes per aspect ratio (portrait), for the studio's 9:16 expectation:
+
+- generic / 9router / SenseNova: `1024x1536`
+- Agnes, free: `768x1024`
+- Canva: no size parameter — template-driven, **1200x1200** in practice
+
+All of them clear `MIN_IMAGE_SHORT_SIDE = 480`. Only Canva is not vertical.
+
+#### Which tiers actually answer — measured 2026-11-20 06:2x UTC
+
+Every row below was measured by calling that tier directly (or its own API), not read from config:
+
+| # | tier | status | evidence |
+|---|---|---|---|
+| 1 | Nano Banana (`nb/`) | **no credentials** | `400 Bad Request` on `nb/nanobanana-pro` and `nb/nanobanana-flash` |
+| 2 | Cloudflare via 9Router | **dry** | 429 on flux-2-klein-4b / -9b / lucid-origin / phoenix-1.0 (10 k neurons/day, reset 00:00 UTC); 410 Gone on bytedance/sdxl-lightning, stabilityai/sdxl-base-1.0, lykon/dreamshaper-8-lcm (deprecated 2026-11-20) |
+| 3 | Canva | **alive** | 8.3 s → `canva_20261120_062133_5d167101.png`, 1200×1200 PNG |
+| 4 | SenseNova GLOBAL | **up, moderation blocks** | 11 keys, endpoint answers; `400 {"error":{"message":"sensitive image","code":"18"}}` |
+| 5 | Agnes | **alive** | 12.1 s → `agnes_20261120_062145_f0ba9e04.png` |
+| 6 | ModelScope (Qwen-Image) | **alive** | 2 keys → `modelscope_20261120_062912_d62e9465.png`; raw API `200` |
+| 7 | Minimax | **no credentials** | `400 Bad Request` on `minimax/image-01` and `minimax/image-01-turbo` |
+| 8 | 9router gateway tier | **dry** | resolves to `nb/nanobanana-pro` (400); the plugin default `gemini/gemini-3.1-flash-image-preview` answers 429 |
+| 9 | free (Pollinations → Horde) | **alive** | `free_flux_20261120_062804_935a8057.jpg` |
+
+So of the six the studio expects — cloudflare, agnes, canva, qwen, minimax, sensenova — **agnes, canva and
+qwen (ModelScope) answer; cloudflare is out of quota with three of its seven models already gone; minimax
+and Nano Banana have no credentials on the gateway; sensenova is up but its moderation rejects the prompt.**
+
+Two of these are decisions, not bugs: fund Nano Banana and/or Minimax on the gateway (both sit at the top of
+the chain and are currently dead), and re-check Cloudflare after 00:00 UTC.
+
+> **Second correction.** The first draft said every image "burns ~9 s on 9 dead models before Canva". The
+> 9.07 s was the *whole tool call*, and 8.3 s of it was Canva's own generation. The dead tiers cost roughly
+> **1–4 s** (Nano Banana fails instantly; the seven Cloudflare models fail in ~3.8 s). Canva is not being
+> starved — it is simply where the chain lands. Send `[canva]` only if that ~4 s matters.
+
 ## Still open (Hermes side, needs root or a config change)
 
 1. **`/v1/skills` 500** — `find_all_skills()` called with an unknown `include_editorial=` kwarg. Blocks the
    skill snapshot entirely.
-2. **`image_gen.model: nb/nanobanana-pro`** points at a model the gateway cannot serve, so every image
-   burns ~9 s on 9 dead models before Canva. Either fund Nano Banana on the gateway, or set
-   `image_gen.model: canva` so Canva leads the chain.
+2. **`image_gen.9router.model: nb/nanobanana-pro`** points at a model the gateway cannot serve
+   (`400 No credentials for provider: nanobanana`), and Cloudflare's free neurons are spent, so every image
+   burns ~9 s on 9 dead models before Canva wins. Nothing is misordered — the chain is correct, its top two
+   tiers are just dry today. Either fund Nano Banana / wait for the Cloudflare reset, or send `[canva]` on
+   the prompt's first line to start at Canva with the rest of the chain still behind it.
+   **Do not try to fix this with a config model** — see the correction above.
 3. **The `api_server` surface runs on `Genevieve`** and degenerates on multi-step tool work. Pin a
    stronger model for that surface only, via `platforms.api_server.extra.model_routes`.
 4. **9:16** — Canva returns 1200×1200 through the tool. Either let the studio crop/pad, or switch the

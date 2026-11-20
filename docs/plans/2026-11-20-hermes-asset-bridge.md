@@ -257,26 +257,22 @@ Expected: `200 {"object": "list", "data": [{"name": …`.
 
 ---
 
-### Task 6: Take the dead providers out of the hot path (Hermes side, config)
+### Task 6: Take the dead providers out of the hot path (Hermes side)
 
-**Files:** none — config only.
+**Files:** none — the studio's prompt only. No config change (see `docs/research/05`, correction).
 
 - [ ] **Step 1: Measure the baseline.** One image turn logs 2 × Nano Banana `400` and 7 × Cloudflare
-  `429`/`410` before Canva wins, ~9 s (`docs/research/05`, §2).
+  `429`/`410` before Canva wins, ~9 s (`docs/research/05`, §2). The chain's *order* is correct.
 
-- [ ] **Step 2: Apply, one at a time, and re-measure**
-
-```bash
-hermes config set image_gen.model canva
-```
-Expected: the trace starts at Canva; the turn time drops by roughly 9 s. If Canva's OAuth tokens are close
-to expiry, revert to the current default and fund Nano Banana on the gateway instead.
+- [ ] **Step 2: Start the prompt with a tag instead of editing config.** Prepending `[canva]` to the first
+  line moves Canva first and leaves the rest of the chain behind it; `[canva:]` would disable fallback and
+  must not be used. There is no config key that reorders the chain.
 
 - [ ] **Step 3: Pin the API-server surface to a stronger model**
 
 Set `platforms.api_server.extra.model_routes` so `hermes-agent` resolves to a strong model for this surface
 only (the `api_server` turn currently runs `Genevieve` and degenerated on a 5-tool turn). Leave the
-Telegram surface untouched.
+Telegram surface untouched, and leave `image_gen.9router.model` alone.
 
 - [ ] **Step 4: Confirm** — one image turn returns clean JSON, `hermes` is `null`, no `agent_error`, and
   the wall clock is comfortably under 180 s.
