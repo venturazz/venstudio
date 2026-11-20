@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { AGNES_CLIP_SECONDS, clipSecondsIssues } from "./image-result.ts";
 import {
   buildProvenance,
   cc0HostAllowed,
@@ -8,8 +9,10 @@ import {
   fallbackChain,
   imagePrompt,
   parseTriedProviders,
+  planClipRequests,
   normalizeProvider,
   resolveImageProvider,
+  MAX_CLIPS_PER_SHOT,
   videoPrompt,
   PROVIDER_NAME_MAX,
   providerTermsIssues,
@@ -260,4 +263,96 @@ test("videoPrompt hands over a base name when a media origin is configured", () 
 
   const [, bare] = videoPrompt({ prompt: "a fox", beatRole: "body", format: "short", shotRef: "shot-07", seconds: 4, mode: "text" });
   assert.match(String(bare.content), /never convert the file to base64/);
+});
+
+test("planClipRequests leaves a shot that already fits as one clip", () => {
+  const plan = planClipRequests(
+    { shotRef: "shot-10", beatRole: "body", prompt: "a fox runs", seconds: 6 },
+    { format: "short" },
+  );
+  assert.equal(plan.clips.length, 1);
+  assert.equal(plan.clips[0].shotRef, "shot-10");
+  assert.equal(plan.clips[0].seconds, 6);
+  assert.equal(plan.clips[0].mode, "text");
+  assert.deepEqual(plan.notes, []);
+});
+
+test("planClipRequests splits a shot longer than one clip, and the parts still sum to it", () => {
+  const plan = planClipRequests(
+    { shotRef: "shot-11", beatRole: "hook", prompt: "a long chase", seconds: 30 },
+    { format: "short" },
+  );
+  assert.equal(plan.clips.length, 3);
+  // Order has to survive the join, so the refs are suffixed in sequence.
+  assert.deepEqual(plan.clips.map((c) => c.shotRef), ["shot-11-c1", "shot-11-c2", "shot-11-c3"]);
+  assert.deepEqual(plan.clips.map((c) => c.seconds), [10, 10, 10]);
+  assert.equal(plan.clips.reduce((n, c) => n + c.seconds, 0), 30);
+  assert.match(plan.notes.join(" "), /3 clips/);
+  // Each part must be renderable on its own, not just in total.
+  for (const clip of plan.clips) assert.deepEqual(clipSecondsIssues(clip.seconds), []);
+  // A continuation clip must not restage the opening.
+  assert.match(plan.clips[1].prompt, /clip 2 of 3/);
+  assert.match(plan.clips[2].prompt, /Do not restage the opening/);
+});
+
+test("planClipRequests handles a remainder rather than dropping a second", () => {
+  const plan = planClipRequests(
+    { shotRef: "shot-12", beatRole: "body", prompt: "a fox", seconds: 13 },
+    { format: "long" },
+  );
+  assert.equal(plan.clips.length, 2);
+  assert.deepEqual(plan.clips.map((c) => c.seconds), [7, 6]);
+  assert.equal(plan.clips.reduce((n, c) => n + c.seconds, 0), 13);
+  assert.equal(plan.clips[0].format, "long");
+});
+
+test("planClipRequests names a shot below the provider minimum instead of stretching it silently", () => {
+  const plan = planClipRequests(
+    { shotRef: "shot-13", beatRole: "body", prompt: "a blink", seconds: 2 },
+    { format: "short" },
+  );
+  assert.equal(plan.clips.length, 1);
+  assert.equal(plan.clips[0].seconds, AGNES_CLIP_SECONDS[0]);
+  assert.match(plan.notes.join(" "), /cannot make less than 4s/);
+});
+
+test("planClipRequests picks reference mode when stills are supplied", () => {
+  const plan = planClipRequests(
+    { shotRef: "shot-14", beatRole: "body", prompt: "a fox", seconds: 5 },
+    { format: "short", sourceImageUrls: ["https://x.test/f.png"] },
+  );
+  assert.equal(plan.clips[0].mode, "reference");
+  const forced = planClipRequests(
+    { shotRef: "shot-15", beatRole: "body", prompt: "a fox", seconds: 5 },
+    { format: "short", sourceImageUrls: ["https://x.test/f.png"], mode: "keyframe" },
+  );
+  assert.equal(forced.clips[0].mode, "keyframe");
+});
+
+test("planClipRequests refuses a shot it cannot cover with legal clips", () => {
+  const plan = planClipRequests(
+    { shotRef: "shot-16", beatRole: "body", prompt: "an endless pan", seconds: 600 },
+    { format: "long" },
+  );
+  // The request cap must never be paid for with illegal clips: 600s in 6 clips is 100s each, which the
+  // provider refuses outright. So nothing is returned and the note says where the fix belongs.
+  assert.deepEqual(plan.clips, []);
+  assert.match(plan.notes.join(" "), /split it in the storyboard/i);
+});
+
+test("planClipRequests allows exactly the cap and refuses one clip past it", () => {
+  const atCap = planClipRequests(
+    { shotRef: "shot-17", beatRole: "body", prompt: "a long take", seconds: 12 * MAX_CLIPS_PER_SHOT },
+    { format: "long" },
+  );
+  assert.equal(atCap.clips.length, MAX_CLIPS_PER_SHOT);
+  assert.deepEqual(atCap.clips.map((c) => c.seconds), Array(MAX_CLIPS_PER_SHOT).fill(12));
+  for (const clip of atCap.clips) assert.deepEqual(clipSecondsIssues(clip.seconds), []);
+
+  const past = planClipRequests(
+    { shotRef: "shot-18", beatRole: "body", prompt: "a long take", seconds: 12 * MAX_CLIPS_PER_SHOT + 1 },
+    { format: "long" },
+  );
+  assert.deepEqual(past.clips, []);
+  assert.match(past.notes.join(" "), /needs 7 clips/);
 });

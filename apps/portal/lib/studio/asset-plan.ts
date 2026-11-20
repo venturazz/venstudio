@@ -3,6 +3,7 @@
  * allowlist, and the prompts sent to Hermes. Pure: no network, no database, no zod.
  */
 import type { AssetKind, AssetSource, Format } from "./catalog.ts";
+import { AGNES_CLIP_SECONDS, clipSecondsIssues } from "./image-result.ts";
 import { dataBlock, MAX_NOTE_CHARS, type ChatMessage } from "./director.ts";
 import type { ProvenanceRecord } from "./provenance.ts";
 import type { BeatRole } from "./templates.ts";
@@ -369,6 +370,100 @@ export function videoPrompt(r: VideoRequest): ChatMessage[] {
         .join("\n"),
     },
   ];
+}
+
+export interface ShotPlan {
+  shotRef: string;
+  beatRole: BeatRole;
+  prompt: string;
+  /** Seconds the storyboard wants for this shot, which may exceed what one clip can hold. */
+  seconds: number;
+}
+
+export interface ClipPlan {
+  clips: VideoRequest[];
+  /** Said out loud when a shot had to be split or padded, so the operator is not surprised at playback. */
+  notes: string[];
+}
+
+export interface ClipPlanOptions {
+  format: Format;
+  mode?: VideoRequest["mode"];
+  sourceImageUrls?: string[];
+  providerOrder?: string[];
+  mediaOrigin?: string;
+  /** Upper bound on the split, so one long shot cannot turn into a dozen requests. */
+  maxClips?: number;
+}
+
+/** Six clips of 12s is 72s of one shot: past that the shot is a scene and should be split in the storyboard. */
+export const MAX_CLIPS_PER_SHOT = 6;
+
+function clipPrompt(prompt: string, count: number, index: number, seconds: number): string {
+  if (count === 1) return prompt;
+  return (
+    `${prompt}\n\nThis is clip ${index + 1} of ${count} for the same shot: ${seconds}s of continuous action. ` +
+    "Continue the framing, the light and the character exactly from the previous clip. Do not restage the opening."
+  );
+}
+
+/**
+ * Turns one storyboard shot into the clips the provider can actually render.
+ *
+ * A shot is not a clip. The provider returns 4-12s, so a 30s shot becomes three 10s clips that the render joins
+ * in order, and the references are suffixed (.c1, .c2) so the join cannot reorder them. A shot below the 4s
+ * minimum becomes one 4s clip and says so, because the alternative is a silent stretch or a refusal.
+ */
+export function planClipRequests(shot: ShotPlan, opts: ClipPlanOptions): ClipPlan {
+  const [minS, maxS] = AGNES_CLIP_SECONDS;
+  const notes: string[] = [];
+  const wanted = Math.max(0, Math.round(shot.seconds));
+  if (wanted < minS) {
+    notes.push(
+      `Shot ${shot.shotRef} asked for ${wanted}s and the provider cannot make less than ${minS}s, so one ${minS}s clip is requested and the render trims it.`,
+    );
+  }
+  const target = Math.max(minS, wanted);
+  const needed = Math.max(1, Math.ceil(target / maxS));
+  const cap = opts.maxClips ?? MAX_CLIPS_PER_SHOT;
+  if (needed > cap) {
+    // Legality beats the request cap. Squeezing 600s into 6 clips would mean 100s clips, which the provider
+    // refuses, so the cap cannot be honoured by splitting harder -- only by saying the shot is too long.
+    notes.push(
+      `Shot ${shot.shotRef} needs ${needed} clips of at most ${maxS}s to cover ${target}s, past the ${cap}-clip limit for one shot. Split it in the storyboard: a shot this long is a scene.`,
+    );
+    return { clips: [], notes };
+  }
+  const count = needed;
+  const base = Math.floor(target / count);
+  const extra = target - base * count;
+  if (count > 1) {
+    notes.push(
+      `Shot ${shot.shotRef} runs ${target}s, longer than the ${maxS}s one clip can hold: asked for ${count} clips, which the render joins in order.`,
+    );
+  }
+
+  const clips: VideoRequest[] = [];
+  for (let i = 0; i < count; i++) {
+    const seconds = base + (i < extra ? 1 : 0);
+    clips.push({
+      prompt: clipPrompt(shot.prompt, count, i, seconds),
+      beatRole: shot.beatRole,
+      format: opts.format,
+      shotRef: count === 1 ? shot.shotRef : `${shot.shotRef}-c${i + 1}`,
+      seconds,
+      mode: opts.mode ?? (opts.sourceImageUrls?.length ? "reference" : "text"),
+      sourceImageUrls: opts.sourceImageUrls,
+      providerOrder: opts.providerOrder,
+      mediaOrigin: opts.mediaOrigin,
+    });
+  }
+  // Every clip of a split has to be legal on its own, not just in total.
+  for (const clip of clips) {
+    const issues = clipSecondsIssues(clip.seconds);
+    if (issues.length > 0) notes.push(`${clip.shotRef}: ${issues.join(" ")}`);
+  }
+  return { clips, notes };
 }
 
 export interface TtsKokoroRequest {
