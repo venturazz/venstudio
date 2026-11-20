@@ -4,8 +4,13 @@
 # - Builds nginx with deploy/hermes-files.nginx.conf baked in (no bind-mounted config file).
 # - Mounts the Hermes data directory read-only. Only /img/, /tts/, /audio/ and /clip/ are served; everything
 #   else, including cache/canva_tokens/, is a 404.
-# - Runs as the Hermes user, so it reads exactly what Hermes can read, and nothing runs as root.
+# - Runs as the Hermes user (uid 10000), so it reads exactly what Hermes can read, and nothing runs as root.
 # - Joins the coolify network, so the portal reaches it as http://hermes-files:8000. Never give it a domain.
+#
+# The volume source is a fixed path on purpose. Coolify refuses variables (${...}) and shell characters in
+# volume paths, so the owner points /data/venstudio/hermes-data at the Hermes /opt/data once, with a symlink,
+# before the first deploy. Docker resolves the symlink when it mounts. scripts/check-coolify-compose.sh checks
+# this file against Coolify's rules in CI.
 services:
   hermes-files:
     build:
@@ -13,12 +18,12 @@ services:
       dockerfile: hermes-files.Dockerfile
     container_name: hermes-files
     restart: unless-stopped
-    user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
+    user: "10000:10000"
     read_only: true
     tmpfs:
       - /tmp
     volumes:
-      - ${HERMES_DATA_DIR:?set HERMES_DATA_DIR to the host path of the Hermes /opt/data directory}:/srv:ro
+      - /data/venstudio/hermes-data:/srv:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/healthz || exit 1"]
       interval: 30s
