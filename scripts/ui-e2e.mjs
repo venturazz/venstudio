@@ -140,6 +140,8 @@ function directorReply(messages) {
         seconds: Math.min(maxShot, 3, i === 0 ? hookMs / 1000 : 3),
         description: `A calm scene for the ${role} beat`,
         imagePrompt: `Flat illustration of an old stone road at dusk, ${role} moment`,
+        // Per-shot backend preference: agnes is in the fake capability scan, midjourney is not and must be dropped.
+        ...(i === 0 ? { provider: "agnes", needs: "text-layout" } : i === 1 ? { provider: "midjourney" } : {}),
       })),
     });
   }
@@ -159,6 +161,8 @@ function directorReply(messages) {
     const shot = /for shot ([\w-]+)/.exec(first)?.[1] ?? "test";
     const seed = Number(/(\d+)$/.exec(shot)?.[1] ?? 0);
     const asks = (fakeStats.imageAsks[shot] = (fakeStats.imageAsks[shot] ?? 0) + 1);
+    if (/For this shot use agnes first/.test(first)) fakeStats.shotPreferenceAsks++;
+    if (/For this shot use midjourney/.test(first)) fakeStats.droppedPreferenceAsks++;
     const ok = (image, source = "canva") => JSON.stringify({ status: "ok", provider: "9router", source, model: "fake-flux", image });
     if (shot === "shot-01" && messages.length <= 2) {
       fakeStats.pathAnswers++;
@@ -209,7 +213,7 @@ function directorReply(messages) {
   }
   return "{}";
 }
-const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0 };
+const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -805,6 +809,10 @@ try {
   // only a few seconds here, so seeing it on a page is logged, not required.
   if (fakeStats.hermes429 !== HERMES_429_BURST) throw new Error(`the fake Hermes answered 429 ${fakeStats.hermes429} times, expected ${HERMES_429_BURST}`);
   console.log(`   Hermes 429 burst of ${HERMES_429_BURST} absorbed; waiting status ${sawHermesWait ? "was" : "was not"} caught on a page`);
+  // A storyboard provider Hermes never reported must never reach the image prompt. Whether agnes was kept depends on
+  // the capability scan having run before the storyboard, so that part is logged, not asserted.
+  if (fakeStats.droppedPreferenceAsks !== 0) throw new Error("the storyboard's unknown provider (midjourney) reached the image prompt");
+  console.log(`   per-shot preference: agnes asked first ${fakeStats.shotPreferenceAsks} time(s) (0 means no scan had run before the storyboard)`);
   await m.waitForLoadState("networkidle");
   const grid = m.getByTestId("asset-grid").first();
   const thumbs = grid.locator("img");
