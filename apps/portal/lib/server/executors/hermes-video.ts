@@ -1,7 +1,7 @@
 import "server-only";
 import { hermesText } from "../hermes-json.ts";
 import { fetchMedia } from "../safe-fetch.ts";
-import { parseTriedProviders, videoPrompt, type TriedProvider } from "../../studio/asset-plan.ts";
+import { parseTriedProviders, resolveHermesMaker, videoPrompt, type TriedProvider } from "../../studio/asset-plan.ts";
 import { extractJson, type Validated } from "../../studio/director.ts";
 import type { FailureClass } from "../../studio/pacing.ts";
 import type { Format } from "../../studio/catalog.ts";
@@ -35,10 +35,13 @@ export interface VideoJob {
 export interface GeneratedVideo {
   bytes: Uint8Array;
   info: VideoInfo;
+  /** The name provider terms are tracked under, by backend as for images (resolveHermesMaker). */
   provider: string;
   model: string;
-  /** The backend Hermes says really rendered the clip (agnes, veo, kling). Empty when it did not say. */
+  /** The backend Hermes says really rendered the clip (agnes, veo, kling), normalised. Empty when it did not say. */
   backend: string;
+  /** The plugin Hermes asked, normalised. Empty when it did not say. */
+  plugin: string;
   /** The URL Hermes gave, when the clip was downloaded. Empty for inline data. */
   originUrl: string;
   mode: VideoJob["mode"];
@@ -87,9 +90,9 @@ export async function generateVideo(job: VideoJob): Promise<VideoResult> {
     mediaOrigin: hermesMediaUrlBase("video") ?? undefined,
   });
 
-  const result = await hermesText<GeneratedVideo & { rawProvider: string; tried: TriedProvider[] }>(
+  const result = await hermesText<GeneratedVideo & { tried: TriedProvider[] }>(
     messages,
-    async (reply): Promise<Validated<GeneratedVideo & { rawProvider: string; tried: TriedProvider[] }>> => {
+    async (reply): Promise<Validated<GeneratedVideo & { tried: TriedProvider[] }>> => {
       const parsed = parseVideoReply(reply);
       if (!parsed.ok) return { ok: false, issues: parsed.issues };
       let bytes: Uint8Array;
@@ -113,18 +116,19 @@ export async function generateVideo(job: VideoJob): Promise<VideoResult> {
       const info = sniffVideo(bytes);
       const issues = videoIssues(info);
       if (issues.length > 0 || !info) return { ok: false, issues };
+      const maker = resolveHermesMaker({ provider: parsed.provider, backend: parsed.backend }, providerOrderHint());
       return {
         ok: true,
         value: {
           bytes,
           info,
-          provider: parsed.provider,
+          provider: maker.provider,
           model: parsed.model,
-          backend: parsed.backend,
+          backend: maker.backend,
+          plugin: maker.plugin,
           originUrl,
           mode: job.mode,
           seconds: job.seconds,
-          rawProvider: parsed.provider,
           tried: triedIn(reply),
         },
       };
@@ -133,8 +137,8 @@ export async function generateVideo(job: VideoJob): Promise<VideoResult> {
   );
 
   if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
-  const { rawProvider, tried, ...video } = result.value;
-  await recordHermesChain(video.backend || rawProvider, tried, "video");
+  const { tried, ...video } = result.value;
+  await recordHermesChain(video.backend || video.provider, tried, "video");
   return { ok: true, video, attempts: result.attempts, tried };
 }
 

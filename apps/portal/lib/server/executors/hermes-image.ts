@@ -5,7 +5,7 @@ import { fetchMedia } from "../safe-fetch.ts";
 import { normalizeGatewayBase } from "../../gateway-url.ts";
 import { originOf } from "../../net-address.ts";
 import { mediaUrlBase } from "../../media-url.ts";
-import { imagePrompt, normalizeProvider, parseTriedProviders, resolveImageProvider, type TriedProvider } from "../../studio/asset-plan.ts";
+import { imagePrompt, normalizeProvider, parseTriedProviders, resolveHermesMaker, type TriedProvider } from "../../studio/asset-plan.ts";
 import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
 import { recordEndpointResult } from "../endpoint-health.ts";
@@ -34,10 +34,16 @@ export interface ImageJob {
 export interface GeneratedImage {
   bytes: Uint8Array;
   info: ImageInfo;
+  /**
+   * The name provider terms are tracked under: the backend (bare when listed in HERMES_IMAGE_PROVIDER_ORDER, else
+   * unlisted-<backend>), or unlisted-<plugin> when Hermes named no backend. See resolveHermesMaker.
+   */
   provider: string;
   model: string;
-  /** The backend Hermes says really made the picture (canva, agnes, cloudflare-9router). Empty when it did not say. */
+  /** The backend Hermes says really made the picture (canva, agnes, cloudflare-9router), normalised. Empty when it did not say. */
   backend: string;
+  /** The image_gen plugin Hermes asked (for example 9router), normalised. Empty when it did not say or for 9router direct. */
+  plugin: string;
   /** The URL Hermes gave, when the image was downloaded. Empty for inline data. */
   originUrl: string;
 }
@@ -130,7 +136,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     providerOrder: providerOrderHint(),
     mediaOrigin: hermesMediaUrlBase() ?? undefined,
   });
-  const result = await hermesText<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>> => {
+  const result = await hermesText<GeneratedImage & { tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { tried: TriedProvider[] }>> => {
     const parsed = parseImageReply(reply);
     if (!parsed.ok) return { ok: false, issues: parsed.issues };
     let bytes: Uint8Array;
@@ -150,23 +156,25 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     const info = sniffImage(bytes);
     const issues = imageIssues(info, job.format);
     if (issues.length > 0 || !info) return { ok: false, issues };
+    const maker = resolveHermesMaker({ provider: parsed.provider, backend: parsed.backend }, providerOrderHint());
     return {
       ok: true,
       value: {
         bytes,
         info,
-        provider: resolveImageProvider(parsed.provider, providerOrderHint()),
+        provider: maker.provider,
         model: parsed.model,
         originUrl,
-        backend: parsed.backend,
-        rawProvider: parsed.provider,
+        backend: maker.backend,
+        plugin: maker.plugin,
         tried: triedIn(reply),
       },
     };
   }, { busyFromReply: true });
   if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
-  const { rawProvider, tried, ...image } = result.value;
-  await recordHermesChain(image.backend || rawProvider, tried);
+  const { tried, ...image } = result.value;
+  // Health is kept per backend. Without a backend report the plugin's unlisted name is recorded, never the bare plugin.
+  await recordHermesChain(image.backend || image.provider, tried);
   return { ok: true, image, attempts: result.attempts, tried };
 }
 

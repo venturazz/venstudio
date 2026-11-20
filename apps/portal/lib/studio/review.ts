@@ -112,7 +112,8 @@ export interface ReviewPayload {
 }
 
 export interface ReviewMedia {
-  images?: Array<{ assetId: string; shotRef: string; provider: string }>;
+  /** provider is the name terms are tracked under (the backend for Hermes images); plugin is the Hermes plugin in front of it. */
+  images?: Array<{ assetId: string; shotRef: string; provider: string; plugin?: string }>;
   audioAssetId?: string;
   videoAssetId?: string;
   /** Voice provider, for the audio card. */

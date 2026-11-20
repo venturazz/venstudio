@@ -13,7 +13,7 @@ import { missingCapabilityMessage, parseRouterList, scanStateOf, skillHintsFor, 
 import {
   joinAudioChunks,
   planVoice,
-  resolveKokoroProvider,
+  resolveHermesVoice,
   retryWaitSec,
   routerProviderName,
   routerVoiceSource,
@@ -308,6 +308,10 @@ function planFor(language: string, router: { configured: boolean; models: Router
 export interface Narration {
   /** The provider that really made the voice, for example "kokoro", "hermes-kokoro", "capcut" or "unlisted-<name>". */
   provider: string;
+  /** Hermes paths: the engine Hermes says really spoke (kokoro, capcut, edge ...). Empty or absent when it did not say. */
+  backend?: string;
+  /** Hermes paths: the plugin in front of that engine (for example capcut). */
+  plugin?: string;
   executor: ProvenanceExecutor;
   via: "9router" | "hermes" | "direct";
   voice: string;
@@ -342,13 +346,14 @@ function measure(audio: Uint8Array): { durationSec: number | null; clipped: bool
 
 const EXT: Record<"audio/wav" | "audio/mpeg" | "audio/ogg", "wav" | "mp3" | "ogg"> = { "audio/wav": "wav", "audio/mpeg": "mp3", "audio/ogg": "ogg" };
 
-type HermesVoice = { audio: Uint8Array; mime: "audio/wav" | "audio/mpeg" | "audio/ogg"; model: string; provider: string };
+type HermesVoice = { audio: Uint8Array; mime: "audio/wav" | "audio/mpeg" | "audio/ogg"; model: string; provider: string; backend: string; plugin: string };
 
 /**
  * Narration through Hermes: asked for its Kokoro voice, or for its CapCut workflow. The reply is checked by magic
- * bytes like any other media. For the Kokoro engine the provider Hermes names is a self-report: resolveKokoroProvider
- * records a claim of Kokoro as "hermes-kokoro" (never the confirmed "kokoro") and any other name as "unlisted-<name>".
- * The CapCut engine is always recorded as "capcut".
+ * bytes like any other media. The voice is named by the engine that really spoke (`source`), not the plugin in
+ * front of it (resolveHermesVoice): a claim of Kokoro is "hermes-kokoro" (never the confirmed "kokoro"), CapCut is
+ * "capcut" when CapCut was asked, any other engine "unlisted-<name>", and a CapCut reply that names no engine is
+ * "unlisted-<plugin>".
  */
 export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, language: string, skillHints: string[] = []): Promise<SynthesisResult> {
   const what = engine === "kokoro" ? "Kokoro through Hermes" : "The backup voice (CapCut through Hermes)";
@@ -372,18 +377,22 @@ export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, l
     const info = sniffAudio(audio);
     const issues = capcutAudioIssues(info);
     if (issues.length > 0 || !info) return { ok: false, issues };
-    const provider = engine === "kokoro" ? resolveKokoroProvider(parsed.provider) : "capcut";
-    return { ok: true, value: { audio, mime: info.mime, model: parsed.model, provider } };
+    const maker = resolveHermesVoice(engine, { provider: parsed.provider, backend: parsed.backend });
+    return { ok: true, value: { audio, mime: info.mime, model: parsed.model, provider: maker.provider, backend: maker.backend, plugin: maker.plugin } };
   }, { busyFromReply: true });
   if (!result.ok) {
     if (result.cause === "busy") return { ok: false, error: `${what} is waiting. ${result.error}`, busyUntil: result.busyUntil };
     return { ok: false, error: `${what} failed. ${result.error}` };
   }
-  const { audio, mime, model, provider } = result.value;
+  const { audio, mime, model, provider, backend, plugin } = result.value;
+  // Health under the engine that spoke, like Hermes's image chain. Only a named engine is recorded.
+  if (backend) await recordEndpointResult("hermes", backend, "tts", { ok: true });
   return {
     ok: true,
     narration: {
       provider,
+      backend,
+      plugin,
       executor: engine === "kokoro" ? "hermes-kokoro" : "hermes-capcut",
       via: "hermes",
       voice: engine,
@@ -532,12 +541,12 @@ export async function describeVoicePath(): Promise<VoicePathInfo> {
 
 /** A short clip for the Settings "Test voice" button, made the same way the voice stage makes narration. */
 export async function voiceTest(): Promise<
-  | { ok: true; provider: string; via: string; model: string; durationSec: number | null; bytes: number; ms: number; skipped: string[] }
+  | { ok: true; provider: string; backend: string; plugin: string; via: string; model: string; durationSec: number | null; bytes: number; ms: number; skipped: string[] }
   | { ok: false; error: string }
 > {
   const started = Date.now();
   const r = await synthesize("This is a VenStudio voice test.", "en", { ignoreQuarantine: true });
   if (!r.ok) return { ok: false, error: r.error };
   const n = r.narration;
-  return { ok: true, provider: n.provider, via: n.via, model: n.model, durationSec: n.durationSec, bytes: n.audio.length, ms: Date.now() - started, skipped: n.skipped };
+  return { ok: true, provider: n.provider, backend: n.backend ?? "", plugin: n.plugin ?? "", via: n.via, model: n.model, durationSec: n.durationSec, bytes: n.audio.length, ms: Date.now() - started, skipped: n.skipped };
 }

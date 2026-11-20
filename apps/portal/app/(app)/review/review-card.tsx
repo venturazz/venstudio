@@ -39,6 +39,7 @@ function MediaBlock({ stage, payload }: { stage: string; payload: ReviewPayload 
               <img src={`/api/assets/${img.assetId}`} alt={`Shot ${img.shotRef}`} loading="lazy" className="aspect-[9/16] w-full rounded-lg border border-border bg-surface-2 object-cover" />
               <p className="break-words text-xs text-muted">
                 {img.shotRef} · {img.provider || "unknown provider"}
+                {img.plugin ? ` via ${img.plugin}` : ""}
               </p>
             </li>
           ))}

@@ -44,6 +44,65 @@ export function resolveImageProvider(claimed: string | null | undefined, configu
   return `unlisted-${name}`.slice(0, PROVIDER_NAME_MAX);
 }
 
+/**
+ * Hermes image_gen plugins that front several backends with different terms (docs/research/05: the 9router plugin
+ * walks canva, agnes, cloudflare, modelscope, sensenova, free ...). A plugin id is never the maker of a file.
+ */
+export const HERMES_IMAGE_PLUGINS: readonly string[] = ["9router"];
+
+/** Who made a file Hermes handed back, split into the name terms are tracked under and the metadata around it. */
+export interface HermesMaker {
+  /**
+   * The asset_providers name. The backend when Hermes reported one (bare when the owner listed it in
+   * HERMES_IMAGE_PROVIDER_ORDER, otherwise unlisted-<backend>), or unlisted-<plugin> when it did not say.
+   */
+  provider: string;
+  /** The backend Hermes reported in `source`, normalised. Empty when it did not say. */
+  backend: string;
+  /** The plugin Hermes reported in `provider`, normalised. Empty when it did not say. */
+  plugin: string;
+}
+
+function reportedName(raw: string | null | undefined): string {
+  return (raw ?? "").trim() ? normalizeProvider(raw) : "";
+}
+
+/**
+ * Names the maker of a Hermes image or clip by the backend that really made it, not by the plugin in front of it, so
+ * the owner's terms for one row never cover every backend behind a plugin. Trust rule, the same one as before applied
+ * to the backend: only a backend listed in HERMES_IMAGE_PROVIDER_ORDER is stored bare; any other backend becomes
+ * unlisted-<backend>. Listing a plugin id (9router) vouches for nothing behind it. Without a backend report the name
+ * is always unlisted-<plugin>, even when the plugin is listed, so nothing looks verified. A `source` that is itself a
+ * known plugin id ("9router") says nothing about the backend and counts as missing. Nothing is inferred from the model id.
+ */
+export function resolveHermesMaker(reported: { provider?: string | null; backend?: string | null }, configuredOrder: readonly string[]): HermesMaker {
+  const plugin = reportedName(reported.provider);
+  let backend = reportedName(reported.backend);
+  if (backend === "unknown" || HERMES_IMAGE_PLUGINS.includes(backend)) backend = "";
+  if (backend) return { provider: resolveImageProvider(backend, configuredOrder), backend, plugin };
+  return { provider: `unlisted-${plugin || "unknown"}`.slice(0, PROVIDER_NAME_MAX), backend: "", plugin };
+}
+
+/** "Image made by cloudflare-9router via 9router plugin (model)", or the stored name when Hermes named no backend. */
+export function makerLine(what: string, m: HermesMaker, model: string): string {
+  const mdl = model.trim() ? ` (${model.trim()})` : "";
+  if (!m.backend) return `${what} made by ${m.provider}${mdl}. Hermes did not say which backend made it`;
+  const via = m.plugin && m.plugin !== m.backend ? ` via ${m.plugin} plugin` : "";
+  return `${what} made by ${m.backend}${via}${mdl}`;
+}
+
+/**
+ * A Settings note for a provider row named after a plugin (unlisted-9router): rows from before the studio recorded
+ * backends, or files Hermes did not attribute. Such a row covers only assets saved under that exact name.
+ */
+export function pluginRowNote(name: string, kind: ProviderKind, plugins: readonly string[] = HERMES_IMAGE_PLUGINS): string | null {
+  if (kind !== "image" && kind !== "video") return null;
+  const n = normalizeProvider(name);
+  const plugin = n.startsWith("unlisted-") ? n.slice("unlisted-".length) : n;
+  if (!plugins.includes(plugin)) return null;
+  return `This row names the Hermes plugin ${plugin}, not the backend that made the files. It covers only assets saved under this name (older ones, or ones where Hermes did not say which backend made them). Each backend behind ${plugin} has its own row.`;
+}
+
 export interface ProviderUse {
   title: string;
   provider: string;
@@ -104,8 +163,12 @@ export interface ProvenanceInput {
   executor: ProvenanceExecutor;
   title: string;
   kind: AssetKind;
-  /** Provider name as reported by Hermes (or "kokoro", "capcut"). */
+  /** Provider name terms are tracked under (or "kokoro", "capcut"). For Hermes, the backend name from resolveHermesMaker. */
   provider: string;
+  /** Hermes: the backend that really made the file, when Hermes said. Named in the licence text. */
+  backend?: string;
+  /** Hermes: the plugin in front of the backend (for example 9router). Metadata and licence text only. */
+  plugin?: string;
   model?: string;
   prompt?: string;
   /** Required for worker-fetch: the page or file the asset came from. */
@@ -136,16 +199,21 @@ const SOURCE_BY_EXECUTOR: Record<ProvenanceExecutor, AssetSource> = {
 export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
   const provider = normalizeProvider(i.provider);
   const model = (i.model ?? "").trim();
+  const backend = (i.backend ?? "").trim() ? normalizeProvider(i.backend) : "";
+  const plugin = (i.plugin ?? "").trim() ? normalizeProvider(i.plugin) : "";
+  // The licence names the real maker: the backend when Hermes said, else the stored provider name.
+  const maker = backend || provider;
+  const viaPlugin = plugin && plugin !== maker ? `, plugin ${plugin}` : "";
   let license: string;
   let providerKind: ProviderKind;
   switch (i.executor) {
     case "hermes-image":
       providerKind = "image";
-      license = `AI generated by ${provider}${model ? ` (${model})` : ""} through Hermes image_gen. Commercial terms are tracked in Settings.`;
+      license = `AI generated by ${maker}${model ? ` (${model})` : ""} through Hermes image_gen${plugin && plugin !== maker ? ` plugin ${plugin}` : ""}.${backend ? "" : " Hermes did not say which backend made it."} Commercial terms are tracked in Settings.`;
       break;
     case "hermes-capcut":
       providerKind = "tts";
-      license = `Voice made by ${provider} through Hermes' CapCut workflow. Commercial terms are tracked in Settings.`;
+      license = `Voice made by ${maker}${model ? ` (${model})` : ""} through Hermes' CapCut workflow${viaPlugin}. Commercial terms are tracked in Settings.`;
       break;
     case "router-tts":
       providerKind = "tts";
@@ -153,7 +221,7 @@ export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
       break;
     case "hermes-kokoro":
       providerKind = "tts";
-      license = `Voice made by ${provider}${model ? ` (${model})` : ""} when Hermes was asked for Kokoro. The provider name is stated by Hermes. Commercial terms are tracked in Settings.`;
+      license = `Voice made by ${maker}${model ? ` (${model})` : ""} when Hermes was asked for Kokoro${viaPlugin}. The provider name is stated by Hermes. Commercial terms are tracked in Settings.`;
       break;
     case "router-image":
       providerKind = "image";
@@ -176,6 +244,8 @@ export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
   };
   const metadata: Record<string, unknown> = { executor: i.executor, provider, providerKind, via: VIA_BY_EXECUTOR[i.executor] };
   if (model) metadata.model = model;
+  if (backend) metadata.backend = backend;
+  if (plugin) metadata.plugin = plugin;
   if (i.prompt) metadata.prompt = i.prompt.slice(0, 2000);
   if (i.shotRef) metadata.shotRef = i.shotRef;
   return { record, provider, providerKind, metadata };
@@ -486,7 +556,7 @@ export function ttsKokoroPrompt(r: TtsKokoroRequest): ChatMessage[] {
       content: [
         "VENSTUDIO_STAGE: tts-kokoro",
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with the Kokoro voice. Use your Kokoro text to speech skill or the 9router Kokoro voice you can call. Do not change the words.`,
-        "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro. In provider, name the engine that really made the audio.",
+        "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro. In source, name the engine that really made the audio.",
         "Prefer WAV (16-bit PCM). MP3 is accepted.",
         ...mediaDelivery(r.mediaOrigin, "audio.value"),
         'Schema: {"status":"ok"|"error","provider":string,"source":string,"model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
@@ -522,7 +592,8 @@ export function ttsCapcutPrompt(r: TtsCapcutRequest): ChatMessage[] {
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with a clear, steady narrator voice, using your CapCut text to speech workflow. Do not change the words.`,
         "Prefer WAV (16-bit PCM). MP3 is accepted.",
         ...mediaDelivery(r.mediaOrigin, "audio.value"),
-        'Schema: {"status":"ok"|"error","provider":"capcut","model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
+        'Schema: {"status":"ok"|"error","provider":string,"source":string,"model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
+        "provider is the plugin that was asked (for example capcut). source is the engine that really spoke: your CapCut workflow can fall back to kokoro, gemini, edge or google_translate, so name the one that made this file. Never guess.",
         dataBlock("narration text", r.text, MAX_TTS_PROMPT_CHARS),
         r.retryHint ? dataBlock("problem with the last attempt", r.retryHint, MAX_NOTE_CHARS) : "",
       ]
