@@ -39,14 +39,23 @@ Use `deploy/hermes-files.coolify.yml`. It builds nginx with the config baked in,
 read-only, runs as the Hermes user (uid 10000), and joins the `coolify` network as `hermes-files`. CI starts
 it and checks the four prefixes, the 404s and the user on every push.
 
-1. On the VPS, find the host path of the Hermes `/opt/data`:
-   `docker inspect hermes-<id> --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}'`
-2. Coolify: **+ New → Resource → Public/Private Repository** → this repo, branch `feat/portal-foundation`,
-   Build Pack **Docker Compose**, Base Directory `/deploy`, Docker Compose Location `/hermes-files.coolify.yml`.
-3. Environment: `HERMES_DATA_DIR` = the path from step 1. Leave the domain empty. Deploy.
-4. Portal environment: `HERMES_MEDIA_ORIGINS=http://hermes-files:8000`. Redeploy the portal.
+Coolify refuses `${...}` and shell characters in volume paths ("Invalid volume source: contains forbidden
+character"), so the file mounts a fixed path, `/data/venstudio/hermes-data`, which you point at the Hermes data
+once with a symlink. `scripts/check-coolify-compose.sh` checks the file against that rule in CI.
 
-Do **not** give it a domain. If the Hermes user is not 10000, set `HERMES_UID` and `HERMES_GID`.
+1. On the VPS, link the fixed path to the Hermes `/opt/data`:
+   ```bash
+   SRC=$(docker inspect hermes-<id> --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}')
+   echo "$SRC"; ls "$SRC/cache"            # must list generated/, tts/ ...
+   sudo mkdir -p /data/venstudio && sudo ln -sfn "$SRC" /data/venstudio/hermes-data
+   ls /data/venstudio/hermes-data/cache    # same listing
+   ```
+2. Coolify: **+ New → Resource → Private Repository (with GitHub App)** → this repo, branch
+   `feat/portal-foundation`, Build Pack **Docker Compose**, Base Directory `/deploy`, Docker Compose Location
+   `/hermes-files.coolify.yml`. No environment variables are needed. Leave the domain empty. Deploy.
+3. Portal environment: `HERMES_MEDIA_ORIGINS=http://hermes-files:8000`. Redeploy the portal.
+
+Do **not** give it a domain. It runs as uid 10000 (the Hermes user); if yours differs, edit `user:` in the file.
 
 ## 2. Point the portal at it
 

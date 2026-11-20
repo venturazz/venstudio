@@ -167,9 +167,13 @@ jobs:
           printf 'MP4DATA' > "$D/cache/generated/videos/c.mp4"
           printf 'SECRET' > "$D/cache/canva_tokens/canva_token_0.json"
           sudo chown -R 10000:10000 "$D"
+          # Same setup the owner does once on the VPS: the fixed path is a symlink to the Hermes data dir.
+          sudo mkdir -p /data/venstudio && sudo ln -sfn "$D" /data/venstudio/hermes-data
           docker network create coolify >/dev/null 2>&1 || true
-          HERMES_DATA_DIR="$D" docker compose -f deploy/hermes-files.coolify.yml config -q
-          HERMES_DATA_DIR="$D" docker compose -f deploy/hermes-files.coolify.yml up -d --build
+          # Coolify refuses ${...} and shell characters in volume paths; fail here instead of in Coolify.
+          bash scripts/check-coolify-compose.sh deploy/hermes-files.coolify.yml docker-compose.coolify.yml
+          docker compose -f deploy/hermes-files.coolify.yml config -q
+          docker compose -f deploy/hermes-files.coolify.yml up -d --build
           code() { docker run --rm --network coolify curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' "$@"; }
           for i in $(seq 1 30); do [ "$(code http://hermes-files:8000/healthz)" = 200 ] && break; sleep 1; done
           fail() { echo "MEDIA FAIL: $*"; docker logs hermes-files 2>&1 | tail -30; exit 1; }
@@ -183,4 +187,7 @@ jobs:
           [ "$(code -X POST http://hermes-files:8000/img/a.png)" = 405 ] || fail "POST accepted"
           [ "$(docker inspect -f '{{.Config.User}}' hermes-files)" = "10000:10000" ] || fail "not running as the Hermes user"
           echo "media host ok"
-          HERMES_DATA_DIR="$D" docker compose -f deploy/hermes-files.coolify.yml down
+          docker compose -f deploy/hermes-files.coolify.yml down
+          # The checker must catch the form Coolify rejected, or it proves nothing.
+          printf 'services:\n  x:\n    image: nginx\n    volumes:\n      - ${HERMES_DATA_DIR:?set it}:/srv:ro\n' > /tmp/bad.yml
+          if bash scripts/check-coolify-compose.sh /tmp/bad.yml; then echo "checker missed a \${...} volume"; exit 1; fi
