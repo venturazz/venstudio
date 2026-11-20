@@ -34,6 +34,8 @@ export interface GeneratedImage {
   info: ImageInfo;
   provider: string;
   model: string;
+  /** The backend Hermes says really made the picture (canva, agnes, cloudflare-9router). Empty when it did not say. */
+  backend: string;
   /** The URL Hermes gave, when the image was downloaded. Empty for inline data. */
   originUrl: string;
 }
@@ -86,6 +88,25 @@ export function hermesTrustedOrigins(): string[] {
   return list;
 }
 
+/**
+ * The base URL the portal tells Hermes to place a file name under — the full origin *including any path*
+ * (http://hermes-files:8000/img), because the agent appends the bare file name to it. hermesTrustedOrigins()
+ * strips the path for the fetch allowlist; this one must not.
+ *
+ * Images and narration live in different directories under the same media host, so each kind gets its own
+ * override and both fall back to the first HERMES_MEDIA_ORIGINS entry.
+ */
+export function hermesMediaUrlBase(kind: "image" | "audio" = "image"): string | null {
+  const specific = (kind === "audio" ? env().HERMES_TTS_MEDIA_ORIGIN : env().HERMES_IMAGE_MEDIA_ORIGIN) ?? "";
+  const first = specific.trim() || ((env().HERMES_MEDIA_ORIGINS ?? "").split(",")[0] ?? "").trim();
+  if (!first) return null;
+  try {
+    return new URL(first).toString().replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
 export function providerOrderHint(): string[] {
   return (env().HERMES_IMAGE_PROVIDER_ORDER ?? "")
     .split(",")
@@ -107,6 +128,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     format: job.format,
     shotRef: job.shotRef,
     providerOrder: providerOrderHint(),
+    mediaOrigin: hermesMediaUrlBase() ?? undefined,
   });
   const result = await hermesText<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>> => {
     const parsed = parseImageReply(reply);
@@ -136,6 +158,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
         provider: resolveImageProvider(parsed.provider, providerOrderHint()),
         model: parsed.model,
         originUrl,
+        backend: parsed.backend,
         rawProvider: parsed.provider,
         tried: triedIn(reply),
       },
@@ -143,7 +166,7 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
   }, { busyFromReply: true });
   if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
   const { rawProvider, tried, ...image } = result.value;
-  await recordHermesChain(rawProvider, tried);
+  await recordHermesChain(image.backend || rawProvider, tried);
   return { ok: true, image, attempts: result.attempts, tried };
 }
 

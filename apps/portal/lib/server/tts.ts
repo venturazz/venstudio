@@ -1,7 +1,7 @@
 import "server-only";
 import { env } from "./env.ts";
 import { explainFetchError } from "./ai-gateway.ts";
-import { hermesTrustedOrigins } from "./executors/hermes-image.ts";
+import { hermesMediaUrlBase, hermesTrustedOrigins } from "./executors/hermes-image.ts";
 import { hermesText } from "./hermes-json.ts";
 import { getCapabilities } from "./capabilities.ts";
 import { mp3DurationSec } from "../studio/mp3.ts";
@@ -357,8 +357,8 @@ export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, l
   const label = LANGUAGE_BY_CODE[language]?.label ?? language;
   const messages =
     engine === "kokoro"
-      ? ttsKokoroPrompt({ text: script, languageLabel: label, languageCode: language, skillHints })
-      : ttsCapcutPrompt({ text: script, languageLabel: label, languageCode: language });
+      ? ttsKokoroPrompt({ text: script, languageLabel: label, languageCode: language, skillHints, mediaOrigin: hermesMediaUrlBase("audio") ?? undefined })
+      : ttsCapcutPrompt({ text: script, languageLabel: label, languageCode: language, mediaOrigin: hermesMediaUrlBase("audio") ?? undefined });
   const result = await hermesText<HermesVoice>(messages, async (reply): Promise<Validated<HermesVoice>> => {
     const parsed = parseAudioReply(reply);
     if (!parsed.ok) return { ok: false, issues: parsed.issues };

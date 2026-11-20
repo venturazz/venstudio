@@ -191,3 +191,29 @@ test("parseTriedProviders keeps bounded, normalised names from Hermes' report", 
   assert.deepEqual(parseTriedProviders({ tried: "cloudflare" }), []);
   assert.equal(parseTriedProviders({ tried: Array.from({ length: 30 }, (_, i) => `p${i}`) }).length, 12);
 });
+
+test("imagePrompt never asks for base64 — that is what makes the turn loop", () => {
+  for (const mediaOrigin of [undefined, "http://hermes-files:8000"]) {
+    const [, user] = imagePrompt({ prompt: "a fox", beatRole: "hook", format: "short", shotRef: "shot-04", mediaOrigin });
+    // The word may appear only as a prohibition, never as an offer.
+    assert.doesNotMatch(user.content, /or base64 image data/);
+    assert.doesNotMatch(user.content, /Return a file path/);
+  }
+});
+
+test("imagePrompt hands Hermes the media origin and says the reply is a name, not the file", () => {
+  const [, user] = imagePrompt({ prompt: "a fox", beatRole: "hook", format: "short", shotRef: "shot-05", mediaOrigin: "http://hermes-files:8000/img" });
+  assert.match(user.content, /http:\/\/hermes-files:8000\/img/);
+  assert.match(user.content, /base name/i);
+  assert.match(user.content, /image\.value must be exactly http:\/\/hermes-files:8000\/img\/<file name>/);
+  assert.match(user.content, /do not use terminal or execute_code/i);
+  assert.match(user.content, /do not convert it to base64/i);
+  assert.doesNotMatch(user.content, /or base64 image data/);
+});
+
+test("ttsKokoroPrompt never asks for base64 and places the audio under the media origin", () => {
+  const [, user] = ttsKokoroPrompt({ text: "Hi.", languageLabel: "English", languageCode: "en", mediaOrigin: "http://hermes-files:8000/tts" });
+  assert.doesNotMatch(user.content, /or base64 audio data/);
+  assert.match(user.content, /http:\/\/hermes-files:8000\/tts/);
+  assert.match(user.content, /audio\.value must be exactly/);
+});

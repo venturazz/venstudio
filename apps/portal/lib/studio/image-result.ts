@@ -15,7 +15,7 @@ export interface MediaSource {
 }
 
 export type MediaReply =
-  | { ok: true; source: MediaSource; provider: string; model: string }
+  | { ok: true; source: MediaSource; provider: string; model: string; backend: string }
   | { ok: false; issues: string[] };
 
 export const MIN_IMAGE_SHORT_SIDE = 480;
@@ -102,13 +102,13 @@ function parseMediaReply(text: string, kind: MediaKind): MediaReply {
     }
     const src = sourceFrom(parsed[kind] ?? parsed.result, kind);
     if (typeof src === "string") return { ok: false, issues: [src] };
-    return { ok: true, source: src, provider: str(parsed.provider), model: str(parsed.model) };
+    return { ok: true, source: src, provider: str(parsed.provider), model: str(parsed.model), backend: str(parsed.source) };
   }
   if (/(^|\s)(\/|~\/|[A-Za-z]:\\)\S+\.(png|jpe?g|webp|wav|mp3|ogg)\b/i.test(text) && !fallbackSource(text, kind)) {
     return { ok: false, issues: [PATH_ISSUE] };
   }
   const loose = fallbackSource(text, kind);
-  if (loose) return { ok: true, source: loose, provider: "", model: "" };
+  if (loose) return { ok: true, source: loose, provider: "", model: "", backend: "" };
   return { ok: false, issues: [`The reply has no ${kind}. Return the JSON object, or an https URL, or base64 data.`] };
 }
 

@@ -135,3 +135,18 @@ test("capcutAudioIssues refuses Ogg and asks for WAV or MP3", () => {
   assert.deepEqual(capcutAudioIssues(sniffAudio(wav)), []);
   assert.ok(capcutAudioIssues(null).length > 0);
 });
+
+test("parseImageReply keeps the backend Hermes really used apart from the provider", () => {
+  const r = parseImageReply('{"status":"ok","provider":"9router","source":"canva","model":"canva-default","image":{"type":"url","value":"http://hermes-files:8000/canva_1.png","mimeType":"image/png"}}');
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.provider, "9router");
+    assert.equal(r.backend, "canva");
+  }
+});
+
+test("parseImageReply leaves backend empty when Hermes does not name one", () => {
+  const r = parseImageReply('{"status":"ok","provider":"cloudflare","image":{"type":"url","value":"http://hermes-files:8000/a.png","mimeType":"image/png"}}');
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal(r.backend, "");
+});

@@ -25,6 +25,10 @@ const schema = z.object({
   TTS_BACKUP: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["hermes-capcut", "off"]).default("hermes-capcut")),
   HERMES_IMAGE_PROVIDER_ORDER: optional(z.string()),
   HERMES_MEDIA_ORIGINS: optional(z.string()),
+  /** Where the studio reads generated images from. May include a path (http://hermes-files:8000/img). Falls back to the first HERMES_MEDIA_ORIGINS entry. */
+  HERMES_IMAGE_MEDIA_ORIGIN: optional(z.string()),
+  /** Where the studio reads narration audio from. May include a path (http://hermes-files:8000/tts). Falls back to the first HERMES_MEDIA_ORIGINS entry. */
+  HERMES_TTS_MEDIA_ORIGIN: optional(z.string()),
   MUSE_AGENT_TASKS: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["1", "0"]).default("0")),
 });
 

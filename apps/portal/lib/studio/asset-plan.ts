@@ -259,9 +259,34 @@ export interface ImageRequest {
   /** Provider names Hermes should try first. A preference only. */
   providerOrder?: string[];
   retryHint?: string;
+  /**
+   * Base URL Hermes must put the generated file's name under (origin plus any path), for example
+   * http://hermes-files:8000/img. Hermes writes the file inside its own container, so a path is useless to the
+   * portal and a base64 blob is far too large for a reply; the portal downloads from this origin instead.
+   */
+  mediaOrigin?: string;
 }
 
 export const MAX_IMAGE_PROMPT_CHARS = 1200;
+
+/**
+ * How Hermes is asked to hand a file over. It generates into its own container, so the only thing it can give
+ * back cheaply is a *name*. Asking for base64 makes the model try to carry a ~100 KB blob inside its reply; it
+ * cannot, the turn falls into a repetition loop and the stream is cut with agent_error. So base64 is never asked
+ * for — the name is, and the portal fetches the bytes over HTTP.
+ */
+function mediaDelivery(origin: string | undefined, field: string): string[] {
+  if (!origin) {
+    return [
+      "Do not return a file path and never convert the file to base64. Reply with an https URL anyone can download, or reply with status \"error\" if you have no way to publish the file.",
+    ];
+  }
+  return [
+    "Your generator writes the file inside your own container, so its path is useless here. Do not read the file, do not convert it to base64, and do not use terminal or execute_code: reply with the file's base name only.",
+    `Place that name under this media origin: ${origin}`,
+    `${field} must be exactly ${origin}/<file name>.`,
+  ];
+}
 
 export function imagePrompt(r: ImageRequest): ChatMessage[] {
   const shape = r.format === "short" ? "vertical 9:16 (1080x1920)" : "landscape 16:9 (1920x1080)";
@@ -277,7 +302,7 @@ export function imagePrompt(r: ImageRequest): ChatMessage[] {
         order.length ? `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.` : "",
         'If every provider is rate limited, reply with status "error" and say "rate limited" in error.',
         "The image must be at least 480 pixels on its short side. It names no real person, no brand and no copyrighted character.",
-        "Do not return a file path. Return an https URL that anyone can download, or base64 image data.",
+        ...mediaDelivery(r.mediaOrigin, "image.value"),
         'Schema: {"status":"ok"|"error","provider":string,"model":string,"image":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string,"tried":[{"provider":string,"error":string}]}',
         "provider is the provider that really made the image. Never guess it. tried lists the providers that failed before it, with a short reason.",
         dataBlock("image description", r.prompt, MAX_IMAGE_PROMPT_CHARS),
@@ -296,6 +321,8 @@ export interface TtsKokoroRequest {
   /** Skill names Hermes reported for narration. Names only, shown as data. */
   skillHints?: string[];
   retryHint?: string;
+  /** Base URL Hermes must put the narration file's name under. See ImageRequest.mediaOrigin. */
+  mediaOrigin?: string;
 }
 
 export function ttsKokoroPrompt(r: TtsKokoroRequest): ChatMessage[] {
@@ -308,7 +335,8 @@ export function ttsKokoroPrompt(r: TtsKokoroRequest): ChatMessage[] {
         "VENSTUDIO_STAGE: tts-kokoro",
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with the Kokoro voice. Use your Kokoro text to speech skill or the 9router Kokoro voice you can call. Do not change the words.`,
         "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro. In provider, name the engine that really made the audio.",
-        "Prefer WAV (16-bit PCM). MP3 is accepted. Do not return a file path. Return an https URL that anyone can download, or base64 audio data.",
+        "Prefer WAV (16-bit PCM). MP3 is accepted.",
+        ...mediaDelivery(r.mediaOrigin, "audio.value"),
         'Schema: {"status":"ok"|"error","provider":string,"model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
         hints.length ? dataBlock("skills you have for narration", hints.join(", "), MAX_NOTE_CHARS) : "",
         dataBlock("narration text", r.text, MAX_TTS_PROMPT_CHARS),
@@ -325,6 +353,8 @@ export interface TtsCapcutRequest {
   languageLabel: string;
   languageCode: string;
   retryHint?: string;
+  /** Base URL Hermes must put the narration file's name under. See ImageRequest.mediaOrigin. */
+  mediaOrigin?: string;
 }
 
 export const MAX_TTS_PROMPT_CHARS = 6000;
@@ -337,7 +367,8 @@ export function ttsCapcutPrompt(r: TtsCapcutRequest): ChatMessage[] {
       content: [
         "VENSTUDIO_STAGE: tts-capcut",
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with a clear, steady narrator voice, using your CapCut text to speech workflow. Do not change the words.`,
-        "Prefer WAV (16-bit PCM). MP3 is accepted. Do not return a file path. Return an https URL that anyone can download, or base64 audio data.",
+        "Prefer WAV (16-bit PCM). MP3 is accepted.",
+        ...mediaDelivery(r.mediaOrigin, "audio.value"),
         'Schema: {"status":"ok"|"error","provider":"capcut","model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
         dataBlock("narration text", r.text, MAX_TTS_PROMPT_CHARS),
         r.retryHint ? dataBlock("problem with the last attempt", r.retryHint, MAX_NOTE_CHARS) : "",
