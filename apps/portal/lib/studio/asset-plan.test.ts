@@ -211,6 +211,12 @@ test("imagePrompt hands Hermes the media origin and says the reply is a name, no
   assert.doesNotMatch(user.content, /or base64 image data/);
 });
 
+test("imagePrompt asks for the real backend in source, apart from provider", () => {
+  const [, user] = imagePrompt({ prompt: "a fox", beatRole: "hook", format: "short", shotRef: "s1", mediaOrigin: "http://hermes-files:8000/img" });
+  assert.match(user.content, /"source":string/);
+  assert.match(user.content, /backend that really made the image/);
+});
+
 test("ttsKokoroPrompt never asks for base64 and places the audio under the media origin", () => {
   const [, user] = ttsKokoroPrompt({ text: "Hi.", languageLabel: "English", languageCode: "en", mediaOrigin: "http://hermes-files:8000/tts" });
   assert.doesNotMatch(user.content, /or base64 audio data/);
