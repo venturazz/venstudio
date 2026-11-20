@@ -110,14 +110,14 @@ export const STAGE_INFO: Record<CapabilityStage, StageInfo> = {
   },
   "video-clips": {
     label: "Video clips",
-    today: "Found, not used by a stage yet. A listing does not prove they work. Check skills asks Hermes whether it can load them; the studio first calls them in Phase 5.",
+    today: "Hermes renders one clip per shot with its video_generate tool (Agnes backend, 4-12s, 720P) and the render joins the shots. A clip is a shot, never the finished video.",
     used: false,
     builtIn: false,
     later: false,
     noun: "video clip maker",
-    hermesWhat: "video or animation skill",
+    hermesWhat: "the video_generate tool",
     routerWhat: "video model",
-    fix: "Add a video provider in the 9router dashboard or a video skill in Hermes",
+    fix: "Nothing to add: Hermes has a video provider through the video_gen plugin. If this still reads missing, enable the video_gen toolset for the calling platform.",
   },
   editing: {
     label: "Editing",
