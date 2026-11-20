@@ -94,5 +94,11 @@ export function stageSummary(stage: DirectorStage, result: unknown): string {
   }
   const shots = Array.isArray(r.shots) ? (r.shots as Shot[]) : [];
   const total = shots.reduce((sum, s) => sum + (typeof s.seconds === "number" ? s.seconds : 0), 0);
-  return `${shots.length} shot${shots.length === 1 ? "" : "s"}, about ${Math.round(total)} seconds`;
+  const steered = shots.filter((s) => typeof s.provider === "string" || typeof s.needs === "string").length;
+  const notes = Array.isArray(r.notes) ? r.notes.filter((n): n is string => typeof n === "string") : [];
+  const extra = [
+    steered > 0 ? `${steered} with an image backend preference` : "",
+    notes.length > 0 ? `${notes.length} preference${notes.length === 1 ? "" : "s"} dropped: ${notes[0]}${notes.length > 1 ? " ..." : ""}` : "",
+  ].filter(Boolean);
+  return `${shots.length} shot${shots.length === 1 ? "" : "s"}, about ${Math.round(total)} seconds${extra.length ? `. ${extra.join(". ")}` : ""}`;
 }

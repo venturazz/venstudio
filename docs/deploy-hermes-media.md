@@ -90,8 +90,10 @@ Then one turn on **Settings → test Hermes image**. Expected reply from Hermes:
 ```
 
 `source` is the backend that really made the file (`canva`, `agnes`, `cloudflare-9router`, `modelscope`,
-`sensenova-edit`, `free-fallback`). `provider` is always the plugin id `9router`. Provenance records
-`source`; if it says `9router` for everything, the reply lost the field.
+`sensenova-edit`, `free-fallback`). `provider` is always the plugin id `9router`. Provenance and Asset providers record
+`source` (as `unlisted-<source>` unless it is listed in `HERMES_IMAGE_PROVIDER_ORDER`); a reply without `source` is
+recorded as `unlisted-9router`. If Settings lists only `unlisted-9router`, the reply lost the field. See "Provider
+identity" in `docs/architecture-autonomous-studio.md`.
 
 ## Security
 

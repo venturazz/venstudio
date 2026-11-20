@@ -17,7 +17,8 @@ import { kokoroHealth, voiceTest } from "@/lib/server/tts.ts";
 import { generateImage, listHermesImageProviders } from "@/lib/server/executors/hermes-image.ts";
 import { testRouterImages } from "@/lib/server/executors/router-image.ts";
 import { runSkillCheck, scanCapabilities } from "@/lib/server/capabilities.ts";
-import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
+import { makerLine, PROVIDER_NAME_MAX, refusedIssue } from "@/lib/studio/asset-plan.ts";
+import { listProviderTerms } from "@/lib/server/executors/persist.ts";
 
 function raw(fd: FormData, key: string) {
   const v = fd.get(key);
@@ -136,6 +137,7 @@ export async function testVoice(_prev: TestState, _fd: FormData): Promise<TestSt
   const how = r.via === "9router" ? "through 9router" : r.via === "hermes" ? "through Hermes" : "straight from your Kokoro server";
   const lines = [
     `Voice made by ${r.provider} ${how}`,
+    ...(r.backend ? [`Spoken by ${r.backend}${r.plugin && r.plugin !== r.backend ? ` via ${r.plugin} plugin` : ""}`] : []),
     `Model ${r.model}`,
     `${r.durationSec === null ? "Length not known" : `${r.durationSec} s of audio`}, ${Math.round(r.bytes / 1024)} KB`,
     `Made in ${(r.ms / 1000).toFixed(1)} s`,
@@ -161,11 +163,20 @@ export async function testHermesImage(_prev: TestState, _fd: FormData): Promise<
     beatRole: "hook",
     format: "short",
     shotRef: "test",
+    // Nothing is saved, so show what Hermes made even from a refused backend, and say so below.
+    enforceTerms: false,
   });
   if (!img.ok) return { ok: false, error: [...lines, `Image: ${img.error}`].join("\n") };
   const { image } = img;
+  const maker = { provider: image.provider, backend: image.backend, plugin: image.plugin };
+  lines.push(makerLine("Image", maker, image.model));
+  // The row terms are tracked under differs from the backend when the backend is not in HERMES_IMAGE_PROVIDER_ORDER.
+  if (image.backend && image.provider !== image.backend) {
+    lines.push(`Listed in Asset providers as ${image.provider}: ${image.backend} is not in HERMES_IMAGE_PROVIDER_ORDER`);
+  }
+  const refused = refusedIssue(maker, "image", await listProviderTerms().catch(() => []));
+  if (refused) lines.push(`A production shot would refuse this image: ${refused}`);
   lines.push(
-    `Image made by ${image.provider}${image.model ? ` (${image.model})` : ""}`,
     `${image.info.width}x${image.info.height} ${image.info.mime}, ${Math.round(image.info.bytes / 1024)} KB`,
     image.originUrl ? "Hermes returned a download link" : "Hermes returned the image data inline",
     `Asked Hermes ${img.attempts} time${img.attempts === 1 ? "" : "s"}`,

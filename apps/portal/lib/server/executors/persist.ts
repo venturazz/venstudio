@@ -23,6 +23,10 @@ export interface GeneratedAssetInput {
   title: string;
   /** Provider as reported by the executor. Normalised here. */
   provider: string;
+  /** Hermes: the backend that really made the file. Named in the licence and kept in metadata. */
+  backend?: string;
+  /** Hermes: the plugin in front of the backend. Kept in metadata and named in the licence. */
+  plugin?: string;
   model?: string;
   prompt?: string;
   originUrl?: string;
@@ -68,6 +72,32 @@ export async function listProviderTerms(): Promise<ProviderTerms[]> {
 }
 
 /**
+ * The Hermes plugins each provider row was made through, read from the saved assets' metadata (`plugin`). For the
+ * Settings list only. An unreadable table gives an empty map.
+ */
+export async function listProviderPlugins(): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  try {
+    const rows = await db()`
+      SELECT metadata->>'provider' AS provider, metadata->>'providerKind' AS kind, array_agg(DISTINCT metadata->>'plugin') AS plugins
+      FROM assets
+      WHERE metadata ? 'plugin' AND metadata ? 'provider'
+      GROUP BY 1, 2
+      LIMIT 500
+    `;
+    for (const r of rows) {
+      const provider = typeof r.provider === "string" ? r.provider : "";
+      const kind = typeof r.kind === "string" ? r.kind : "";
+      const plugins = Array.isArray(r.plugins) ? (r.plugins as unknown[]).filter((p): p is string => typeof p === "string" && p !== "") : [];
+      if (provider && kind && plugins.length > 0) out.set(`${kind}:${provider}`, plugins.slice(0, 5));
+    }
+  } catch (err) {
+    console.error("could not read provider plugins", err);
+  }
+  return out;
+}
+
+/**
  * Stores an asset the studio made itself. The licence, source and origin come from buildProvenance (code that knows
  * which executor ran), never from text a model wrote. The provider is registered as "unknown" until the owner
  * confirms its terms in Settings.
@@ -78,6 +108,8 @@ export async function saveGeneratedAsset(input: GeneratedAssetInput): Promise<Sa
     title: input.title,
     kind: input.kind,
     provider: input.provider,
+    backend: input.backend,
+    plugin: input.plugin,
     model: input.model,
     prompt: input.prompt,
     originUrl: input.originUrl,

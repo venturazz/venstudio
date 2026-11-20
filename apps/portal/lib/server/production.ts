@@ -192,6 +192,8 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
           format: run.config.format,
           shotRef: order.shotRef,
           note: spec.note || undefined,
+          provider: spec.provider,
+          needs: spec.needs,
         });
         if (!r.ok) {
           if (r.cause === "busy" && r.busyUntil) return { kind: "busy", until: r.busyUntil, text: r.error };
@@ -210,6 +212,8 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
           executor: "hermes-image",
           title: `${order.shotRef} image`,
           provider: img.provider,
+          backend: img.backend,
+          plugin: img.plugin,
           model: img.model,
           prompt: spec.prompt,
           originUrl: img.originUrl,
@@ -219,9 +223,13 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
           channelId: run.channelId,
           createdBy: null,
         });
+        const made: Record<string, unknown> = { executor: "hermes-image", model: img.model };
+        if (img.backend) made.backend = img.backend;
+        if (img.plugin) made.plugin = img.plugin;
+        if (spec.provider) made.preferredProvider = spec.provider;
+        if (spec.needs) made.needs = spec.needs;
         await finishOrder(order.id, saved.assetId, saved.provider, {
-          executor: "hermes-image",
-          model: img.model,
+          ...made,
           hermesAsks: r.attempts,
           claim: order.attempts,
           ...(r.tried.length > 0 ? { hermesTried: r.tried.map((t) => t.provider) } : {}),
@@ -361,6 +369,8 @@ async function runAssetsStage(run: RunInfo, st: StageRow): Promise<void> {
 interface AssetRow {
   shotRef: string;
   provider: string;
+  /** The Hermes plugin in front of the backend, from the asset metadata. Empty for older assets and non-Hermes paths. */
+  plugin: string;
   providerKind: ProviderKind;
   record: ProvenanceRecord;
   assetId: string;
@@ -381,6 +391,7 @@ async function loadAssetRows(sql: Q, runId: string): Promise<AssetRow[]> {
     return {
       shotRef: (r.shot_ref as string | null) ?? "",
       provider: normalizeProvider(text(meta.provider) || ((r.provider as string | null) ?? "")),
+      plugin: text(meta.plugin),
       providerKind,
       assetId: r.id as string,
       record: {
@@ -454,7 +465,13 @@ async function concludeAssets(runId: string, st: StageRow): Promise<void> {
   const providers = Array.from(new Set(rows.map((r) => r.provider)));
   // The storyboards forbid real people, but a disclosure is cheap: assume anything AI made may look realistic.
   const disclosure = aiDisclosureRequired({ sources: rows.map((r) => r.record.source), realisticSynthetic: true });
-  const media: ReviewMedia = { images: rows.map((r) => ({ assetId: r.assetId, shotRef: r.shotRef, provider: r.provider })) };
+  const media: ReviewMedia = {
+    images: rows.map((r) => {
+      const item: { assetId: string; shotRef: string; provider: string; plugin?: string } = { assetId: r.assetId, shotRef: r.shotRef, provider: r.provider };
+      if (r.plugin) item.plugin = r.plugin;
+      return item;
+    }),
+  };
   const result = { done: rows.length, total: shotCount, providers, aiDisclosureRequired: disclosure, termsOnly: onlyTermsIssues(gate.issues) };
   const conclusion: StageConclusion = { result, gate, media };
   await concludeStage(run, st, template, conclusion);
@@ -491,6 +508,8 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     executor: n.executor,
     title: `Narration (${n.provider})`,
     provider: n.provider,
+    backend: n.backend,
+    plugin: n.plugin,
     model: n.model,
     runId: run.id,
     channelId: run.channelId,
@@ -513,6 +532,8 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     provider: saved.provider,
     voice: n.voice,
     model: n.model,
+    ...(n.backend ? { backend: n.backend } : {}),
+    ...(n.plugin ? { plugin: n.plugin } : {}),
     via: n.via,
     skipped: n.skipped,
     voiceVerified: n.voiceVerified,

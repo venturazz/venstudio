@@ -7,6 +7,7 @@
  */
 import { THEME_BY_ID, type Format } from "./catalog.ts";
 import type { BeatRole, Template } from "./templates.ts";
+import { bareProviderName, HERMES_IMAGE_PLUGINS, isShotNeed, SHOT_NEEDS, type ShotNeed } from "./providers.ts";
 
 export type Validated<T> = { ok: true; value: T } | { ok: false; issues: string[] };
 
@@ -44,9 +45,23 @@ export interface Shot {
   seconds: number;
   description: string;
   imagePrompt: string;
+  /** Optional image backend Hermes wants first for this shot, checked against what Hermes has reported. */
+  provider?: string;
+  /** Optional capability this shot needs from the backend (SHOT_NEEDS). */
+  needs?: ShotNeed;
 }
 export interface StoryboardOutput {
   shots: Shot[];
+  /** Per-shot provider or needs values that were dropped, and why. The storyboard itself still passes. */
+  notes?: string[];
+}
+
+export interface StoryboardCheck {
+  /**
+   * Image backends Hermes has reported (capability scan and its own chain). When given, a per-shot provider outside
+   * this list is dropped with a note. When absent (reading a stored storyboard back) the stored value is kept.
+   */
+  knownProviders?: readonly string[];
 }
 
 export type DirectorStage = "idea" | "research" | "script" | "storyboard";
@@ -171,8 +186,42 @@ export function validateScript(value: unknown): Validated<ScriptOutput> {
   return finish(issues, { hooks, chosenHook, script });
 }
 
-export function validateStoryboard(value: unknown): Validated<StoryboardOutput> {
+/**
+ * The optional per-shot provider and needs. An unknown value never fails the storyboard: it is dropped and a note
+ * says so, because the preference is only a hint and Hermes's chain falls through on its own.
+ */
+function shotPreference(r: Record<string, unknown>, n: number, check: StoryboardCheck, notes: string[]): { provider?: string; needs?: ShotNeed } {
+  const out: { provider?: string; needs?: ShotNeed } = {};
+  const p = r.provider;
+  if (typeof p === "string" && p.trim()) {
+    const name = bareProviderName(p);
+    const known = check.knownProviders?.map((k) => bareProviderName(k));
+    if (name === "unknown" || HERMES_IMAGE_PLUGINS.includes(name)) {
+      notes.push(`Shot ${n}: provider "${p.trim().slice(0, 40)}" is not an image backend, so the preference was dropped`);
+    } else if (known && !known.includes(name)) {
+      notes.push(
+        known.length
+          ? `Shot ${n}: provider "${name}" is not among the backends Hermes reported (${known.slice(0, 8).join(", ")}), so the preference was dropped`
+          : `Shot ${n}: provider "${name}" could not be checked because Hermes has reported no image backends yet (run Scan now in Settings), so the preference was dropped`,
+      );
+    } else out.provider = name;
+  } else if (p !== undefined && p !== null && p !== "") {
+    notes.push(`Shot ${n}: provider must be text, so it was dropped`);
+  }
+  const need = r.needs;
+  if (typeof need === "string" && need.trim()) {
+    const v = need.trim().toLowerCase();
+    if (isShotNeed(v)) out.needs = v;
+    else notes.push(`Shot ${n}: needs "${need.trim().slice(0, 40)}" is not one of ${SHOT_NEEDS.join(", ")}, so it was dropped`);
+  } else if (need !== undefined && need !== null && need !== "") {
+    notes.push(`Shot ${n}: needs must be text, so it was dropped`);
+  }
+  return out;
+}
+
+export function validateStoryboard(value: unknown, check: StoryboardCheck = {}): Validated<StoryboardOutput> {
   const issues: string[] = [];
+  const notes: string[] = [];
   if (!isRecord(value) || !Array.isArray(value.shots)) return { ok: false, issues: ["Expected an object with a shots array"] };
   const raw: unknown[] = value.shots;
   if (raw.length < 1 || raw.length > MAX_SHOTS) issues.push(`shots must hold 1 to ${MAX_SHOTS} items, got ${raw.length}`);
@@ -194,9 +243,9 @@ export function validateStoryboard(value: unknown): Validated<StoryboardOutput> 
     } else seconds = r.seconds;
     const description = text(r.description, `Shot ${n} description`, 500, issues);
     const imagePrompt = text(r.imagePrompt, `Shot ${n} imagePrompt`, 600, issues);
-    shots.push({ beatRole, seconds, description, imagePrompt });
+    shots.push({ beatRole, seconds, description, imagePrompt, ...shotPreference(r, n, check, notes) });
   });
-  return finish(issues, { shots });
+  return finish(issues, notes.length > 0 ? { shots, notes: notes.slice(0, 20) } : { shots });
 }
 
 export function validateClassification(value: unknown): Validated<RevisionClassification> {
@@ -440,7 +489,8 @@ export function scriptPrompt(
   ];
 }
 
-export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint?: string, skillHints?: string[]): ChatMessage[] {
+export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint?: string, skillHints?: string[], imageBackends?: readonly string[]): ChatMessage[] {
+  const backends = (imageBackends ?? []).map((b) => b.replace(/\s+/g, " ").trim().slice(0, 40)).filter(Boolean).slice(0, 20);
   const t = ctx.template;
   const maxShot = t ? t.pacing.maxShotSeconds : 6;
   const narrationSec = Math.round((script.split(/\s+/).filter(Boolean).length / wordsPerMinuteFor(t)) * 60);
@@ -457,8 +507,12 @@ export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint
         "imagePrompt describes one still image in plain words. It names no real person, no brand and no copyrighted character.",
         ...channelLines(ctx),
         ...templateLines(ctx),
-        'Schema: {"shots":[{"beatRole":string,"seconds":number,"description":string,"imagePrompt":string}]}',
+        'Schema: {"shots":[{"beatRole":string,"seconds":number,"description":string,"imagePrompt":string,"provider"?:string,"needs"?:string}]}',
+        "provider and needs are optional. Leave both out unless a shot really needs a particular image backend: you know which of your skills and backends suit which picture.",
+        `provider names the image backend that should make this shot first${backends.length ? ", taken from the DATA block of backends" : ""}. A name Hermes has not reported is dropped.`,
+        `needs is one of ${SHOT_NEEDS.join(", ")}: reference-edit keeps a subject from a reference image, text-layout is a designed card with legible words, photoreal is a photographic look, portrait-native is a true vertical frame.`,
         dataBlock("script", script, MAX_SCRIPT_CHARS),
+        backends.length ? dataBlock("image backends you have reported", backends.join(", "), 20 * 42) : "",
         skillBlock(skillHints),
         retryHint ? dataBlock("owner revision note", retryHint, MAX_NOTE_CHARS) : "",
       ]
@@ -493,18 +547,28 @@ export function retryNote(issues: string[]): ChatMessage {
   };
 }
 
+export interface WorkOrderSpecDraft {
+  prompt: string;
+  seconds: number;
+  beatRole: BeatRole;
+  provider?: string;
+  needs?: ShotNeed;
+}
+
 export interface WorkOrderDraft {
   shotRef: string;
   executor: "hermes-image";
-  spec: { prompt: string; seconds: number; beatRole: BeatRole };
+  spec: WorkOrderSpecDraft;
 }
 
 export function workOrdersFromStoryboard(shots: Shot[]): WorkOrderDraft[] {
-  return shots.map((s, i) => ({
-    shotRef: `shot-${String(i + 1).padStart(2, "0")}`,
-    executor: "hermes-image" as const,
-    spec: { prompt: s.imagePrompt, seconds: s.seconds, beatRole: s.beatRole },
-  }));
+  return shots.map((s, i) => {
+    const spec: WorkOrderSpecDraft = { prompt: s.imagePrompt, seconds: s.seconds, beatRole: s.beatRole };
+    // Only shots that carry a preference get the fields, so older readers see the same small spec.
+    if (s.provider) spec.provider = s.provider;
+    if (s.needs) spec.needs = s.needs;
+    return { shotRef: `shot-${String(i + 1).padStart(2, "0")}`, executor: "hermes-image" as const, spec };
+  });
 }
 
 export type RevisableStage = "idea" | "script" | "storyboard" | "assets" | "voice";

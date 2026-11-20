@@ -39,7 +39,14 @@ function toPayload(raw: unknown): ReviewPayload {
       media.images = m.images.flatMap((i) => {
         const r = (typeof i === "object" && i !== null ? i : {}) as Record<string, unknown>;
         if (typeof r.assetId !== "string" || !/^[0-9a-f-]{36}$/i.test(r.assetId)) return [];
-        return [{ assetId: r.assetId, shotRef: typeof r.shotRef === "string" ? r.shotRef : "", provider: typeof r.provider === "string" ? r.provider : "" }];
+        const item: { assetId: string; shotRef: string; provider: string; plugin?: string } = {
+          assetId: r.assetId,
+          shotRef: typeof r.shotRef === "string" ? r.shotRef : "",
+          provider: typeof r.provider === "string" ? r.provider : "",
+        };
+        // The Hermes plugin in front of the backend, so the card reads "canva via 9router".
+        if (typeof r.plugin === "string" && r.plugin) item.plugin = r.plugin.slice(0, 80);
+        return [item];
       });
     }
     const id = (v: unknown): string | undefined => (typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);

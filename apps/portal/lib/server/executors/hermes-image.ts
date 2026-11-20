@@ -5,11 +5,22 @@ import { fetchMedia } from "../safe-fetch.ts";
 import { normalizeGatewayBase } from "../../gateway-url.ts";
 import { originOf } from "../../net-address.ts";
 import { mediaUrlBase } from "../../media-url.ts";
-import { imagePrompt, normalizeProvider, parseTriedProviders, resolveImageProvider, type TriedProvider } from "../../studio/asset-plan.ts";
+import {
+  imagePrompt,
+  normalizeProvider,
+  parseTriedProviders,
+  refusedIssue,
+  refusedProviders,
+  resolveHermesMaker,
+  type ProviderTerms,
+  type TriedProvider,
+} from "../../studio/asset-plan.ts";
 import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
-import { recordEndpointResult } from "../endpoint-health.ts";
-import type { EndpointKind } from "../../studio/endpoint-health.ts";
+import { listEndpointHealth, recordEndpointResult } from "../endpoint-health.ts";
+import { recentlyFailing, type EndpointKind } from "../../studio/endpoint-health.ts";
+import { listProviderTerms } from "./persist.ts";
+import type { ShotNeed } from "../../studio/providers.ts";
 import type { Format } from "../../studio/catalog.ts";
 import type { BeatRole } from "../../studio/templates.ts";
 import {
@@ -29,15 +40,30 @@ export interface ImageJob {
   shotRef: string;
   /** Owner revision note for this shot, shown to Hermes as data. */
   note?: string;
+  /** The storyboard's backend for this shot. Outranks HERMES_IMAGE_PROVIDER_ORDER in the prompt. */
+  provider?: string;
+  /** What the shot needs from the backend. */
+  needs?: ShotNeed;
+  /**
+   * Refuse a picture from a backend the owner marked "no" (default true). The Settings test turns it off so the owner
+   * still sees what Hermes made; nothing from the test is saved.
+   */
+  enforceTerms?: boolean;
 }
 
 export interface GeneratedImage {
   bytes: Uint8Array;
   info: ImageInfo;
+  /**
+   * The name provider terms are tracked under: the backend (bare when listed in HERMES_IMAGE_PROVIDER_ORDER, else
+   * unlisted-<backend>), or unlisted-<plugin> when Hermes named no backend. See resolveHermesMaker.
+   */
   provider: string;
   model: string;
-  /** The backend Hermes says really made the picture (canva, agnes, cloudflare-9router). Empty when it did not say. */
+  /** The backend Hermes says really made the picture (canva, agnes, cloudflare-9router), normalised. Empty when it did not say. */
   backend: string;
+  /** The image_gen plugin Hermes asked (for example 9router), normalised. Empty when it did not say or for 9router direct. */
+  plugin: string;
   /** The URL Hermes gave, when the image was downloaded. Empty for inline data. */
   originUrl: string;
 }
@@ -122,17 +148,33 @@ export function providerOrderHint(): string[] {
  */
 export async function generateImage(job: ImageJob): Promise<ImageResult> {
   const trusted = hermesTrustedOrigins();
+  const enforce = job.enforceTerms !== false;
+  // The owner's terms and Hermes's recent failures steer the prompt. A read error leaves them out (the G-assets gate
+  // still refuses a "no" provider before anything publishes).
+  const terms: ProviderTerms[] = await listProviderTerms().catch((err: unknown) => {
+    console.error("could not read provider terms for the image prompt", err);
+    return [];
+  });
+  const health = await listEndpointHealth("image");
   const messages = imagePrompt({
     prompt: job.note ? `${job.prompt}\n\nOwner note: ${job.note}` : job.prompt,
     beatRole: job.beatRole,
     format: job.format,
     shotRef: job.shotRef,
     providerOrder: providerOrderHint(),
+    shotProvider: job.provider,
+    shotNeeds: job.needs,
+    avoidProviders: refusedProviders(terms, "image"),
+    failingProviders: recentlyFailing(health, "hermes", "image", Date.now()),
     mediaOrigin: hermesMediaUrlBase() ?? undefined,
   });
-  const result = await hermesText<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { rawProvider: string; tried: TriedProvider[] }>> => {
+  const result = await hermesText<GeneratedImage & { tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { tried: TriedProvider[] }>> => {
     const parsed = parseImageReply(reply);
     if (!parsed.ok) return { ok: false, issues: parsed.issues };
+    const maker = resolveHermesMaker({ provider: parsed.provider, backend: parsed.backend }, providerOrderHint());
+    // A backend the owner refused is never used, even though Hermes was told: ask again for another backend.
+    const refused = enforce ? refusedIssue(maker, "image", terms) : null;
+    if (refused) return { ok: false, issues: [`${refused} Make the image again with another backend and name that backend in source.`] };
     let bytes: Uint8Array;
     let originUrl = "";
     try {
@@ -155,18 +197,19 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
       value: {
         bytes,
         info,
-        provider: resolveImageProvider(parsed.provider, providerOrderHint()),
+        provider: maker.provider,
         model: parsed.model,
         originUrl,
-        backend: parsed.backend,
-        rawProvider: parsed.provider,
+        backend: maker.backend,
+        plugin: maker.plugin,
         tried: triedIn(reply),
       },
     };
   }, { busyFromReply: true });
   if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
-  const { rawProvider, tried, ...image } = result.value;
-  await recordHermesChain(image.backend || rawProvider, tried);
+  const { tried, ...image } = result.value;
+  // Health is kept per backend. Without a backend report the plugin's unlisted name is recorded, never the bare plugin.
+  await recordHermesChain(image.backend || image.provider, tried);
   return { ok: true, image, attempts: result.attempts, tried };
 }
 

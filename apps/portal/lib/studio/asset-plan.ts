@@ -7,6 +7,9 @@ import { AGNES_CLIP_SECONDS, clipSecondsIssues } from "./image-result.ts";
 import { dataBlock, MAX_NOTE_CHARS, type ChatMessage } from "./director.ts";
 import type { ProvenanceRecord } from "./provenance.ts";
 import type { BeatRole } from "./templates.ts";
+import { bareProviderName, HERMES_IMAGE_PLUGINS, normalizeProvider, pluginTagFor, SHOT_NEED_TEXT, type ShotNeed } from "./providers.ts";
+
+export { HERMES_IMAGE_PLUGINS, normalizeProvider };
 
 export type ProviderKind = "image" | "tts" | "library" | "video";
 export type CommercialOk = "unknown" | "yes" | "no";
@@ -18,16 +21,6 @@ export interface ProviderTerms {
   note?: string;
 }
 
-/** Lowercase slug so "Cloudflare AI" and "cloudflare-ai" are one provider. Empty or missing becomes "unknown". */
-export function normalizeProvider(raw: string | null | undefined): string {
-  const slug = (raw ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40)
-    .replace(/-+$/g, "");
-  return slug || "unknown";
-}
 
 /**
  * The provider name Hermes reports is a self-report. Only a name in the owner's configured provider order is
@@ -42,6 +35,60 @@ export function resolveImageProvider(claimed: string | null | undefined, configu
   const order = configuredOrder.map((p) => normalizeProvider(p));
   if (order.length > 0 && order.includes(name)) return name;
   return `unlisted-${name}`.slice(0, PROVIDER_NAME_MAX);
+}
+
+
+/** Who made a file Hermes handed back, split into the name terms are tracked under and the metadata around it. */
+export interface HermesMaker {
+  /**
+   * The asset_providers name. The backend when Hermes reported one (bare when the owner listed it in
+   * HERMES_IMAGE_PROVIDER_ORDER, otherwise unlisted-<backend>), or unlisted-<plugin> when it did not say.
+   */
+  provider: string;
+  /** The backend Hermes reported in `source`, normalised. Empty when it did not say. */
+  backend: string;
+  /** The plugin Hermes reported in `provider`, normalised. Empty when it did not say. */
+  plugin: string;
+}
+
+function reportedName(raw: string | null | undefined): string {
+  return (raw ?? "").trim() ? normalizeProvider(raw) : "";
+}
+
+/**
+ * Names the maker of a Hermes image or clip by the backend that really made it, not by the plugin in front of it, so
+ * the owner's terms for one row never cover every backend behind a plugin. Trust rule, the same one as before applied
+ * to the backend: only a backend listed in HERMES_IMAGE_PROVIDER_ORDER is stored bare; any other backend becomes
+ * unlisted-<backend>. Listing a plugin id (9router) vouches for nothing behind it. Without a backend report the name
+ * is always unlisted-<plugin>, even when the plugin is listed, so nothing looks verified. A `source` that is itself a
+ * known plugin id ("9router") says nothing about the backend and counts as missing. Nothing is inferred from the model id.
+ */
+export function resolveHermesMaker(reported: { provider?: string | null; backend?: string | null }, configuredOrder: readonly string[]): HermesMaker {
+  const plugin = reportedName(reported.provider);
+  let backend = reportedName(reported.backend);
+  if (backend === "unknown" || HERMES_IMAGE_PLUGINS.includes(backend)) backend = "";
+  if (backend) return { provider: resolveImageProvider(backend, configuredOrder), backend, plugin };
+  return { provider: `unlisted-${plugin || "unknown"}`.slice(0, PROVIDER_NAME_MAX), backend: "", plugin };
+}
+
+/** "Image made by cloudflare-9router via 9router plugin (model)", or the stored name when Hermes named no backend. */
+export function makerLine(what: string, m: HermesMaker, model: string): string {
+  const mdl = model.trim() ? ` (${model.trim()})` : "";
+  if (!m.backend) return `${what} made by ${m.provider}${mdl}. Hermes did not say which backend made it`;
+  const via = m.plugin && m.plugin !== m.backend ? ` via ${m.plugin} plugin` : "";
+  return `${what} made by ${m.backend}${via}${mdl}`;
+}
+
+/**
+ * A Settings note for a provider row named after a plugin (unlisted-9router): rows from before the studio recorded
+ * backends, or files Hermes did not attribute. Such a row covers only assets saved under that exact name.
+ */
+export function pluginRowNote(name: string, kind: ProviderKind, plugins: readonly string[] = HERMES_IMAGE_PLUGINS): string | null {
+  if (kind !== "image" && kind !== "video") return null;
+  const n = normalizeProvider(name);
+  const plugin = n.startsWith("unlisted-") ? n.slice("unlisted-".length) : n;
+  if (!plugins.includes(plugin)) return null;
+  return `This row names the Hermes plugin ${plugin}, not the backend that made the files. It covers only assets saved under this name (older ones, or ones where Hermes did not say which backend made them). Each backend behind ${plugin} has its own row.`;
 }
 
 export interface ProviderUse {
@@ -78,6 +125,54 @@ export function providerTermsIssues(uses: ProviderUse[], terms: ProviderTerms[])
   return issues;
 }
 
+/**
+ * Backends the owner marked "no" (Not for commercial use) for this kind, as Hermes knows them: "unlisted-canva" and
+ * "canva" both become "canva". Rows named after a plugin (unlisted-9router) are left out: telling Hermes not to use
+ * its whole plugin would stop every image, and such a row only covers files saved under that name.
+ */
+export function refusedProviders(terms: readonly ProviderTerms[], kind: ProviderKind, plugins: readonly string[] = HERMES_IMAGE_PLUGINS): string[] {
+  const out: string[] = [];
+  for (const t of terms) {
+    if (t.kind !== kind || t.commercialOk !== "no") continue;
+    const name = bareProviderName(t.name);
+    if (name === "unknown" || plugins.includes(name) || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out.slice(0, 12);
+}
+
+/**
+ * Refuses a file whose maker the owner marked "no": the stored name, or the backend under either form. The text is
+ * fed back to Hermes so it can make the picture with another backend; after the last ask the work order fails with
+ * it. Unknown terms stay allowed (G-assets flags them at publish, as before).
+ */
+export function refusedIssue(maker: HermesMaker, kind: ProviderKind, terms: readonly ProviderTerms[]): string | null {
+  const names = new Set<string>([normalizeProvider(maker.provider)]);
+  if (maker.backend) {
+    names.add(normalizeProvider(maker.backend));
+    names.add(normalizeProvider(`unlisted-${maker.backend}`));
+  }
+  const hit = terms.find((t) => t.kind === kind && t.commercialOk === "no" && names.has(normalizeProvider(t.name)));
+  if (!hit) return null;
+  const who = maker.backend || maker.provider;
+  return `${who} cannot be used: Settings says ${normalizeProvider(hit.name)} is not cleared for commercial use.`;
+}
+
+/**
+ * Image backends Hermes has told the studio about: its capability scan (imageProviders) and the backends its own
+ * chain reported in endpoint health. Used to check a storyboard's per-shot provider. Plugin ids are left out.
+ */
+export function knownImageBackends(scanned: readonly string[], reported: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of [...scanned, ...reported]) {
+    if (!raw.trim()) continue;
+    const name = bareProviderName(raw);
+    if (name === "unknown" || HERMES_IMAGE_PLUGINS.includes(name) || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out.slice(0, 40);
+}
+
 export type ProvenanceExecutor =
   | "hermes-image"
   | "hermes-capcut"
@@ -104,8 +199,12 @@ export interface ProvenanceInput {
   executor: ProvenanceExecutor;
   title: string;
   kind: AssetKind;
-  /** Provider name as reported by Hermes (or "kokoro", "capcut"). */
+  /** Provider name terms are tracked under (or "kokoro", "capcut"). For Hermes, the backend name from resolveHermesMaker. */
   provider: string;
+  /** Hermes: the backend that really made the file, when Hermes said. Named in the licence text. */
+  backend?: string;
+  /** Hermes: the plugin in front of the backend (for example 9router). Metadata and licence text only. */
+  plugin?: string;
   model?: string;
   prompt?: string;
   /** Required for worker-fetch: the page or file the asset came from. */
@@ -136,16 +235,21 @@ const SOURCE_BY_EXECUTOR: Record<ProvenanceExecutor, AssetSource> = {
 export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
   const provider = normalizeProvider(i.provider);
   const model = (i.model ?? "").trim();
+  const backend = (i.backend ?? "").trim() ? normalizeProvider(i.backend) : "";
+  const plugin = (i.plugin ?? "").trim() ? normalizeProvider(i.plugin) : "";
+  // The licence names the real maker: the backend when Hermes said, else the stored provider name.
+  const maker = backend || provider;
+  const viaPlugin = plugin && plugin !== maker ? `, plugin ${plugin}` : "";
   let license: string;
   let providerKind: ProviderKind;
   switch (i.executor) {
     case "hermes-image":
       providerKind = "image";
-      license = `AI generated by ${provider}${model ? ` (${model})` : ""} through Hermes image_gen. Commercial terms are tracked in Settings.`;
+      license = `AI generated by ${maker}${model ? ` (${model})` : ""} through Hermes image_gen${plugin && plugin !== maker ? ` plugin ${plugin}` : ""}.${backend ? "" : " Hermes did not say which backend made it."} Commercial terms are tracked in Settings.`;
       break;
     case "hermes-capcut":
       providerKind = "tts";
-      license = `Voice made by ${provider} through Hermes' CapCut workflow. Commercial terms are tracked in Settings.`;
+      license = `Voice made by ${maker}${model ? ` (${model})` : ""} through Hermes' CapCut workflow${viaPlugin}. Commercial terms are tracked in Settings.`;
       break;
     case "router-tts":
       providerKind = "tts";
@@ -153,7 +257,7 @@ export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
       break;
     case "hermes-kokoro":
       providerKind = "tts";
-      license = `Voice made by ${provider}${model ? ` (${model})` : ""} when Hermes was asked for Kokoro. The provider name is stated by Hermes. Commercial terms are tracked in Settings.`;
+      license = `Voice made by ${maker}${model ? ` (${model})` : ""} when Hermes was asked for Kokoro${viaPlugin}. The provider name is stated by Hermes. Commercial terms are tracked in Settings.`;
       break;
     case "router-image":
       providerKind = "image";
@@ -176,6 +280,8 @@ export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
   };
   const metadata: Record<string, unknown> = { executor: i.executor, provider, providerKind, via: VIA_BY_EXECUTOR[i.executor] };
   if (model) metadata.model = model;
+  if (backend) metadata.backend = backend;
+  if (plugin) metadata.plugin = plugin;
   if (i.prompt) metadata.prompt = i.prompt.slice(0, 2000);
   if (i.shotRef) metadata.shotRef = i.shotRef;
   return { record, provider, providerKind, metadata };
@@ -259,6 +365,14 @@ export interface ImageRequest {
   shotRef: string;
   /** Provider names Hermes should try first. A preference only. */
   providerOrder?: string[];
+  /** The storyboard's backend for this shot. Outranks providerOrder; dropped when the owner refused it. */
+  shotProvider?: string;
+  /** What this shot needs from the backend (see SHOT_NEEDS). */
+  shotNeeds?: ShotNeed;
+  /** Backends the owner marked "no" (refusedProviders). Hermes is told not to use them. */
+  avoidProviders?: string[];
+  /** Backends Hermes's own chain reported failing recently. Hermes is told to skip them. */
+  failingProviders?: string[];
   retryHint?: string;
   /**
    * Base URL Hermes must put the generated file's name under (origin plus any path), for example
@@ -289,9 +403,58 @@ function mediaDelivery(origin: string | undefined, field: string): string[] {
   ];
 }
 
+function uniqueNames(list: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of list ?? []) {
+    if (!raw.trim()) continue;
+    const name = bareProviderName(raw);
+    if (name !== "unknown" && !out.includes(name)) out.push(name);
+  }
+  return out.slice(0, 12);
+}
+
+/**
+ * The per-shot steering lines: the shot's backend first (it outranks the global order), what the shot needs, the
+ * backends the owner refused and the ones failing right now. Owner refusal wins over a storyboard preference.
+ */
+function shotSteering(r: ImageRequest): string[] {
+  const avoid = uniqueNames(r.avoidProviders);
+  const preferredRaw = r.shotProvider ? bareProviderName(r.shotProvider) : "";
+  const preferred = preferredRaw && preferredRaw !== "unknown" && !avoid.includes(preferredRaw) ? preferredRaw : "";
+  const failing = uniqueNames(r.failingProviders).filter((n) => !avoid.includes(n) && n !== preferred);
+  const order = (r.providerOrder ?? []).map((p) => p.trim()).filter((p) => p && !avoid.includes(bareProviderName(p)));
+  const lines: string[] = [];
+  if (preferred) {
+    lines.push(`For this shot use ${preferred} first. If it fails, continue your chain as usual, and report in source which backend really made the image.`);
+    const tag = pluginTagFor(preferred);
+    if (tag) {
+      lines.push(`With the 9router image_gen plugin, start the prompt you give image_generate with the tag [${tag}]: that backend goes first and the rest of the chain stays behind it. Never use the [${tag}:] form, which turns the fallback off.`);
+    }
+  }
+  if (r.shotNeeds) {
+    lines.push(
+      `This shot needs ${SHOT_NEED_TEXT[r.shotNeeds]}.${preferred ? "" : " Try a backend in your chain that can do this first; if it fails, continue your chain."}`,
+    );
+  }
+  if (order.length) {
+    lines.push(
+      preferred || r.shotNeeds
+        ? `For the rest of the chain, preferred order if you have them: ${order.join(", ")}. The choice for this shot above comes first.`
+        : `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.`,
+    );
+  }
+  if (avoid.length) {
+    lines.push(
+      `Do not use these backends: ${avoid.join(", ")}. The owner marked them not for commercial use, so an image from them is refused. If one of them makes the image anyway, generate again starting from another backend.`,
+    );
+  }
+  if (failing.length) lines.push(`These backends failed recently, skip them if you can: ${failing.join(", ")}.`);
+  return lines;
+}
+
 export function imagePrompt(r: ImageRequest): ChatMessage[] {
   const shape = r.format === "short" ? "vertical 9:16 (1080x1920)" : "landscape 16:9 (1920x1080)";
-  const order = (r.providerOrder ?? []).map((p) => p.trim()).filter(Boolean);
+  const steering = shotSteering(r);
   return [
     system("Make one still image with your image_gen tool chain."),
     {
@@ -300,7 +463,7 @@ export function imagePrompt(r: ImageRequest): ChatMessage[] {
         "VENSTUDIO_STAGE: image",
         `Generate one image for shot ${r.shotRef} (${r.beatRole} beat), ${shape}. Use your image_gen tools.`,
         "You choose the provider. Let your image_gen chain fall through its own providers in your own order (for example cloudflare, agnes, canva, qwen, minimax, sensenova): if one fails or is rate limited, go on to the next one. Do not stop at the first failure.",
-        order.length ? `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.` : "",
+        ...steering,
         'If every provider is rate limited, reply with status "error" and say "rate limited" in error.',
         "The image must be at least 480 pixels on its short side. It names no real person, no brand and no copyrighted character.",
         ...mediaDelivery(r.mediaOrigin, "image.value"),
@@ -486,7 +649,7 @@ export function ttsKokoroPrompt(r: TtsKokoroRequest): ChatMessage[] {
       content: [
         "VENSTUDIO_STAGE: tts-kokoro",
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with the Kokoro voice. Use your Kokoro text to speech skill or the 9router Kokoro voice you can call. Do not change the words.`,
-        "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro. In provider, name the engine that really made the audio.",
+        "If you have no Kokoro voice, reply with status error. Do not use another voice and do not say it is Kokoro. In source, name the engine that really made the audio.",
         "Prefer WAV (16-bit PCM). MP3 is accepted.",
         ...mediaDelivery(r.mediaOrigin, "audio.value"),
         'Schema: {"status":"ok"|"error","provider":string,"source":string,"model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
@@ -522,7 +685,8 @@ export function ttsCapcutPrompt(r: TtsCapcutRequest): ChatMessage[] {
         `Read the text in the DATA block aloud in ${r.languageLabel} (${r.languageCode}) with a clear, steady narrator voice, using your CapCut text to speech workflow. Do not change the words.`,
         "Prefer WAV (16-bit PCM). MP3 is accepted.",
         ...mediaDelivery(r.mediaOrigin, "audio.value"),
-        'Schema: {"status":"ok"|"error","provider":"capcut","model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
+        'Schema: {"status":"ok"|"error","provider":string,"source":string,"model":string,"audio":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string}',
+        "provider is the plugin that was asked (for example capcut). source is the engine that really spoke: your CapCut workflow can fall back to kokoro, gemini, edge or google_translate, so name the one that made this file. Never guess.",
         dataBlock("narration text", r.text, MAX_TTS_PROMPT_CHARS),
         r.retryHint ? dataBlock("problem with the last attempt", r.retryHint, MAX_NOTE_CHARS) : "",
       ]

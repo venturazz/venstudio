@@ -48,6 +48,26 @@ export function isProven(h: EndpointHealth | undefined, nowMs: number): boolean 
   return Boolean(h && h.lastSuccessAt !== null && !isQuarantined(h, nowMs));
 }
 
+/** How long a backend Hermes reported failing is mentioned as "failing right now" (the 9router plugin's own cooldown). */
+export const RECENT_FAILURE_MS = 30 * 60_000;
+
+/**
+ * Names on one endpoint whose last call failed within RECENT_FAILURE_MS, or that are set aside. A newer success
+ * clears it. Unlisted names (Hermes did not say which backend) are left out: they are not a backend to skip.
+ */
+export function recentlyFailing(list: readonly EndpointHealth[], endpoint: EndpointName, kind: EndpointKind, nowMs: number, windowMs: number = RECENT_FAILURE_MS): string[] {
+  const out: string[] = [];
+  for (const h of list) {
+    if (h.endpoint !== endpoint || h.kind !== kind || h.model.startsWith("unlisted-")) continue;
+    const lastFail = h.lastFailureAt ?? 0;
+    const failedLast = h.lastFailureAt !== null && (h.lastSuccessAt === null || h.lastSuccessAt < lastFail);
+    if (isQuarantined(h, nowMs) || (failedLast && nowMs - lastFail < windowMs)) {
+      if (!out.includes(h.model)) out.push(h.model);
+    }
+  }
+  return out.slice(0, 8);
+}
+
 export type Proof = "proven" | "listed" | "quarantined";
 
 export function proofOf(h: EndpointHealth | undefined, nowMs: number): Proof {

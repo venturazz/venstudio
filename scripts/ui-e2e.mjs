@@ -140,6 +140,8 @@ function directorReply(messages) {
         seconds: Math.min(maxShot, 3, i === 0 ? hookMs / 1000 : 3),
         description: `A calm scene for the ${role} beat`,
         imagePrompt: `Flat illustration of an old stone road at dusk, ${role} moment`,
+        // Per-shot backend preference: agnes is in the fake capability scan, midjourney is not and must be dropped.
+        ...(i === 0 ? { provider: "agnes", needs: "text-layout" } : i === 1 ? { provider: "midjourney" } : {}),
       })),
     });
   }
@@ -148,7 +150,10 @@ function directorReply(messages) {
   //   shot-01 first answers with a file path (the portal must feed that back and Hermes then sends base64),
   //   shot-02 answers with an error for its first three asks (one whole attempt), so the second attempt runs,
   //   shot-03 answers with a download link on this fake server, every other shot with base64.
-  // Hermes reports the provider `cloudflare`, which the owner has not confirmed, so the provider-terms flow runs.
+  // Hermes answers like the live 9router plugin: `provider` is the plugin (9router), `source` the backend that made the
+  // file. Most shots come from canva (listed in CI's HERMES_IMAGE_PROVIDER_ORDER, so stored as "canva"); shot-03 comes
+  // from cloudflare-9router, which is not listed and is stored as "unlisted-cloudflare-9router". Neither is confirmed
+  // yet, so the provider-terms flow runs. Nothing may be stored under the plugin name (unlisted-9router).
   if (stage === "providers") {
     return JSON.stringify({ providers: ["cloudflare", "agnes", "canva", "qwen", "minimax", "sensenova"].map((name) => ({ name, note: "fake" })) });
   }
@@ -156,23 +161,25 @@ function directorReply(messages) {
     const shot = /for shot ([\w-]+)/.exec(first)?.[1] ?? "test";
     const seed = Number(/(\d+)$/.exec(shot)?.[1] ?? 0);
     const asks = (fakeStats.imageAsks[shot] = (fakeStats.imageAsks[shot] ?? 0) + 1);
-    const ok = (image) => JSON.stringify({ status: "ok", provider: "cloudflare", model: "fake-flux", image });
+    if (/For this shot use agnes first/.test(first)) fakeStats.shotPreferenceAsks++;
+    if (/For this shot use midjourney/.test(first)) fakeStats.droppedPreferenceAsks++;
+    const ok = (image, source = "canva") => JSON.stringify({ status: "ok", provider: "9router", source, model: "fake-flux", image });
     if (shot === "shot-01" && messages.length <= 2) {
       fakeStats.pathAnswers++;
       return ok({ type: "path", value: "/tmp/hermes/out.png", mimeType: "image/png" });
     }
     if (shot === "shot-02" && asks <= 3) {
       fakeStats.errorAnswers++;
-      return JSON.stringify({ status: "error", provider: "cloudflare", error: "Fake provider chain is down" });
+      return JSON.stringify({ status: "error", provider: "9router", error: "Fake provider chain is down" });
     }
     if (shot === "shot-04") {
       // Hermes never makes this one, so the studio falls through to the 9router image model.
       fakeStats.hermesImageRefusals++;
-      return JSON.stringify({ status: "error", provider: "cloudflare", error: "Fake Hermes has no image for this shot" });
+      return JSON.stringify({ status: "error", provider: "9router", error: "Fake Hermes has no image for this shot" });
     }
     if (shot === "shot-03") {
       fakeStats.urlAnswers++;
-      return ok({ type: "url", value: `http://127.0.0.1:${HERMES_PORT}/fake-image/${seed}.png`, mimeType: "image/png" });
+      return ok({ type: "url", value: `http://127.0.0.1:${HERMES_PORT}/fake-image/${seed}.png`, mimeType: "image/png" }, "cloudflare-9router");
     }
     return ok({ type: "base64", value: makePng(540, 960, seed).toString("base64"), mimeType: "image/png" });
   }
@@ -191,10 +198,10 @@ function directorReply(messages) {
   }
   if (stage === "tts-kokoro") {
     fakeStats.hermesKokoroCalls++;
-    return JSON.stringify({ status: "ok", provider: "kokoro", model: "fake-hermes-kokoro", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
+    return JSON.stringify({ status: "ok", provider: "kokoro", source: "kokoro", model: "fake-hermes-kokoro", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
   }
   if (stage === "tts-capcut") {
-    return JSON.stringify({ status: "ok", provider: "capcut", model: "fake-capcut", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
+    return JSON.stringify({ status: "ok", provider: "capcut", source: "capcut", model: "fake-capcut", audio: { type: "base64", value: makeWav(3).toString("base64"), mimeType: "audio/wav" } });
   }
   if (stage === "cc0") {
     return JSON.stringify({
@@ -206,7 +213,7 @@ function directorReply(messages) {
   }
   return "{}";
 }
-const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0 };
+const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -802,13 +809,20 @@ try {
   // only a few seconds here, so seeing it on a page is logged, not required.
   if (fakeStats.hermes429 !== HERMES_429_BURST) throw new Error(`the fake Hermes answered 429 ${fakeStats.hermes429} times, expected ${HERMES_429_BURST}`);
   console.log(`   Hermes 429 burst of ${HERMES_429_BURST} absorbed; waiting status ${sawHermesWait ? "was" : "was not"} caught on a page`);
+  // A storyboard provider Hermes never reported must never reach the image prompt. Whether agnes was kept depends on
+  // the capability scan having run before the storyboard, so that part is logged, not asserted.
+  if (fakeStats.droppedPreferenceAsks !== 0) throw new Error("the storyboard's unknown provider (midjourney) reached the image prompt");
+  console.log(`   per-shot preference: agnes asked first ${fakeStats.shotPreferenceAsks} time(s) (0 means no scan had run before the storyboard)`);
   await m.waitForLoadState("networkidle");
   const grid = m.getByTestId("asset-grid").first();
   const thumbs = grid.locator("img");
   if ((await thumbs.count()) < 3) throw new Error(`expected at least 3 thumbnails, got ${await thumbs.count()}`);
   await m.waitForFunction(() => [...document.querySelectorAll('[data-testid="asset-grid"] img')].every((i) => i.complete && i.naturalWidth > 0));
   await m.getByTestId("provider-terms-notice").first().waitFor();
-  if (!(await grid.textContent()).includes("cloudflare")) throw new Error("the image grid does not name the provider");
+  const gridText = (await grid.textContent()) ?? "";
+  if (!gridText.includes("canva via 9router")) throw new Error(`the image grid does not name the backend and plugin (canva via 9router): ${gridText.slice(0, 300)}`);
+  if (!gridText.includes("unlisted-cloudflare-9router")) throw new Error("the image grid does not name the unlisted backend of shot-03 (unlisted-cloudflare-9router)");
+  if (gridText.includes("unlisted-9router")) throw new Error("an image is credited to the plugin (unlisted-9router) instead of its backend");
   await assertNoOverflow(m, "/review (assets)");
   await assertTapTargets(m, [
     ["Confirm the terms in Settings", m.getByRole("link", { name: "Confirm the terms in Settings" })],
@@ -832,20 +846,32 @@ try {
   // The owner confirms a provider in Settings. Nothing else can set this.
   async function confirmProvider(name) {
     await page.goto(`${APP}/settings`);
-    const select = page.getByLabel(`Commercial use for ${name}`).first();
+    const select = page.getByLabel(`Commercial use for ${name}`, { exact: true }).first();
     await select.waitFor();
     await select.selectOption("yes");
     await select.locator("xpath=ancestor::form").getByRole("button", { name: "Save" }).click();
     for (let i = 0; i < 15; i++) {
       await page.goto(`${APP}/settings`);
-      if ((await page.getByLabel(`Commercial use for ${name}`).first().inputValue()) === "yes") return;
+      if ((await page.getByLabel(`Commercial use for ${name}`, { exact: true }).first().inputValue()) === "yes") return;
       await page.waitForTimeout(1000);
     }
     throw new Error(`the terms for ${name} were not saved`);
   }
 
   step("settings: the owner confirms the image provider terms, Kokoro is healthy, Test Hermes image works");
-  await confirmProvider("cloudflare");
+  // Asset providers lists each backend, never the plugin in front of them.
+  await page.goto(`${APP}/settings`);
+  for (const name of ["canva", "unlisted-cloudflare-9router"]) {
+    if ((await page.locator(`[data-testid="provider-row"][data-provider="${name}"]`).count()) !== 1) {
+      const rows = await page.locator('[data-testid="provider-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-provider")));
+      throw new Error(`Asset providers has no row for the backend ${name}; rows: ${rows.join(", ")}`);
+    }
+  }
+  if ((await page.locator('[data-testid="provider-row"][data-provider="unlisted-9router"]').count()) !== 0) {
+    throw new Error("Asset providers has a row for the plugin unlisted-9router; images must be credited to their backend");
+  }
+  await confirmProvider("canva");
+  await confirmProvider("unlisted-cloudflare-9router");
   await confirmProvider("fake-img");
   // No KOKORO_BASE_URL is set: the voice comes from the Kokoro model 9router lists, and Hermes is only the fallback.
   await page.getByText("9router voice kokoro/af_heart").first().waitFor();
@@ -866,7 +892,7 @@ try {
   if (fakeStats.routerSpeechCalls !== calls) throw new Error("the failing 9router speech endpoint was counted as a success");
   await page.getByRole("button", { name: "Test Hermes image" }).click();
   await page.getByText("Providers Hermes reports: cloudflare, agnes").waitFor({ timeout: 60_000 });
-  await page.getByText("Image made by cloudflare").waitFor();
+  await page.getByText("Image made by canva via 9router plugin (fake-flux)", { exact: true }).waitFor();
   await shot("21-settings-media-desktop");
 
   step("production: retry the assets, then approve them");
@@ -945,7 +971,7 @@ try {
   await m.goto(`${APP}${assetsRunHref ?? runHref}`);
   await m.getByTestId("work-orders").waitFor();
   if ((await m.getByTestId("work-order").count()) < 3) throw new Error("the run page shows fewer than 3 work orders");
-  if (!(await m.getByTestId("work-orders").textContent()).includes("cloudflare")) throw new Error("the run page does not name the provider");
+  if (!(await m.getByTestId("work-orders").textContent()).includes("canva")) throw new Error("the run page does not name the backend (canva)");
   // shot-01 got every 429 of the burst. Waiting for Hermes must not have used up its attempts.
   const firstOrder = await m.getByTestId("work-order").filter({ hasText: "shot-01" }).first().innerText();
   if (!/\b1 attempt\b(?!s)/.test(firstOrder)) throw new Error(`shot-01 should show 1 attempt after the 429 burst, saw: ${firstOrder.replace(/\s+/g, " ")}`);

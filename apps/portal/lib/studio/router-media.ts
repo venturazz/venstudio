@@ -2,7 +2,7 @@
  * Voice and image choices made from what 9router lists. Pure: no network, no database. Nothing here names a model the
  * owner must have; ids come from the lists 9router returns (/v1/models/tts, /v1/models/image).
  */
-import { normalizeProvider, PROVIDER_NAME_MAX } from "./asset-plan.ts";
+import { normalizeProvider, PROVIDER_NAME_MAX, type HermesMaker } from "./asset-plan.ts";
 import type { RouterModel } from "./capabilities.ts";
 import type { Format } from "./catalog.ts";
 import { sniffAudio } from "./image-result.ts";
@@ -95,6 +95,26 @@ export function resolveKokoroProvider(claimed: string | null | undefined): strin
   const name = normalizeProvider(claimed);
   if (name === "kokoro") return "hermes-kokoro";
   return `unlisted-${name}`.slice(0, PROVIDER_NAME_MAX);
+}
+
+/**
+ * Names a Hermes voice by the engine that really spoke (`source`), not by the plugin in front of it: the CapCut plugin
+ * falls back to kokoro, gemini, edge and google_translate, each with its own terms. A Kokoro engine is "hermes-kokoro"
+ * (a Hermes claim never borrows the confirmed "kokoro"), CapCut is "capcut" only when CapCut was asked, any other engine
+ * is "unlisted-<engine>". Without an engine report: the Kokoro request keeps resolveKokoroProvider on the reported name,
+ * and the CapCut request is "unlisted-<plugin>" because the plugin may have fallen through to anything.
+ */
+export function resolveHermesVoice(engine: "kokoro" | "capcut", reported: { provider?: string | null; backend?: string | null }): HermesMaker {
+  const plugin = (reported.provider ?? "").trim() ? normalizeProvider(reported.provider) : "";
+  const raw = (reported.backend ?? "").trim() ? normalizeProvider(reported.backend) : "";
+  const backend = raw === "unknown" ? "" : raw;
+  if (backend) {
+    if (backend === "kokoro") return { provider: "hermes-kokoro", backend, plugin };
+    if (backend === "capcut" && engine === "capcut") return { provider: "capcut", backend, plugin };
+    return { provider: `unlisted-${backend}`.slice(0, PROVIDER_NAME_MAX), backend, plugin };
+  }
+  if (engine === "kokoro") return { provider: resolveKokoroProvider(reported.provider), backend: "", plugin };
+  return { provider: `unlisted-${plugin || "capcut"}`.slice(0, PROVIDER_NAME_MAX), backend: "", plugin };
 }
 
 /** Seconds to wait before retrying a 503, from the Retry-After header: its value, 5 s without one, never more than 20. */
