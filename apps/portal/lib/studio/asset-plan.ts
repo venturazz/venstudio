@@ -7,6 +7,9 @@ import { AGNES_CLIP_SECONDS, clipSecondsIssues } from "./image-result.ts";
 import { dataBlock, MAX_NOTE_CHARS, type ChatMessage } from "./director.ts";
 import type { ProvenanceRecord } from "./provenance.ts";
 import type { BeatRole } from "./templates.ts";
+import { bareProviderName, HERMES_IMAGE_PLUGINS, normalizeProvider, pluginTagFor, SHOT_NEED_TEXT, type ShotNeed } from "./providers.ts";
+
+export { HERMES_IMAGE_PLUGINS, normalizeProvider };
 
 export type ProviderKind = "image" | "tts" | "library" | "video";
 export type CommercialOk = "unknown" | "yes" | "no";
@@ -18,16 +21,6 @@ export interface ProviderTerms {
   note?: string;
 }
 
-/** Lowercase slug so "Cloudflare AI" and "cloudflare-ai" are one provider. Empty or missing becomes "unknown". */
-export function normalizeProvider(raw: string | null | undefined): string {
-  const slug = (raw ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40)
-    .replace(/-+$/g, "");
-  return slug || "unknown";
-}
 
 /**
  * The provider name Hermes reports is a self-report. Only a name in the owner's configured provider order is
@@ -44,11 +37,6 @@ export function resolveImageProvider(claimed: string | null | undefined, configu
   return `unlisted-${name}`.slice(0, PROVIDER_NAME_MAX);
 }
 
-/**
- * Hermes image_gen plugins that front several backends with different terms (docs/research/05: the 9router plugin
- * walks canva, agnes, cloudflare, modelscope, sensenova, free ...). A plugin id is never the maker of a file.
- */
-export const HERMES_IMAGE_PLUGINS: readonly string[] = ["9router"];
 
 /** Who made a file Hermes handed back, split into the name terms are tracked under and the metadata around it. */
 export interface HermesMaker {
@@ -135,6 +123,54 @@ export function providerTermsIssues(uses: ProviderUse[], terms: ProviderTerms[])
     }
   }
   return issues;
+}
+
+/**
+ * Backends the owner marked "no" (Not for commercial use) for this kind, as Hermes knows them: "unlisted-canva" and
+ * "canva" both become "canva". Rows named after a plugin (unlisted-9router) are left out: telling Hermes not to use
+ * its whole plugin would stop every image, and such a row only covers files saved under that name.
+ */
+export function refusedProviders(terms: readonly ProviderTerms[], kind: ProviderKind, plugins: readonly string[] = HERMES_IMAGE_PLUGINS): string[] {
+  const out: string[] = [];
+  for (const t of terms) {
+    if (t.kind !== kind || t.commercialOk !== "no") continue;
+    const name = bareProviderName(t.name);
+    if (name === "unknown" || plugins.includes(name) || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out.slice(0, 12);
+}
+
+/**
+ * Refuses a file whose maker the owner marked "no": the stored name, or the backend under either form. The text is
+ * fed back to Hermes so it can make the picture with another backend; after the last ask the work order fails with
+ * it. Unknown terms stay allowed (G-assets flags them at publish, as before).
+ */
+export function refusedIssue(maker: HermesMaker, kind: ProviderKind, terms: readonly ProviderTerms[]): string | null {
+  const names = new Set<string>([normalizeProvider(maker.provider)]);
+  if (maker.backend) {
+    names.add(normalizeProvider(maker.backend));
+    names.add(normalizeProvider(`unlisted-${maker.backend}`));
+  }
+  const hit = terms.find((t) => t.kind === kind && t.commercialOk === "no" && names.has(normalizeProvider(t.name)));
+  if (!hit) return null;
+  const who = maker.backend || maker.provider;
+  return `${who} cannot be used: Settings says ${normalizeProvider(hit.name)} is not cleared for commercial use.`;
+}
+
+/**
+ * Image backends Hermes has told the studio about: its capability scan (imageProviders) and the backends its own
+ * chain reported in endpoint health. Used to check a storyboard's per-shot provider. Plugin ids are left out.
+ */
+export function knownImageBackends(scanned: readonly string[], reported: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of [...scanned, ...reported]) {
+    if (!raw.trim()) continue;
+    const name = bareProviderName(raw);
+    if (name === "unknown" || HERMES_IMAGE_PLUGINS.includes(name) || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out.slice(0, 40);
 }
 
 export type ProvenanceExecutor =
@@ -329,6 +365,14 @@ export interface ImageRequest {
   shotRef: string;
   /** Provider names Hermes should try first. A preference only. */
   providerOrder?: string[];
+  /** The storyboard's backend for this shot. Outranks providerOrder; dropped when the owner refused it. */
+  shotProvider?: string;
+  /** What this shot needs from the backend (see SHOT_NEEDS). */
+  shotNeeds?: ShotNeed;
+  /** Backends the owner marked "no" (refusedProviders). Hermes is told not to use them. */
+  avoidProviders?: string[];
+  /** Backends Hermes's own chain reported failing recently. Hermes is told to skip them. */
+  failingProviders?: string[];
   retryHint?: string;
   /**
    * Base URL Hermes must put the generated file's name under (origin plus any path), for example
@@ -359,9 +403,58 @@ function mediaDelivery(origin: string | undefined, field: string): string[] {
   ];
 }
 
+function uniqueNames(list: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of list ?? []) {
+    if (!raw.trim()) continue;
+    const name = bareProviderName(raw);
+    if (name !== "unknown" && !out.includes(name)) out.push(name);
+  }
+  return out.slice(0, 12);
+}
+
+/**
+ * The per-shot steering lines: the shot's backend first (it outranks the global order), what the shot needs, the
+ * backends the owner refused and the ones failing right now. Owner refusal wins over a storyboard preference.
+ */
+function shotSteering(r: ImageRequest): string[] {
+  const avoid = uniqueNames(r.avoidProviders);
+  const preferredRaw = r.shotProvider ? bareProviderName(r.shotProvider) : "";
+  const preferred = preferredRaw && preferredRaw !== "unknown" && !avoid.includes(preferredRaw) ? preferredRaw : "";
+  const failing = uniqueNames(r.failingProviders).filter((n) => !avoid.includes(n) && n !== preferred);
+  const order = (r.providerOrder ?? []).map((p) => p.trim()).filter((p) => p && !avoid.includes(bareProviderName(p)));
+  const lines: string[] = [];
+  if (preferred) {
+    lines.push(`For this shot use ${preferred} first. If it fails, continue your chain as usual, and report in source which backend really made the image.`);
+    const tag = pluginTagFor(preferred);
+    if (tag) {
+      lines.push(`With the 9router image_gen plugin, start the prompt you give image_generate with the tag [${tag}]: that backend goes first and the rest of the chain stays behind it. Never use the [${tag}:] form, which turns the fallback off.`);
+    }
+  }
+  if (r.shotNeeds) {
+    lines.push(
+      `This shot needs ${SHOT_NEED_TEXT[r.shotNeeds]}.${preferred ? "" : " Try a backend in your chain that can do this first; if it fails, continue your chain."}`,
+    );
+  }
+  if (order.length) {
+    lines.push(
+      preferred || r.shotNeeds
+        ? `For the rest of the chain, preferred order if you have them: ${order.join(", ")}. The choice for this shot above comes first.`
+        : `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.`,
+    );
+  }
+  if (avoid.length) {
+    lines.push(
+      `Do not use these backends: ${avoid.join(", ")}. The owner marked them not for commercial use, so an image from them is refused. If one of them makes the image anyway, generate again starting from another backend.`,
+    );
+  }
+  if (failing.length) lines.push(`These backends failed recently, skip them if you can: ${failing.join(", ")}.`);
+  return lines;
+}
+
 export function imagePrompt(r: ImageRequest): ChatMessage[] {
   const shape = r.format === "short" ? "vertical 9:16 (1080x1920)" : "landscape 16:9 (1920x1080)";
-  const order = (r.providerOrder ?? []).map((p) => p.trim()).filter(Boolean);
+  const steering = shotSteering(r);
   return [
     system("Make one still image with your image_gen tool chain."),
     {
@@ -370,7 +463,7 @@ export function imagePrompt(r: ImageRequest): ChatMessage[] {
         "VENSTUDIO_STAGE: image",
         `Generate one image for shot ${r.shotRef} (${r.beatRole} beat), ${shape}. Use your image_gen tools.`,
         "You choose the provider. Let your image_gen chain fall through its own providers in your own order (for example cloudflare, agnes, canva, qwen, minimax, sensenova): if one fails or is rate limited, go on to the next one. Do not stop at the first failure.",
-        order.length ? `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.` : "",
+        ...steering,
         'If every provider is rate limited, reply with status "error" and say "rate limited" in error.',
         "The image must be at least 480 pixels on its short side. It names no real person, no brand and no copyrighted character.",
         ...mediaDelivery(r.mediaOrigin, "image.value"),

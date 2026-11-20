@@ -192,6 +192,8 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
           format: run.config.format,
           shotRef: order.shotRef,
           note: spec.note || undefined,
+          provider: spec.provider,
+          needs: spec.needs,
         });
         if (!r.ok) {
           if (r.cause === "busy" && r.busyUntil) return { kind: "busy", until: r.busyUntil, text: r.error };
@@ -224,6 +226,8 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
         const made: Record<string, unknown> = { executor: "hermes-image", model: img.model };
         if (img.backend) made.backend = img.backend;
         if (img.plugin) made.plugin = img.plugin;
+        if (spec.provider) made.preferredProvider = spec.provider;
+        if (spec.needs) made.needs = spec.needs;
         await finishOrder(order.id, saved.assetId, saved.provider, {
           ...made,
           hermesAsks: r.attempts,

@@ -10,6 +10,7 @@ import type { BeatRole } from "./templates.ts";
 import type { ProductionStage, RunStage } from "./engine.ts";
 import type { ReviewKind } from "./review.ts";
 import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
+import { bareProviderName, isShotNeed, type ShotNeed } from "./providers.ts";
 
 /** Hermes image attempts per shot before the CC0 library (each attempt already re-asks Hermes up to 2 times). */
 export const HERMES_IMAGE_ATTEMPTS = 2;
@@ -34,6 +35,10 @@ export interface OrderSpec {
   beatRole: BeatRole;
   /** The owner's revision note for this shot. Untrusted text, sent to Hermes inside a DATA block. */
   note: string;
+  /** The storyboard's image backend for this shot, already checked when the storyboard was made. Absent on older orders. */
+  provider?: string;
+  /** What the shot needs from the backend. Absent on older orders. */
+  needs?: ShotNeed;
 }
 
 const BEATS: readonly BeatRole[] = ["hook", "setup", "body", "payoff", "cta", "outro"];
@@ -42,12 +47,19 @@ const BEATS: readonly BeatRole[] = ["hook", "setup", "body", "payoff", "cta", "o
 export function parseOrderSpec(raw: unknown): OrderSpec {
   const r = (typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const beat = BEATS.find((b) => b === r.beatRole) ?? "body";
-  return {
+  const spec: OrderSpec = {
     prompt: typeof r.prompt === "string" ? r.prompt : "",
     seconds: typeof r.seconds === "number" && r.seconds > 0 ? r.seconds : 4,
     beatRole: beat,
     note: typeof r.note === "string" ? r.note : "",
   };
+  // Older rows have neither field; a bad value is ignored rather than failing the order.
+  if (typeof r.provider === "string" && r.provider.trim()) {
+    const name = bareProviderName(r.provider);
+    if (name !== "unknown") spec.provider = name;
+  }
+  if (isShotNeed(r.needs)) spec.needs = r.needs;
+  return spec;
 }
 
 export type OrderAction = "keep" | "requeue" | "fail";

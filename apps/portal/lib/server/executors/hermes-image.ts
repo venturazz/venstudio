@@ -5,11 +5,22 @@ import { fetchMedia } from "../safe-fetch.ts";
 import { normalizeGatewayBase } from "../../gateway-url.ts";
 import { originOf } from "../../net-address.ts";
 import { mediaUrlBase } from "../../media-url.ts";
-import { imagePrompt, normalizeProvider, parseTriedProviders, resolveHermesMaker, type TriedProvider } from "../../studio/asset-plan.ts";
+import {
+  imagePrompt,
+  normalizeProvider,
+  parseTriedProviders,
+  refusedIssue,
+  refusedProviders,
+  resolveHermesMaker,
+  type ProviderTerms,
+  type TriedProvider,
+} from "../../studio/asset-plan.ts";
 import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
-import { recordEndpointResult } from "../endpoint-health.ts";
-import type { EndpointKind } from "../../studio/endpoint-health.ts";
+import { listEndpointHealth, recordEndpointResult } from "../endpoint-health.ts";
+import { recentlyFailing, type EndpointKind } from "../../studio/endpoint-health.ts";
+import { listProviderTerms } from "./persist.ts";
+import type { ShotNeed } from "../../studio/providers.ts";
 import type { Format } from "../../studio/catalog.ts";
 import type { BeatRole } from "../../studio/templates.ts";
 import {
@@ -29,6 +40,15 @@ export interface ImageJob {
   shotRef: string;
   /** Owner revision note for this shot, shown to Hermes as data. */
   note?: string;
+  /** The storyboard's backend for this shot. Outranks HERMES_IMAGE_PROVIDER_ORDER in the prompt. */
+  provider?: string;
+  /** What the shot needs from the backend. */
+  needs?: ShotNeed;
+  /**
+   * Refuse a picture from a backend the owner marked "no" (default true). The Settings test turns it off so the owner
+   * still sees what Hermes made; nothing from the test is saved.
+   */
+  enforceTerms?: boolean;
 }
 
 export interface GeneratedImage {
@@ -128,17 +148,33 @@ export function providerOrderHint(): string[] {
  */
 export async function generateImage(job: ImageJob): Promise<ImageResult> {
   const trusted = hermesTrustedOrigins();
+  const enforce = job.enforceTerms !== false;
+  // The owner's terms and Hermes's recent failures steer the prompt. A read error leaves them out (the G-assets gate
+  // still refuses a "no" provider before anything publishes).
+  const terms: ProviderTerms[] = await listProviderTerms().catch((err: unknown) => {
+    console.error("could not read provider terms for the image prompt", err);
+    return [];
+  });
+  const health = await listEndpointHealth("image");
   const messages = imagePrompt({
     prompt: job.note ? `${job.prompt}\n\nOwner note: ${job.note}` : job.prompt,
     beatRole: job.beatRole,
     format: job.format,
     shotRef: job.shotRef,
     providerOrder: providerOrderHint(),
+    shotProvider: job.provider,
+    shotNeeds: job.needs,
+    avoidProviders: refusedProviders(terms, "image"),
+    failingProviders: recentlyFailing(health, "hermes", "image", Date.now()),
     mediaOrigin: hermesMediaUrlBase() ?? undefined,
   });
   const result = await hermesText<GeneratedImage & { tried: TriedProvider[] }>(messages, async (reply): Promise<Validated<GeneratedImage & { tried: TriedProvider[] }>> => {
     const parsed = parseImageReply(reply);
     if (!parsed.ok) return { ok: false, issues: parsed.issues };
+    const maker = resolveHermesMaker({ provider: parsed.provider, backend: parsed.backend }, providerOrderHint());
+    // A backend the owner refused is never used, even though Hermes was told: ask again for another backend.
+    const refused = enforce ? refusedIssue(maker, "image", terms) : null;
+    if (refused) return { ok: false, issues: [`${refused} Make the image again with another backend and name that backend in source.`] };
     let bytes: Uint8Array;
     let originUrl = "";
     try {
@@ -156,7 +192,6 @@ export async function generateImage(job: ImageJob): Promise<ImageResult> {
     const info = sniffImage(bytes);
     const issues = imageIssues(info, job.format);
     if (issues.length > 0 || !info) return { ok: false, issues };
-    const maker = resolveHermesMaker({ provider: parsed.provider, backend: parsed.backend }, providerOrderHint());
     return {
       ok: true,
       value: {

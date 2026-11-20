@@ -409,6 +409,41 @@ Older rows named `unlisted-9router` stay visible and keep the owner's decision, 
 exact name (assets from before this change, or replies without a backend). Settings shows a note on such rows. No
 migration: the new fields live in existing jsonb columns.
 
+### Per-shot provider preference and the owner's "no"
+
+Some shots need a particular backend: reference-image edits only work on some (agnes, sensenova-edit, qwen-edit), a
+typography card suits canva, and canva returns a square 1200x1200 where other backends return a real portrait. Hermes
+knows its skills, so the storyboard may say so per shot (`lib/studio/director.ts`, `lib/studio/providers.ts`):
+
+- `provider` (optional): one image backend for this shot. The storyboard prompt lists the backends Hermes has reported
+  (its capability scan `imageProviders` plus the backends its own chain reported in `endpoint_health`, plugin ids left
+  out, `knownImageBackends`). A name outside that list, a plugin id (`9router`), or any name when Hermes has reported
+  nothing yet is dropped with a note; the storyboard still passes. `unlisted-agnes` is read as `agnes`.
+- `needs` (optional), one of a fixed set (`SHOT_NEEDS`): `reference-edit` (keep a subject from a reference image; the
+  studio does not pass a reference file yet, so this only steers the backend choice), `text-layout` (a designed card
+  with legible words), `photoreal` (a photographic look), `portrait-native` (a true vertical frame, not a square).
+  Any other value is dropped with a note.
+
+Dropped values are kept in the storyboard result as `notes` and the storyboard summary says how many. The fields go
+into the work order spec only when set (`workOrdersFromStoryboard`), and `parseOrderSpec` reads them with safe defaults,
+so older work orders are unchanged. The image prompt then says "For this shot use canva first. If it fails, continue
+your chain as usual, and report in source which backend really made the image", adds the 9router plugin's measured
+prompt tag (`[canva]`, never the `[canva:]` no-fallback form; research 05), and moves the global
+`HERMES_IMAGE_PROVIDER_ORDER` hint behind it ("for the rest of the chain"). A per-shot preference outranks that hint.
+
+Owner terms. Backends the owner marked **Not for commercial use** (`commercial_ok = no`, under the bare or the
+`unlisted-` name) are listed in every image prompt as "do not use" (`refusedProviders`; rows named after a plugin are
+left out, since they would stop every image). A storyboard preference for one of them is dropped from the prompt. If
+Hermes still returns a file from one, the reply is refused before the bytes are fetched (`refusedIssue`) and fed back
+so Hermes can make it again with another backend; after the last ask the work order fails with that reason, and the
+assets stage stops with it. Nothing is saved from a refused backend. `unknown` stays allowed and is flagged by
+`G-assets` at publish, as before. **Test Hermes image** does not refuse (nothing is saved) but says when a production
+shot would refuse the picture.
+
+Endpoint health. Backends Hermes's chain reported failing in the last 30 minutes (the 9router plugin's own cooldown),
+or set aside, are named in the prompt as "failed recently, skip them if you can" (`recentlyFailing`). The shot's own
+preference is never listed there.
+
 ## 6. Muse agent-task delivery (UNVERIFIED, needs a Muse test)
 
 0. Flag-gated: the portal creates these jobs only when `MUSE_AGENT_TASKS=1`, and a worker advertises the handler only when `VENSTUDIO_AGENT_TASKS=1`. Both default to off, and the task is never in the default fallback chain.

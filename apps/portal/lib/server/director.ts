@@ -7,6 +7,8 @@ import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
 import { getCapabilities } from "./capabilities.ts";
 import { skillHintsFor } from "../studio/capabilities.ts";
+import { listEndpointHealth } from "./endpoint-health.ts";
+import { knownImageBackends } from "../studio/asset-plan.ts";
 import { giveUpMessage, waitExpired, type FailureClass } from "../studio/pacing.ts";
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
@@ -359,7 +361,18 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   const scriptOut = await latestPassedOutput(sql, run.id, "script");
   const checkedScript = validateScript(scriptOut?.result);
   if (!checkedScript.ok) return { ok: false, error: "The approved script is missing" };
-  const r = fromHermes(await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap)), validateStoryboard));
+  // Backends Hermes has reported (its scan and its own image chain): the storyboard may pick one per shot, and any
+  // other name is dropped with a note instead of failing the storyboard.
+  const health = await listEndpointHealth("image");
+  const backends = knownImageBackends(
+    snap?.hermes?.imageProviders ?? [],
+    health.filter((h) => h.endpoint === "hermes").map((h) => h.model),
+  );
+  const r = fromHermes(
+    await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap), backends), (v) =>
+      validateStoryboard(v, { knownProviders: backends }),
+    ),
+  );
   if (!r.ok) return r;
   return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wordsPerMinuteFor(template))) };
 }
