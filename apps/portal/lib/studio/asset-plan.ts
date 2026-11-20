@@ -7,7 +7,7 @@ import { dataBlock, MAX_NOTE_CHARS, type ChatMessage } from "./director.ts";
 import type { ProvenanceRecord } from "./provenance.ts";
 import type { BeatRole } from "./templates.ts";
 
-export type ProviderKind = "image" | "tts" | "library";
+export type ProviderKind = "image" | "tts" | "library" | "video";
 export type CommercialOk = "unknown" | "yes" | "no";
 
 export interface ProviderTerms {

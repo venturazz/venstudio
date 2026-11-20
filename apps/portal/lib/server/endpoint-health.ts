@@ -57,7 +57,7 @@ export async function listEndpointHealth(kind?: EndpointKind): Promise<EndpointH
     const out: EndpointHealth[] = [];
     for (const r of rows) {
       const endpoint: EndpointName | null = r.endpoint === "9router" ? "9router" : r.endpoint === "hermes" ? "hermes" : null;
-      const k: EndpointKind | null = r.kind === "image" ? "image" : r.kind === "tts" ? "tts" : null;
+      const k: EndpointKind | null = r.kind === "image" ? "image" : r.kind === "tts" ? "tts" : r.kind === "video" ? "video" : null;
       if (!endpoint || !k) continue;
       const cls: unknown = r.failure_class;
       const h: EndpointHealth = {

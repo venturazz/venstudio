@@ -376,7 +376,7 @@ async function loadAssetRows(sql: Q, runId: string): Promise<AssetRow[]> {
   return rows.map((r): AssetRow => {
     const meta = toObject(r.metadata);
     const kindText = text(meta.providerKind);
-    const providerKind: ProviderKind = kindText === "tts" ? "tts" : kindText === "library" ? "library" : "image";
+    const providerKind: ProviderKind = kindText === "tts" ? "tts" : kindText === "library" ? "library" : kindText === "video" ? "video" : "image";
     const tags = Array.isArray(r.tags) ? (r.tags as unknown[]).filter((t): t is string => typeof t === "string") : [];
     return {
       shotRef: (r.shot_ref as string | null) ?? "",

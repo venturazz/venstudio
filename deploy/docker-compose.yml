@@ -45,6 +45,7 @@ services:
       # Where the studio reads the files Hermes generates (see docs/deploy-hermes-media.md). A path is allowed.
       HERMES_IMAGE_MEDIA_ORIGIN: ${HERMES_IMAGE_MEDIA_ORIGIN:-}
       HERMES_TTS_MEDIA_ORIGIN: ${HERMES_TTS_MEDIA_ORIGIN:-}
+      HERMES_VIDEO_MEDIA_ORIGIN: ${HERMES_VIDEO_MEDIA_ORIGIN:-}
       # Allowlist for downloading those URLs: full origins, comma list, any path stripped by the portal.
       HERMES_MEDIA_ORIGINS: ${HERMES_MEDIA_ORIGINS:-}
     volumes:

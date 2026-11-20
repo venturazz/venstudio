@@ -8,6 +8,7 @@ import { imagePrompt, normalizeProvider, parseTriedProviders, resolveImageProvid
 import { dataBlock, extractJson, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
 import { looksRateLimited, type FailureClass } from "../../studio/pacing.ts";
 import { recordEndpointResult } from "../endpoint-health.ts";
+import type { EndpointKind } from "../../studio/endpoint-health.ts";
 import type { Format } from "../../studio/catalog.ts";
 import type { BeatRole } from "../../studio/templates.ts";
 import {
@@ -53,15 +54,18 @@ function triedIn(reply: string): TriedProvider[] {
 }
 
 /**
- * Health rows for Hermes's own chain: the provider that made the picture worked, the ones it says failed before it did
+ * Health rows for Hermes's own chain: the backend that made the file worked, the ones it says failed before it did
  * not. These names are Hermes's report, so they are stored under endpoint "hermes" and never decide provider terms.
+ *
+ * Shared with the video executor, because a video backend and an image backend fail in the same two ways and both
+ * belong in the same table.
  */
-async function recordHermesChain(provider: string, tried: readonly TriedProvider[]): Promise<void> {
+export async function recordHermesChain(provider: string, tried: readonly TriedProvider[], kind: EndpointKind = "image"): Promise<void> {
   const made = normalizeProvider(provider);
-  if (made !== "unknown") await recordEndpointResult("hermes", made, "image", { ok: true });
+  if (made !== "unknown") await recordEndpointResult("hermes", made, kind, { ok: true });
   for (const t of tried) {
     if (t.provider === made) continue;
-    await recordEndpointResult("hermes", t.provider, "image", { ok: false, failureClass: looksRateLimited(t.error) ? "busy" : "server", error: t.error || "Hermes said this provider failed" });
+    await recordEndpointResult("hermes", t.provider, kind, { ok: false, failureClass: looksRateLimited(t.error) ? "busy" : "server", error: t.error || "Hermes said this provider failed" });
   }
 }
 
@@ -96,8 +100,9 @@ export function hermesTrustedOrigins(): string[] {
  * Images and narration live in different directories under the same media host, so each kind gets its own
  * override and both fall back to the first HERMES_MEDIA_ORIGINS entry.
  */
-export function hermesMediaUrlBase(kind: "image" | "audio" = "image"): string | null {
-  const specific = (kind === "audio" ? env().HERMES_TTS_MEDIA_ORIGIN : env().HERMES_IMAGE_MEDIA_ORIGIN) ?? "";
+export function hermesMediaUrlBase(kind: "image" | "audio" | "video" = "image"): string | null {
+  const specific =
+    (kind === "audio" ? env().HERMES_TTS_MEDIA_ORIGIN : kind === "video" ? env().HERMES_VIDEO_MEDIA_ORIGIN : env().HERMES_IMAGE_MEDIA_ORIGIN) ?? "";
   const first = specific.trim() || ((env().HERMES_MEDIA_ORIGINS ?? "").split(",")[0] ?? "").trim();
   if (!first) return null;
   try {

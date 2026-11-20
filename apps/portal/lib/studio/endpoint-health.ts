@@ -6,7 +6,7 @@
  */
 import { classifyStatus, type FailureClass } from "./pacing.ts";
 
-export type EndpointKind = "image" | "tts";
+export type EndpointKind = "image" | "tts" | "video";
 /** "9router" for models called straight through 9router, "hermes" for providers Hermes reports from its own chain. */
 export type EndpointName = "9router" | "hermes";
 
