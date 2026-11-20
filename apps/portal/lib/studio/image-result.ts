@@ -6,7 +6,7 @@
 import { VIDEO_FORMATS, type Format } from "./catalog.ts";
 import { extractJson } from "./director.ts";
 
-export type MediaKind = "image" | "audio";
+export type MediaKind = "image" | "audio" | "video";
 
 export interface MediaSource {
   type: "url" | "base64" | "data-uri";
@@ -21,6 +21,15 @@ export type MediaReply =
 export const MIN_IMAGE_SHORT_SIDE = 480;
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_AUDIO_BYTES = 60 * 1024 * 1024;
+export const MIN_VIDEO_BYTES = 1000;
+export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+
+/**
+ * What a generated clip may be. The provider returns 4-12s while `VIDEO_FORMATS.short` runs 15-60s, so one
+ * request is always *one shot*: a longer request would come back truncated and the studio would not notice.
+ * Long shots are split and joined at render time.
+ */
+export const AGNES_CLIP_SECONDS: [number, number] = [4, 12];
 
 const PATH_ISSUE = "The reply gave a file path, which the studio cannot read. Return an https URL or base64 data instead.";
 
@@ -32,7 +41,7 @@ function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-const MIME_PREFIX: Record<MediaKind, string> = { image: "image/", audio: "audio/" };
+const MIME_PREFIX: Record<MediaKind, string> = { image: "image/", audio: "audio/", video: "video/" };
 
 function dataUriSource(uri: string, kind: MediaKind): MediaSource | string {
   const m = /^data:([a-z]+\/[a-z0-9.+-]+)?(?:;[a-z0-9=.+-]+)*;base64,([A-Za-z0-9+/=\s_-]+)$/i.exec(uri.trim());
@@ -104,7 +113,7 @@ function parseMediaReply(text: string, kind: MediaKind): MediaReply {
     if (typeof src === "string") return { ok: false, issues: [src] };
     return { ok: true, source: src, provider: str(parsed.provider), model: str(parsed.model), backend: str(parsed.source) };
   }
-  if (/(^|\s)(\/|~\/|[A-Za-z]:\\)\S+\.(png|jpe?g|webp|wav|mp3|ogg)\b/i.test(text) && !fallbackSource(text, kind)) {
+  if (/(^|\s)(\/|~\/|[A-Za-z]:\\)\S+\.(png|jpe?g|webp|wav|mp3|ogg|mp4|webm|mov)\b/i.test(text) && !fallbackSource(text, kind)) {
     return { ok: false, issues: [PATH_ISSUE] };
   }
   const loose = fallbackSource(text, kind);
@@ -118,6 +127,10 @@ export function parseImageReply(text: string): MediaReply {
 
 export function parseAudioReply(text: string): MediaReply {
   return parseMediaReply(text, "audio");
+}
+
+export function parseVideoReply(text: string): MediaReply {
+  return parseMediaReply(text, "video");
 }
 
 /** Decodes base64 or data-uri sources. Returns null for a url source (fetch it instead). */
@@ -223,5 +236,45 @@ export function audioIssues(info: AudioInfo | null): string[] {
   if (!info) return ["The file is not a WAV, MP3 or OGG audio file"];
   if (info.bytes < 1000) return ["The audio file is almost empty"];
   if (info.bytes > MAX_AUDIO_BYTES) return [`The audio is ${Math.round(info.bytes / 1048576)} MB; the limit is ${MAX_AUDIO_BYTES / 1048576} MB`];
+  return [];
+}
+
+
+export interface VideoInfo {
+  mime: "video/mp4" | "video/webm" | "video/quicktime";
+  bytes: number;
+}
+
+/**
+ * Identifies mp4, webm and mov by magic bytes. An mp4 and a .mov share the `ftyp` box and differ only in the
+ * brand, which is why the brand is read rather than trusted from the file name. Null when unrecognised.
+ */
+export function sniffVideo(b: Uint8Array): VideoInfo | null {
+  if (b.length >= 12 && ascii(b, 4, 4) === "ftyp") {
+    const brand = ascii(b, 8, 4);
+    return { mime: brand === "qt  " ? "video/quicktime" : "video/mp4", bytes: b.length };
+  }
+  if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) {
+    return { mime: "video/webm", bytes: b.length };
+  }
+  return null;
+}
+
+export function videoIssues(info: VideoInfo | null): string[] {
+  if (!info) return ["The file is not an MP4, WebM or MOV video"];
+  if (info.bytes < MIN_VIDEO_BYTES) return ["The video file is almost empty"];
+  if (info.bytes > MAX_VIDEO_BYTES) {
+    return [`The video is ${Math.round(info.bytes / 1048576)} MB; the limit is ${MAX_VIDEO_BYTES / 1048576} MB`];
+  }
+  return [];
+}
+
+export function clipSecondsIssues(seconds: number): string[] {
+  const [min, max] = AGNES_CLIP_SECONDS;
+  if (!Number.isFinite(seconds)) return ["The clip length is not a number"];
+  if (seconds < min) return [`A generated clip must be at least ${min}s; ${seconds}s would come back stretched or refused`];
+  if (seconds > max) {
+    return [`A generated clip can be at most ${max}s; ${seconds}s needs ${Math.ceil(seconds / max)} clips joined in the render`];
+  }
   return [];
 }

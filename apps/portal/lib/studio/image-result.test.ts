@@ -1,6 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { audioIssues, capcutAudioIssues, decodeInlineSource, imageIssues, parseAudioReply, parseImageReply, sniffAudio, sniffImage } from "./image-result.ts";
+import {
+  AGNES_CLIP_SECONDS,
+  audioIssues,
+  capcutAudioIssues,
+  clipSecondsIssues,
+  decodeInlineSource,
+  imageIssues,
+  parseAudioReply,
+  parseImageReply,
+  parseVideoReply,
+  sniffAudio,
+  sniffImage,
+  sniffVideo,
+  videoIssues,
+} from "./image-result.ts";
 import { makeWav } from "./wav.ts";
 
 const b64 = (bytes: number[]) => Buffer.from(bytes).toString("base64");
@@ -36,7 +50,75 @@ function webpX(w: number, h: number): Uint8Array {
   return b;
 }
 
-test("parseImageReply reads the JSON contract", () => {
+// ---------------------------------------------------------------- video
+
+/** MP4: an `ftyp` box at offset 4, then a brand. */
+function mp4(brand = "isom", size = 4096): Uint8Array {
+  const b = new Uint8Array(Math.max(size, 16));
+  b.set([0, 0, 0, 0x18], 0);
+  b.set([...Buffer.from("ftyp")], 4);
+  b.set([...Buffer.from(brand)], 8);
+  return b;
+}
+/** WebM/Matroska: the EBML magic. */
+function webm(size = 4096): Uint8Array {
+  const b = new Uint8Array(size);
+  b.set([0x1a, 0x45, 0xdf, 0xa3], 0);
+  return b;
+}
+
+test("sniffVideo identifies mp4, quicktime and webm by magic bytes", () => {
+  assert.equal(sniffVideo(mp4())?.mime, "video/mp4");
+  // The same box with the `qt  ` brand is a .mov file.
+  assert.equal(sniffVideo(mp4("qt  "))?.mime, "video/quicktime");
+  assert.equal(sniffVideo(webm())?.mime, "video/webm");
+  assert.equal(sniffVideo(png(512, 512)), null);
+  assert.equal(sniffVideo(new Uint8Array(0)), null);
+});
+
+test("videoIssues rejects anything that is not a video", () => {
+  assert.deepEqual(videoIssues(null), ["The file is not an MP4, WebM or MOV video"]);
+  assert.deepEqual(videoIssues(sniffVideo(mp4())), []);
+  assert.deepEqual(videoIssues(sniffVideo(mp4("isom", 400))), ["The video file is almost empty"]);
+});
+
+test("a clip must fit the provider window, which is shorter than the video", () => {
+  // Agnes returns 4-12s clips while a short is 15-60s, so one request is one shot
+  // and the render joins the clips. A 30s request would be silently truncated.
+  assert.deepEqual(clipSecondsIssues(AGNES_CLIP_SECONDS[0]), []);
+  assert.deepEqual(clipSecondsIssues(AGNES_CLIP_SECONDS[1]), []);
+  assert.match(clipSecondsIssues(3)[0] ?? "", /at least 4/);
+  assert.match(clipSecondsIssues(13)[0] ?? "", /at most 12/);
+  assert.match(clipSecondsIssues(30)[0] ?? "", /at most 12/);
+});
+
+test("parseVideoReply reads the JSON contract, including which backend rendered", () => {
+  const r = parseVideoReply(
+    'done\n```json\n{"status":"ok","provider":"agnes","source":"agnes","model":"agnes-video-2.5-flash","video":{"type":"url","value":"https://x.test/a.mp4","mimeType":"video/mp4"}}\n```',
+  );
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.deepEqual(r.source, { type: "url", value: "https://x.test/a.mp4", mimeType: "video/mp4" });
+    assert.equal(r.provider, "agnes");
+    assert.equal(r.backend, "agnes");
+  }
+});
+
+test("parseVideoReply never accepts a path, and surfaces a reported error", () => {
+  const pathReply = parseVideoReply(JSON.stringify({ status: "ok", video: { type: "path", value: "/opt/data/cache/generated/video/a.mp4" } }));
+  assert.equal(pathReply.ok, false);
+  const err = parseVideoReply('{"status":"error","error":"queue full"}');
+  assert.equal(err.ok, false);
+  if (!err.ok) assert.match(err.issues[0] ?? "", /queue full/);
+});
+
+test("parseVideoReply takes a loose url when the model ignores the schema", () => {
+  const loose = parseVideoReply("Here: https://x.test/b.mp4 enjoy");
+  assert.equal(loose.ok, true);
+  if (loose.ok) assert.equal(loose.source.value, "https://x.test/b.mp4");
+});
+
+test("parseAudioReply reads the JSON contract", () => {
   const r = parseImageReply('Here you go\n```json\n{"status":"ok","provider":"Cloudflare","model":"flux","image":{"type":"url","value":"https://x.test/a.png","mimeType":"image/png"}}\n```');
   assert.equal(r.ok, true);
   if (r.ok) {

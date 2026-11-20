@@ -10,6 +10,7 @@ import {
   parseTriedProviders,
   normalizeProvider,
   resolveImageProvider,
+  videoPrompt,
   PROVIDER_NAME_MAX,
   providerTermsIssues,
   ttsCapcutPrompt,
@@ -222,4 +223,41 @@ test("ttsKokoroPrompt never asks for base64 and places the audio under the media
   assert.doesNotMatch(user.content, /or base64 audio data/);
   assert.match(user.content, /http:\/\/hermes-files:8000\/tts/);
   assert.match(user.content, /audio\.value must be exactly/);
+});
+
+test("videoPrompt asks for one clip, not a film, and states the length", () => {
+  const [, user] = videoPrompt({ prompt: "a fox runs through snow", beatRole: "hook", format: "short", shotRef: "shot-03", seconds: 5, mode: "text" });
+  const text = String(user.content);
+  assert.match(text, /VENSTUDIO_STAGE: video/);
+  assert.match(text, /shot-03/);
+  assert.match(text, /vertical 9:16 \(720x1280\)/);
+  assert.match(text, /5 seconds/);
+  // The provider returns a shot, so the prompt must not imply a whole video.
+  assert.match(text, /ONE continuous clip/);
+  assert.match(text, /not a film/);
+  assert.match(text, /"video":\{/);
+  assert.match(text, /"source":string/);
+});
+
+test("videoPrompt names the source images per mode", () => {
+  const [, keyframe] = videoPrompt({ prompt: "a fox", beatRole: "body", format: "long", shotRef: "shot-04", seconds: 8, mode: "keyframe", sourceImageUrls: ["https://x.test/f.png"] });
+  const kf = String(keyframe.content);
+  assert.match(kf, /opening frame/);
+  assert.match(kf, /https:\/\/x\.test\/f\.png/);
+  assert.match(kf, /landscape 16:9 \(1280x720\)/);
+
+  const [, plain] = videoPrompt({ prompt: "a fox", beatRole: "body", format: "short", shotRef: "shot-05", seconds: 6, mode: "text" });
+  assert.match(String(plain.content), /no source image/);
+});
+
+test("videoPrompt hands over a base name when a media origin is configured", () => {
+  const [, user] = videoPrompt({ prompt: "a fox", beatRole: "body", format: "short", shotRef: "shot-06", seconds: 4, mode: "text", mediaOrigin: "http://hermes-files:8000/clip" });
+  const text = String(user.content);
+  // The byte-carrying reply is what made the model loop, so it must never be asked for.
+  assert.match(text, /Do not read the file, do not convert it to base64/);
+  assert.match(text, /base name only/);
+  assert.match(text, /http:\/\/hermes-files:8000\/clip\/<file name>/);
+
+  const [, bare] = videoPrompt({ prompt: "a fox", beatRole: "body", format: "short", shotRef: "shot-07", seconds: 4, mode: "text" });
+  assert.match(String(bare.content), /never convert the file to base64/);
 });

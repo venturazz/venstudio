@@ -314,6 +314,63 @@ export function imagePrompt(r: ImageRequest): ChatMessage[] {
   ];
 }
 
+export interface VideoRequest {
+  prompt: string;
+  beatRole: BeatRole;
+  format: Format;
+  shotRef: string;
+  /**
+   * Seconds for THIS clip, and it must sit inside AGNES_CLIP_SECONDS (4-12). The provider cannot render a whole
+   * 15-60s video, so one request is one shot; the render joins the clips. Asking for 30s would come back
+   * truncated, which the studio would only discover at final playback.
+   */
+  seconds: number;
+  /** text = from the description alone; keyframe = animate one still; reference = keep a character or style. */
+  mode: "text" | "keyframe" | "reference";
+  /** The still to animate (keyframe) or the character/style stills to preserve (reference). */
+  sourceImageUrls?: string[];
+  /** Provider names Hermes should try first. A preference only. */
+  providerOrder?: string[];
+  retryHint?: string;
+  /** Base URL Hermes must put the clip's name under. See ImageRequest.mediaOrigin. */
+  mediaOrigin?: string;
+}
+
+export const MAX_VIDEO_PROMPT_CHARS = 1200;
+
+export function videoPrompt(r: VideoRequest): ChatMessage[] {
+  const shape = r.format === "short" ? "vertical 9:16 (720x1280)" : "landscape 16:9 (1280x720)";
+  const order = (r.providerOrder ?? []).map((p) => p.trim()).filter(Boolean);
+  const modeLine: Record<VideoRequest["mode"], string> = {
+    text: "Render it from the description alone, with no source image.",
+    keyframe: "Use the first source image as the opening frame and animate from it. Keep the framing, the costume and the light.",
+    reference: "Keep the character and the style of the source images exactly. Do not redesign them.",
+  };
+  return [
+    system("Make one video clip with your video or animation tools."),
+    {
+      role: "user",
+      content: [
+        "VENSTUDIO_STAGE: video",
+        `Generate ONE continuous clip for shot ${r.shotRef} (${r.beatRole} beat), ${shape}, ${r.seconds} seconds long.`,
+        "Reply with a single clip, not a film: the remaining shots are requested separately. Burn in no text, captions, subtitles or watermarks.",
+        modeLine[r.mode],
+        r.sourceImageUrls?.length ? `Source images, in the order to use them: ${r.sourceImageUrls.join(" ")}` : "",
+        order.length ? `Preferred provider order, if you have them: ${order.join(", ")}. This is a preference, not a rule.` : "",
+        'If you have no video provider, or every one is rate limited, reply with status "error" and say "rate limited" in error.',
+        "The clip shows no real person, no brand and no copyrighted character.",
+        ...mediaDelivery(r.mediaOrigin, "video.value"),
+        'Schema: {"status":"ok"|"error","provider":string,"source":string,"model":string,"video":{"type":"url"|"base64"|"data-uri","value":string,"mimeType":string},"error":string,"tried":[{"provider":string,"error":string}]}',
+        "provider is the plugin that was asked (for example agnes). source is the backend that really rendered the clip (for example agnes, veo, kling). Never guess either one. tried lists the backends that failed before it, with a short reason.",
+        dataBlock("shot description", r.prompt, MAX_VIDEO_PROMPT_CHARS),
+        r.retryHint ? dataBlock("problem with the last attempt", r.retryHint, MAX_NOTE_CHARS) : "",
+      ]
+        .filter((l) => l !== "")
+        .join("\n"),
+    },
+  ];
+}
+
 export interface TtsKokoroRequest {
   text: string;
   languageLabel: string;
