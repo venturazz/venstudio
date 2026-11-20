@@ -1,0 +1,7 @@
+name: agnes
+version: 1.0.0
+description: "Agnes AI video generation (agnes-video-2.5-flash): text-to-video, image-to-video via keyframe, and reference-to-video with up to 5 reference images. 4-12s clips, 720P, 21:9/16:9/4:3/1:1/3:4/9:16. Rotates an AGNES_API_KEYS pool, retries 503 video_queue_full against a wall-clock deadline, polls only with the submitting key, and re-verifies every reference URL before each submit because provider output URLs expire."
+author: local
+kind: backend
+requires_env:
+  - AGNES_API_KEYS
