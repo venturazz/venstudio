@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17-alpine
@@ -61,6 +61,11 @@ jobs:
           fi
           ffmpeg -version | head -1
 
+      - name: Vendored style packs match styles/lock.json and validate
+        run: |
+          node scripts/sync-styles.mjs --check
+          node --test "styles/tools/*.test.mjs"
+
       - name: Unit tests (crypto)
         run: npm run test:unit
 
@@ -83,20 +88,23 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # After Playwright: its --with-deps installed the system libraries Remotion's headless Chromium needs too.
-      - name: Remotion renderer (install, typecheck, probe, render the golden fixture)
+      # The project is assembled exactly as the portal serves it to workers: the runtime plus the vendored packs'
+      # render projects (the flat-vector-explainer composition loads from styles/packs/explainer-flat-vector/render).
+      - name: Remotion renderer (assemble from the vendored packs, install, typecheck, probe, render the golden fixture)
         timeout-minutes: 15
         env:
-          VENSTUDIO_REMOTION_DIR: ${{ github.workspace }}/apps/render-remotion
+          VENSTUDIO_REMOTION_DIR: ${{ github.workspace }}/.e2e-remotion-project
           VENSTUDIO_REMOTION_OUT: ${{ github.workspace }}/.e2e-remotion
           VENSTUDIO_REMOTION_REQUIRED: "1"
         run: |
-          cd apps/render-remotion
+          node scripts/remotion-project.mjs "$VENSTUDIO_REMOTION_DIR"
+          cd "$VENSTUDIO_REMOTION_DIR"
           npm install --no-audit --no-fund
           npx tsc -p tsconfig.json
           npx remotion browser ensure
           node scripts/probe.mjs --full
           node scripts/probe.mjs
-          cd ../..
+          cd "$GITHUB_WORKSPACE"
           node --test apps/worker/remotion-render.test.ts
 
       - name: Browser end-to-end (UI flows + screenshots)
@@ -135,7 +143,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Shell syntax
-        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs && node --check scripts/e2e-update-proxy.mjs
+        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs && node --check scripts/e2e-update-proxy.mjs && node --check scripts/sync-styles.mjs && node --check scripts/remotion-project.mjs
 
   docker:
     runs-on: ubuntu-latest
@@ -174,7 +182,12 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/setup)" = 200
           curl -fsS http://localhost:3000/install/SETUP.md | grep -q "https://studio.example.com/install/install.sh"
           # The image carries the Remotion templates, so Muse workers can install remotion-2d from the portal.
-          curl -fsS http://localhost:3000/install/render-remotion.json | grep -q '"src/FlatVectorExplainer.tsx"'
+          # Downloaded first, then searched: grep -q closing a pipe early must not fail curl.
+          curl -fsS http://localhost:3000/install/render-remotion.json -o /tmp/render-remotion.json
+          grep -q '"src/packs/explainer-flat-vector/FlatVectorExplainer.tsx"' /tmp/render-remotion.json
+          # The image carries the vendored style packs: their index is served for workers.
+          curl -fsS http://localhost:3000/install/style-packs.json -o /tmp/style-packs.json
+          grep -q '"explainer-flat-vector"' /tmp/style-packs.json
           # Another app on the shared coolify network (stands in for Hermes) must be reachable by container name.
           docker run -d --rm --name fake-hermes-abc --network coolify nginx:alpine >/dev/null
           sleep 2

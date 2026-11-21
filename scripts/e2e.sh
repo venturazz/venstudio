@@ -12,10 +12,12 @@ export ARTIFACT_DIR="$ROOT/.e2e/artifacts"
 WORK="$ROOT/.e2e"
 rm -rf "$WORK" && mkdir -p "$WORK"
 # The portal serves the worker from a copy, so the self-update steps below can change what it serves (an older
-# version, a broken one) without touching the repo. Same files as apps/worker and the Remotion project.
+# version, a broken one) without touching the repo. Same files as apps/worker, the Remotion runtime and the vendored
+# style packs (found at <WORKER_DIR>/../styles, as in the image).
 mkdir -p "$WORK/src/render-remotion"
 cp -r "$ROOT/apps/worker" "$WORK/src/worker"
 cp -r "$ROOT/apps/render-remotion/package.json" "$ROOT/apps/render-remotion/tsconfig.json" "$ROOT/apps/render-remotion/scripts" "$ROOT/apps/render-remotion/src" "$WORK/src/render-remotion/"
+cp -r "$ROOT/styles" "$WORK/src/styles"
 export WORKER_DIR="$WORK/src/worker"
 
 fail() { echo "E2E FAIL: $*" >&2; [ -f "$WORK/portal.log" ] && tail -n 80 "$WORK/portal.log" >&2; exit 1; }
@@ -49,7 +51,16 @@ grep -qF "VenStudio worker setup" <<<"$AGENT_BODY" || fail "old setup link broke
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/install/../../etc/passwd")" != "200" ] || fail "install path traversal"
 curl -fsS "$APP_URL/install/render-remotion.json" -o "$WORK/render-remotion.json" || fail "render-remotion.json not served"
 node "$ROOT/apps/worker/venstudio-worker.ts" unpack-bundle --file "$WORK/render-remotion.json" --dir "$WORK/remotion-unpacked" >/dev/null || fail "render-remotion.json does not unpack"
-diff -r "$ROOT/apps/render-remotion/src" "$WORK/remotion-unpacked/src" >/dev/null || fail "unpacked Remotion templates differ from the repo"
+# The served project is the runtime plus the vendored packs' render projects, exactly as scripts/remotion-project.mjs builds it.
+node "$ROOT/scripts/remotion-project.mjs" "$WORK/remotion-expected" >/dev/null || fail "could not build the expected Remotion project"
+diff -r "$WORK/remotion-expected/src" "$WORK/remotion-unpacked/src" >/dev/null || fail "unpacked Remotion project differs from the runtime plus the vendored packs"
+[ -f "$WORK/remotion-unpacked/src/packs/explainer-flat-vector/FlatVectorExplainer.tsx" ] || fail "the explainer composition is not served from its pack"
+grep -q '"flat-vector-explainer"' "$WORK/remotion-unpacked/src/packs/packs.json" || fail "packs.json does not list the explainer composition"
+curl -fsS "$APP_URL/install/style-packs.json" -o "$WORK/style-packs.json" || fail "style-packs.json not served"
+for P in explainer-flat-vector documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud; do
+  grep -q "\"id\": \"$P\"" "$WORK/style-packs.json" || fail "style-packs.json does not list $P"
+done
+grep -q "\"commit\": \"$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).source.commit)' "$ROOT/styles/lock.json")\"" "$WORK/style-packs.json" || fail "style-packs.json does not name the vendored styles commit"
 
 echo "== worker API rejects bad tokens and codes"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$APP_URL/api/worker/claim" -H 'authorization: Bearer nope-nope-nope-nope-nope' -d '{}')" = "401" ] || fail "claim without valid token not 401"
@@ -66,6 +77,7 @@ q "INSERT INTO enrollment_codes (code_hash, label, host, channel_id, created_by,
 echo "== install + enroll worker via install.sh"
 curl -fsSL "$APP_URL/install/install.sh" | bash -s -- --portal "$APP_URL" --code "$CODE" --name "E2E worker" --mode tick --home "$WORK/worker"
 [ -f "$WORK/worker/config.json" ] || fail "worker config not written"
+cmp -s "$WORK/worker/styles/style-packs.json" "$WORK/style-packs.json" || fail "install.sh did not install the served style packs index"
 [ "$(stat -c '%a' "$WORK/worker/config.json")" = "600" ] || fail "config.json not chmod 600"
 WORKER=$(q "SELECT id FROM workers WHERE name = 'E2E worker'")
 [ -n "$WORKER" ] || fail "worker not registered"
@@ -89,6 +101,33 @@ ffprobe -v error -show_entries stream=width,height -of csv=p=0 "$FILE" | grep -q
 q "SELECT result FROM jobs WHERE id = '$SMOKE_JOB'"
 [ "$(q "SELECT jsonb_typeof(result) FROM jobs WHERE id = '$SMOKE_JOB'")" = "object" ] || fail "job result stored as $(q "SELECT jsonb_typeof(result) FROM jobs WHERE id = '$SMOKE_JOB'"), not object"
 [ "$(q "SELECT result->>'resolution' FROM jobs WHERE id = '$SMOKE_JOB'")" = "540x960" ] || fail "result fields missing"
+
+echo "== the worker reports each installed stills pack once its probe (ffmpeg with xfade) passes, and no Remotion pack without Remotion"
+CAPS=$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")
+for P in documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud; do
+  grep -qF "pack:$P@1.0.0" <<<"$CAPS" || fail "the worker does not report pack:$P@1.0.0 (capabilities: $CAPS)"
+done
+if grep -qF "pack:explainer-flat-vector@" <<<"$CAPS"; then fail "a worker without Remotion reports the Remotion pack"; fi
+# A render queued under a pack capability is claimed only by a worker reporting it.
+PACK_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','pack:explainer-flat-vector@1.0.0') RETURNING id")
+"$WORK/worker/run.sh" tick || fail "tick with a pack job exited non-zero"
+[ "$(q "SELECT status FROM jobs WHERE id = '$PACK_JOB'")" = "queued" ] || fail "a worker without the pack claimed its job"
+q "UPDATE jobs SET status = 'cancelled' WHERE id = '$PACK_JOB'" >/dev/null
+
+echo "== migration 0015: the trial curation log, additive only"
+[ "$(q "SELECT to_regclass('public.style_trial_outcomes') IS NOT NULL")" = "t" ] || fail "table style_trial_outcomes missing after migration 0015"
+for col in run_id pack_id pack_version qc_passed qc_gates presentation_score owner_decision decided_by decided_at video_asset_id created_at updated_at; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'style_trial_outcomes' AND column_name = '$col'")" = "1" ] || fail "column style_trial_outcomes.$col missing after migration 0015"
+done
+[ "$(q "SELECT count(*) FROM style_trial_outcomes")" = "0" ] || fail "style_trial_outcomes should start empty"
+TRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e trial', '{\"styleId\":\"documentary-stills\",\"stylePack\":{\"id\":\"documentary-stills\",\"version\":\"1.0.0\",\"status\":\"trial\",\"trial\":true}}') RETURNING id")
+q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision)
+   VALUES ('$TRUN', 'documentary-stills', '1.0.0', true, '[{\"gate\":\"G-technical\",\"passed\":true,\"score\":null}]', 84, 'approved')" >/dev/null || fail "style_trial_outcomes refused a valid outcome"
+q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, owner_decision) VALUES ('$TRUN', 'documentary-stills', '1.0.0', true, 'maybe')" >/dev/null 2>&1 && fail "style_trial_outcomes accepted an unknown owner decision"
+q "UPDATE style_trial_outcomes SET pack_version = 'latest' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a version that is not semver"
+q "UPDATE style_trial_outcomes SET presentation_score = 101 WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a presentation score above 100"
+q "DELETE FROM pipeline_runs WHERE id = '$TRUN'" >/dev/null
+[ "$(q "SELECT count(*) FROM style_trial_outcomes")" = "0" ] || fail "a run's trial outcome must go with the run"
 
 echo "== migration 0007 created the template and pipeline tables"
 for T in templates template_versions template_trials pipeline_runs pipeline_stages work_orders qc_reports; do
@@ -428,6 +467,16 @@ run_tick "after run.sh rollback"
 [ "$(wq update_status)" = "rolled_back" ] || fail "the run.sh rollback was not reported"
 grep -qF "v9.9.2" <<<"$(wq update_detail)" || fail "run.sh rollback reason: $(wq update_detail)"
 expect_live "$(fsha "$PRISTINE")" "the worker changed after the run.sh rollback"
+
+echo "== style packs travel through the signed update: a worker without them gets them, verified, without a version bump"
+rm -f "$WORK/worker/styles/style-packs.json"
+run_tick "style packs update"
+cmp -s "$WORK/worker/styles/style-packs.json" "$WORK/style-packs.json" || { tail -n 20 "$LOGF"; fail "the signed update did not install the style packs index"; }
+grep -q "style packs [0-9a-f]\{12\}: signature and checksum verified" "$LOGF" || fail "the log does not show the packs verification"
+[ "$(wq version)" = "$CURRENT" ] || fail "installing packs changed the worker version"
+expect_live "$(fsha "$PRISTINE")" "installing packs changed the worker file"
+run_tick "after the packs update"
+grep -qF "pack:documentary-stills@1.0.0" <<<"$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")" || fail "the worker does not report its packs after the update"
 
 echo "== drained worker gets no new jobs; revoked worker is rejected"
 q "UPDATE workers SET status = 'draining' WHERE id = '$WORKER'" >/dev/null

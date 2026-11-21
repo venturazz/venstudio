@@ -25,3 +25,5 @@ apps/render-remotion/node_modules/
 apps/render-remotion/package-lock.json
 apps/render-remotion/.venstudio-probe.json
 /.e2e-remotion/
+/.e2e-remotion-project/
+apps/render-remotion/src/packs/

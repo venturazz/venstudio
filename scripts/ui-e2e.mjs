@@ -813,7 +813,21 @@ try {
   await page.fill("#brief", STUDIO_BRIEF);
   await page.getByRole("button", { name: "Suggest from brief", exact: true }).click();
   await page.getByTestId("style-suggestions").waitFor();
+  // Style packs: every pack is in Trial, so the main list is empty and the research-only section offers them, once the
+  // worker reports the pack. Planned catalogue styles are never options.
+  const trialSection = page.getByTestId("trial-styles");
+  await trialSection.getByRole("heading", { name: "Trial styles (research only, not for publishing)", exact: true }).waitFor();
+  await trialSection.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
+  await page.getByTestId("no-listed-styles").waitFor();
+  const styleOptions = await page.locator("#templateId option").evaluateAll((os) => os.map((o) => o.value));
+  for (const planned of ["tpl-kinetic-facts", "tpl-math-explainer", "tpl-blender-3d", "tpl-ai-character-sketch"]) {
+    if (styleOptions.includes(planned)) throw new Error(`New Video offers the planned style ${planned}: ${styleOptions.join(", ")}`);
+  }
+  if (!styleOptions.includes("tpl-explainer-flat-vector")) throw new Error(`New Video does not offer the trial pack: ${styleOptions.join(", ")}`);
+  const trialGroup = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
+  if (!trialGroup.includes("Trial styles (research only, not for publishing)")) throw new Error(`no trial group in the style list: ${trialGroup.join(", ")}`);
   await page.selectOption("#templateId", "tpl-explainer-flat-vector");
+  await page.getByTestId("trial-style-note").waitFor();
   await page.selectOption("#format", "short");
   const engineInfo = await page.getByTestId("engine-info").innerText();
   if (!engineInfo.includes("Muse: runs well") || !engineInfo.includes("A worker reports remotion-2d")) throw new Error(`the engine line is wrong: ${engineInfo.replace(/\s+/g, " ")}`);
@@ -846,9 +860,14 @@ try {
   await page.getByTestId("run-settings").locator("summary").click();
   await page.getByTestId("run-settings").locator("dl").waitFor();
   const settingsText = await page.getByTestId("run-settings").innerText();
-  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF]) {
+  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF, "explainer-flat-vector 1.0.0, Trial: research only, not for publishing"]) {
     if (!settingsText.includes(want)) throw new Error(`the run settings miss "${want}": ${settingsText.replace(/\s+/g, " ")}`);
   }
+  // A run started with a Trial pack carries the badge, and its config records the pack (additive).
+  await page.getByTestId("trial-badge").getByText("Trial style: research only, not for publishing", { exact: true }).waitFor();
+  const startedId = startedHref.split("/").pop();
+  const storedPack = dbValue(`SELECT config->'stylePack'->>'id' || '@' || (config->'stylePack'->>'version') || ':' || (config->'stylePack'->>'trial') FROM pipeline_runs WHERE id = '${startedId}'`);
+  if (storedPack !== null && storedPack !== "explainer-flat-vector@1.0.0:true") throw new Error(`the run config does not mark the trial pack: ${storedPack}`);
   await page.goto(`${APP}/studio`);
   await page.getByTestId("studio-runs").getByRole("link").filter({ hasText: "Myth Stories" }).first().waitFor();
 
@@ -884,6 +903,7 @@ try {
     ["Send revision", m.getByRole("button", { name: "Send revision" })],
     ["Reject", m.getByRole("button", { name: "Reject" })],
   ]);
+  await m.getByTestId("review-card").filter({ has: m.getByRole("button", { name: "Approve this idea" }) }).first().getByTestId("trial-badge").waitFor();
   await shot("17-review-mobile", m);
   const runHref = await m.getByRole("link", { name: "Open run" }).first().getAttribute("href");
   if (!runHref) throw new Error("review card has no link to its run");
@@ -1247,6 +1267,40 @@ try {
   const approveQc = qc.getByRole("button", { name: "Approve", exact: true });
   if (await approveQc.isVisible().catch(() => false)) await approveQc.click();
   else await qc.getByRole("button", { name: "Reject" }).click();
+
+  step("style packs: the render was routed by the pack, the trial outcome is in the curation log, and Styles shows it");
+  {
+    const prodRunId = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
+    const cap = dbValue(`SELECT capability FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${prodRunId}' ORDER BY created_at DESC LIMIT 1`);
+    if (cap !== null && cap !== "pack:explainer-flat-vector@1.0.0") throw new Error(`the render job is queued under ${cap}, not the pack capability`);
+    // The decision is saved by a server action; the log row follows it.
+    let outcome = null;
+    for (let i = 0; i < 20; i++) {
+      outcome = dbValue(
+        `SELECT pack_id || '@' || pack_version || ' ' || qc_passed::text || ' ' || coalesce(owner_decision, 'none') || ' ' || (video_asset_id IS NOT NULL)::text FROM style_trial_outcomes WHERE run_id = '${prodRunId}'`,
+      );
+      if (outcome === null || / (approved|rejected) /.test(outcome)) break;
+      await m.waitForTimeout(1000);
+    }
+    if (outcome === null) console.log("   no database access (UI_DB unset): the curation log check is skipped");
+    else if (!/^explainer-flat-vector@1\.0\.0 (true|false) (approved|rejected) true$/.test(outcome)) {
+      await dumpPipeline(m, productionRunHref, "the trial outcome was not recorded");
+      throw new Error(`the trial outcome is "${outcome}", expected the pack version, the QC result, the owner's decision and the video`);
+    }
+    await page.goto(`${APP}/studio/styles`);
+    const explainerCard = page.getByTestId("style-pack-explainer-flat-vector");
+    await explainerCard.getByText("Trial", { exact: true }).first().waitFor();
+    await explainerCard.getByTestId("pack-availability").getByText("A worker reports pack:explainer-flat-vector@1.0.0", { exact: true }).waitFor();
+    if (outcome !== null) {
+      await explainerCard.getByTestId("trial-record").getByText(/^Trial runs of v1\.0\.0: 1 /).waitFor();
+      await explainerCard.getByTestId("promotion-issues").getByText("Needs at least 5 trial runs (has 1)", { exact: true }).waitFor();
+    }
+    const plannedCard = page.getByTestId("planned-style-kinetic-facts");
+    await plannedCard.getByText("Planned", { exact: true }).waitFor();
+    await plannedCard.getByText("Not selectable for a run", { exact: true }).waitFor();
+    await page.getByTestId("planned-styles").getByRole("heading", { name: "Planned styles (not selectable)", exact: true }).waitFor();
+    await shot("15b-styles-desktop");
+  }
 
   step("production: the render mixed the tagged music track as its bed, never the narration");
   {
