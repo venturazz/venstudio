@@ -1,7 +1,12 @@
 # Style system: style packs, renderers, Template Lab
 
 Status: agreed with the owner. Phase 0 (signed automatic worker updates) is implemented on
-`feat/auto-update`; phases 1 to 5 are the plan.
+`feat/auto-update`; Phase 1 (pack format, vendored registry, Listed/Trial in New Video) on `feat/style-registry`,
+described in `docs/style-packs.md`; phases 2 to 5 are the plan.
+
+Phase 1 changes one thing in section 2 below, by owner decision (no new secrets): the portal has no GitHub token, so it
+does not read signed releases from the styles repo. venstudio vendors a pinned copy (`styles/`, `styles/lock.json`)
+through a normal PR that its CI must pass, and the portal signs what it serves to workers with its Phase 0 key.
 
 ## Ringkasan (Bahasa Indonesia)
 

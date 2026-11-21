@@ -178,7 +178,11 @@ from remotion.pro. Check this applies before relying on it. Nothing in the code 
   label and a neutral ring); bars and gauges plot `series` only when declared (otherwise muted placeholder shapes and
   no numbers).
 
-Developing a template: `cd apps/render-remotion && npm install && npx remotion studio src/index.ts` previews the
-sample props; `npm run typecheck`; `node scripts/probe.mjs --full` before committing. Add new files to
-`REMOTION_PROJECT_FILES` in `apps/portal/lib/install-bundle.ts` (a unit test fails until you do), and a new template
-to `src/Root.tsx`, `COMPOSITIONS` in `scripts/probe.mjs` and `REMOTION_COMPOSITIONS` in the worker.
+Developing a template: templates are style packs now (docs/style-packs.md). `apps/render-remotion` is the shared
+runtime (package, root, shared props, probe) and has no composition of its own; a Remotion pack's `render/` in
+venturazz/venstudio-styles holds the composition, and the portal installs it as `src/packs/<id>/` in the bundle it
+serves. To work on one: `node scripts/remotion-project.mjs /tmp/remotion && cd /tmp/remotion && npm install && npx
+remotion studio src/index.ts`; then `npx tsc -p tsconfig.json` and `node scripts/probe.mjs --full`. The probe renders
+every composition listed in the generated `src/packs/packs.json`, and the worker maps a scene plan's template to its
+composition from that list. A new runtime file goes into `REMOTION_RUNTIME_FILES` in
+`apps/portal/lib/install-bundle.ts` (a unit test fails until it does) and into the styles repo's runtime copy.
