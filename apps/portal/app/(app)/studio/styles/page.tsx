@@ -200,7 +200,7 @@ function PackCard({ entry: e, caps, outcomes, template }: { entry: RegistryEntry
         <div className="mt-3 space-y-1.5 rounded-lg border border-border p-3 text-xs" data-testid="trial-record">
           <p className="font-medium">
             Trial runs of v{pack.version}: {counts.trials} · technical pass {Math.round(counts.passRate * 100)}% · mean presentation{" "}
-            {Math.round(counts.meanPresentationScore)} · owner approved {counts.approved}, rejected {counts.rejected}
+            {Math.round(counts.meanPresentationScore)} ({counts.presentationScored} scored) · owner approved {counts.approved}, rejected {counts.rejected}
           </p>
           <p className="text-muted">Promotion rule: {PROMOTION_RULE_TEXT}</p>
           {ready ? (

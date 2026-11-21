@@ -262,6 +262,8 @@ export function ownerDecisionOf(reviewState: string | null, autoApproved: boolea
 export interface TrialCounts extends TemplateEvidence {
   /** Outcomes of this version with a QC result. */
   measured: number;
+  /** Trials with a presentation score (G-presentation). The mean is over these only. */
+  presentationScored: number;
   approved: number;
   rejected: number;
   undecided: number;
@@ -271,7 +273,7 @@ export interface TrialCounts extends TemplateEvidence {
 export function trialCounts(outcomes: readonly TrialOutcome[], version: string): TrialCounts {
   const mine = outcomes.filter((o) => o.packVersion === version && o.qcPassed !== null);
   const failed = (o: TrialOutcome, gate: GateId) => o.gates.some((g) => g.gate === gate && !g.passed);
-  const scores = mine.map((o) => o.presentationScore ?? 0);
+  const scores = mine.flatMap((o) => (o.presentationScore === null ? [] : [o.presentationScore]));
   return {
     trials: mine.length,
     passRate: mine.length ? mine.filter((o) => o.qcPassed).length / mine.length : 0,
@@ -280,6 +282,7 @@ export function trialCounts(outcomes: readonly TrialOutcome[], version: string):
     complianceFailures: mine.filter((o) => failed(o, "G-compliance")).length,
     claims: mine.filter((o) => failed(o, "G-claims")).length,
     measured: mine.length,
+    presentationScored: scores.length,
     approved: mine.filter((o) => o.ownerDecision === "approved").length,
     rejected: mine.filter((o) => o.ownerDecision === "rejected").length,
     undecided: mine.filter((o) => o.ownerDecision === null).length,
@@ -295,7 +298,11 @@ export function packPromotionIssues(pack: StylePack, template: Template | null, 
   if (pack.status !== "trial") return [`Only a Trial pack is promoted from the portal's record (this one is ${STATUS_LABEL[pack.status]})`];
   const checklist = template?.copyrightChecklist ?? [];
   const base: Template = template ?? ({ copyrightChecklist: [] } as unknown as Template);
-  return promotionIssues({ ...base, status: "candidate", copyrightChecklist: checklist, evidence: counts });
+  const issues = promotionIssues({ ...base, status: "candidate", copyrightChecklist: checklist, evidence: counts });
+  // A run without a presentation score is not counted as 0 and not as a pass: the rule needs the score measured.
+  const unscored = counts.trials - counts.presentationScored;
+  if (unscored > 0) issues.push(`${unscored} of ${counts.trials} trial run(s) have no presentation score yet (G-presentation); the rule needs it measured`);
+  return issues;
 }
 
 export const PROMOTION_RULE_TEXT = `At least ${PROMOTION_MIN_TRIALS} trial runs, every one passing the technical gate, a mean presentation score of at least ${PROMOTION_MIN_PRESENTATION}, no asset or compliance failures, no open claims, and the owner's copyright checklist signed.`;

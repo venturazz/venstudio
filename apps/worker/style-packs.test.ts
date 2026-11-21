@@ -143,6 +143,11 @@ test("signed delivery: a manifest may name the packs index; planUpdate installs 
   const p = planUpdate(newerWorker, { ...local, workerSha: sha("old") });
   assert.equal(p.worker?.name, "venstudio-worker.ts");
   assert.equal(p.packs, null, "the packs wait for the new worker (it may read a newer index)");
+  // A portal older than this worker: the worker file is refused, the packs index is still taken.
+  const older = planUpdate({ ...base, version: "0.1.0" }, local);
+  assert.match(older.refused ?? "", /older than this worker/);
+  assert.equal(older.worker, null);
+  assert.equal(older.packs?.name, "style-packs.json");
   const failed = planUpdate(base, { ...local, failed: { [sha(body.packs)]: "style packs index: unknown format" } });
   assert.equal(failed.packs, null);
   assert.match(failed.notice ?? "", /style packs .* failed here before/);

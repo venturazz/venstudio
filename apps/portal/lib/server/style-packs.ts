@@ -104,10 +104,13 @@ async function load(): Promise<VendoredStyles> {
 
 let cached: Promise<VendoredStyles> | undefined;
 
-/** The vendored packs, loaded once per process. */
+/** The vendored packs, loaded once per process. A load that found no styles/ is not kept, so it is tried again. */
 export function vendoredStyles(): Promise<VendoredStyles> {
-  cached ??= load();
-  return cached;
+  const p = (cached ??= load());
+  void p.then((v) => {
+    if (v.dir === null && cached === p) cached = undefined;
+  });
+  return p;
 }
 
 /** The registry: catalogue merged with the vendored packs. */

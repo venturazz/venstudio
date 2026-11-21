@@ -48,7 +48,7 @@ import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
 import { VIDEO_FORMATS } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
-import { gateCapabilities, mixFeaturesFor, packRenderIssue, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
+import { gateCapabilities, mixFeaturesFor, packWaitNote, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
 import { runStylePack, type RunStylePack } from "../studio/style-registry.ts";
 import { registryEntry } from "./style-packs.ts";
 import { recordTrialOutcome } from "./style-trials.ts";
@@ -950,11 +950,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // A run started with a style pack renders with the pack version this portal serves now (workers update to it) and
   // only on a worker that reports it. Runs started before packs keep the engine routing they had.
   const stylePack = await renderPackFor(run.config.stylePack ?? null);
-  const packIssue = packRenderIssue(stylePack, gate);
-  if (packIssue) {
-    await recordStageError(run.id, st.id, "render", packIssue);
-    return;
-  }
+  const packNote = packWaitNote(stylePack, gate);
   // Phase 4 has no animatic, so the draft stage is recorded as skipped once.
   await sql`
     INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
@@ -978,6 +974,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     ...(music ? { music } : {}),
     ...(mix.note ? { mixNote: mix.note } : {}),
     ...(stylePack ? { stylePack } : {}),
+    ...(packNote ? { packNote } : {}),
   });
 }
 
@@ -1196,6 +1193,8 @@ async function completeRender(jobId: string): Promise<boolean> {
     // What plays under the narration, from the payload the worker rendered (0.7.0+): the bed's title and licence.
     music: bedInput ? `Music bed: ${bedInput.title} (${bedInput.license})` : toObject(job.payload.audio).bed === null ? "No music bed" : "",
     ...(text(st.output.mixNote) ? { mixNote: text(st.output.mixNote) } : {}),
+    // The style pack version this video was rendered with (the curation log reads it).
+    ...(isRecord(st.output.stylePack) ? { stylePack: st.output.stylePack } : {}),
     // Where each scene starts (worker 0.5+). The qc stage hands these to the cut check.
     sceneStarts: Array.isArray(r.sceneStarts) ? (r.sceneStarts as unknown[]).filter((v): v is number => num(v) !== null).slice(0, 500) : [],
   };

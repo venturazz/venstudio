@@ -60,8 +60,15 @@ Listed or Trial packs no worker reports yet are named under the Trial section as
   remotion-2d pack's `render/`, installed as `src/packs/<id>/` with a generated `src/packs/index.ts` that `Root.tsx`
   registers. The worker maps a scene plan's template to its composition from the installed `packs.json`.
 - A run's render job is queued under `pack:<id>@<version>` (the version the portal serves at render time), so only a
-  worker that has that pack claims it; with workers reporting but none reporting the pack, the render stage stops
-  with a message and a Retry. Runs started before packs keep the engine routing they had.
+  worker that has that pack claims it. When workers report but none has that pack version yet (right after a deploy
+  or a pack bump), the job waits and the render stage and the Jobs page say why; workers install it with their next
+  signed update. An engine no worker can run at all is still refused at planning. Runs started before packs keep the
+  engine routing they had.
+- Known limits: a stills pack needs ffmpeg with `xfade` on the worker (every supported ffmpeg has it), so a worker
+  without it gets no stills pack instead of falling back to hard cuts; a pack-only change shows on the Workers page
+  as an available update of the version the worker already runs, and approve mode asks for it like any release.
+- A Trial run's presentation score comes from the G-presentation gate; runs without one are listed as not scored,
+  never averaged in as 0, and block promotion until measured.
 
 ## Curation log and promotion
 

@@ -3052,7 +3052,8 @@ export function planUpdate(
   const cmp = compareVersions(m.version, local.version);
   if (Number.isNaN(cmp)) return { ...plan, refused: `unreadable version ${m.version}` };
   if (cmp < 0 && !m.pin) {
-    return { ...plan, refused: `v${m.version} is older than this worker (v${local.version}); downgrades are refused unless the owner pins that version` };
+    // The worker file is refused, but the packs index is data: a worker newer than the portal still takes it.
+    return withPacks({ ...plan, refused: `v${m.version} is older than this worker (v${local.version}); downgrades are refused unless the owner pins that version` }, m, local);
   }
   const wf = m.files.find((f) => f.name === UPDATE_WORKER_FILE) ?? null;
   if (wf && wf.sha256 !== local.workerSha) {
@@ -3065,8 +3066,14 @@ export function planUpdate(
     if (local.failed[bf.sha256]) plan.notice = plan.notice ?? `skipping the Remotion templates ${bf.sha256.slice(0, 12)}: they failed here before`;
     else plan.bundle = bf;
   }
-  // The packs index is data, not code: installed whenever it differs, once the worker file is current (a new worker
-  // version may read a newer index format).
+  return withPacks(plan, m, local);
+}
+
+/**
+ * The packs index is data, not code: installed whenever it differs, once no worker file is about to replace this one
+ * (a new worker version may read a newer index format).
+ */
+function withPacks(plan: UpdatePlan, m: Pick<UpdateManifest, "files">, local: { packsSha?: string | null; failed: Readonly<Record<string, string>> }): UpdatePlan {
   const pf = m.files.find((f) => f.name === UPDATE_PACKS_FILE) ?? null;
   if (!plan.worker && pf && pf.sha256 !== (local.packsSha ?? null)) {
     if (local.failed[pf.sha256]) plan.notice = plan.notice ?? `skipping the style packs ${pf.sha256.slice(0, 12)}: they failed here before`;

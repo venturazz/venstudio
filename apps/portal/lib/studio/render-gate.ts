@@ -53,17 +53,19 @@ export function withFadeFallback<T extends { ok: boolean }>(transitionSec: numbe
 }
 
 /**
- * The render stage error when workers report capabilities but none reports this pack version, or null when one does
- * (or when the gate is skipped: nothing reported yet, so the job waits in the queue like any render).
+ * The note on the render stage when workers report capabilities but none reports this pack version yet, or null when
+ * one does (or nothing is reported yet). The job is queued anyway under the pack capability and waits: workers 0.9.0+
+ * install a new pack version with their next signed update (minutes), and the Jobs page says why it waits. An engine
+ * no worker can run at all is still refused at planning, by the engine gate.
  */
-export function packRenderIssue(pack: { id: string; version: string } | null, gate: readonly string[] | undefined): string | null {
+export function packWaitNote(pack: { id: string; version: string } | null, gate: readonly string[] | undefined): string | null {
   if (!pack || !gate) return null;
   const cap = packCapability(pack.id, pack.version);
   if (gate.includes(cap)) return null;
   return (
-    `No worker reports the style pack ${pack.id} ${pack.version} ("${cap}") yet, so nothing was queued. Workers 0.9.0 and later ` +
-    `install style packs from this portal with their signed updates and report each pack once its renderer probe passes; ` +
-    `check the Workers page (update mode, last update result), or run install.sh again. Then press Retry.`
+    `Waiting for a worker with the style pack ${pack.id} ${pack.version} ("${cap}"). Workers 0.9.0 and later install style ` +
+    `packs with their signed updates and report a pack once its renderer probe passes; the render starts then. If it ` +
+    `keeps waiting, check the Workers page (update mode, last update result) or run install.sh again.`
   );
 }
 

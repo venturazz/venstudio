@@ -3,9 +3,11 @@
  * the narration mux and qc-video, exactly as a Muse worker would.
  *
  * Skipped unless VENSTUDIO_REMOTION_DIR points at an installed project whose probe passes, and ffmpeg is present.
- * CI sets that up (see .github/workflows/ci.yml); locally:
- *   (cd apps/render-remotion && npm install && npx remotion browser ensure && node scripts/probe.mjs --full)
- *   VENSTUDIO_REMOTION_DIR=$PWD/apps/render-remotion node --test apps/worker/remotion-render.test.ts
+ * CI sets that up (see .github/workflows/ci.yml) from the project a worker gets: the runtime plus the vendored packs
+ * (the composition comes from styles/packs/explainer-flat-vector/render). Locally:
+ *   node scripts/remotion-project.mjs /tmp/vs-remotion
+ *   (cd /tmp/vs-remotion && npm install && npx remotion browser ensure && node scripts/probe.mjs --full)
+ *   VENSTUDIO_REMOTION_DIR=/tmp/vs-remotion node --test apps/worker/remotion-render.test.ts
  * Set VENSTUDIO_REMOTION_OUT=<dir> to keep the video and a few frames to look at.
  */
 import { test } from "node:test";

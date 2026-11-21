@@ -10,7 +10,7 @@ import { renderParamsForStyle } from "./scene-plan.ts";
 import { PUBLISH_GATES } from "./qc.ts";
 import { MOTION_TOKENS } from "./render-engine.ts";
 import { parseRunConfig, isTrialRun, runSettings } from "./run-config.ts";
-import { packRenderIssue, renderJobCapability } from "./render-gate.ts";
+import { packWaitNote, renderJobCapability } from "./render-gate.ts";
 import {
   PACK_CAPABILITY_RE,
   availabilityOf,
@@ -174,7 +174,7 @@ test("a run started with a Trial pack is marked trial in its config, additively,
   assert.equal(parseRunStylePack({ id: "ab", version: "1.0.0", status: "beta" }), null);
 });
 
-test("renders of a pack are queued under its versioned capability and refused when no worker reports it", () => {
+test("renders of a pack are queued under its versioned capability, and wait with a note until a worker reports it", () => {
   const sp = { id: "explainer-flat-vector", version: "1.0.0" };
   assert.equal(renderJobCapability("remotion-2d", 0.5, sp), "pack:explainer-flat-vector@1.0.0");
   assert.equal(renderJobCapability("ffmpeg-stills", 0.5, { id: "documentary-stills", version: "1.0.0" }), "pack:documentary-stills@1.0.0");
@@ -183,10 +183,10 @@ test("renders of a pack are queued under its versioned capability and refused wh
   assert.equal(renderJobCapability("remotion-2d", 0.5, null), "remotion-2d");
   assert.ok(PACK_CAPABILITY_RE.test(packCapability("explainer-flat-vector", "1.0.0")));
   assert.ok(!PACK_CAPABILITY_RE.test("pack:../x@1.0.0") && !PACK_CAPABILITY_RE.test("pack:abc@latest"));
-  assert.equal(packRenderIssue(sp, undefined), null, "no worker reports anything yet: the job waits in the queue");
-  assert.equal(packRenderIssue(null, ["ffmpeg"]), null);
-  assert.equal(packRenderIssue(sp, ["remotion-2d", "pack:explainer-flat-vector@1.0.0"]), null);
-  assert.match(packRenderIssue(sp, ["remotion-2d", "pack:explainer-flat-vector@0.9.0"]) ?? "", /No worker reports the style pack explainer-flat-vector 1\.0\.0 \("pack:explainer-flat-vector@1\.0\.0"\).*Retry/);
+  assert.equal(packWaitNote(sp, undefined), null, "no worker reports anything yet: the job waits like any render");
+  assert.equal(packWaitNote(null, ["ffmpeg"]), null);
+  assert.equal(packWaitNote(sp, ["remotion-2d", "pack:explainer-flat-vector@1.0.0"]), null);
+  assert.match(packWaitNote(sp, ["remotion-2d", "pack:explainer-flat-vector@0.9.0"]) ?? "", /^Waiting for a worker with the style pack explainer-flat-vector 1\.0\.0 \("pack:explainer-flat-vector@1\.0\.0"\)\..*signed updates/);
 });
 
 function outcome(n: number, over: Partial<TrialOutcome> = {}): TrialOutcome {
@@ -235,6 +235,10 @@ test("curation counts against the promotion rule: 5 trials, 100% technical pass,
   assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(five.slice(0, 4), "1.0.0")).some((i) => /at least 5 trial runs \(has 4\)/.test(i)));
   const oneFail = [...five.slice(0, 4), outcome(5, { qcPassed: false, gates: [{ gate: "G-technical", passed: false, score: null }] })];
   assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(oneFail, "1.0.0")).some((i) => /pass rate is 80 percent/.test(i)));
+  const unscored = [...five.slice(0, 4), outcome(5, { presentationScore: null })];
+  const u = trialCounts(unscored, "1.0.0");
+  assert.equal(u.meanPresentationScore, 85, "a missing score is not averaged in as 0");
+  assert.ok(packPromotionIssues(p, signedTemplate(), u).some((i) => /1 of 5 trial run\(s\) have no presentation score yet/.test(i)));
   const low = five.map((o) => ({ ...o, presentationScore: 70 }));
   assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(low, "1.0.0")).some((i) => /presentation score must be at least 80 \(is 70\)/.test(i)));
   const assetFail = [...five.slice(0, 4), outcome(5, { gates: [{ gate: "G-technical", passed: true, score: null }, { gate: "G-assets", passed: false, score: null }] })];

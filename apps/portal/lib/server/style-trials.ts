@@ -24,9 +24,9 @@ export async function recordTrialOutcome(runId: string): Promise<void> {
       SELECT output FROM pipeline_stages WHERE run_id = ${runId} AND stage = 'render' AND state = 'passed' ORDER BY attempt DESC LIMIT 1
     `;
     const renderOut = isRecord(render?.output) ? render.output : {};
-    const rendered = parseRunStylePack(renderOut.stylePack);
-    const version = rendered?.id === pack.id ? rendered.version : pack.version;
     const result = isRecord(renderOut.result) ? renderOut.result : {};
+    const rendered = parseRunStylePack(renderOut.stylePack ?? result.stylePack);
+    const version = rendered?.id === pack.id ? rendered.version : pack.version;
     const videoAssetId = asUuid(result.assetId);
     const gateRows = await sql`
       SELECT DISTINCT ON (gate) gate, passed, score FROM qc_reports WHERE run_id = ${runId} ORDER BY gate, created_at DESC
