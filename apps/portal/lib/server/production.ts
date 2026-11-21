@@ -29,9 +29,9 @@ import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, prov
 import type { AssetKind, AssetSource } from "../studio/catalog.ts";
 import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
 import type { Template } from "../studio/templates.ts";
-import { buildRenderPayload } from "../studio/render.ts";
+import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
-import { gateCapabilities, renderJobCapability, renderStageError } from "../studio/render-gate.ts";
+import { gateCapabilities, renderJobCapability, renderStageError, withFadeFallback } from "../studio/render-gate.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import type { ReviewMedia } from "../studio/review.ts";
@@ -596,8 +596,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
 
   // A cross-fade is a two-sided change: the worker has to build the xfade and accept a timeline whose
   // shots add up to more than the narration. So the portal only asks once a worker says it can, and a
-  // capability read that fails means no fades rather than a failed run.
-  // Null when the read fails: no fades, and no engine gate either, rather than a failed run.
+  // capability read that fails (null) means no fades and no engine gate, rather than a failed run.
   let workerCapabilities: string[] | null = null;
   try {
     const rows = (await sql`SELECT DISTINCT unnest(capabilities) AS cap FROM workers WHERE status <> 'revoked'`) as unknown as Array<{ cap: unknown }>;
@@ -605,32 +604,36 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   } catch {
     workerCapabilities = null;
   }
-  const transitionSec = transitionForWorker(workerCapabilities, shotSpecs.map((s) => s.seconds));
+  const fadeSec = transitionForWorker(workerCapabilities, shotSpecs.map((s) => s.seconds));
   // Once any worker reports, an engine none of them can run fails here, at planning, instead of being claimed by a
   // worker that would refuse it (0.5+) or, worse, render it as stills (0.4). With no worker enrolled the job waits.
   const gate = gateCapabilities(workerCapabilities);
   const engine = renderParams?.engine ?? DEFAULT_RENDER_ENGINE;
-  const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: board.value.shots, transitionSec }) : null;
-  if (scenes && !scenes.ok) {
-    await recordStageError(run.id, st.id, "render", renderStageError(scenes.issues, engine));
-    return;
-  }
-  const renderInput = {
-    fontAssetId: font ? asUuid(font.id) : null,
-    format: run.config.format,
-    shots: shotSpecs,
-    shotAssets,
-    narrationAssetId: asUuid(voiceResult.assetId),
-    narrationSec: typeof voiceResult.narrationSec === "number" ? voiceResult.narrationSec : 0,
-    captions: captionLines(script.value.script),
-    targetLufs: template.audio.targetLufs,
-    maxShotSeconds: template.pacing.maxShotSeconds,
-    runId: run.id,
-    ...(renderParams ? { engine: renderParams.engine, transitionSec } : {}),
-    ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
-    ...(gate ? { workerCapabilities: gate } : {}),
+  // Read once, outside the closure, so the narrowing above holds.
+  const boardShots = board.value.shots;
+  const captions = captionLines(script.value.script);
+  const fontAssetId = font ? asUuid(font.id) : null;
+  const planFor = (transitionSec: number): RenderPlan => {
+    const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: boardShots, transitionSec }) : null;
+    if (scenes && !scenes.ok) return { ok: false, issues: scenes.issues };
+    return buildRenderPayload({
+      fontAssetId,
+      format: run.config.format,
+      shots: shotSpecs,
+      shotAssets,
+      narrationAssetId: asUuid(voiceResult.assetId),
+      narrationSec: typeof voiceResult.narrationSec === "number" ? voiceResult.narrationSec : 0,
+      captions,
+      targetLufs: template.audio.targetLufs,
+      maxShotSeconds: template.pacing.maxShotSeconds,
+      runId: run.id,
+      ...(renderParams ? { engine: renderParams.engine, transitionSec } : {}),
+      ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
+      ...(gate ? { workerCapabilities: gate } : {}),
+    });
   };
-  const plan = buildRenderPayload(renderInput);
+  // Fades make the shots longer by the overlaps; a storyboard planned with no room for that renders with hard cuts.
+  const plan = withFadeFallback(fadeSec, planFor).result;
   if (!plan.ok) {
     await recordStageError(run.id, st.id, "render", renderStageError(plan.issues, engine));
     return;
@@ -648,7 +651,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     priority: URGENT_PRIORITY,
     createdBy: null,
     // Queued under the engine's capability, so only a worker that can run it claims it.
-    capability: renderJobCapability(plan.payload.engine),
+    capability: renderJobCapability(plan.payload.engine, plan.payload.transitionSec),
   });
   await mergeStageOutput(st.id, { jobId, shots: plan.payload.shots.length, narrationSec: plan.payload.narrationSec });
 }

@@ -236,7 +236,12 @@ function hasCommand(cmd: string, args: string[] = ["-version"]): boolean {
 
 export async function detectCapabilities(): Promise<Capability[]> {
   const caps: Capability[] = ["echo"];
-  if (hasCommand(process.env.FFMPEG_PATH ?? "ffmpeg")) caps.push("ffmpeg");
+  if (hasCommand(process.env.FFMPEG_PATH ?? "ffmpeg")) {
+    caps.push("ffmpeg");
+    // The portal starts asking for cross-fades the moment any worker reports this, so it is reported only where
+    // render-video can build them: this ffmpeg has the filter, and parseRenderSpec accepts the faded timeline.
+    if (ffmpegHasFilter("xfade")) caps.push("xfade");
+  }
   const kokoro = process.env.KOKORO_URL;
   if (kokoro) {
     try {
@@ -1106,6 +1111,82 @@ export function parseScenePlan(raw: unknown, ctx: { engine: string; width: numbe
   };
 }
 
+// Cross-fades. Same numbers as planCrossFades and transitionFor in apps/portal/lib/studio/render-engine.ts, which
+// the worker cannot import (it is one file with no dependencies). render-engines.test.ts checks both agree on the
+// golden fixture.
+
+export const MIN_TRANSITION_SEC = 0.15;
+/** No shot may be left with less than this much screen time of its own by the fades around it. */
+export const MIN_EXCLUSIVE_SHOT_SEC = 0.4;
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+export type CrossFadePlan =
+  | { ok: true; starts: number[]; offsets: number[]; totalSec: number; transitionSec: number }
+  | { ok: false; issues: string[] };
+
+/** Places the shots on one timeline, each adjacent pair overlapping by `transitionSec`. Mirror of the portal's. */
+export function planCrossFades(seconds: readonly number[], transitionSec: number): CrossFadePlan {
+  const issues: string[] = [];
+  if (seconds.length === 0) return { ok: false, issues: ["There are no shots to place on the timeline"] };
+  seconds.forEach((s, i) => {
+    if (!Number.isFinite(s) || s <= 0) issues.push(`Shot ${i + 1} has no usable length (${s})`);
+  });
+  if (!Number.isFinite(transitionSec) || transitionSec < 0) issues.push(`Transition length is not usable (${transitionSec})`);
+  if (issues.length > 0) return { ok: false, issues };
+  const n = seconds.length;
+  const d = n < 2 ? 0 : transitionSec;
+  if (d > 0 && d < MIN_TRANSITION_SEC) return { ok: false, issues: [`Transition length ${d} s is below the ${MIN_TRANSITION_SEC} s minimum`] };
+  if (d > 0) {
+    seconds.forEach((s, i) => {
+      const count = (i > 0 ? 1 : 0) + (i < n - 1 ? 1 : 0);
+      const exclusive = s - count * d;
+      if (exclusive < MIN_EXCLUSIVE_SHOT_SEC) {
+        issues.push(
+          `A ${d} s transition leaves shot ${i + 1} only ${round3(Math.max(0, exclusive))} s of its own ` +
+            `(it is ${round3(s)} s). Shorten the transition or lengthen the shot.`,
+        );
+      }
+    });
+    if (issues.length > 0) return { ok: false, issues };
+  }
+  const starts: number[] = [0];
+  for (let i = 1; i < n; i++) starts.push(round3(starts[i - 1] + seconds[i - 1] - d));
+  return { ok: true, starts, offsets: starts.slice(1), totalSec: round3(starts[n - 1] + seconds[n - 1]), transitionSec: d };
+}
+
+export type TransitionName = "none" | "fade" | "slideup" | "wipeleft" | "circleopen";
+const TRANSITION_CYCLE: readonly TransitionName[] = ["fade", "slideup", "fade", "wipeleft", "fade", "circleopen"];
+
+/** Transition joining shot `index` to the one before it, fixed by position. Mirror of the portal's. */
+export function transitionFor(index: number): TransitionName {
+  if (index <= 0) return "none";
+  return TRANSITION_CYCLE[(index - 1) % TRANSITION_CYCLE.length];
+}
+
+/**
+ * The cross-fade timeline in whole frames, which is what ffmpeg actually renders.
+ *
+ * The portal's starts are rounded to the millisecond, so they rarely fall on a frame (4.167 s is frame 125.01 at
+ * 30 fps). Each boundary is snapped to its nearest frame once, on the shared timeline, so rounding never accumulates
+ * from shot to shot: shot i runs from startFrames[i] for frames[i] frames, the last fadeFrames of which it shares with
+ * shot i + 1. totalFrames / fps is the portal's totalSec to within half a frame.
+ */
+export interface XfadeTimeline {
+  fadeFrames: number;
+  startFrames: number[];
+  frames: number[];
+  totalFrames: number;
+}
+
+export function xfadeTimeline(starts: readonly number[], totalSec: number, transitionSec: number, fps: number): XfadeTimeline {
+  const n = starts.length;
+  const fadeFrames = Math.round(transitionSec * fps);
+  const startFrames = starts.map((s) => Math.round(s * fps));
+  const totalFrames = Math.round(totalSec * fps);
+  const frames = startFrames.map((f, i) => (i < n - 1 ? startFrames[i + 1] + fadeFrames : totalFrames) - f);
+  return { fadeFrames, startFrames, frames, totalFrames };
+}
+
 /** Strict check of a render-video payload. Throws NonRetryableError with a plain message. */
 export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   const bad = (m: string): never => {
@@ -1135,13 +1216,31 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   if (!inputs.includes(narrationAssetId as string)) bad("the narration asset is not listed in inputs");
   const narrationSec = num(payload.narrationSec);
   if (!(narrationSec > 0) || narrationSec > RENDER_LIMITS.maxSeconds) bad(`narrationSec must be above 0 and at most ${RENDER_LIMITS.maxSeconds}`);
-  const transitionSec = payload.transitionSec === undefined || payload.transitionSec === null ? 0 : num(payload.transitionSec);
-  if (!(transitionSec >= 0) || transitionSec > 5) bad("transitionSec must be from 0 to 5 seconds");
-  // A cross-fade makes the shots add up to more than the narration, so the timing check below would be wrong for it.
-  if (transitionSec > 0) bad(`this worker (${VERSION}) does not build cross-fades yet; the job asks for ${transitionSec} s fades`);
+  const askedFade = payload.transitionSec === undefined || payload.transitionSec === null ? 0 : num(payload.transitionSec);
+  if (!(askedFade >= 0) || askedFade > 5) bad("transitionSec must be from 0 to 5 seconds");
+  // One shot has nothing to fade into.
+  const transitionSec = shots.length < 2 ? 0 : askedFade;
   const total = shots.reduce((n, s) => n + s.seconds, 0);
   if (total > RENDER_LIMITS.maxSeconds) bad(`the shots add up to ${Math.round(total)} s; the limit is ${RENDER_LIMITS.maxSeconds} s`);
-  if (Math.abs(total - narrationSec) > 1) bad(`the shots add up to ${round2(total)} s but the narration is ${round2(narrationSec)} s`);
+  let durationSec = round2(total);
+  if (transitionSec === 0) {
+    // Hard cuts: the shots end to end are the video, so they must match the narration. Unchanged from before fades.
+    if (Math.abs(total - narrationSec) > 1) bad(`the shots add up to ${round2(total)} s but the narration is ${round2(narrationSec)} s`);
+  } else {
+    // Cross-fades: each of the n - 1 fades overlaps two shots, so the shots add up to narration + (n - 1) x fade.
+    // What must match the narration is the timeline after the overlaps, which the portal sends as durationSec.
+    const fade = planCrossFades(shots.map((s) => s.seconds), transitionSec);
+    if (!fade.ok) return bad(fade.issues.join("; "));
+    const planned = payload.durationSec === undefined ? fade.totalSec : num(payload.durationSec);
+    if (!(Math.abs(planned - fade.totalSec) <= 0.05)) {
+      bad(`durationSec is ${String(payload.durationSec)} s, but ${shots.length} shots of ${round2(total)} s with ${transitionSec} s cross-fades last ${fade.totalSec} s`);
+    }
+    if (Math.abs(fade.totalSec - narrationSec) > 1) {
+      bad(`with ${transitionSec} s cross-fades the shots (${round2(total)} s together) fill ${fade.totalSec} s, but the narration is ${round2(narrationSec)} s`);
+    }
+    if (!(Math.round(transitionSec * fps) >= 1)) bad(`a ${transitionSec} s cross-fade is shorter than one frame at ${fps} fps`);
+    durationSec = fade.totalSec;
+  }
   const targetLufs = payload.targetLufs === undefined ? -16 : num(payload.targetLufs);
   if (!(targetLufs >= -30 && targetLufs <= -5)) bad("targetLufs must be between -30 and -5");
   const rawCaps = Array.isArray(payload.captions) ? (payload.captions as unknown[]) : [];
@@ -1168,7 +1267,7 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     shots,
     narrationAssetId: narrationAssetId as string,
     narrationSec,
-    durationSec: round2(total),
+    durationSec,
     captions,
     targetLufs,
     fontAssetId,
@@ -1209,6 +1308,29 @@ function zoompanFor(motion: RenderMotion, frames: number): string {
   }
 }
 
+/**
+ * Extra frames past its fade for every shot but the last. Some ffmpeg builds (4.x) only end an xfade when the first
+ * input has a frame *after* the fade window, and end the whole output when that input runs out first. xfade discards
+ * these frames, so they never show. Two are needed; one more is spare.
+ */
+export const XFADE_PAD_FRAMES = 3;
+
+/** Seconds for an ffmpeg option, to the microsecond (xfade reads offset and duration as microseconds). */
+const secs = (n: number) => String(Math.round(n * 1e6) / 1e6);
+
+/** The frame timeline for a spec with cross-fades. Throws NonRetryableError when the fades do not fit. */
+export function xfadeTimelineFor(spec: Pick<RenderSpec, "shots" | "transitionSec" | "fps">): XfadeTimeline {
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  if (!plan.ok) throw new NonRetryableError(`render-video: ${plan.issues.join("; ")}`);
+  const t = xfadeTimeline(plan.starts, plan.totalSec, plan.transitionSec, spec.fps);
+  if (t.fadeFrames < 1) throw new NonRetryableError(`render-video: a ${spec.transitionSec} s cross-fade is shorter than one frame`);
+  t.frames.forEach((f, i) => {
+    const shared = (i > 0 ? 1 : 0) + (i < t.frames.length - 1 ? 1 : 0);
+    if (f <= shared * t.fadeFrames) throw new NonRetryableError(`render-video: shot ${i + 1} is no longer than the cross-fades around it`);
+  });
+  return t;
+}
+
 /** Builds the ffmpeg arguments for the final render. Pure. Plain H.264/AAC mp4 with faststart so qc-video can read it. */
 export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { drawtext: boolean }): RenderArgs {
   if (paths.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image file per shot");
@@ -1220,14 +1342,31 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
   // Zoompan works on a larger picture so the slow motion stays smooth, then scales down to the output size.
   const bigW = Math.round((w * 1.5) / 2) * 2;
   const bigH = Math.round((h * 1.5) / 2) * 2;
+  const fade = spec.transitionSec > 0 ? xfadeTimelineFor(spec) : null;
+  const last = spec.shots.length - 1;
   spec.shots.forEach((s, i) => {
-    const frames = Math.max(1, Math.round(s.seconds * fps));
+    const frames = fade ? fade.frames[i] : Math.max(1, Math.round(s.seconds * fps));
+    // With fades, every shot but the last runs XFADE_PAD_FRAMES past its fade. xfade drops those frames; without
+    // them an ffmpeg whose first input ends inside the fade ends the whole output there.
+    const length = fade && i < last ? frames + XFADE_PAD_FRAMES : frames;
     chains.push(
       `[${i}:v]scale=${bigW}:${bigH}:force_original_aspect_ratio=increase,crop=${bigW}:${bigH},setsar=1,` +
-        `zoompan=${zoompanFor(s.motion, frames)}:d=${frames}:s=${w}x${h}:fps=${fps},format=yuv420p[v${i}]`,
+        `zoompan=${zoompanFor(s.motion, frames)}:d=${length}:s=${w}x${h}:fps=${fps},format=yuv420p[v${i}]`,
     );
   });
   const joined = spec.shots.map((_, i) => `[v${i}]`).join("");
+  /** Joins the shot streams into one labelled `out`: hard cuts with concat, or a chain of xfades. */
+  const join = (out: string): string[] => {
+    if (!fade) return [`${joined}concat=n=${spec.shots.length}:v=1:a=0[${out}]`];
+    const steps: string[] = [];
+    for (let i = 1; i <= last; i++) {
+      const from = i === 1 ? "[v0]" : `[x${i - 1}]`;
+      const to = i === last ? `[${out}]` : `[x${i}]`;
+      // offset is where shot i starts on the whole timeline, which is also the length so far of the chain it joins.
+      steps.push(`${from}[v${i}]xfade=transition=${transitionFor(i)}:duration=${secs(fade.fadeFrames / fps)}:offset=${secs(fade.startFrames[i] / fps)}${to}`);
+    }
+    return steps;
+  };
   const captionFiles: Array<{ file: string; text: string }> = [];
   const canBurn = caps.drawtext && Boolean(paths.font) && spec.captions.length > 0;
   let captionNote: string | null = null;
@@ -1235,7 +1374,7 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
     captionNote = !caps.drawtext ? "this ffmpeg build has no drawtext filter" : "no font in Assets";
   }
   if (canBurn) {
-    chains.push(`${joined}concat=n=${spec.shots.length}:v=1:a=0[vc]`);
+    chains.push(...join("vc"));
     const size = Math.round(Math.min(w, h) / 18);
     const maxChars = Math.max(12, Math.floor(w / (size * 0.55)));
     const draws = spec.captions.map((c, i) => {
@@ -1248,7 +1387,7 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
     });
     chains.push(`[vc]${draws.join(",")}[v]`);
   } else {
-    chains.push(`${joined}concat=n=${spec.shots.length}:v=1:a=0[v]`);
+    chains.push(...join("v"));
   }
   const n = spec.shots.length;
   chains.push(

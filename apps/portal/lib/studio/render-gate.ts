@@ -6,7 +6,7 @@
  * Review card. Kept out of production.ts so it can be tested without a database.
  */
 import type { Capability } from "@venstudio/protocol";
-import { capabilityForEngine } from "./render-engine.ts";
+import { capabilityForEngine, XFADE_CAPABILITY } from "./render-engine.ts";
 
 /**
  * The capability list to gate a render on, or undefined to skip the gate.
@@ -24,10 +24,28 @@ export function gateCapabilities(reported: readonly string[] | null | undefined)
  * Capability the render-video job is queued under, so only a worker that can run the engine claims it.
  * The stills engine keeps "ffmpeg", which is what every render-video job used before engines existed.
  */
-export function renderJobCapability(engine: string): Capability {
+export function renderJobCapability(engine: string, transitionSec: number = 0): Capability {
   // An engine whose capability is not a worker one (provider, blender) never gets here: the gate refused it, or no
   // worker is enrolled and nothing will claim the job anyway.
-  return (capabilityForEngine(engine) ?? "ffmpeg") as Capability;
+  const need = (capabilityForEngine(engine) ?? "ffmpeg") as Capability;
+  // A faded stills timeline is longer than the narration, and a worker without xfade (0.4) refuses it. So with more
+  // than one worker, only one that reports xfade may claim it.
+  if (need === "ffmpeg" && transitionSec > 0) return XFADE_CAPABILITY as Capability;
+  return need;
+}
+
+/**
+ * Plans with the fade, and again with hard cuts when only the fade stopped it.
+ *
+ * A cross-fade lengthens every shot but one by its overlap, so a storyboard whose shots already run near the
+ * template's limit cannot carry it. `fitTransitionSec` makes the same trade for shots too short for a fade: a render
+ * that worked with hard cuts keeps working. When both fail, the faded plan's problems are reported.
+ */
+export function withFadeFallback<T extends { ok: boolean }>(transitionSec: number, plan: (transitionSec: number) => T): { result: T; transitionSec: number } {
+  const faded = plan(transitionSec);
+  if (faded.ok || !(transitionSec > 0)) return { result: faded, transitionSec };
+  const cut = plan(0);
+  return cut.ok ? { result: cut, transitionSec: 0 } : { result: faded, transitionSec };
 }
 
 /** Where the owner finds the Remotion install steps. */
