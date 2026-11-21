@@ -45,7 +45,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.8.0";
+export const VERSION = "0.9.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -300,6 +300,11 @@ export async function detectCapabilities(home?: string): Promise<Capability[]> {
   }
   const extra = (process.env.VENSTUDIO_EXTRA_CAPS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   for (const c of extra) if (!caps.includes(c as Capability)) caps.push(c as Capability);
+  // Style packs (0.9.0+): one capability per installed pack whose renderer probe passed here, at its exact version.
+  // After every other capability, because a pack's probe is built from them.
+  const index = await readInstalledPacks(home ?? defaultHome());
+  const probed = caps.includes("remotion-2d") ? (await remotionProbe(remotionDir(home))).packs : [];
+  for (const c of packCapabilitiesFor(index, caps, probed)) if (!caps.includes(c as Capability)) caps.push(c as Capability);
   return caps;
 }
 
@@ -2039,7 +2044,21 @@ export function remotionDir(home?: string): string {
   return path.join(home ?? defaultHome(), "remotion");
 }
 
-const remotionProbes = new Map<string, Promise<string | null>>();
+/** A pack the Remotion project's full probe rendered: from the quick probe's `packs` (src/packs/packs.json). */
+export interface ProbedPack {
+  id: string;
+  version: string;
+  composition: string;
+}
+
+export interface RemotionProbe {
+  /** Why the renderer cannot run here, or null. */
+  reason: string | null;
+  /** The packs the passed probe rendered (empty when it did not pass, or the project predates packs). */
+  packs: ProbedPack[];
+}
+
+const remotionProbes = new Map<string, Promise<RemotionProbe>>();
 
 /** Forgets cached probe results. For tests, and after an install in the same process. */
 export function clearRemotionProbeCache() {
@@ -2051,6 +2070,11 @@ export function clearRemotionProbeCache() {
  * packages, versions, and a passed full probe for these exact templates) once per process and directory.
  */
 export function remotionUnavailableReason(dir: string): Promise<string | null> {
+  return remotionProbe(dir).then((p) => p.reason);
+}
+
+/** The probe's verdict and the packs it rendered, once per process and directory. */
+export function remotionProbe(dir: string): Promise<RemotionProbe> {
   let p = remotionProbes.get(dir);
   if (!p) {
     p = probeRemotion(dir);
@@ -2059,9 +2083,20 @@ export function remotionUnavailableReason(dir: string): Promise<string | null> {
   return p;
 }
 
-function probeRemotion(dir: string): Promise<string | null> {
+/** The `packs` list of a quick probe's output line, keeping only well-formed entries. */
+export function probedPacksOf(parsed: unknown): ProbedPack[] {
+  const list = isRecord(parsed) && Array.isArray(parsed.packs) ? parsed.packs : [];
+  return list.flatMap((x) =>
+    isRecord(x) && typeof x.id === "string" && typeof x.version === "string" && typeof x.composition === "string"
+      ? [{ id: x.id, version: x.version, composition: x.composition }]
+      : [],
+  );
+}
+
+function probeRemotion(dir: string): Promise<RemotionProbe> {
+  const none = (reason: string): RemotionProbe => ({ reason, packs: [] });
   const script = path.join(dir, "scripts", "probe.mjs");
-  if (!existsSync(script)) return Promise.resolve(`the Remotion renderer is not installed at ${dir}`);
+  if (!existsSync(script)) return Promise.resolve(none(`the Remotion renderer is not installed at ${dir}`));
   return new Promise((resolve) => {
     let out = "";
     const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
@@ -2070,15 +2105,15 @@ function probeRemotion(dir: string): Promise<string | null> {
       out = (out + c).slice(-4000);
     });
     child.stderr.resume();
-    child.on("error", (err) => resolve(`the Remotion probe could not start: ${err.message}`));
+    child.on("error", (err) => resolve(none(`the Remotion probe could not start: ${err.message}`)));
     child.on("close", (code) => {
       const last = out.trim().split("\n").pop() ?? "";
-      let parsed: { ok?: unknown; reason?: unknown } = {};
+      let parsed: { ok?: unknown; reason?: unknown; packs?: unknown } = {};
       try {
-        parsed = JSON.parse(last) as { ok?: unknown; reason?: unknown };
+        parsed = JSON.parse(last) as { ok?: unknown; reason?: unknown; packs?: unknown };
       } catch {}
-      if (code === 0 && parsed.ok === true) return resolve(null);
-      resolve(typeof parsed.reason === "string" ? parsed.reason : `the Remotion probe exited with ${String(code)}`);
+      if (code === 0 && parsed.ok === true) return resolve({ reason: null, packs: probedPacksOf(parsed) });
+      resolve(none(typeof parsed.reason === "string" ? parsed.reason : `the Remotion probe exited with ${String(code)}`));
     });
   });
 }
@@ -2133,12 +2168,18 @@ async function remotionUnavailable(ctx: JobContext): Promise<string | null> {
   return remotionUnavailableReason(remotionDir(ctx.home));
 }
 
-/** Composition for a spec's template. Throws NonRetryableError for a template this worker has none for. */
-export function remotionCompositionFor(spec: Pick<RenderSpec, "engine" | "scenePlan">): string {
+/**
+ * Composition for a spec's template (the style pack id). From 0.9.0 the installed project says which packs it has
+ * (`installed`, from its probe); without that list (a project from before packs) the built-in map is used. Throws
+ * NonRetryableError for a template this worker has none for.
+ */
+export function remotionCompositionFor(spec: Pick<RenderSpec, "engine" | "scenePlan">, installed?: readonly ProbedPack[]): string {
   const template = spec.scenePlan?.template ?? "";
-  const id = Object.hasOwn(REMOTION_COMPOSITIONS, template) ? REMOTION_COMPOSITIONS[template] : undefined;
+  const map: Readonly<Record<string, string>> =
+    installed && installed.length > 0 ? Object.fromEntries(installed.map((p) => [p.id, p.composition])) : REMOTION_COMPOSITIONS;
+  const id = Object.hasOwn(map, template) ? map[template] : undefined;
   if (!id) {
-    const known = Object.keys(REMOTION_COMPOSITIONS).join(", ");
+    const known = Object.keys(map).join(", ");
     throw new NonRetryableError(
       `Template "${template}" has no ${spec.engine} composition in this worker (${VERSION}); it has ${known}. ` +
         `Nothing was rendered, and it is not drawn with another template instead.`,
@@ -2454,7 +2495,7 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
   }
   const spec = parseRenderSpec(ctx.job.payload);
   // A template without a composition is refused here too, before the downloads.
-  const composition = spec.engine === "remotion-2d" ? remotionCompositionFor(spec) : null;
+  const composition = spec.engine === "remotion-2d" ? remotionCompositionFor(spec, (await remotionProbe(remotionDir(ctx.home))).packs) : null;
   // The portal sends `audio` only to a fleet that reports audio-mix; a machine whose ffmpeg changed since says so
   // here, before the downloads, instead of failing halfway through the mix.
   const missing = spec.audio ? missingAudioMixFilters() : [];
@@ -2861,6 +2902,9 @@ export function runFfmpeg(
 
 export const UPDATE_WORKER_FILE = "venstudio-worker.ts";
 export const UPDATE_BUNDLE_FILE = "render-remotion.json";
+/** The style packs index (0.9.0+): apps/portal/lib/style-packs-index.ts. Installed to <home>/styles/style-packs.json. */
+export const UPDATE_PACKS_FILE = "style-packs.json";
+const UPDATE_FILES: readonly string[] = [UPDATE_WORKER_FILE, UPDATE_BUNDLE_FILE, UPDATE_PACKS_FILE];
 /** Prefix of the signed bytes. Same as MANIFEST_CONTEXT in apps/portal/lib/update-manifest.ts. */
 export const MANIFEST_CONTEXT = "venstudio-update-manifest-v1\n";
 /** Clock difference tolerated between the portal and this machine. */
@@ -2946,10 +2990,10 @@ export function checkManifest(
   }
   if (typeof raw.pin !== "boolean") return no("the manifest has no valid pin");
   const files = raw.files;
-  if (!Array.isArray(files) || files.length === 0 || files.length > 2) return no("the manifest lists no valid files");
+  if (!Array.isArray(files) || files.length === 0 || files.length > UPDATE_FILES.length) return no("the manifest lists no valid files");
   const seen = new Set<string>();
   for (const f of files) {
-    if (!isRecord(f) || (f.name !== UPDATE_WORKER_FILE && f.name !== UPDATE_BUNDLE_FILE) || seen.has(f.name)) return no("the manifest lists an unknown or repeated file");
+    if (!isRecord(f) || typeof f.name !== "string" || !UPDATE_FILES.includes(f.name) || seen.has(f.name)) return no("the manifest lists an unknown or repeated file");
     if (typeof f.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(f.sha256)) return no(`${f.name} has no valid sha256`);
     if (!Number.isInteger(f.bytes) || (f.bytes as number) < 1 || (f.bytes as number) > UPDATE_MAX_FILE_BYTES) return no(`${f.name} has no valid size`);
     seen.add(f.name);
@@ -2991,6 +3035,8 @@ export interface UpdatePlan {
   worker: UpdateManifestFile | null;
   /** The Remotion bundle to install (only where a project is installed, and only when the worker file is current). */
   bundle: UpdateManifestFile | null;
+  /** The style packs index to install (only when the worker file is current). */
+  packs: UpdateManifestFile | null;
   /** Why (part of) the manifest is refused; reported to the portal. */
   refused: string | null;
   /** Something skipped on purpose (a release that failed here before); logged, not reported again. */
@@ -3000,9 +3046,9 @@ export interface UpdatePlan {
 /** What to do with a verified manifest. Never installs an older worker unless the owner pinned exactly that version. */
 export function planUpdate(
   m: Pick<UpdateManifest, "version" | "pin" | "files">,
-  local: { version: string; workerSha: string; bundleSha: string | null; failed: Readonly<Record<string, string>> },
+  local: { version: string; workerSha: string; bundleSha: string | null; packsSha?: string | null; failed: Readonly<Record<string, string>> },
 ): UpdatePlan {
-  const plan: UpdatePlan = { worker: null, bundle: null, refused: null, notice: null };
+  const plan: UpdatePlan = { worker: null, bundle: null, packs: null, refused: null, notice: null };
   const cmp = compareVersions(m.version, local.version);
   if (Number.isNaN(cmp)) return { ...plan, refused: `unreadable version ${m.version}` };
   if (cmp < 0 && !m.pin) {
@@ -3019,7 +3065,113 @@ export function planUpdate(
     if (local.failed[bf.sha256]) plan.notice = plan.notice ?? `skipping the Remotion templates ${bf.sha256.slice(0, 12)}: they failed here before`;
     else plan.bundle = bf;
   }
+  // The packs index is data, not code: installed whenever it differs, once the worker file is current (a new worker
+  // version may read a newer index format).
+  const pf = m.files.find((f) => f.name === UPDATE_PACKS_FILE) ?? null;
+  if (!plan.worker && pf && pf.sha256 !== (local.packsSha ?? null)) {
+    if (local.failed[pf.sha256]) plan.notice = plan.notice ?? `skipping the style packs ${pf.sha256.slice(0, 12)}: they failed here before`;
+    else plan.packs = pf;
+  }
   return plan;
+}
+
+// ---------------------------------------------------------------------------
+// Style packs (0.9.0+). The portal serves an index of its vendored packs (/install/style-packs.json, signed through the
+// update manifest); the worker keeps it in <home>/styles/ and reports pack:<id>@<version> for each pack whose renderer
+// probe passes here. Stills packs need ffmpeg with xfade; Remotion packs need the remotion-2d probe to have rendered
+// exactly that pack version. Nothing in the index is executed: render projects arrive in the Remotion bundle.
+
+export const PACKS_INDEX_FORMAT = 1;
+export const PACKS_LIMITS = { packs: 200, bytes: 512 * 1024 } as const;
+
+export interface PacksIndexEntry {
+  id: string;
+  version: string;
+  status: string;
+  engine: string;
+  minWorkerVersion: string;
+  composition: string | null;
+  sha256: string;
+}
+
+export interface PacksIndex {
+  format: number;
+  commit: string | null;
+  packs: PacksIndexEntry[];
+}
+
+export function stylePacksPath(home: string): string {
+  return path.join(home, "styles", UPDATE_PACKS_FILE);
+}
+
+/** Reads a packs index (same format as apps/portal/lib/style-packs-index.ts). Throws on anything else. */
+export function parsePacksIndex(raw: unknown): PacksIndex {
+  const bad = (m: string): never => {
+    throw new Error(`style packs index: ${m}`);
+  };
+  if (!isRecord(raw)) return bad("not an object");
+  if (raw.format !== PACKS_INDEX_FORMAT) return bad(`unknown format ${String(raw.format)} (this worker reads ${PACKS_INDEX_FORMAT}; update the worker)`);
+  if (!Array.isArray(raw.packs) || raw.packs.length > PACKS_LIMITS.packs) return bad("no valid pack list");
+  const seen = new Set<string>();
+  const packs = raw.packs.map((p, i): PacksIndexEntry => {
+    if (!isRecord(p)) return bad(`pack ${i + 1} is not an object`);
+    const id = p.id;
+    if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(id) || seen.has(id)) return bad(`pack ${i + 1} has no valid or a repeated id`);
+    seen.add(id);
+    if (typeof p.version !== "string" || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(p.version)) return bad(`${id} has no valid version`);
+    if (typeof p.engine !== "string" || p.engine.length > 40) return bad(`${id} has no valid engine`);
+    if (typeof p.minWorkerVersion !== "string" || Number.isNaN(compareVersions(p.minWorkerVersion, "0"))) return bad(`${id} has no valid minWorkerVersion`);
+    if (p.composition !== null && (typeof p.composition !== "string" || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(p.composition))) return bad(`${id} has no valid composition`);
+    if (typeof p.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(p.sha256)) return bad(`${id} has no valid sha256`);
+    return { id, version: p.version, status: typeof p.status === "string" ? p.status.slice(0, 20) : "", engine: p.engine, minWorkerVersion: p.minWorkerVersion, composition: p.composition, sha256: p.sha256 };
+  });
+  return { format: PACKS_INDEX_FORMAT, commit: typeof raw.commit === "string" ? raw.commit.slice(0, 64) : null, packs };
+}
+
+/** Validates and installs a packs index (bytes as served). Nothing is written when it does not parse. */
+export async function installPacksIndex(home: string, body: Uint8Array): Promise<PacksIndex> {
+  if (body.length > PACKS_LIMITS.bytes) throw new Error(`style packs index: larger than ${PACKS_LIMITS.bytes} bytes`);
+  const index = parsePacksIndex(JSON.parse(Buffer.from(body).toString("utf8")) as unknown);
+  const file = stylePacksPath(home);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(`${file}.part`, body);
+  await rename(`${file}.part`, file);
+  return index;
+}
+
+/** The installed index, or null when none is installed or it no longer parses. */
+export async function readInstalledPacks(home: string): Promise<PacksIndex | null> {
+  try {
+    return parsePacksIndex(JSON.parse(await readFile(stylePacksPath(home), "utf8")) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/** SHA-256 of the installed index file, or null without one. */
+export async function installedPacksSha(home: string): Promise<string | null> {
+  return existsSync(stylePacksPath(home)) ? sha256File(stylePacksPath(home)).catch(() => null) : null;
+}
+
+/**
+ * pack:<id>@<version> for each installed pack whose probe passes on this machine. Pure. A pack needs a worker at least
+ * its minWorkerVersion; a stills pack needs ffmpeg with xfade (its fades); a Remotion pack needs remotion-2d and the
+ * project's full probe to have rendered this pack version's composition. Other engines are not run by this worker.
+ */
+export function packCapabilitiesFor(index: PacksIndex | null, caps: readonly string[], probed: readonly ProbedPack[], version: string = VERSION): string[] {
+  if (!index) return [];
+  const out: string[] = [];
+  for (const p of index.packs) {
+    if (!(compareVersions(p.minWorkerVersion, version) <= 0)) continue;
+    const ok =
+      p.engine === "ffmpeg-stills"
+        ? caps.includes("ffmpeg") && caps.includes("xfade")
+        : p.engine === "remotion-2d"
+          ? caps.includes("remotion-2d") && probed.some((r) => r.id === p.id && r.version === p.version && r.composition === p.composition)
+          : false;
+    if (ok) out.push(`pack:${p.id}@${p.version}`);
+  }
+  return out;
 }
 
 export function updatePaths(home: string) {
@@ -3358,7 +3510,7 @@ async function reportUpdate(client: PortalClient, body: UpdateReportRequest): Pr
   }
 }
 
-export type UpdateCheckOutcome = { restart: boolean; bundle?: { file: UpdateManifestFile; body: Buffer } };
+export type UpdateCheckOutcome = { restart: boolean; bundle?: { file: UpdateManifestFile; body: Buffer }; packsInstalled?: boolean };
 
 /**
  * One update check, between jobs. Returns restart: true once a verified, self-tested new worker file is in place.
@@ -3369,12 +3521,13 @@ export async function checkForUpdate(client: PortalClient, cfg: WorkerConfig, ho
   const key = cfg.updateKey as string;
   const ownSha = await sha256File(p.live);
   const bundleSha = await installedBundleSha(home);
+  const packsSha = await installedPacksSha(home);
   let res: UpdateCheckResponse | null;
   try {
     res = await client.json<UpdateCheckResponse>(
       "POST",
       "/api/worker/update",
-      { version: VERSION, files: { [UPDATE_WORKER_FILE]: ownSha, [UPDATE_BUNDLE_FILE]: bundleSha }, keyId: updateKeyId(key) },
+      { version: VERSION, files: { [UPDATE_WORKER_FILE]: ownSha, [UPDATE_BUNDLE_FILE]: bundleSha, [UPDATE_PACKS_FILE]: packsSha }, keyId: updateKeyId(key) },
       2,
     );
   } catch (err) {
@@ -3393,7 +3546,7 @@ export async function checkForUpdate(client: PortalClient, cfg: WorkerConfig, ho
   }
   const m = check.manifest;
   state.lastIssuedAt = m.issuedAt;
-  const plan = planUpdate(m, { version: VERSION, workerSha: ownSha, bundleSha, failed: state.failed ?? {} });
+  const plan = planUpdate(m, { version: VERSION, workerSha: ownSha, bundleSha, packsSha, failed: state.failed ?? {} });
   const said = plan.refused ?? plan.notice;
   const fresh = said !== null && state.lastNotice !== `${m.release}: ${said}`;
   if (said !== null) state.lastNotice = `${m.release}: ${said}`;
@@ -3430,6 +3583,30 @@ export async function checkForUpdate(client: PortalClient, cfg: WorkerConfig, ho
     log(`update v${m.version}: installed (previous v${VERSION} kept in ${p.prevDir}); restarting`);
     return { restart: true };
   }
+  let packsInstalled = false;
+  if (plan.packs) {
+    const file = plan.packs;
+    try {
+      const body = await client.installFile(file.name, file.bytes);
+      verifyUpdateBytes(file, body);
+      const index = await installPacksIndex(home, body);
+      packsInstalled = true;
+      const list = index.packs.map((p) => `${p.id}@${p.version}`).join(", ") || "none";
+      log(`style packs ${file.sha256.slice(0, 12)}: signature and checksum verified; installed ${list}`);
+      await reportUpdate(client, { status: "ok", version: VERSION, detail: `style packs ${file.sha256.slice(0, 12)} installed: ${list}`.slice(0, 500) });
+    } catch (err) {
+      const why = (err as Error).message;
+      if (!(err instanceof UpdateRefused)) {
+        // A download hiccup is tried again later; an index that does not parse is remembered and not tried again.
+        if (!why.startsWith("style packs index") && !(err instanceof SyntaxError)) throw err;
+        const latest = await readUpdateState(home);
+        latest.failed = { ...latest.failed, [file.sha256]: why };
+        await writeUpdateState(home, latest);
+      }
+      log(`style packs refused: ${why}`);
+      await reportUpdate(client, { status: "refused", version: m.version, detail: `style packs: ${why}` });
+    }
+  }
   if (plan.bundle) {
     let body: Buffer;
     try {
@@ -3439,11 +3616,11 @@ export async function checkForUpdate(client: PortalClient, cfg: WorkerConfig, ho
       if (!(err instanceof UpdateRefused)) throw err;
       log(`update refused: ${err.message}`);
       await reportUpdate(client, { status: "refused", version: m.version, detail: err.message });
-      return { restart: false };
+      return { restart: false, packsInstalled };
     }
-    return { restart: false, bundle: { file: plan.bundle, body } };
+    return { restart: false, bundle: { file: plan.bundle, body }, packsInstalled };
   }
-  return { restart: false };
+  return { restart: false, packsInstalled };
 }
 
 /** A Remotion project being built in the background (see stageRemotionBundle). */
@@ -3725,6 +3902,8 @@ export async function loop(opts: {
             break;
           }
           if (outcome.bundle && !bundleTask) bundleTask = startBundleTask(opts.home, outcome.bundle.file, outcome.bundle.body);
+          // New packs: report them on the next claim (each only once its probe passes here).
+          if (outcome.packsInstalled) capabilities = await detectCapabilities(opts.home);
         } catch (err) {
           log(`update check failed (will try again later): ${(err as Error).message}`);
         }
@@ -3846,6 +4025,7 @@ Usage:
   node venstudio-worker.ts selftest                    load, check the portal and capabilities; claims nothing
   node venstudio-worker.ts pin-key --key <base64>      pin the portal's update key (used by install.sh)
   node venstudio-worker.ts unpack-bundle --file <bundle.json> --dir <dir>   (used by install.sh --with-remotion)
+  node venstudio-worker.ts install-packs --file <style-packs.json>          (used by install.sh)
 Env: VENSTUDIO_HOME, VENSTUDIO_AUTO_UPDATE=0 (no self-update), VENSTUDIO_UPDATE_CHECK_SECONDS, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
 
 /**
@@ -3900,6 +4080,13 @@ export async function main(argv: string[]) {
       if (!flags.key) throw new Error("pin-key needs --key");
       const r = await pinUpdateKey(home, flags.key);
       log(`update key ${updateKeyId(flags.key)} ${r === "unchanged" ? "already pinned" : r === "replaced" ? "pinned (replaced the previous key)" : "pinned"}`);
+      return;
+    }
+    case "install-packs": {
+      // Used by install.sh: the style packs index this portal serves (signed updates replace it later).
+      if (!flags.file) throw new Error("install-packs needs --file");
+      const index = await installPacksIndex(home, await readFile(flags.file));
+      log(`installed style packs: ${index.packs.map((p) => `${p.id}@${p.version}`).join(", ") || "none"} into ${stylePacksPath(home)}`);
       return;
     }
     case "unpack-bundle": {

@@ -135,3 +135,27 @@ test("describeUpdateResult gives the owner one plain line", () => {
   assert.equal(describeUpdateResult("rolled_back", "self-test failed", "0.9.0"), "Rolled back from v0.9.0: self-test failed");
   assert.equal(describeUpdateResult("refused", "checksum mismatch", "0.8.0"), "Refused v0.8.0: checksum mismatch");
 });
+
+test("style packs: the index is signed like the other files, offered when a 0.9.0 worker lacks it, never sent to 0.8.0", async () => {
+  const PACKS_SHA = "d".repeat(64);
+  const all: ManifestFile[] = [...files, { name: "style-packs.json", sha256: PACKS_SHA, bytes: 3000 }];
+  const s: ServedRelease = { version: "0.9.0", release: releaseOf("0.9.0", all), files: all };
+  assert.notEqual(s.release, releaseOf("0.9.0", files), "a packs change is a new release");
+  const current = { "venstudio-worker.ts": WORKER_SHA, "render-remotion.json": null };
+  // 0.9.0 reports the key: null (nothing installed) or a stale hash makes it pending; the right hash does not.
+  assert.deepEqual(pendingFiles(s, { version: "0.9.0", files: { ...current, "style-packs.json": null } }), ["style-packs.json"]);
+  assert.deepEqual(pendingFiles(s, { version: "0.9.0", files: { ...current, "style-packs.json": "e".repeat(64) } }), ["style-packs.json"]);
+  assert.deepEqual(pendingFiles(s, { version: "0.9.0", files: { ...current, "style-packs.json": PACKS_SHA } }), []);
+  // 0.8.0 does not know the file: not pending, and a manifest for it names only the two files it accepts.
+  const old = { version: "0.8.0", files: { "venstudio-worker.ts": "f".repeat(64), "render-remotion.json": null } };
+  assert.deepEqual(pendingFiles(s, old), ["venstudio-worker.ts"]);
+  const forOld = buildManifest({ keyId: "k", workerId: WORKER_ID, served: s, pinnedVersion: null, now: new Date(0), worker: old });
+  assert.deepEqual(forOld.files.map((f) => f.name), ["venstudio-worker.ts", "render-remotion.json"]);
+  const forNew = buildManifest({ keyId: "k", workerId: WORKER_ID, served: s, pinnedVersion: null, now: new Date(0), worker: { version: "0.9.0", files: { ...current, "style-packs.json": null } } });
+  assert.deepEqual(forNew.files.map((f) => f.name), ["venstudio-worker.ts", "render-remotion.json", "style-packs.json"]);
+  // An approval of this release covers the packs half too, and Off offers nothing.
+  assert.equal(decideOffer({ mode: "approve", approvedRelease: s.release, served: s, worker: { version: "0.9.0", files: { ...current, "style-packs.json": null } } }).offer, true);
+  assert.equal(decideOffer({ mode: "off", approvedRelease: null, served: s, worker: { version: "0.9.0", files: { ...current, "style-packs.json": null } } }).offer, false);
+  // The 0.8.0 worker's own check accepts at most two known files: the manifest built for it passes that rule.
+  assert.ok(forOld.files.length <= 2 && forOld.files.every((f) => f.name === "venstudio-worker.ts" || f.name === "render-remotion.json"));
+});

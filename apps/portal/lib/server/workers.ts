@@ -1,5 +1,6 @@
 import "server-only";
 import { CAPABILITIES, type Capability } from "@venstudio/protocol";
+import { PACK_CAPABILITY_RE } from "../studio/style-registry.ts";
 import { db } from "./db.ts";
 import { enrollmentCode, normalizeCode, randomToken, sha256Hex } from "../crypto/tokens.ts";
 
@@ -24,9 +25,14 @@ export async function authenticateWorker(req: Request, ip: string): Promise<Auth
   return (rows[0] as AuthedWorker | undefined) ?? null;
 }
 
+/** Most capabilities a worker can report: the named ones plus one per installed style pack. */
+export const MAX_REPORTED_CAPABILITIES = 100;
+
+/** Known capabilities, plus pack:<id>@<version> for installed style packs (worker 0.9.0+); anything else is dropped. */
 export function sanitizeCapabilities(input: unknown): Capability[] {
   if (!Array.isArray(input)) return [];
-  return [...new Set(input.filter((c): c is Capability => CAPABILITIES.includes(c as Capability)))];
+  const ok = (c: unknown): c is Capability => typeof c === "string" && (CAPABILITIES.includes(c as Capability) || PACK_CAPABILITY_RE.test(c));
+  return [...new Set(input.filter(ok))].slice(0, MAX_REPORTED_CAPABILITIES);
 }
 
 export async function createEnrollmentCode(input: {

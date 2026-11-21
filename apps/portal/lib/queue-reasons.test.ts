@@ -59,3 +59,11 @@ test("a home-worker wait is shown; urgent jobs don't wait", () => {
 test("a job that is not queued has no reasons", () => {
   assert.deepEqual(queueReasons(job({ status: "running" }), [worker()], opts), []);
 });
+
+test("a render queued under a style pack names the pack version the worker lacks", () => {
+  const r = queueReasons(job({ type: "render-video", capability: "pack:explainer-flat-vector@1.1.0" }), [worker({ capabilities: ["ffmpeg", "remotion-2d", "pack:explainer-flat-vector@1.0.0"], jobTypes: ["render-video"] })], opts);
+  assert.equal(r.length, 1);
+  assert.match(r[0], /^Muse 01 does not report the style pack explainer-flat-vector 1\.1\.0 \(it has 1\.0\.0\)\. Workers 0\.9\.0 and later install style packs/);
+  const ok = queueReasons(job({ type: "render-video", capability: "pack:explainer-flat-vector@1.0.0" }), [worker({ capabilities: ["pack:explainer-flat-vector@1.0.0"], jobTypes: ["render-video"] })], opts);
+  assert.match(ok[0], /should take this job/);
+});

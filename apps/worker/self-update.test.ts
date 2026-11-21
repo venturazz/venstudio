@@ -171,7 +171,7 @@ test("planUpdate installs only newer workers, a pinned version, and bundles wher
   assert.equal(planUpdate({ ...down, pin: true }, local).worker?.name, "venstudio-worker.ts");
   // Same version, same file: nothing. Different file: refused, but a bundle may still update.
   const same = { ...base, version: "0.8.0" };
-  assert.deepEqual(planUpdate(same, { ...local, workerSha: sha("W") }), { worker: null, bundle: null, refused: null, notice: null });
+  assert.deepEqual(planUpdate(same, { ...local, workerSha: sha("W") }), { worker: null, bundle: null, packs: null, refused: null, notice: null });
   const p2 = planUpdate(same, { ...local, bundleSha: "unknown" });
   assert.match(p2.refused ?? "", /same version/);
   assert.equal(p2.bundle?.name, "render-remotion.json");
