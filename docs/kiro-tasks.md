@@ -247,3 +247,35 @@ frame 125,01 pada 30 fps). Worker memakai angka yang sama, lalu membulatkan tiap
 bersama (tanpa akumulasi), dan memberi tiap shot kecuali yang terakhir 3 frame ekstra yang dibuang `xfade`. `scenes[].seconds`
 di scene plan adalah panjang storyboard sebelum shot dipanjangkan untuk fade, jadi template memakai `shots[].seconds`
 untuk timing, bukan `scenes[].seconds`.
+
+## Status worker 0.7.0 (Kiro): `audio`, `captionStyle`, batas video panjang
+
+Worker 0.7.0 sekarang **memakai** kontrak di atas, bukan sekadar menerimanya:
+
+- **`audio`** diparse ketat (angka finite dalam rentang filter ffmpeg, `cover` hanya `loop`/`trim`, `color` hanya
+  `brown`/`pink`/`white`, setiap `assetId` harus ada di `inputs`, `master.targetLufs` harus sama dengan `targetLufs`);
+  data buruk → NonRetryable. Mix-nya satu filter chain, dipakai jalur stills maupun mux Remotion, urutannya persis
+  urutan di atas: voice (`atempo` bila ada) → `loudnorm` → bed (`aloop` lalu `atrim` untuk `loop`, `atrim` lalu `apad`
+  untuk `trim`) → `loudnorm` ke `sourceLufs` → `+gainDb` → `sidechaincompress` dengan voice sebagai kunci → ambient
+  `anoisesrc` + `highpass`/`lowpass` di `bandHz` pada `gainDb` → SFX (`adelay` ke `atSec`) → `amix` → master `loudnorm`
+  ke `targetLufs`, TP `maxTruePeakDb`. Semua lapisan dipotong tepat sepanjang video, jadi `amix` tidak pernah
+  kehilangan input di tengah. `bed: null` → narasi + ambient saja.
+- **`captionStyle`** dipakai di dua engine: drawtext stills (ukuran, outline, shadow, `line_spacing`, margin bawah,
+  lebar bungkus dari `maxWidthPx`, font dari `fontAssetId`) dan template Remotion (`props.captionStyle`, tanpa kotak
+  gelap, outline + shadow). Tanpa `captionStyle` tampilannya sama dengan 0.6.0.
+- Payload tanpa `audio`/`captionStyle` menghasilkan argumen ffmpeg **byte-identik** dengan 0.6.0 (golden baru:
+  `apps/worker/testdata/fixture-args-0.6.0.golden.json`, diambil dari worker 0.6.0 di 266c911).
+- Kapabilitas baru `audio-mix` (hanya bila ffmpeg punya semua filter mix) dan `caption-style`. Portal hanya mengirim
+  `audio`/`captionStyle` bila **semua** render worker melaporkannya (`mixFeaturesFor` di `render-gate.ts`, pola yang
+  sama dengan `narration-tempo`); kalau tidak, payload-nya payload 0.6.0 dan stage render mencatat `mixNote`.
+- **Bug bed = narasi** diperbaiki: bed hanya dari aset `audio` bertag `music` (centang "This is a music track for
+  video beds" di Assets), bukan TTS, bukan narasi run ini, sesuai `musicPolicy` dan `assetPolicy`, provenance lengkap,
+  dan terms provider sudah dikonfirmasi owner. Aturannya murni di `lib/studio/music-bed.ts`. Lisensi bed tercantum
+  paling depan di lisensi video ("Music bed: …").
+- **Batas** satu angka di `lib/studio/render-limits.ts` = `RENDER_LIMITS` worker: 600 shot (1200 s ÷ 2 s), 1200 baris
+  caption. Storyboard (`MAX_SHOTS`), scene plan (`MAX_SCENES`), `captionLines` dan `buildRenderPayload` memakai angka
+  itu, jadi tidak ada lagi rencana yang lolos di portal lalu ditolak worker setelah gambar dibayar. Stills > 60 shot
+  dirender per bagian ≤ 60 input (ukuran yang sudah jalan di Muse) lalu digabung tanpa re-encode; fade di batas
+  bagian memotong zoompan shot yang sama, jadi gambarnya sama dengan satu graf.
+
+Langkah owner (tambah musik, update Muse ke 0.7.0, cek langsung) ada di `docs/remotion-worker.md`.
