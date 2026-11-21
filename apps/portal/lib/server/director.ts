@@ -13,7 +13,6 @@ import { giveUpMessage, waitExpired, type FailureClass } from "../studio/pacing.
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
-import type { Format } from "../studio/catalog.ts";
 import type { Template } from "../studio/templates.ts";
 import {
   MAX_NOTE_CHARS,
@@ -38,7 +37,6 @@ import {
   type ResearchNote,
 } from "../studio/director.ts";
 import {
-  DEFAULT_DURATION_SEC,
   isProductionStage,
   isRunStage,
   nextRunStage,
@@ -63,6 +61,7 @@ import {
   type ProviderRowUse,
 } from "../studio/terms-review.ts";
 import type { ProviderKind } from "../studio/asset-plan.ts";
+import { buildRunConfig, parseRunConfig, topicFromBrief, type RunConfig, type RunRequest } from "../studio/run-config.ts";
 
 /**
  * The run engine: idea, research, script and storyboard are Hermes stages; assets, voice, render and qc are the
@@ -74,15 +73,6 @@ import type { ProviderKind } from "../studio/asset-plan.ts";
 /** A transaction handle is accepted wherever a connection is. */
 export type Q = Sql | TransactionSql;
 
-interface RunConfig {
-  format: Format;
-  language: string;
-  durationSec: number;
-  themeId: string;
-  styleId: string;
-  purposes: string[];
-  topicHint: string;
-}
 
 export interface RunInfo {
   id: string;
@@ -123,20 +113,6 @@ function toObject(v: unknown): Record<string, unknown> {
   return isRecord(v) ? v : {};
 }
 
-function parseConfig(raw: unknown): RunConfig {
-  const c = toObject(raw);
-  const format: Format = c.format === "long" ? "long" : "short";
-  return {
-    format,
-    language: typeof c.language === "string" && c.language ? c.language : "en",
-    durationSec: typeof c.durationSec === "number" && c.durationSec > 0 ? c.durationSec : DEFAULT_DURATION_SEC[format],
-    themeId: typeof c.themeId === "string" ? c.themeId : "",
-    styleId: typeof c.styleId === "string" ? c.styleId : "",
-    purposes: Array.isArray(c.purposes) ? c.purposes.filter((p): p is string => typeof p === "string") : [],
-    topicHint: typeof c.topicHint === "string" ? c.topicHint : "",
-  };
-}
-
 function asIdea(v: unknown): Idea | null {
   if (!isRecord(v)) return null;
   if (typeof v.title !== "string" || typeof v.hook !== "string" || typeof v.angle !== "string" || typeof v.score !== "number") return null;
@@ -168,7 +144,7 @@ export async function loadRun(sql: Q, runId: string): Promise<RunInfo | null> {
     level: toLevel(r.autonomy_level),
     paused: r.autonomy_paused === true,
     topic: (r.topic as string | null) ?? "",
-    config: parseConfig(r.config),
+    config: parseRunConfig(r.config),
     niche: (r.niche as string | null) ?? "",
     plan: (r.plan as string | null) ?? "",
     category: (r.category as string | null) ?? "",
@@ -236,14 +212,15 @@ async function safeAudit(entry: Parameters<typeof audit>[0]): Promise<void> {
 
 export type StartResult = { ok: true; runId: string } | { ok: false; error: string };
 
-export async function startRun(input: {
-  channelId: string;
-  templateId: string;
-  format: Format;
-  language: string;
-  topic: string;
-  userId: string;
-}): Promise<StartResult> {
+export async function startRun(
+  input: RunRequest & {
+    channelId: string;
+    templateId: string;
+    /** A saved plan the run was started from, or empty. */
+    productionId?: string;
+    userId: string;
+  },
+): Promise<StartResult> {
   try {
     const sql = db();
     const [c] = await sql`SELECT id, category, autonomy_level FROM channels WHERE id = ${input.channelId}`;
@@ -258,28 +235,28 @@ export async function startRun(input: {
     if (template.status === "retired") return { ok: false, error: "This template is retired" };
     if (!template.formats.includes(input.format)) return { ok: false, error: `This template does not make ${input.format} videos` };
 
-    const topic = input.topic.trim().slice(0, 300);
-    const config: RunConfig = {
-      format: input.format,
-      language: input.language,
-      durationSec: DEFAULT_DURATION_SEC[input.format],
-      themeId: (c.category as string | null) ?? "",
-      styleId: template.styleId,
-      purposes: [],
-      topicHint: topic,
-    };
+    // The theme defaults to the channel category; an override lives on this run only and never on the channel.
+    const built = buildRunConfig(input, { category: (c.category as string | null) ?? "" }, template);
+    if (!built.ok) return { ok: false, error: built.error };
+    const config: RunConfig = built.config;
+    const topic = topicFromBrief(config.topicHint);
+    let productionId: string | null = null;
+    if (input.productionId) {
+      const [p] = await sql`SELECT id FROM productions WHERE id = ${input.productionId}`;
+      productionId = p ? (p.id as string) : null;
+    }
     const level = toLevel(c.autonomy_level);
     const runId = await sql.begin(async (tx) => {
       const [row] = await tx`
-        INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config)
-        VALUES (${input.channelId}, ${tpl.id}, ${tpl.version}, ${topic}, ${level}, ${json(config)}::text::jsonb)
+        INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, production_id)
+        VALUES (${input.channelId}, ${tpl.id}, ${tpl.version}, ${topic}, ${level}, ${json(config)}::text::jsonb, ${productionId})
         RETURNING id
       `;
       const id = row.id as string;
       await insertPending(tx, id, "idea", "", 0);
       return id;
     });
-    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format } });
+    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource } });
     return { ok: true, runId };
   } catch (err) {
     console.error("startRun failed", err);
@@ -329,6 +306,8 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     template,
     pastTitles: st.stage === "idea" ? await pastTitles(sql, run) : [],
     topicHint: run.config.topicHint || undefined,
+    purposes: run.config.purposes,
+    subtitles: run.config.subtitles,
   };
   const hint = feedback || undefined;
   // Skill names Hermes reported in the last scan. No scan, or a failed read, means no hint.
