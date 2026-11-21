@@ -1,4 +1,5 @@
 import "server-only";
+import { recordSpeechSample } from "./speech-rate.ts";
 import { env } from "./env.ts";
 import { explainFetchError } from "./ai-gateway.ts";
 import { hermesMediaUrlBase, hermesTrustedOrigins } from "./executors/hermes-image.ts";
@@ -539,14 +540,51 @@ export async function describeVoicePath(): Promise<VoicePathInfo> {
   return { paths, skipped: plan.skipped, backup: env().TTS_BACKUP === "off" ? "off" : "CapCut through Hermes" };
 }
 
+/**
+ * The Test voice text. Long enough (about 40 words) that the leading and trailing silence hardly changes the measured
+ * pace, which is recorded for the voice (lib/server/speech-rate.ts).
+ */
+export const VOICE_TEST_TEXT =
+  "This is a VenStudio voice test. The studio measures how fast this voice speaks, so that the script, the storyboard and the narration agree on the length of every video. A calm and steady sample like this one is enough for that.";
+
 /** A short clip for the Settings "Test voice" button, made the same way the voice stage makes narration. */
 export async function voiceTest(): Promise<
-  | { ok: true; provider: string; backend: string; plugin: string; via: string; model: string; durationSec: number | null; bytes: number; ms: number; skipped: string[] }
+  | {
+      ok: true;
+      provider: string;
+      backend: string;
+      plugin: string;
+      via: string;
+      model: string;
+      durationSec: number | null;
+      bytes: number;
+      ms: number;
+      skipped: string[];
+      /** Measured words per minute, recorded for this voice. Null when the length was not measured. */
+      wordsPerMinute: number | null;
+    }
   | { ok: false; error: string }
 > {
   const started = Date.now();
-  const r = await synthesize("This is a VenStudio voice test.", "en", { ignoreQuarantine: true });
+  const r = await synthesize(VOICE_TEST_TEXT, "en", { ignoreQuarantine: true });
   if (!r.ok) return { ok: false, error: r.error };
   const n = r.narration;
-  return { ok: true, provider: n.provider, backend: n.backend ?? "", plugin: n.plugin ?? "", via: n.via, model: n.model, durationSec: n.durationSec, bytes: n.audio.length, ms: Date.now() - started, skipped: n.skipped };
+  const words = VOICE_TEST_TEXT.split(/\s+/).filter(Boolean).length;
+  const wordsPerMinute =
+    n.durationSec !== null
+      ? await recordSpeechSample({ provider: n.provider, model: n.model, voice: n.voice, language: "en", words, seconds: n.durationSec, source: "test" })
+      : null;
+  return {
+    ok: true,
+    provider: n.provider,
+    backend: n.backend ?? "",
+    plugin: n.plugin ?? "",
+    via: n.via,
+    model: n.model,
+    durationSec: n.durationSec,
+    bytes: n.audio.length,
+    ms: Date.now() - started,
+    skipped: n.skipped,
+    wordsPerMinute,
+  };
 }

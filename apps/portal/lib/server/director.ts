@@ -48,13 +48,16 @@ import {
 } from "../studio/engine.ts";
 import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
 import { finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
-import { cancelRunWork, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
+import { cancelRunWork, narrationTempoReady, planScriptFit, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
+import { paceForRun } from "./speech-rate.ts";
+import { parseVoiceFix, voiceRevisionRoute, type LengthDirection, type VoiceFix } from "../studio/voice-fit.ts";
 import { listProviderTermsIn } from "./provider-terms.ts";
 import {
   autoRecheckMatches,
   blockingRows,
   isTermsStage,
   parseProviderRows,
+  fitMessage,
   recheckMessage,
   recheckRefusal,
   type ConclusionAction,
@@ -175,10 +178,10 @@ async function pastTitles(sql: Q, run: RunInfo): Promise<string[]> {
 }
 
 /** Inserts the next attempt of a stage as pending. The feedback travels in the row's output until it runs. */
-async function insertPending(sql: Q, runId: string, stage: string, feedback: string, autoRevisions: number): Promise<void> {
+async function insertPending(sql: Q, runId: string, stage: string, feedback: string, autoRevisions: number, extra: Record<string, unknown> = {}): Promise<void> {
   await sql`
     INSERT INTO pipeline_stages (run_id, stage, attempt, output)
-    SELECT ${runId}::uuid, ${stage}::text, COALESCE(MAX(attempt), 0) + 1, ${json({ feedback, autoRevisions })}::text::jsonb
+    SELECT ${runId}::uuid, ${stage}::text, COALESCE(MAX(attempt), 0) + 1, ${json({ ...extra, feedback, autoRevisions })}::text::jsonb
     FROM pipeline_stages WHERE run_id = ${runId} AND stage = ${stage}
   `;
 }
@@ -309,6 +312,13 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     purposes: run.config.purposes,
     subtitles: run.config.subtitles,
   };
+  // The script and storyboard plan with the measured pace of the voice this run will most likely get (the one that
+  // spoke last for its language), so the script, the storyboard and the voice check agree on the narration length.
+  if (st.stage === "script" || st.stage === "storyboard") {
+    const pace = await paceForRun(run.config.language);
+    if (pace.learned) ctx.wordsPerMinute = pace.wpm;
+  }
+  const wpm = wordsPerMinuteFor(template, ctx.wordsPerMinute);
   const hint = feedback || undefined;
   // Skill names Hermes reported in the last scan. No scan, or a failed read, means no hint.
   const snap = await getCapabilities().catch(() => null);
@@ -342,7 +352,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       hooks: r.value.hooks,
       format: run.config.format,
       durationSec: run.config.durationSec,
-      wordsPerMinute: wordsPerMinuteFor(template),
+      wordsPerMinute: wpm,
       sources,
       requiresSources: needs,
     });
@@ -365,7 +375,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     ),
   );
   if (!r.ok) return r;
-  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wordsPerMinuteFor(template))) };
+  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wpm)) };
 }
 
 /**
@@ -487,6 +497,10 @@ export interface StageConclusion {
   final?: boolean;
   /** Set by a re-check, so the new card says when it was checked again. */
   recheckedAt?: string;
+  /** Lines the owner should read that do not fail the step (a narration longer than its estimate). */
+  notes?: string[];
+  /** Voice: what the gate found and which fixes the card can offer. */
+  voice?: VoiceFix;
 }
 
 /** What concludeStage decided, worked out before any write. */
@@ -527,6 +541,8 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
     ...(outcome.media ? { media: outcome.media } : {}),
     ...(outcome.providers && outcome.providers.length > 0 ? { providers: outcome.providers } : {}),
     ...(outcome.recheckedAt ? { recheckedAt: outcome.recheckedAt } : {}),
+    ...(outcome.notes && outcome.notes.length > 0 ? { notes: outcome.notes } : {}),
+    ...(outcome.voice ? { voice: outcome.voice } : {}),
   };
   return { decision, base, summary, issues, reason, detail, autoRevisions, result: outcome.result };
 }
@@ -772,6 +788,8 @@ export async function decideReview(input: {
   note: string;
   ideaIndex?: number;
   userId: string;
+  /** Approve anyway is the owner's alone; the action checks the role too. */
+  isOwner?: boolean;
 }): Promise<DecideResult> {
   try {
     const sql = db();
@@ -786,14 +804,34 @@ export async function decideReview(input: {
     const decision = input.decision;
     const payload = toObject(rv.payload);
     const storedIssues = Array.isArray(payload.issues) ? payload.issues.filter((i): i is string => typeof i === "string") : [];
-    if (decision === "recheck") return { ok: false, error: "Use Check the terms again for this" };
-    if (!decisionOptions(kind, { stage, issues: storedIssues }).includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
+    if (decision === "recheck" || decision === "fit") return { ok: false, error: "Use Check again for this" };
+    const voiceFix = parseVoiceFix(payload.voice);
+    // tempoReady only matters for "fit", which goes through recheckReview.
+    const options = decisionOptions(kind, { stage, issues: storedIssues, voice: voiceFix, tempoReady: true });
+    if (!options.includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
+    if (decision === "override" && input.isOwner !== true) return { ok: false, error: "Only the owner can approve anyway" };
     const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
 
     let target: RunStage = stage;
-    if (decision === "revise") {
+    // A script fit: Hermes rewrites the script to a length that fits and only the voice is made again. Asked for with
+    // the button, or with a revision note about length or speed on a voice card.
+    let fit: { direction: LengthDirection } | null = decision === "tighten" ? { direction: "fit" } : null;
+    let fitRequest: Record<string, unknown> | null = null;
+    if (decision === "revise" && stage === "voice" && note) {
+      const route = voiceRevisionRoute(note);
+      if (route?.route === "tighten") fit = { direction: route.direction };
+    }
+    if (fit) {
+      const planned = await planScriptFit(sql, runId, fit.direction, decision === "revise" ? note : "");
+      if (planned.ok) fitRequest = { ...planned.request };
+      // The button needs a plan. A note that cannot be planned is sorted like any other revision note.
+      else if (decision === "tighten") return { ok: false, error: planned.error };
+    }
+    if (decision === "revise" && !fitRequest) {
       if (!note) return { ok: false, error: "Write what should change" };
-      if (isProductionStage(stage)) {
+      if (stage === "voice" && voiceRevisionRoute(note)?.route === "voice") {
+        target = "voice";
+      } else if (isProductionStage(stage)) {
         // The Hermes classifier only knows the four director stages, so production notes are sorted by keywords.
         target = revisionTarget(null, note, stage);
       } else {
@@ -809,7 +847,7 @@ export async function decideReview(input: {
       chosen = ideas[idx];
     }
 
-    const newState = decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "revision";
+    const newState = decision === "approve" || decision === "override" ? "approved" : decision === "reject" ? "rejected" : "revision";
     let message = "";
     await sql.begin(async (tx) => {
       const [run] = await tx`SELECT state FROM pipeline_runs WHERE id = ${runId} FOR UPDATE`;
@@ -828,6 +866,23 @@ export async function decideReview(input: {
         message = approveMessage(stage);
         return;
       }
+      if (decision === "override") {
+        // Only offered for soft voice problems (decisionOptions); never for terms, clipping or language.
+        if (latest.state !== "waiting-human") throw new DecisionError("This stage is no longer waiting for you");
+        await approveStage(tx, runId, latest.id as string, stage, { auto: false, override: { by: input.userId, at: new Date().toISOString(), issues: storedIssues } });
+        message = `Approved anyway. ${approveMessage(stage).replace(/^Approved\. /, "")}`;
+        return;
+      }
+      if (fitRequest) {
+        await supersedeOpenReviews(tx, runId);
+        await clearOpenStages(tx, runId);
+        // No work order and no storyboard changes: the pictures are kept, only the script and the voice are redone.
+        await insertPending(tx, runId, "voice", note, 0, { tighten: fitRequest });
+        await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
+        const secs = typeof fitRequest.targetSec === "number" ? Math.round(fitRequest.targetSec) : 0;
+        message = `Hermes is fitting the script to about ${secs} seconds. The storyboard and every image are kept; only the voice is recorded again.`;
+        return;
+      }
       if (decision === "reject") {
         await supersedeOpenReviews(tx, runId);
         await clearOpenStages(tx, runId);
@@ -843,7 +898,10 @@ export async function decideReview(input: {
         await clearOpenStages(tx, runId);
         // Only the shots that failed run again; finished images are kept.
         if (again === "assets") await resetFailedOrders(tx, runId);
-        await insertPending(tx, runId, again, issuesToFeedback(issues), 0);
+        // A voice stage that stopped while fitting the script asks Hermes again; once the script is fitted it is not.
+        const latestOut = toObject(latest.output);
+        const carry = again === "voice" && isRecord(latestOut.tighten) ? { tighten: latestOut.tighten } : {};
+        await insertPending(tx, runId, again, issuesToFeedback(issues), 0, carry);
         await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
         message = again === stage ? "Trying again." : `Trying again from the ${stageLabel(again).toLowerCase()} step.`;
         return;
@@ -857,7 +915,8 @@ export async function decideReview(input: {
       await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
       message = target === stage ? "Revision sent. Hermes is redoing this step." : `Revision sent. Hermes goes back to the ${stageLabel(target).toLowerCase()} step.`;
     });
-    await safeAudit({ userId: input.userId, action: `review.${decision}`, target: input.reviewId, detail: { runId, stage, kind } });
+    const action = fitRequest ? "review.fit-script" : `review.${decision}`;
+    await safeAudit({ userId: input.userId, action, target: input.reviewId, detail: { runId, stage, kind, ...(decision === "override" ? { issues: storedIssues } : {}), ...(fitRequest ? { fit: fitRequest } : {}) } });
     return { ok: true, runId, message };
   } catch (err) {
     if (err instanceof DecisionError) return { ok: false, error: err.message };
@@ -883,21 +942,27 @@ export type RecheckResult =
  * transaction, and the terms are read inside it. A second click, or the automatic re-check racing the owner, finds
  * the card no longer open and changes nothing. Safe to repeat. userId is null for the automatic re-check.
  */
-export async function recheckReview(input: { reviewId: string; userId: string | null }): Promise<RecheckResult> {
+export async function recheckReview(input: { reviewId: string; userId: string | null; fit?: boolean }): Promise<RecheckResult> {
   try {
     const sql = db();
     const [rv] = await sql`SELECT run_id, stage FROM review_items WHERE id = ${input.reviewId}`;
     if (!rv) return { ok: false, error: "Unknown review item" };
     const runId = rv.run_id as string;
     const stageText = rv.stage as string;
-    if (!isTermsStage(stageText)) return { ok: false, error: "Only an assets or voice card held up by provider terms can be checked again." };
+    if (!isTermsStage(stageText)) return { ok: false, error: "Only an assets card held up by provider terms, or a voice card that did not pass, can be checked again." };
     const stage = stageText;
+    const fit = input.fit === true;
+    if (fit && stage !== "voice") return { ok: false, error: "Only a voice card can be fitted to the video." };
+    // A fitted narration is played at its tempo by the worker, so every render worker must be able to (0.6.0+).
+    if (fit && !(await narrationTempoReady())) {
+      return { ok: false, error: "Fitting the narration needs worker 0.6.0 or later on every render worker. Update the worker, or use Tighten the script, keep the pictures." };
+    }
     const pre = await loadRun(sql, runId);
     const template = pre?.templateId ? await getTemplate(pre.templateId) : null;
     if (!pre || !template) return { ok: false, error: "The run or its template no longer exists" };
 
     const recheckedAt = new Date().toISOString();
-    const done = await sql.begin(async (tx): Promise<{ action: ConclusionAction; gate: GateResult | null; stillBlocking: string[]; attempt: number }> => {
+    const done = await sql.begin(async (tx): Promise<{ action: ConclusionAction; gate: GateResult | null; stillBlocking: string[]; attempt: number; tempo: number }> => {
       const [runRow] = await tx`SELECT state FROM pipeline_runs WHERE id = ${runId} FOR UPDATE`;
       const [item] = await tx`SELECT state, kind, payload FROM review_items WHERE id = ${input.reviewId} FOR UPDATE`;
       const [latest] = await tx`SELECT id, state, attempt, output FROM pipeline_stages WHERE run_id = ${runId} AND stage = ${stage} ORDER BY attempt DESC LIMIT 1 FOR UPDATE`;
@@ -917,23 +982,26 @@ export async function recheckReview(input: { reviewId: string; userId: string | 
       if (!run) throw new DecisionError(CLOSED);
       const st: StageRow = { id: latest.id as string, stage, attempt: latest.attempt as number, output: toObject(latest.output) };
       const terms = await listProviderTermsIn(tx);
-      const checked = await recheckConclusion(tx, run, st, template, terms);
+      const checked = await recheckConclusion(tx, run, st, template, terms, { fit });
       if (!checked.ok) throw new DecisionError(checked.error);
       const stillBlocking = blockingRows(checked.conclusion.providers ?? [], terms).map((b) => b.name);
+      const what = fit ? "Fitted the narration to the video" : stage === "voice" ? "Checked again" : "Checked the terms again";
       await tx`
-        UPDATE review_items SET state = 'superseded', note = 'Checked the terms again', decided_by = ${input.userId}, decided_at = now()
+        UPDATE review_items SET state = 'superseded', note = ${what}, decided_by = ${input.userId}, decided_at = now()
         WHERE id = ${input.reviewId} AND state = 'open'
       `;
       // approveStage moves a waiting run back to running; the gate-failure path parks it again.
       await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
       const action = await applyConclusion(tx, run, st, planConclusion(run, st, template, { ...checked.conclusion, recheckedAt }));
-      return { action, gate: checked.conclusion.gate, stillBlocking, attempt: st.attempt };
+      const tempo = fit ? (checked.conclusion.voice?.tempo ?? 1) : 1;
+      return { action, gate: checked.conclusion.gate, stillBlocking, attempt: st.attempt, tempo };
     });
     if (done.gate) {
-      await saveQcReport({ result: done.gate, runId, details: { stage, attempt: done.attempt, recheck: true } }).catch((err) => console.error("recheck: qc report failed", err));
+      await saveQcReport({ result: done.gate, runId, details: { stage, attempt: done.attempt, recheck: true, ...(fit ? { tempo: done.tempo } : {}) } }).catch((err) => console.error("recheck: qc report failed", err));
     }
-    await safeAudit({ userId: input.userId, action: "review.recheck", target: input.reviewId, detail: { runId, stage, outcome: done.action } });
-    return { ok: true, runId, action: done.action, message: recheckMessage(stage, done.action, done.stillBlocking) };
+    await safeAudit({ userId: input.userId, action: fit ? "review.fit" : "review.recheck", target: input.reviewId, detail: { runId, stage, outcome: done.action, ...(fit ? { tempo: done.tempo } : {}) } });
+    const message = fit ? fitMessage(done.tempo, done.action) : recheckMessage(stage, done.action, done.stillBlocking);
+    return { ok: true, runId, action: done.action, message };
   } catch (err) {
     if (err instanceof DecisionError) return { ok: false, error: err.message };
     console.error("recheckReview failed", err);

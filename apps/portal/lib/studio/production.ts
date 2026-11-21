@@ -21,10 +21,10 @@ export const ORDER_WORST_CASE_SEC = (HERMES_IMAGE_ATTEMPTS * 3 + 2) * HERMES_ASK
 /** A work order or assets stage with no activity this long is treated as lost. */
 export const ORDER_STUCK_MINUTES = Math.ceil(ORDER_WORST_CASE_SEC / 60) + 6;
 /**
- * Voice, render-without-job and qc-without-job stages are lost after this long. Voice may ask Hermes twice (Kokoro,
- * then CapCut), 3 asks each, after 9router.
+ * Voice, render-without-job and qc-without-job stages are lost after this long. Voice may first ask Hermes to fit the
+ * script to the pictures (3 asks), then ask it twice more for the voice (Kokoro, then CapCut), 3 asks each, after 9router.
  */
-export const PRODUCTION_STUCK_MINUTES = Math.ceil((6 * HERMES_ASK_WORST_SEC) / 60) + 6;
+export const PRODUCTION_STUCK_MINUTES = Math.ceil((9 * HERMES_ASK_WORST_SEC) / 60) + 6;
 /** Most captions the worker accepts is 300; lines are cut at this many characters. */
 export const CAPTION_LINE_CHARS = 90;
 export const MAX_CAPTION_LINES = 300;
@@ -176,6 +176,7 @@ export function finalReason(reason: string, missing: readonly GateId[]): string 
 export function addGateIssues(g: GateResult, extra: readonly string[]): GateResult {
   if (extra.length === 0) return g;
   const out: GateResult = { gate: g.gate, passed: false, issues: [...g.issues, ...extra], executor: g.executor };
+  if (g.notes && g.notes.length > 0) out.notes = g.notes;
   return out;
 }
 
@@ -236,7 +237,10 @@ export function productionSummary(stage: ProductionStage, result: unknown): stri
     const provider = typeof r.provider === "string" ? r.provider : "unknown";
     const unchecked = r.voiceVerified === false ? ". This voice has not been checked by ear, listen before approving" : "";
     const via = r.via === "9router" ? " through 9router" : r.via === "hermes" ? " through Hermes" : "";
-    return `Narration by ${provider}${via}${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${unchecked}`;
+    const tempo = num(r.tempo);
+    const played = tempo > 0 && tempo !== 1 ? `, played at ${tempo}x (${Math.round(sec / tempo)} seconds) to fit the shots` : "";
+    const fitted = num(r.fittedWords) > 0 ? `. The script was fitted to the pictures (${num(r.fittedWords)} words)` : "";
+    return `Narration by ${provider}${via}${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${played}${fitted}${unchecked}`;
   }
   if (stage === "render") {
     const sec = num(r.durationSec);

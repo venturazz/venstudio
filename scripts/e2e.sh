@@ -149,6 +149,17 @@ q "INSERT INTO endpoint_health (endpoint, model, kind) VALUES ('hermes', 'e2e/ba
 q "DELETE FROM asset_providers WHERE name = 'e2e-video'" >/dev/null
 q "DELETE FROM endpoint_health WHERE model = 'e2e/video'" >/dev/null
 
+echo "== migration 0013 created the speech rate table, additive only"
+[ "$(q "SELECT to_regclass('public.voice_speech_rates') IS NOT NULL")" = "t" ] || fail "table voice_speech_rates missing after migration 0013"
+for col in voice_key provider model voice language words seconds wpm source run_id created_at; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'voice_speech_rates' AND column_name = '$col'")" = "1" ] || fail "column voice_speech_rates.$col missing after migration 0013"
+done
+q "INSERT INTO voice_speech_rates (voice_key, words, seconds, wpm, source) VALUES ('e2e|check|voice', 119, 55.01, 129.8, 'narration')" >/dev/null || fail "voice_speech_rates refused a valid sample"
+q "INSERT INTO voice_speech_rates (voice_key, words, seconds, wpm, source) VALUES ('e2e|check|voice', 10, 5, 120, 'guess')" >/dev/null 2>&1 && fail "voice_speech_rates accepted an unknown source"
+q "INSERT INTO voice_speech_rates (voice_key, words, seconds, wpm, source) VALUES ('e2e|check|voice', 10, 0, 120, 'test')" >/dev/null 2>&1 && fail "voice_speech_rates accepted a zero length"
+q "DELETE FROM voice_speech_rates WHERE voice_key = 'e2e|check|voice'" >/dev/null
+[ "$(q "SELECT count(*) FROM voice_speech_rates")" = "0" ] || fail "voice_speech_rates should start empty: no pace is assumed learned"
+
 echo "== render-video renders generated stills and a WAV, then qc-video measures the result"
 STILLS="$WORK/stills"
 mkdir -p "$STILLS"

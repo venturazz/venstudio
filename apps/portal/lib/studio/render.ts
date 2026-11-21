@@ -47,7 +47,13 @@ export interface RenderPayload {
   scenePlan?: ScenePlan;
   shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion }>;
   narrationAssetId: string;
+  /** Length of the narration as it plays (after narrationTempo). */
   narrationSec: number;
+  /**
+   * Tempo the worker applies to the narration file (ffmpeg atempo, worker 0.6.0+). Absent means 1, so a payload
+   * without a fit is byte-identical to before.
+   */
+  narrationTempo?: number;
   durationSec: number;
   captions: CaptionCue[];
   targetLufs: number;
@@ -66,7 +72,10 @@ export interface RenderInput {
   /** Asset id per shotRef. */
   shotAssets: Record<string, string | null | undefined>;
   narrationAssetId: string | null;
+  /** Length of the narration as it plays: the measured length divided by narrationTempo. */
   narrationSec: number;
+  /** Tempo chosen to fit the narration to the shots. 1 or absent: none, and the payload has no narrationTempo. */
+  narrationTempo?: number;
   /** Caption lines in speaking order. Timed across the narration by length. */
   captions: string[];
   targetLufs: number;
@@ -177,5 +186,8 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
   };
   if (i.scenePlan) payload.scenePlan = i.scenePlan;
   if (i.runId) payload.runId = i.runId;
+  if (typeof i.narrationTempo === "number" && Number.isFinite(i.narrationTempo) && i.narrationTempo > 0 && i.narrationTempo !== 1) {
+    payload.narrationTempo = Math.round(i.narrationTempo * 1000) / 1000;
+  }
   return { ok: true, payload };
 }

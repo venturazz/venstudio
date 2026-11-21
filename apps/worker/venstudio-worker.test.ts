@@ -16,6 +16,8 @@ import {
   joinWav,
   makeWavPcm16,
   narrationLengthIssue,
+  narrationFilter,
+  buildMuxArgs,
   parseAstatsPeak,
   parseAudioDuration,
   parseRenderSpec,
@@ -890,6 +892,52 @@ test("render-video renders two stills and a narration into a checked mp4", { ski
   assert.equal(result.narrationClipped, false);
   assert.equal(result.captionsBurned, false, "no font was supplied");
   assert.ok((portal.state.artifacts.get(`${jobId}/video.mp4`)?.bytes ?? 0) > 1000);
+});
+
+test("render-video plays a fitted narration at its tempo: 5 s of speech at 1.111x fills a 4.5 s video", { skip: !hasFfmpeg && "ffmpeg is not installed" }, async (t) => {
+  const portal = fakePortal();
+  const base = await portal.start();
+  const home = await mkdtemp(path.join(os.tmpdir(), "vs-worker-"));
+  t.after(async () => {
+    await portal.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+  for (const [id, color] of [[A1, "red"], [A2, "blue"]] as const) {
+    const f = path.join(home, `${id}.png`);
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=${color}:s=200x120`, "-frames:v", "1", f]);
+    portal.state.inputs.set(id, readFileSync(f));
+  }
+  // The file is 5 s; the portal planned the shots for 5 / 1.111 = 4.5 s. Without the tempo this is 0.5 s of speech cut off.
+  portal.state.inputs.set(NARR, Buffer.from(makeWavPcm16(24000, 1, sinePcm(5, 24000))));
+  await enroll({ home, portal: base, code: "VS-GOOD-CODE-0001", name: "Render worker" });
+  const jobId = "88888888-3333-4444-8555-777777777777";
+  portal.state.queue.push({ id: jobId, type: "render-video", payload: renderPayload({ narrationTempo: 1.111 }) });
+  await loop({ home, mode: "tick", maxMinutes: 5, pollSeconds: 1 });
+  assert.equal(portal.state.failed.get(jobId)?.error, undefined);
+  const result = portal.state.completed.get(jobId) as Record<string, unknown>;
+  assert.ok(result, "render completed");
+  assert.equal(result.narrationTempo, 1.111);
+  assert.ok(Math.abs((result.durationSec as number) - 4.5) < 0.3, `duration ${String(result.durationSec)}`);
+});
+
+test("narrationTempo: parsed only when set, applied with atempo before loudnorm, and checked as played", () => {
+  const plain = parseRenderSpec(renderPayload());
+  assert.ok(!("narrationTempo" in plain), "a payload without the field parses as before");
+  assert.equal(parseRenderSpec(renderPayload({ narrationTempo: 1 })).narrationTempo, undefined);
+  assert.equal(parseRenderSpec(renderPayload({ narrationTempo: null })).narrationTempo, undefined);
+  const fitted = parseRenderSpec(renderPayload({ narrationTempo: 1.024 }));
+  assert.equal(fitted.narrationTempo, 1.024);
+  assert.throws(() => parseRenderSpec(renderPayload({ narrationTempo: 1.6 })), /narrationTempo must be from 0.8 to 1.25/);
+  assert.throws(() => parseRenderSpec(renderPayload({ narrationTempo: "fast" })), /narrationTempo/);
+  const before = "[2:a]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=4.5[a]";
+  assert.equal(narrationFilter(plain, 2), before);
+  assert.equal(narrationFilter(fitted, 2), before.replace("[2:a]", "[2:a]atempo=1.024,"));
+  assert.ok(buildMuxArgs(fitted, "v.mp4", "n.wav", "o.mp4").some((a) => a.startsWith("[1:a]atempo=1.024,loudnorm")));
+  assert.ok(!buildMuxArgs(plain, "v.mp4", "n.wav", "o.mp4").some((a) => a.includes("atempo")));
+  // 55.01 s of speech at 1.024x plays for 53.72 s: that is what the shots were planned for.
+  assert.equal(narrationLengthIssue(55.01, 53.72, 1.024), null);
+  assert.match(narrationLengthIssue(55.01, 53.72) as string, /narration is 55.01 s but the shots were planned for 53.72 s/);
+  assert.match(narrationLengthIssue(60, 53.72, 1.024) as string, /60 s \(58.59 s at 1.024x\)/);
 });
 
 test("parseAudioDuration reads ffprobe format duration", () => {

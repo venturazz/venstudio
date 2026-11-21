@@ -425,9 +425,21 @@ export interface ChatMessage {
 /** Words per minute used when a template does not say. About a calm narration pace. */
 export const DEFAULT_WORDS_PER_MINUTE = 150;
 
-/** Templates do not carry a pace yet, so this is the documented default for every template. */
-export function wordsPerMinuteFor(_template?: Template | null): number {
+/** The pace a learned rate may set; outside it the default is used (see LEARNED_WPM_CLAMP in speech-rate.ts). */
+const PACE_RANGE: readonly [number, number] = [100, 200];
+
+/**
+ * Words per minute to plan narration with. `learned` is the measured pace of the run's voice (speech-rate.ts), used
+ * when it is a sane number; otherwise the documented default. Templates do not carry a pace of their own.
+ */
+export function wordsPerMinuteFor(_template?: Template | null, learned?: number | null): number {
+  if (typeof learned === "number" && Number.isFinite(learned) && learned >= PACE_RANGE[0] && learned <= PACE_RANGE[1]) return learned;
   return DEFAULT_WORDS_PER_MINUTE;
+}
+
+/** The pace a prompt plans with: the run's learned pace when the context carries one. */
+function paceOf(ctx: DirectorContext): number {
+  return wordsPerMinuteFor(ctx.template, ctx.wordsPerMinute);
 }
 
 export interface DirectorContext {
@@ -447,6 +459,8 @@ export interface DirectorContext {
   purposes?: string[];
   /** Subtitle language codes besides the narration language. */
   subtitles?: string[];
+  /** Measured pace of the run's voice (words per minute). Absent: the default pace. */
+  wordsPerMinute?: number;
 }
 
 /** Longest owner brief passed to Hermes (matches run-config.ts MAX_BRIEF_CHARS). */
@@ -468,13 +482,13 @@ export function dataBlock(label: string, content: string, max: number): string {
 
 function templateLines(ctx: DirectorContext): string[] {
   const t = ctx.template;
-  if (!t) return [`Maximum shot length: 6 seconds. Narration pace: ${DEFAULT_WORDS_PER_MINUTE} words per minute.`];
+  if (!t) return [`Maximum shot length: 6 seconds. Narration pace: ${paceOf(ctx)} words per minute.`];
   return [
     `Template: ${t.label}`,
     `Beats in order: ${t.beats.map((b) => `${b.role} (${Math.round(b.shareOfDuration[0] * 100)} to ${Math.round(b.shareOfDuration[1] * 100)} percent of the duration)`).join(", ")}`,
     `Maximum shot length: ${t.pacing.maxShotSeconds} seconds`,
     `The first shot change must come within ${t.pacing.hookByMs} ms`,
-    `Narration pace: ${wordsPerMinuteFor(t)} words per minute`,
+    `Narration pace: ${paceOf(ctx)} words per minute`,
   ];
 }
 
@@ -581,7 +595,7 @@ function runLines(ctx: DirectorContext, stage: DirectorStage): string[] {
 }
 
 /** First line of every user prompt. Lets a fake or logging gateway tell the stages apart. */
-export type PromptStage = DirectorStage | "classify" | "selftest";
+export type PromptStage = DirectorStage | "classify" | "selftest" | "script-fit";
 export function stageMarker(stage: PromptStage): string {
   return `VENSTUDIO_STAGE: ${stage}`;
 }
@@ -646,7 +660,7 @@ export function scriptPrompt(
   retryHint?: string,
   skillHints?: string[],
 ): ChatMessage[] {
-  const wpm = wordsPerMinuteFor(ctx.template);
+  const wpm = paceOf(ctx);
   const target = Math.round((wpm * ctx.durationSec) / 60);
   const firstWindow = ctx.format === "short" ? 3 : 30;
   const notes = research.map((n, i) => `${i + 1}. ${n.claim} (${n.sourced ? n.sourceUrl : "no source"}): ${n.summary}`).join("\n");
@@ -681,7 +695,7 @@ export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint
   const backends = (imageBackends ?? []).map((b) => b.replace(/\s+/g, " ").trim().slice(0, 40)).filter(Boolean).slice(0, 20);
   const t = ctx.template;
   const maxShot = t ? t.pacing.maxShotSeconds : 6;
-  const narrationSec = Math.round((script.split(/\s+/).filter(Boolean).length / wordsPerMinuteFor(t)) * 60);
+  const narrationSec = Math.round((script.split(/\s+/).filter(Boolean).length / paceOf(ctx)) * 60);
   const minShots = Math.ceil((narrationSec * 1.15) / maxShot);
   return [
     system("Turn the script into a storyboard of shots."),
@@ -710,6 +724,73 @@ export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint
         .join("\n"),
     },
   ];
+}
+
+/** Allowed difference between a fitted script's word count and its target. */
+export const FIT_WORD_TOLERANCE = 0.12;
+
+export interface ScriptFitRequest {
+  script: string;
+  /** The approved storyboard's shots, in order: the beats the new script must keep. */
+  shots: ReadonlyArray<Pick<Shot, "beatRole" | "seconds" | "description">>;
+  targetSec: number;
+  /** Words per minute of the voice that will speak it (measured on its last narration). */
+  wordsPerMinute: number;
+  language: string;
+  /** The owner's revision note, if the fit came from one. Untrusted: sent in a DATA block. */
+  note?: string;
+}
+
+export function fitTargetWords(targetSec: number, wordsPerMinute: number): number {
+  return Math.max(1, Math.round((targetSec * wordsPerMinute) / 60));
+}
+
+/**
+ * Asks Hermes to shorten or lengthen the approved script to a target length while keeping the storyboard's beats in
+ * order, so the storyboard and every finished image still match. Only the narration is made again.
+ */
+export function scriptFitPrompt(r: ScriptFitRequest): ChatMessage[] {
+  const words = fitTargetWords(r.targetSec, r.wordsPerMinute);
+  const now = countScriptWords(r.script);
+  const way = words < now ? "Shorten" : "Lengthen";
+  const beats = r.shots.map((s, i) => `${i + 1}. ${s.beatRole}, ${s.seconds} s: ${s.description}`).join("\n");
+  return [
+    system("Fit the narration script to the length of the finished storyboard."),
+    {
+      role: "user",
+      content: [
+        stageMarker("script-fit"),
+        `${way} the script to about ${words} words (it has ${now}). The voice speaks ${Math.round(r.wordsPerMinute)} words per minute, so that is about ${Math.round(r.targetSec)} seconds.`,
+        "The pictures are already made for the storyboard in the DATA block storyboard. Keep every beat, in the same order, so each sentence still matches its shot. Do not add new scenes or topics.",
+        "Keep the opening hook, the facts and the call to action. Remove or add words, not meaning. Write in your own words.",
+        `Language code ${r.language}. The script is plain narration text with no stage directions.`,
+        'Schema: {"script":string}',
+        dataBlock("script", r.script, MAX_SCRIPT_CHARS),
+        dataBlock("storyboard", beats, 6000),
+        r.note ? dataBlock("owner revision note", r.note, MAX_NOTE_CHARS) : "",
+      ]
+        .filter((l) => l !== "")
+        .join("\n"),
+    },
+  ];
+}
+
+function countScriptWords(s: string): number {
+  return s.split(/\s+/).filter(Boolean).length;
+}
+
+/** Checks a fitted script: plain text near the target word count. */
+export function validateFittedScript(value: unknown, targetWords: number): Validated<{ script: string }> {
+  const issues: string[] = [];
+  if (!isRecord(value)) return { ok: false, issues: ["Expected an object with script"] };
+  const script = text(value.script, "script", MAX_SCRIPT_CHARS, issues);
+  if (script) {
+    const n = countScriptWords(script);
+    const lo = Math.floor(targetWords * (1 - FIT_WORD_TOLERANCE));
+    const hi = Math.ceil(targetWords * (1 + FIT_WORD_TOLERANCE));
+    if (n < lo || n > hi) issues.push(`The script has ${n} words; it must have ${lo} to ${hi} (about ${targetWords})`);
+  }
+  return finish(issues, { script });
 }
 
 export function classifyPrompt(note: string, currentStage: DirectorStage): ChatMessage[] {

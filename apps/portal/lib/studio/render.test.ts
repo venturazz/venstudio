@@ -137,3 +137,24 @@ test("buildRenderPayload carries an animating scene plan and gates its engine", 
   assert.equal(mixed.ok, false);
   assert.match(!mixed.ok ? mixed.issues.join(" | ") : "", /scene plan is for engine/);
 });
+
+test("buildRenderPayload: a fitted narration carries narrationTempo and plans for the played length; none means no field", () => {
+  const plain = buildRenderPayload({ ...base, runId: "run-1" });
+  const unit = buildRenderPayload({ ...base, runId: "run-1", narrationTempo: 1 });
+  assert.ok(plain.ok && unit.ok);
+  if (!plain.ok || !unit.ok) return;
+  // Byte-identical to a payload from before the field existed.
+  assert.equal(JSON.stringify(unit.payload), JSON.stringify(plain.payload));
+  assert.ok(!("narrationTempo" in plain.payload));
+  // 19.2 s of speech played at 1.067x lasts 18 s: what three 6 s shots can cover.
+  const raw = 19.2;
+  const fitted = buildRenderPayload({ ...base, narrationSec: raw / 1.067, narrationTempo: 1.067 });
+  assert.ok(fitted.ok);
+  if (!fitted.ok) return;
+  assert.equal(fitted.payload.narrationTempo, 1.067);
+  assert.equal(fitted.payload.narrationSec, 17.994);
+  assert.ok(Math.abs(fitted.payload.durationSec - 17.994) < 0.01);
+  assert.equal(fitted.payload.captions.at(-1)?.end, 17.994);
+  // Without the tempo the same narration does not fit.
+  assert.equal(buildRenderPayload({ ...base, narrationSec: raw }).ok, false);
+});

@@ -3,8 +3,9 @@ import { Inbox } from "lucide-react";
 import { hasRole, requireUser } from "@/lib/server/auth.ts";
 import { listProviderTerms } from "@/lib/server/executors/persist.ts";
 import type { ProviderTerms } from "@/lib/studio/asset-plan.ts";
-import { blockingRows, canRecheck, providersFromPayload } from "@/lib/studio/terms-review.ts";
+import { blockingRows, providersFromPayload, termsHeld } from "@/lib/studio/terms-review.ts";
 import { reapStuckStages } from "@/lib/server/director.ts";
+import { narrationTempoReady } from "@/lib/server/production.ts";
 import { listOpenReviews } from "@/lib/server/reviews.ts";
 import { listWaitingRuns, type WaitingRun } from "@/lib/server/runs.ts";
 import { waitingText } from "@/lib/studio/pacing.ts";
@@ -37,11 +38,16 @@ export default async function ReviewPage() {
     const items = sortReviews(await listOpenReviews());
     // Read from the database only when a card needs it. A failed read shows the cards without the provider list.
     let terms: ProviderTerms[] | null = null;
-    if (items.some((r) => canRecheck(r.kind, r.stage, r.payload.issues))) {
+    if (items.some((r) => termsHeld(r.kind, r.stage, r.payload.issues))) {
       terms = await listProviderTerms().catch((err) => {
         console.error("review page: could not load provider terms", err);
         return null;
       });
+    }
+    // Fit the narration needs every render worker to play a changed tempo. Read only when a card could offer it.
+    let tempoReady = false;
+    if (items.some((r) => r.kind === "gate-failure" && r.stage === "voice" && r.payload.voice?.fitTempo)) {
+      tempoReady = await narrationTempoReady().catch(() => false);
     }
     views = items.map(
       (r): ReviewCardView => ({
@@ -54,8 +60,10 @@ export default async function ReviewPage() {
         channelName: r.channelName,
         gateLines: r.kind === "gate-failure" ? describeGateIssues(r.gates.filter((g) => !g.passed)) : [],
         age: timeAgo(r.createdAt),
-        blocking: terms && canRecheck(r.kind, r.stage, r.payload.issues) ? blockingRows(providersFromPayload(r.stage, r.payload), terms) : null,
+        blocking: terms && termsHeld(r.kind, r.stage, r.payload.issues) ? blockingRows(providersFromPayload(r.stage, r.payload), terms) : null,
         canSetTerms: isOwner,
+        isOwner,
+        tempoReady,
         recheckedAge: r.payload.recheckedAt ? timeAgo(new Date(r.payload.recheckedAt)) : "",
       }),
     );

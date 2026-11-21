@@ -6,6 +6,8 @@ import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
 import { getTemplate } from "./templates.ts";
 import { synthesize } from "./tts.ts";
+import { hermesJson } from "./hermes-json.ts";
+import { paceForRun, recordSpeechSample } from "./speech-rate.ts";
 import { generateImage } from "./executors/hermes-image.ts";
 import { generateRouterImage, routerImageModel } from "./executors/router-image.ts";
 import { getCapabilities } from "./capabilities.ts";
@@ -23,16 +25,27 @@ import {
   type StageRow,
 } from "./director.ts";
 import { giveUpMessage, orderFailureCause, pauseMessage, systemicPause, waitExpired, type FailureClass } from "../studio/pacing.ts";
-import { assetsGate, combineGates, PUBLISH_GATES, qcSummary, voiceGate, type GateId, type GateResult } from "../studio/qc.ts";
+import { assetsGate, combineGates, PUBLISH_GATES, qcSummary, voiceAssessment, type GateId, type GateResult } from "../studio/qc.ts";
 import { aiDisclosureRequired, type ProvenanceRecord } from "../studio/provenance.ts";
 import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind, type ProviderTerms } from "../studio/asset-plan.ts";
 import { providerRowsUsed } from "../studio/terms-review.ts";
 import type { AssetKind, AssetSource } from "../studio/catalog.ts";
-import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
+import {
+  fitTargetWords,
+  scriptFitPrompt,
+  validateFittedScript,
+  validateScript,
+  validateStoryboard,
+  workOrdersFromStoryboard,
+  type ScriptOutput,
+  type Shot,
+} from "../studio/director.ts";
+import { countWords, type Pace } from "../studio/speech-rate.ts";
+import { fitWindow, parseTightenRequest, tempoOf, tightenRequest, type LengthDirection, type TightenRequest } from "../studio/voice-fit.ts";
 import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
-import { gateCapabilities, renderJobCapability, renderStageError, withFadeFallback } from "../studio/render-gate.ts";
+import { gateCapabilities, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import type { ReviewMedia } from "../studio/review.ts";
@@ -484,16 +497,105 @@ async function assetsConclusion(sql: Q, runId: string, template: Template, provi
   return { result, gate, media, providers: providerRowsUsed(uses) };
 }
 
-/** The voice gate plus the provider terms for the narration. Used when the voice is made and when it is checked again. */
-function voiceCheck(v: { languageCode: string; provider: string; scriptEstimateSec: number; narrationSec: number; clipped: boolean }, providerTerms: ProviderTerms[]): GateResult {
-  const base = voiceGate(v);
-  return addGateIssues(base, providerTermsIssues([{ title: "Narration", provider: v.provider, kind: "tts" }], providerTerms));
+/** The approved storyboard's shots and planned length (sum of the shots), or null when it cannot be read. */
+async function storyboardShape(q: Q, runId: string): Promise<{ shots: Shot[]; plannedSec: number } | null> {
+  const out = await latestPassedOutput(q, runId, "storyboard");
+  const board = validateStoryboard(out?.result);
+  if (!board.ok) return null;
+  return { shots: board.value.shots, plannedSec: board.value.shots.reduce((n, s) => n + s.seconds, 0) };
+}
+
+/** The approved script (the newest passed attempt, which a script fit replaces), with its attempt number. */
+async function approvedScript(q: Q, runId: string): Promise<{ attempt: number; output: Record<string, unknown>; value: ScriptOutput } | null> {
+  const [r] = await q`
+    SELECT attempt, output FROM pipeline_stages WHERE run_id = ${runId} AND stage = 'script' AND state = 'passed'
+    ORDER BY attempt DESC LIMIT 1
+  `;
+  if (!r) return null;
+  const output = toObject(r.output);
+  const checked = validateScript(output.result);
+  return checked.ok ? { attempt: Number(r.attempt), output, value: checked.value } : null;
+}
+
+/** The voice that spoke a narration result, for its speech-rate key. Older results lack `speaker` and use their own fields. */
+function speakerOf(result: Record<string, unknown>): { provider: string; model: string; voice: string } {
+  const sp = toObject(result.speaker);
+  return {
+    provider: text(sp.provider) || text(result.provider),
+    model: text(sp.model) || text(result.model),
+    voice: text(sp.voice) || text(result.voice),
+  };
+}
+
+const finiteOr = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+
+/**
+ * The voice gate on a narration result: language, clipping, the format's limits, the storyboard's shots, the script
+ * estimate at the voice's pace (a note unless it is far off), and the provider terms. Used when the voice is made and
+ * when its card is checked again or fitted. Reads only.
+ */
+function voiceConclusionFrom(i: {
+  run: RunInfo;
+  template: Template;
+  result: Record<string, unknown>;
+  script: string | null;
+  board: { shots: Shot[]; plannedSec: number } | null;
+  pace: Pace;
+  providerTerms: ProviderTerms[];
+}): StageConclusion {
+  const r = i.result;
+  const provider = text(r.provider);
+  const narrationSec = finiteOr(r.narrationSec, 0);
+  const estimate = i.script ? estimateNarrationSec(i.script, i.pace.wpm) : finiteOr(r.scriptEstimateSec, 0);
+  const a = voiceAssessment({
+    languageCode: i.run.config.language,
+    provider,
+    scriptEstimateSec: estimate,
+    narrationSec,
+    clipped: r.clipped === true,
+    format: i.run.config.format,
+    shotCount: i.board?.shots.length,
+    maxShotSeconds: i.template.pacing.maxShotSeconds,
+    plannedSec: i.board?.plannedSec,
+    tempo: tempoOf(r.tempo),
+    wordsPerMinute: i.pace.wpm,
+  });
+  const base: GateResult = { gate: a.gate, passed: a.passed, issues: a.issues, executor: a.executor };
+  if (a.notes) base.notes = a.notes;
+  const gate = addGateIssues(base, providerTermsIssues([{ title: "Narration", provider, kind: "tts" }], i.providerTerms));
+  const result = { ...r, scriptEstimateSec: estimate, wordsPerMinute: i.pace.wpm, paceLearned: i.pace.learned };
+  const assetId = asUuid(r.assetId) ?? "";
+  return {
+    result,
+    gate,
+    media: { audioAssetId: assetId, voiceProvider: provider },
+    providers: [{ name: provider, kind: "tts", count: 1 }],
+    voice: a.fix,
+    notes: a.notes ?? [],
+  };
+}
+
+/** Each non-revoked worker's reported capabilities, mapped from postgres rows. Null when the read fails. */
+async function workerCapabilityLists(q: Q): Promise<string[][] | null> {
+  try {
+    const rows = await q`SELECT capabilities FROM workers WHERE status <> 'revoked'`;
+    return rows.map((r) => (Array.isArray(r.capabilities) ? (r.capabilities as unknown[]).map((c) => String(c)) : []));
+  } catch {
+    return null;
+  }
+}
+
+/** True when every render worker can play a narration at a changed tempo (worker 0.6.0+). False when unknown. */
+export async function narrationTempoReady(q: Q = db()): Promise<boolean> {
+  const lists = await workerCapabilityLists(q);
+  return lists !== null && tempoReadyFor(lists);
 }
 
 /**
  * For a re-check of an assets or voice card: the same conclusion the stage reached, worked out again from the work
  * that is already saved and the given terms. It reads only: no work order changes, nothing is generated or
  * synthesized, no provider is registered. Runs inside the caller's transaction (which holds the run and stage locks).
+ * With `fit` on a voice card, the narration is given the tempo that makes it fit the shots (nothing is made again).
  */
 export async function recheckConclusion(
   q: Q,
@@ -501,8 +603,10 @@ export async function recheckConclusion(
   st: StageRow,
   template: Template,
   providerTerms: ProviderTerms[],
+  opts: { fit?: boolean } = {},
 ): Promise<{ ok: true; conclusion: StageConclusion } | { ok: false; error: string }> {
   if (st.stage === "assets") {
+    if (opts.fit) return { ok: false, error: "Only a voice card can be fitted to the video." };
     const counts = await orderCounts(q, run.id);
     if (counts.failed > 0 || counts.pending > 0 || counts.running > 0) {
       return { ok: false, error: "Some shots are not finished, so the terms alone cannot pass them. Use Retry failed shots." };
@@ -518,29 +622,130 @@ export async function recheckConclusion(
     if (!assetId || !provider) return { ok: false, error: "The narration of this run could not be read back. Use Make the voice again." };
     const [asset] = await q`SELECT id FROM assets WHERE id = ${assetId}`;
     if (!asset) return { ok: false, error: "The narration file is gone. Use Make the voice again." };
-    const narrationSec = typeof result.narrationSec === "number" ? result.narrationSec : 0;
-    const scriptEstimateSec = typeof result.scriptEstimateSec === "number" ? result.scriptEstimateSec : 0;
-    const gate = voiceCheck({ languageCode: run.config.language, provider, scriptEstimateSec, narrationSec, clipped: result.clipped === true }, providerTerms);
-    return {
-      ok: true,
-      conclusion: { result, gate, media: { audioAssetId: assetId, voiceProvider: provider }, providers: [{ name: provider, kind: "tts", count: 1 }] },
-    };
+    const script = await approvedScript(q, run.id);
+    const board = await storyboardShape(q, run.id);
+    const pace = await paceForRun(run.config.language, speakerOf(result), q);
+    const input = { run, template, script: script?.value.script ?? null, board, pace, providerTerms };
+    let conclusion = voiceConclusionFrom({ ...input, result });
+    if (opts.fit) {
+      const tempo = conclusion.voice?.fitTempo ?? null;
+      if (tempo === null) {
+        return { ok: false, error: "This narration cannot be fitted by a small speed change. Use Tighten the script, keep the pictures." };
+      }
+      conclusion = voiceConclusionFrom({ ...input, result: { ...result, tempo } });
+    }
+    return { ok: true, conclusion };
   }
   return { ok: false, error: "Only the assets and voice steps can be checked again." };
+}
+
+/**
+ * Plans a script fit for the run's voice card: the target length from the narration, the storyboard and the format,
+ * and this voice's pace. Reads only. Fails when the narration or the storyboard cannot be read, or nothing fits.
+ */
+export async function planScriptFit(
+  q: Q,
+  runId: string,
+  direction: LengthDirection,
+  note: string,
+): Promise<{ ok: true; request: TightenRequest } | { ok: false; error: string }> {
+  const run = await loadRun(q, runId);
+  const template = run?.templateId ? await getTemplate(run.templateId) : null;
+  if (!run || !template) return { ok: false, error: "The run or its template no longer exists" };
+  const [v] = await q`SELECT output FROM pipeline_stages WHERE run_id = ${runId} AND stage = 'voice' ORDER BY attempt DESC LIMIT 1`;
+  const result = toObject(toObject(v?.output).result);
+  const narrationSec = finiteOr(result.narrationSec, 0);
+  if (!(narrationSec > 0)) return { ok: false, error: "The narration length of this run is not known, so the script cannot be fitted to it." };
+  const script = await approvedScript(q, runId);
+  const board = await storyboardShape(q, runId);
+  if (!script || !board) return { ok: false, error: "The approved script or storyboard is missing" };
+  const pace = await paceForRun(run.config.language, speakerOf(result), q);
+  const window = fitWindow({ format: run.config.format, shotCount: board.shots.length, maxShotSeconds: template.pacing.maxShotSeconds });
+  const request = tightenRequest({
+    narrationSec,
+    words: countWords(script.value.script),
+    plannedSec: board.plannedSec,
+    window,
+    direction,
+    fallbackWpm: pace.wpm,
+    note,
+  });
+  if (!request) return { ok: false, error: "No narration length fits both the format and the storyboard's shots. Send a revision to the storyboard." };
+  return { ok: true, request };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Voice
 
+/**
+ * Has Hermes rewrite the approved script to the requested length, keeping the storyboard's beats, and stores it as
+ * the newest approved script. The storyboard, the work orders and every image are left as they are. Returns the new
+ * script, or null when the stage was deferred (Hermes busy) or failed (a stage error with Retry, which asks again).
+ */
+async function fitScript(run: RunInfo, st: StageRow, request: TightenRequest): Promise<{ script: string; words: number } | null> {
+  const sql = db();
+  const script = await approvedScript(sql, run.id);
+  const board = await storyboardShape(sql, run.id);
+  if (!script || !board) {
+    await recordStageError(run.id, st.id, "voice", "The approved script or storyboard is missing, so the script cannot be fitted");
+    return null;
+  }
+  const targetWords = fitTargetWords(request.targetSec, request.wordsPerMinute);
+  const prompt = scriptFitPrompt({
+    script: script.value.script,
+    shots: board.shots,
+    targetSec: request.targetSec,
+    wordsPerMinute: request.wordsPerMinute,
+    language: run.config.language,
+    note: request.note || undefined,
+  });
+  const r = await hermesJson(prompt, (v) => validateFittedScript(v, targetWords));
+  if (!r.ok) {
+    if (r.cause === "busy" && r.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
+      await deferStage(run.id, st.id, r.busyUntil, r.error);
+      return null;
+    }
+    await recordStageError(run.id, st.id, "voice", `Hermes could not fit the script to the pictures: ${r.error}`.slice(0, 500));
+    return null;
+  }
+  const words = countWords(r.value.script);
+  const output = {
+    result: { ...script.value, script: r.value.script },
+    feedback: request.note,
+    autoRevisions: 0,
+    auto: false,
+    fittedFrom: script.attempt,
+    fit: { targetSec: request.targetSec, words, direction: request.direction },
+  };
+  await sql.begin(async (tx) => {
+    // The fitted script becomes the newest approved script; the storyboard stays approved and no work order changes.
+    await tx`
+      INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, started_at, finished_at)
+      SELECT ${run.id}::uuid, 'script', 'passed', COALESCE(MAX(attempt), 0) + 1, ${json(output)}::text::jsonb, now(), now()
+      FROM pipeline_stages WHERE run_id = ${run.id} AND stage = 'script'
+    `;
+    // Done: a retry of this voice stage now speaks the fitted script instead of asking Hermes again.
+    await tx`UPDATE pipeline_stages SET output = output - 'tighten' WHERE id = ${st.id}`;
+  });
+  return { script: r.value.script, words };
+}
+
 async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Promise<void> {
   const sql = db();
-  const scriptOut = await latestPassedOutput(sql, run.id, "script");
-  const checked = validateScript(scriptOut?.result);
-  if (!checked.ok) {
+  const checked = await approvedScript(sql, run.id);
+  if (!checked) {
     await recordStageError(run.id, st.id, "voice", "The approved script is missing");
     return;
   }
-  const script = checked.value.script;
+  let script = checked.value.script;
+  let fittedWords: number | null = null;
+  const fitRequest = parseTightenRequest(st.output.tighten);
+  if (fitRequest) {
+    const fitted = await fitScript(run, st, fitRequest);
+    if (!fitted) return;
+    script = fitted.script;
+    fittedWords = fitted.words;
+  }
   const tts = await synthesize(script, run.config.language);
   if (!tts.ok) {
     // 9router could not speak and Hermes is rate limited: wait for Hermes instead of failing the voice.
@@ -567,36 +772,37 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     channelId: run.channelId,
     createdBy: null,
   });
-  const estimate = estimateNarrationSec(script, wordsPerMinuteFor(template));
+  const words = countWords(script);
+  const speaker = { provider: n.provider, model: n.model, voice: n.voice };
+  // The pace of this voice from earlier recordings; this narration is recorded after the check so it does not judge itself.
+  const pace = await paceForRun(run.config.language, speaker);
   // WAV and MP3 lengths are measured here. CapCut audio that is Ogg is refused at the source, so only WAV and MP3 (measured) reach here.
-  const narrationSec = n.durationSec ?? estimate;
-  const gate = voiceCheck(
-    { languageCode: run.config.language, provider: saved.provider, scriptEstimateSec: estimate, narrationSec, clipped: n.clipped === true },
-    await listProviderTerms(),
-  );
+  const narrationSec = n.durationSec ?? estimateNarrationSec(script, pace.wpm);
   const result = {
     assetId: saved.assetId,
     provider: saved.provider,
     voice: n.voice,
     model: n.model,
+    speaker,
     ...(n.backend ? { backend: n.backend } : {}),
     ...(n.plugin ? { plugin: n.plugin } : {}),
     via: n.via,
     skipped: n.skipped,
     voiceVerified: n.voiceVerified,
     narrationSec,
-    scriptEstimateSec: estimate,
+    words,
+    ...(fittedWords !== null ? { fittedWords } : {}),
     clipped: n.clipped,
     deferredCheck: n.deferredCheck,
     mime: n.mime,
     note: n.note,
   };
-  await concludeStage(run, st, template, {
-    result,
-    gate,
-    media: { audioAssetId: saved.assetId, voiceProvider: saved.provider },
-    providers: [{ name: saved.provider, kind: "tts", count: 1 }],
-  });
+  const board = await storyboardShape(sql, run.id);
+  const conclusion = voiceConclusionFrom({ run, template, result, script, board, pace, providerTerms: await listProviderTerms() });
+  if (n.durationSec !== null) {
+    await recordSpeechSample({ ...speaker, language: run.config.language, words, seconds: n.durationSec, source: "narration", runId: run.id });
+  }
+  await concludeStage(run, st, template, conclusion);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -661,6 +867,18 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // Read once, outside the closure, so the narrowing above holds.
   const boardShots = board.value.shots;
   const captions = captionLines(script.value.script);
+  // A fitted narration plays at its tempo: the shots, captions and video length are planned for the played length,
+  // and the worker (0.6.0+) applies the tempo. Without a fit the payload is exactly what it was before.
+  const tempo = tempoOf(voiceResult.tempo);
+  const rawNarrationSec = typeof voiceResult.narrationSec === "number" ? voiceResult.narrationSec : 0;
+  if (tempo !== 1) {
+    const lists = await workerCapabilityLists(sql);
+    // With no worker enrolled the job waits in the queue like any other render; once workers report, all must cope.
+    if (lists && lists.length > 0 && !tempoReadyFor(lists)) {
+      await recordStageError(run.id, st.id, "render", tempoWorkerMessage(tempo));
+      return;
+    }
+  }
   const fontAssetId = font ? asUuid(font.id) : null;
   const planFor = (transitionSec: number): RenderPlan => {
     const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: boardShots, transitionSec }) : null;
@@ -671,7 +889,8 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
       shots: shotSpecs,
       shotAssets,
       narrationAssetId: asUuid(voiceResult.assetId),
-      narrationSec: typeof voiceResult.narrationSec === "number" ? voiceResult.narrationSec : 0,
+      narrationSec: tempo !== 1 ? rawNarrationSec / tempo : rawNarrationSec,
+      ...(tempo !== 1 ? { narrationTempo: tempo } : {}),
       captions,
       targetLufs: template.audio.targetLufs,
       maxShotSeconds: template.pacing.maxShotSeconds,

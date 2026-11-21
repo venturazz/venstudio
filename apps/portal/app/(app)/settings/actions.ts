@@ -144,6 +144,7 @@ export async function testVoice(_prev: TestState, _fd: FormData): Promise<TestSt
     `Model ${r.model}`,
     `${r.durationSec === null ? "Length not known" : `${r.durationSec} s of audio`}, ${Math.round(r.bytes / 1024)} KB`,
     `Made in ${(r.ms / 1000).toFixed(1)} s`,
+    ...(r.wordsPerMinute !== null ? [`Speaks about ${Math.round(r.wordsPerMinute)} words per minute (recorded for this voice; scripts are sized with it once there are 3 recordings)`] : []),
   ];
   if (r.skipped.length > 0) lines.push(`Not used: ${r.skipped.join(" ")}`);
   return { ok: true, lines };

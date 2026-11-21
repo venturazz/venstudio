@@ -4,12 +4,19 @@
  */
 import { qcSummary, type GateResult } from "./qc.ts";
 import { onlyTermsIssues } from "./production.ts";
-import { canRecheck, type ProviderRowUse } from "./terms-review.ts";
+import { canRecheck, hasTermsIssues, type ProviderRowUse } from "./terms-review.ts";
+import { LENGTH_PROBLEMS, SOFT_PROBLEMS, type VoiceFix } from "./voice-fit.ts";
 
 export type ReviewKind = "idea" | "approval" | "gate-failure" | "stage-error";
 export type ReviewState = "open" | "approved" | "revision" | "rejected" | "superseded";
-/** "recheck" runs only the gate again on work that is already made (assets and voice cards held up by provider terms). */
-export type ReviewDecision = "approve" | "revise" | "reject" | "retry" | "recheck";
+/**
+ * "recheck" runs only the gate again on work that is already made (assets cards held up by provider terms, any voice
+ * gate failure). The voice fixes: "fit" plays the narration at a small tempo change so it fits the shots (nothing is
+ * made again), "tighten" has Hermes rewrite the script to a length that fits and records only the voice again,
+ * "override" is the owner's Approve anyway for a soft voice problem.
+ */
+export type ReviewDecision = "approve" | "revise" | "reject" | "retry" | "recheck" | "fit" | "tighten" | "override";
+export const REVIEW_DECISIONS: readonly ReviewDecision[] = ["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override"];
 
 export const STAGE_LABELS: Record<string, string> = {
   idea: "Idea",
@@ -45,6 +52,36 @@ export function reviewTitle(kind: ReviewKind, stage: string): string {
 export interface DecisionContext {
   stage?: string;
   issues?: readonly string[];
+  /** Voice gate failures: what the gate found and which fixes would work (payload.voice). */
+  voice?: VoiceFix | null;
+  /** True when every render worker can play narration at a changed tempo (worker 0.6.0+). Needed for "fit". */
+  tempoReady?: boolean;
+}
+
+/**
+ * A voice gate failure. Terms-only cards keep their old choices. Otherwise: fit and tighten for a narration that
+ * does not fit the video, Approve anyway when every problem is soft and no terms issue is open, Check again always,
+ * and Make the voice again unless the only problems are its length (the same voice would come back the same).
+ */
+function voiceOptions(issues: readonly string[], fix: VoiceFix | null | undefined, tempoReady: boolean): ReviewDecision[] {
+  if (onlyTermsIssues(issues)) return ["recheck", "retry", "revise", "reject"];
+  const codes = fix?.problems ?? [];
+  const out: ReviewDecision[] = [];
+  const lengthOnly = codes.length > 0 && codes.every((c) => LENGTH_PROBLEMS.includes(c));
+  if (codes.some((c) => LENGTH_PROBLEMS.includes(c))) {
+    if (fix?.fitTempo && tempoReady) out.push("fit");
+    if (fix?.tightenSec) out.push("tighten");
+  }
+  // Clipping or a language problem needs a new recording, so that leads. A card made before the voice-length rules has
+  // no fix details: Check again leads, so it is judged by the current rules on the narration it has (mixed with terms
+  // issues it keeps its old order).
+  const rerecord = codes.some((c) => c === "clipped" || c === "language") || (!fix && hasTermsIssues(issues));
+  if (lengthOnly) out.push("recheck");
+  else if (rerecord) out.push("retry", "recheck");
+  else out.push("recheck", "retry");
+  if (codes.length > 0 && codes.every((c) => SOFT_PROBLEMS.includes(c)) && !hasTermsIssues(issues)) out.push("override");
+  out.push("revise", "reject");
+  return out;
 }
 
 /**
@@ -59,6 +96,7 @@ export function decisionOptions(kind: ReviewKind, ctx: DecisionContext = {}): Re
       return ["approve", "revise", "reject"];
     case "gate-failure": {
       const stage = ctx.stage ?? "";
+      if (stage === "voice") return voiceOptions(ctx.issues ?? [], ctx.voice, ctx.tempoReady === true);
       if (!canRecheck(kind, stage, ctx.issues)) return ["retry", "revise", "reject"];
       if (!onlyTermsIssues(ctx.issues ?? [])) return ["retry", "recheck", "revise", "reject"];
       return stage === "assets" ? ["recheck", "revise", "reject"] : ["recheck", "retry", "revise", "reject"];
@@ -74,10 +112,15 @@ export const DECISION_LABELS: Record<ReviewDecision, string> = {
   reject: "Reject",
   retry: "Try again",
   recheck: "Check the terms again",
+  fit: "Fit the narration to the video",
+  tighten: "Tighten the script, keep the pictures",
+  override: "Approve anyway",
 };
 
 /** The button text, named after what the choice really does on this card. */
-export function decisionLabel(decision: ReviewDecision, kind: ReviewKind, stage: string): string {
+export function decisionLabel(decision: ReviewDecision, kind: ReviewKind, stage: string, ctx: DecisionContext = {}): string {
+  if (decision === "recheck" && stage === "voice" && !hasTermsIssues(ctx.issues)) return "Check again";
+  if (decision === "tighten" && ctx.voice?.tightenSec && ctx.voice.tightenSec > ctx.voice.narrationSec) return "Lengthen the script, keep the pictures";
   if (decision === "retry") {
     if (kind === "gate-failure" && stage === "assets") return "Retry failed shots";
     if (kind === "gate-failure" && stage === "voice") return "Make the voice again";
@@ -86,12 +129,32 @@ export function decisionLabel(decision: ReviewDecision, kind: ReviewKind, stage:
   return DECISION_LABELS[decision];
 }
 
+const PRODUCTION = ["assets", "voice", "render", "qc"];
+const sec = (n: number) => String(Math.round(n * 10) / 10);
+
 /** One plain line under a button when its effect is not obvious from the label. */
-export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: string): string | null {
+export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: string, ctx: DecisionContext = {}): string | null {
+  const fix = ctx.voice;
   if (decision === "recheck") {
+    if (stage === "voice" && !hasTermsIssues(ctx.issues)) return "Checks this narration again with the current rules. Nothing is recorded again.";
     return stage === "voice"
       ? "Checks the narration you have against the provider terms. Nothing is recorded again."
       : "Checks the images you have against the provider terms. Nothing is made again.";
+  }
+  if (decision === "fit" && fix?.fitTempo) {
+    const way = fix.fitTempo > 1 ? "a little faster" : "a little slower";
+    return `Plays the narration ${way} (${fix.fitTempo}x, ${sec(fix.narrationSec / fix.fitTempo)} s instead of ${sec(fix.narrationSec)} s) so it fits the shots. The images and the narration are kept; nothing is made again.`;
+  }
+  if (decision === "tighten") {
+    const to = fix?.tightenSec ? ` to about ${sec(fix.tightenSec)} s` : " to fit the shots";
+    return `Hermes rewrites the script${to} with the same beats, and only the voice is recorded again. The storyboard and every image are kept.`;
+  }
+  if (decision === "override") return "Owner only. Uses this narration as it is, after you have listened to it. Your decision is recorded in the audit log.";
+  if (decision === "reject") {
+    return PRODUCTION.includes(stage) ? "Cancels the run. The images and narration already made stay in Assets." : "Cancels the run.";
+  }
+  if (decision === "revise" && stage === "voice") {
+    return "A note about length or speed rewrites the script to fit and keeps the pictures. A note about the voice or accent records the voice again.";
   }
   if (decision === "retry" && kind === "gate-failure" && stage === "assets") return "Makes only the shots that failed again. Finished images are kept.";
   if (decision === "retry" && kind === "gate-failure" && stage === "voice") return "Records the whole narration again.";
@@ -155,6 +218,10 @@ export interface ReviewPayload {
   providers?: ProviderRowUse[];
   /** Set when the card replaced another after the gate was checked again (ISO time). */
   recheckedAt?: string;
+  /** Things to know that do not fail the check (for example a narration longer than its estimate). */
+  notes?: string[];
+  /** Voice cards: what the voice gate found and which fixes would work. Read with parseVoiceFix. */
+  voice?: VoiceFix;
 }
 
 export interface ReviewMedia {

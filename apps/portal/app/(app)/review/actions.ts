@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/server/auth.ts";
+import { hasRole, requireUser } from "@/lib/server/auth.ts";
 import { advanceRun, decideReview, recheckReview, recheckTermsReviews } from "@/lib/server/director.ts";
 import { saveProviderTerms } from "@/lib/server/provider-terms.ts";
 import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
@@ -12,7 +12,7 @@ import type { FormState } from "@/lib/form.ts";
 
 const schema = z.object({
   reviewId: z.uuid("Unknown review item"),
-  decision: z.enum(["approve", "revise", "reject", "retry", "recheck"]),
+  decision: z.enum(["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override"]),
   note: z.string().max(1000),
   ideaIndex: z.union([z.literal(""), z.coerce.number().int().min(0).max(50)]),
 });
@@ -28,9 +28,10 @@ export async function decideReviewAction(_prev: FormState, fd: FormData): Promis
   });
   if (!parsed.success) return fail(fd, parsed.error.issues[0]?.message ?? "Check the form and try again.");
   const d = parsed.data;
-  if (d.decision === "recheck") {
-    // Only the gate runs again on the work that is already made; terms are read, never written.
-    const r = await recheckReview({ reviewId: d.reviewId, userId: user.id });
+  if (d.decision === "recheck" || d.decision === "fit") {
+    // Only the gate runs again on the work that is already made; terms are read, never written. A fit only sets the
+    // tempo the narration plays at; nothing is made again.
+    const r = await recheckReview({ reviewId: d.reviewId, userId: user.id, fit: d.decision === "fit" });
     revalidatePath("/review");
     if (!r.ok) return fail(fd, r.error);
     revalidatePath(`/studio/runs/${r.runId}`);
@@ -40,12 +41,16 @@ export async function decideReviewAction(_prev: FormState, fd: FormData): Promis
     }
     return { ok: r.message };
   }
+  // Approve anyway is the owner's decision alone.
+  const isOwner = hasRole(user.role, "owner");
+  if (d.decision === "override" && !isOwner) return fail(fd, "Only the owner can approve anyway.");
   const result = await decideReview({
     reviewId: d.reviewId,
     decision: d.decision,
     note: d.note,
     ideaIndex: d.ideaIndex === "" ? undefined : d.ideaIndex,
     userId: user.id,
+    isOwner,
   });
   revalidatePath("/review");
   if (!result.ok) return fail(fd, result.error);

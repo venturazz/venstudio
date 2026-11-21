@@ -127,6 +127,15 @@ function directorReply(messages) {
     const body = words.slice(0, Math.max(0, target - opening.split(" ").length)).join(" ");
     return JSON.stringify({ hooks: ["Here is a strange true tale.", "Nobody tells this part.", "You were told the wrong ending."], chosenHook: 0, script: `${opening} ${body}.` });
   }
+  if (stage === "script-fit") {
+    // Fit the script to the pictures: as many words as the prompt asks for, so the fitted script passes its check.
+    fakeStats.scriptFitAsks++;
+    const target = Number(/to about (\d+) words/.exec(first)?.[1] ?? 60);
+    const filler = "A traveller crossed the hills and listened to every voice along the road before the night fell.".split(" ");
+    const words = [];
+    while (words.length < target) words.push(...filler);
+    return JSON.stringify({ script: `Here is a strange true tale. ${words.slice(0, Math.max(1, target - 6)).join(" ")}.` });
+  }
   if (stage === "storyboard") {
     const roles = [...(/Beats in order: (.*)/.exec(first)?.[1] ?? "hook (x), body (x)").matchAll(/(\w+) \(/g)].map((m) => m[1]);
     const maxShot = Number(/Maximum shot length: ([\d.]+) seconds/.exec(first)?.[1] ?? 3);
@@ -216,7 +225,7 @@ function directorReply(messages) {
 // The newest first user message per stage marker (idea, research, script, storyboard ...), so the UI test can check
 // what the New video form carried into the director prompts.
 const lastPrompt = {};
-const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
+const fakeStats = { scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -281,9 +290,11 @@ const fakeHermes = createServer((req, res) => {
 await new Promise((r) => fakeHermes.listen(HERMES_PORT, "127.0.0.1", r));
 
 // Fake 9router. In "hang" mode it accepts connections and never answers, like an unroutable address, so the pages-stay-fast
-// check is meaningful. In "ok" mode it lists models and speaks 0.4 s per word (the pace the portal estimates, 150 words a
-// minute). routerTts "error" makes only the speech endpoint fail, to prove the fallback to Hermes.
+// check is meaningful. In "ok" mode it lists models and speaks 0.46 s per word: about 130 words a minute, like the owner's
+// Kokoro voice, so every narration is about 15 percent longer than the portal's 150 words-a-minute estimate. That must
+// be a note on the voice card, not a failure. routerTts "error" makes only the speech endpoint fail, to prove the fallback to Hermes.
 const router = { mode: "hang", tts: "ok" };
+const FAKE_SECONDS_PER_WORD = 0.46;
 const routerSockets = new Set();
 const ROUTER_KEY = process.env.NINEROUTER_API_KEY ?? "";
 const fakeRouter = createServer((req, res) => {
@@ -333,7 +344,7 @@ const fakeRouter = createServer((req, res) => {
       fakeStats.routerSpeechCalls++;
       const words = String(body.input ?? "").split(/\s+/).filter(Boolean).length;
       res.writeHead(200, { "content-type": "audio/wav" });
-      res.end(makeWav(Math.max(0.5, words * 0.4)));
+      res.end(makeWav(Math.max(0.5, words * FAKE_SECONDS_PER_WORD)));
     });
     return;
   }
@@ -387,6 +398,7 @@ async function dumpPipeline(p, runHref, why) {
     psql("jobs of this run, and the latest render and qc jobs", `SELECT type, status, attempts || '/' || max_attempts AS tries, priority, capability, worker_id, preferred_worker_id, run_after <= now() AS runnable, progress, left(coalesce(message, ''), 120) AS message, left(coalesce(error, ''), 400) AS error FROM jobs WHERE payload->>'runId' = '${runId}' OR type IN ('render-video', 'qc-video') ORDER BY created_at DESC LIMIT 10`);
     psql("job events of the latest render and qc jobs", `SELECT j.type, e.level, left(e.message, 200) AS message FROM job_events e JOIN jobs j ON j.id = e.job_id WHERE j.payload->>'runId' = '${runId}' AND j.type IN ('render-video', 'qc-video') ORDER BY e.id DESC LIMIT 20`);
     psql("work orders", `SELECT shot_ref, executor, state, attempts, job_id, asset_id IS NOT NULL AS has_asset, to_jsonb(w)->>'not_before' AS not_before, left(coalesce(to_jsonb(w)->>'wait_reason', ''), 120) AS wait_reason, left(coalesce(to_jsonb(w)->>'error', ''), 200) AS error FROM work_orders w WHERE run_id = '${runId}' ORDER BY shot_ref`);
+    psql("speech rates (newest)", `SELECT voice_key, language, words, round(seconds::numeric, 2) AS seconds, round(wpm::numeric, 1) AS wpm, source, run_id = '${runId}' AS this_run FROM voice_speech_rates ORDER BY created_at DESC LIMIT 8`);
     psql("hermes gate", `SELECT * FROM hermes_gate`);
     psql("endpoint health", `SELECT endpoint, model, kind, last_success_at IS NOT NULL AS worked, failure_class, quarantined_at IS NOT NULL AS set_aside, successes, failures, left(last_error, 160) AS last_error FROM endpoint_health ORDER BY updated_at DESC LIMIT 20`);
     psql("review items", `SELECT stage, kind, state, left(payload::text, 300) AS payload FROM review_items WHERE run_id = '${runId}' ORDER BY created_at`);
@@ -1068,6 +1080,49 @@ try {
     if (names.join(",") !== "kokoro:tts") throw new Error(`the voice card should list exactly kokoro (voice); it lists: ${names.join(", ")}`);
     if ((await voiceGateCard().getByRole("button", { name: "Retry", exact: true }).count()) !== 0) throw new Error("the voice card has an unnamed Retry");
     await voiceGateCard().getByRole("button", { name: "Make the voice again", exact: true }).waitFor();
+    // The fake voice speaks about 15 percent slower than the estimate. That is a note on the card, never a failed check.
+    const voiceIssues = await voiceGateCard().locator("ul.list-disc > li").allInnerTexts();
+    if (voiceIssues.some((t) => /script estimate|limit 10 percent|shots can fill/.test(t))) {
+      throw new Error(`the voice card fails on the narration length: ${voiceIssues.join(" | ")}`);
+    }
+    const voiceNote = (await voiceGateCard().getByTestId("review-notes").innerText()).replace(/\s+/g, " ");
+    if (!/percent longer than the script estimate/.test(voiceNote) || !/only a note/.test(voiceNote)) throw new Error(`the voice card has no length note: ${voiceNote}`);
+    // Approve anyway is never offered while provider terms are open; Fit is not offered for a narration that fits.
+    if ((await voiceGateCard().getByRole("button", { name: "Approve anyway", exact: true }).count()) !== 0) throw new Error("Approve anyway is offered on a card held up by provider terms");
+    if ((await voiceGateCard().getByRole("button", { name: "Fit the narration to the video", exact: true }).count()) !== 0) throw new Error("Fit the narration is offered for a narration that fits");
+    await voiceGateCard().getByTestId("reject-hint").getByText("stay in Assets", { exact: false }).waitFor();
+
+    // A note about length on the voice card fits the script to the pictures: Hermes rewrites the script, only the voice
+    // is recorded again, and no image is made again.
+    {
+      const imagesBefore = productionImageCalls();
+      const ttsBeforeFit = ttsCalls();
+      const fitAsksBefore = fakeStats.scriptFitAsks;
+      const fitId = await voiceGateCard().getAttribute("data-review-id");
+      await voiceGateCard().getByRole("textbox", { name: "What should change?", exact: true }).fill("Make the narration a bit shorter");
+      await voiceGateCard().getByRole("button", { name: "Send revision", exact: true }).click();
+      await m.locator(`[data-testid="review-card"][data-review-id="${fitId}"]`).waitFor({ state: "detached", timeout: 30_000 });
+      let fitted = false;
+      for (const end = Date.now() + 60_000; Date.now() < end && !fitted; ) {
+        await m.goto(`${APP}/review`);
+        fitted = (await voiceGateCard().isVisible().catch(() => false)) && (await voiceGateCard().getAttribute("data-review-id")) !== fitId;
+        if (!fitted) await m.waitForTimeout(1000);
+      }
+      if (!fitted) {
+        await dumpPipeline(m, assetsRunHref ?? runHref, "the voice card did not come back after a length note");
+        throw new Error("the voice card did not come back after the length note");
+      }
+      if (fakeStats.scriptFitAsks <= fitAsksBefore) throw new Error("a length note on the voice card did not ask Hermes to fit the script");
+      if (!/Keep every beat, in the same order/.test(lastPrompt["script-fit"] ?? "")) throw new Error("the script-fit prompt does not keep the storyboard's beats");
+      if (productionImageCalls() !== imagesBefore) throw new Error(`fitting the script made images again (${imagesBefore} -> ${productionImageCalls()} image calls)`);
+      // The narration is spoken in chunks of up to 400 characters, so one recording may be more than one speech call.
+      if (ttsCalls() <= ttsBeforeFit) throw new Error(`fitting the script did not record the voice again (${ttsBeforeFit} -> ${ttsCalls()} speech calls)`);
+      if ((await voiceGateCard().getByText(/The script was fitted to the pictures \(\d+ words\)/).count()) !== 1) {
+        throw new Error(`the new voice card does not say the script was fitted: ${(await voiceGateCard().innerText()).slice(0, 400)}`);
+      }
+      if ((await blockingNames(voiceGateCard())).join(",") !== "kokoro:tts") throw new Error("the fitted voice card does not name kokoro");
+      console.log(`   length note: script fitted by Hermes, voice recorded again, images kept (${imagesBefore} image calls)`);
+    }
     await assertTapTargets(m, [
       ["Check the terms again (voice)", voiceGateCard().getByRole("button", { name: "Check the terms again", exact: true })],
       ["Commercial use OK (kokoro)", blockingRow(voiceGateCard(), "kokoro").getByRole("button", { name: "Commercial use OK", exact: true })],
