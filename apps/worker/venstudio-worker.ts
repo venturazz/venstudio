@@ -37,7 +37,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -243,6 +243,8 @@ export async function detectCapabilities(home?: string): Promise<Capability[]> {
     // The portal starts asking for cross-fades the moment any worker reports this, so it is reported only where
     // render-video can build them: this ffmpeg has the filter, and parseRenderSpec accepts the faded timeline.
     if (ffmpegHasFilter("xfade")) caps.push("xfade");
+    // render-video plays a fitted narration at its tempo (narrationTempo) with atempo, which keeps the pitch.
+    if (ffmpegHasFilter("atempo")) caps.push("narration-tempo");
     // remotion-2d also needs ffmpeg, which adds the narration. Reported only when the project is installed here and
     // its probe passes (a still of every template rendered once at install time, through this machine's browser).
     if (!(await remotionUnavailableReason(remotionDir(home)))) caps.push("remotion-2d");
@@ -968,7 +970,13 @@ export interface RenderSpec {
   scenePlan: RenderScenePlan | null;
   shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: RenderMotion }>;
   narrationAssetId: string;
+  /** Length of the narration as it plays, after narrationTempo. */
   narrationSec: number;
+  /**
+   * Tempo applied to the narration file (ffmpeg atempo, pitch kept), from a portal that fitted the narration to the
+   * shots. Absent for every other payload, which then renders exactly as before.
+   */
+  narrationTempo?: number;
   /** Length of the finished video. The sum of the shots with hard cuts; less the fade overlaps with cross-fades. */
   durationSec: number;
   captions: Array<{ start: number; end: number; text: string }>;
@@ -978,6 +986,8 @@ export interface RenderSpec {
 }
 
 export const RENDER_LIMITS = { maxShots: 60, maxSeconds: 1800, maxCaptions: 300, minShotSeconds: 0.5 } as const;
+/** Tempo a render-video payload may ask for. The portal offers 0.9 to 1.15; a little more is accepted here. */
+export const NARRATION_TEMPO_LIMITS: readonly [number, number] = [0.8, 1.25];
 const MOTIONS: readonly string[] = ["zoom-in", "zoom-out", "pan-left", "pan-right"];
 
 function num(v: unknown): number {
@@ -1221,6 +1231,10 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   if (!inputs.includes(narrationAssetId as string)) bad("the narration asset is not listed in inputs");
   const narrationSec = num(payload.narrationSec);
   if (!(narrationSec > 0) || narrationSec > RENDER_LIMITS.maxSeconds) bad(`narrationSec must be above 0 and at most ${RENDER_LIMITS.maxSeconds}`);
+  const tempo = payload.narrationTempo === undefined || payload.narrationTempo === null ? 1 : num(payload.narrationTempo);
+  if (!(tempo >= NARRATION_TEMPO_LIMITS[0] && tempo <= NARRATION_TEMPO_LIMITS[1])) {
+    bad(`narrationTempo must be from ${NARRATION_TEMPO_LIMITS[0]} to ${NARRATION_TEMPO_LIMITS[1]}`);
+  }
   const askedFade = payload.transitionSec === undefined || payload.transitionSec === null ? 0 : num(payload.transitionSec);
   if (!(askedFade >= 0) || askedFade > 5) bad("transitionSec must be from 0 to 5 seconds");
   // One shot has nothing to fade into.
@@ -1272,6 +1286,7 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     shots,
     narrationAssetId: narrationAssetId as string,
     narrationSec,
+    ...(tempo !== 1 ? { narrationTempo: round3(tempo) } : {}),
     durationSec,
     captions,
     targetLufs,
@@ -1340,8 +1355,10 @@ export function xfadeTimelineFor(spec: Pick<RenderSpec, "shots" | "transitionSec
  * The narration as every engine delivers it: loudness-normalised to the template's target, 48 kHz stereo, padded
  * with silence to the video's length. `input` is the narration's ffmpeg input index.
  */
-export function narrationFilter(spec: Pick<RenderSpec, "targetLufs" | "durationSec">, input: number): string {
-  return `[${input}:a]loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`;
+export function narrationFilter(spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo">, input: number): string {
+  // atempo first, so loudness is measured on the narration as it plays. No tempo: the chain is unchanged.
+  const tempo = spec.narrationTempo !== undefined && spec.narrationTempo !== 1 ? `atempo=${spec.narrationTempo},` : "";
+  return `[${input}:a]${tempo}loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`;
 }
 
 /** Where each shot starts in the finished video, in seconds. */
@@ -1440,11 +1457,16 @@ export function parseAudioDuration(json: unknown): number | null {
 /** Allowed gap between the narration the portal planned the shots for and the real file. */
 export const NARRATION_LENGTH_TOLERANCE_SEC = 1;
 
-/** A plain message when the real narration length differs from the planned one (the render would cut or pad it). */
-export function narrationLengthIssue(realSec: number | null, plannedSec: number): string | null {
+/**
+ * A plain message when the real narration length differs from the planned one (the render would cut or pad it).
+ * With a tempo the file is compared as it will play: its length divided by the tempo.
+ */
+export function narrationLengthIssue(realSec: number | null, plannedSec: number, tempo: number = 1): string | null {
   if (realSec === null) return "Could not read the narration length";
-  if (Math.abs(realSec - plannedSec) <= NARRATION_LENGTH_TOLERANCE_SEC) return null;
-  return `The narration is ${round2(realSec)} s but the shots were planned for ${round2(plannedSec)} s. Make the narration again so the shots match it.`;
+  const played = realSec / tempo;
+  if (Math.abs(played - plannedSec) <= NARRATION_LENGTH_TOLERANCE_SEC) return null;
+  const at = tempo !== 1 ? ` (${round2(played)} s at ${tempo}x)` : "";
+  return `The narration is ${round2(realSec)} s${at} but the shots were planned for ${round2(plannedSec)} s. Make the narration again so the shots match it.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1650,7 +1672,7 @@ export function remotionRenderArgs(o: RemotionRenderOptions): string[] {
 }
 
 /** ffmpeg arguments that add the narration to Remotion's muted video, with the same audio chain as the stills path. */
-export function buildMuxArgs(spec: Pick<RenderSpec, "targetLufs" | "durationSec">, video: string, narration: string, output: string): string[] {
+export function buildMuxArgs(spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo">, video: string, narration: string, output: string): string[] {
   return [
     "-y", "-hide_banner", "-loglevel", "error",
     "-i", video, "-i", narration,
@@ -1839,7 +1861,7 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
   } catch {
     narrationProbe = null;
   }
-  const lengthIssue = narrationLengthIssue(parseAudioDuration(narrationProbe), spec.narrationSec);
+  const lengthIssue = narrationLengthIssue(parseAudioDuration(narrationProbe), spec.narrationSec, spec.narrationTempo ?? 1);
   if (lengthIssue) throw new NonRetryableError(lengthIssue);
   const peakDb = parseAstatsPeak(
     (await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", path.join(ctx.workDir, narrationRel), "-af", "astats=metadata=0", "-f", "null", "-"], ctx.signal)).stderr,
@@ -1881,6 +1903,7 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     engine: spec.engine,
     transitionSec: spec.transitionSec,
     narrationSec: spec.narrationSec,
+    ...(spec.narrationTempo !== undefined ? { narrationTempo: spec.narrationTempo } : {}),
     narrationClipped,
     narrationPeakDb: peakDb,
     shots: spec.shots.length,

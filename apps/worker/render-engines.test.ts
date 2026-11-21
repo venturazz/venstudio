@@ -46,6 +46,8 @@ test("ffmpeg-stills args are byte-identical to the worker before engines (0.4.0)
     ["an old portal's payload (no engine, no transitionSec)", golden.payload],
     ["engine ffmpeg-stills, transitionSec 0", { ...golden.payload, engine: "ffmpeg-stills", transitionSec: 0 }],
     ["engine ffmpeg-stills with a stray scenePlan", { ...golden.payload, engine: "ffmpeg-stills", transitionSec: 0, scenePlan: { version: 1 } }],
+    // Worker 0.6.0: a narration that was not fitted (tempo 1, or no field) renders exactly as before.
+    ["narrationTempo 1", { ...golden.payload, narrationTempo: 1 }],
   ];
   for (const [label, payload] of variants) {
     const spec = parseRenderSpec(payload);
