@@ -161,6 +161,13 @@ stills. Perubahan itu ada di `runRenderStage`, sekitar baris 589.
 4. **Pakai `transitionSec`.** Kalau > 0, susun `xfade` memakai `planCrossFades` — jangan hitung offset
    sendiri di dalam string shell. Durasi akhir video adalah `totalSec`; `render.ts` sudah memanjangkan
    shot sebesar tumpang tindihnya supaya narasi tidak melewati video.
+   **Invarian payload kamu harus ikut berubah.** Worker sekarang menolak dengan pesan
+   `render-video payload: the shots add up to X s but the narration is Y s`. Dengan fade aktif, jumlah
+   shot memang **lebih besar** dari narasi: `sum = narration + (n-1) × transitionSec`, dan yang wajib
+   sama dengan narasi adalah `durationSec` (yaitu `planCrossFades().totalSec`), **bukan** jumlah shot.
+   Selama `transitionSec` 0, aturan lama tetap berlaku — itulah sebabnya portal masih mengirim 0.
+   CI sudah pernah menangkap pelanggaran ini sekali; jangan aktifkan fade di portal sebelum cek-nya
+   diubah.
 5. **Jangan pasang `xfade` kalau `transitionSec` 0** — perilaku lama harus tetap byte-identik.
 6. **Tipe payload di worker** perlu mendapat `engine`, `transitionSec`, dan `scenePlan`.
 
