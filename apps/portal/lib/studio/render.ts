@@ -3,6 +3,7 @@ import { VIDEO_FORMATS, type Format } from "./catalog.ts";
 import type { AudioPlan } from "./audio-plan.ts";
 import { captionSpecIssues, type CaptionSpec } from "./caption-spec.ts";
 import { DEFAULT_RENDER_ENGINE, engineExists, engineIssues, planCrossFades } from "./render-engine.ts";
+import { RENDER_LIMITS } from "./render-limits.ts";
 import { scenePlanIssues, type ScenePlan } from "./scene-plan.ts";
 
 export type Motion = "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
@@ -143,6 +144,9 @@ function rescale(seconds: number[], target: number, max: number): number[] {
 export function buildRenderPayload(i: RenderInput): RenderPlan {
   const issues: string[] = [];
   if (i.shots.length === 0) issues.push("There are no shots to render");
+  // The worker's own limits (render-limits.ts): refused here, before a job is queued, never by the worker mid-render.
+  if (i.shots.length > RENDER_LIMITS.maxShots) issues.push(`${i.shots.length} shots is more than the ${RENDER_LIMITS.maxShots} one render takes`);
+  if (i.captions.length > RENDER_LIMITS.maxCaptions) issues.push(`${i.captions.length} caption lines is more than the ${RENDER_LIMITS.maxCaptions} one render takes`);
   const missing = i.shots.filter((s) => !i.shotAssets[s.shotRef]).map((s) => s.shotRef);
   if (missing.length > 0) issues.push(`No image for ${missing.join(", ")}`);
   if (!i.narrationAssetId) issues.push("There is no narration to render");

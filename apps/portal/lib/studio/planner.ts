@@ -21,6 +21,20 @@ import {
   type Workflow,
 } from "./catalog.ts";
 import { engineIssues } from "./render-engine.ts";
+import { RENDER_LIMITS } from "./render-limits.ts";
+
+/**
+ * The plan's warning when the longest video of this format, cut at the style's fastest pace, needs more shots than
+ * one render takes. Said at planning, before a script, images or a voice are paid for. Null when it fits, which every
+ * style in today's catalogue does (the limit is derived from it).
+ */
+export function renderLimitWarning(style: Pick<Style, "label" | "shotSeconds">, format: Format): string | null {
+  const longest = VIDEO_FORMATS[format].durationSec[1];
+  const most = Math.ceil(longest / Math.max(0.1, style.shotSeconds[0]));
+  if (most <= RENDER_LIMITS.maxShots) return null;
+  const fits = Math.floor(RENDER_LIMITS.maxShots * style.shotSeconds[0]);
+  return `${style.label} cuts as often as every ${style.shotSeconds[0]} s, so a ${Math.round(longest / 60)}-minute video can need ${most} shots, more than the ${RENDER_LIMITS.maxShots} one render takes. Keep this video under ${Math.floor(fits / 60)} minutes, or split it into parts.`;
+}
 
 export interface PlanStage {
   id: string;
@@ -228,6 +242,8 @@ function buildWarnings(style: Style, format: Format, workflow: Workflow, primary
   if (engine.muse === "external") warnings.push("Clips come from a paid AI provider. Check its commercial-use terms for every output.");
   if (format === "long" && engine.tier === "heavy") warnings.push("A long video with a heavy engine can take many hours to render. Split it into chapters.");
   if (workflow === "copycat-structure") warnings.push("Copy-cat mode learns structure only. Script, footage, characters and music must be your own.");
+  const tooMany = renderLimitWarning(style, format);
+  if (tooMany) warnings.push(tooMany);
   const natural = frameOf(style);
   const jobFrame = frameForFormat(format);
   if (natural !== "both" && natural !== jobFrame) {

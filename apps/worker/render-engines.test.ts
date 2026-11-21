@@ -30,7 +30,7 @@ import {
   type JobContext,
 } from "./venstudio-worker.ts";
 import { planCrossFades as portalPlanCrossFades, transitionFor as portalTransitionFor } from "../portal/lib/studio/render-engine.ts";
-import { fixture, fixtureWithUuids } from "./testdata/fixture.ts";
+import { fixture, fixtureWithUuids, fixtureWithoutMix } from "./testdata/fixture.ts";
 
 const golden = JSON.parse(readFileSync(new URL("./testdata/stills-args.golden.json", import.meta.url), "utf8")) as {
   payload: Record<string, unknown>;
@@ -239,7 +239,8 @@ test("with fades the check is on the timeline after the overlaps; with hard cuts
 });
 
 test("buildRenderArgs chains xfades at frame-exact offsets, with the transition fixed by position", () => {
-  const spec = parseRenderSpec({ ...fixtureWithUuids(), engine: "ffmpeg-stills" });
+  // The 0.6.0 payload shape: the mix and caption style have tests of their own (audio-mix.test.ts).
+  const spec = parseRenderSpec({ ...fixtureWithoutMix(), engine: "ffmpeg-stills" });
   const images = ["a", "b", "c", "d", "e"].map((x) => `in/${x}.png`);
   const plan = buildRenderArgs(spec, { images, narration: "in/n.wav", output: "o.mp4" }, { drawtext: false });
   const graph = plan.args[plan.args.indexOf("-filter_complex") + 1];

@@ -37,7 +37,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -245,6 +245,12 @@ export async function detectCapabilities(home?: string): Promise<Capability[]> {
     if (ffmpegHasFilter("xfade")) caps.push("xfade");
     // render-video plays a fitted narration at its tempo (narrationTempo) with atempo, which keeps the pitch.
     if (ffmpegHasFilter("atempo")) caps.push("narration-tempo");
+    // render-video mixes payload.audio (bed, ducking, ambience, accents, master loudness) only where every filter of
+    // that chain exists. Reported after the code that honours it, never before: the portal sends `audio` only to a
+    // fleet in which every render worker reports this.
+    if (missingAudioMixFilters().length === 0) caps.push("audio-mix");
+    // render-video draws captions with payload.captionStyle on both engines (0.7.0+).
+    caps.push("caption-style");
     // remotion-2d also needs ffmpeg, which adds the narration. Reported only when the project is installed here and
     // its probe passes (a still of every template rendered once at install time, through this machine's browser).
     if (!(await remotionUnavailableReason(remotionDir(home)))) caps.push("remotion-2d");
@@ -500,14 +506,29 @@ export function wrapText(text: string, maxChars: number): string {
 
 const CARD_COLORS = ["0x1d3557", "0x2a9d8f", "0x264653", "0x457b9d", "0x6d597a"];
 
+/** `ffmpeg -filters` output per ffmpeg binary, read once per process. */
+const filterLists = new Map<string, string>();
+
 /** True when this ffmpeg build has the named filter (drawtext needs freetype). */
 export function ffmpegHasFilter(name: string): boolean {
-  try {
-    const r = spawnSync(ffmpegPath(), ["-hide_banner", "-filters"], { encoding: "utf8", timeout: 15_000 });
-    return typeof r.stdout === "string" && new RegExp(`\\s${name}\\s`).test(r.stdout);
-  } catch {
-    return false;
+  const bin = ffmpegPath();
+  let list = filterLists.get(bin);
+  if (list === undefined) {
+    try {
+      const r = spawnSync(bin, ["-hide_banner", "-filters"], { encoding: "utf8", timeout: 15_000 });
+      list = typeof r.stdout === "string" ? r.stdout : "";
+    } catch {
+      list = "";
+    }
+    // An empty answer is not cached: an ffmpeg installed after start-up is found on the next look.
+    if (list) filterLists.set(bin, list);
   }
+  return new RegExp(`\\s${name}\\s`).test(list);
+}
+
+/** Filters of the audio mix this ffmpeg lacks. Empty when it can mix. */
+export function missingAudioMixFilters(): string[] {
+  return AUDIO_MIX_FILTERS.filter((f) => !ffmpegHasFilter(f));
 }
 
 export const handlers: Record<string, Handler> = {
@@ -983,15 +1004,199 @@ export interface RenderSpec {
   targetLufs: number;
   fontAssetId: string | null;
   inputs: string[];
+  /** Caption geometry from the portal (0.7.0+). Absent: captions keep the look they had in 0.6.0. */
+  captionStyle?: RenderCaptionStyle;
+  /** The audio layers to mix (0.7.0+). Absent: the narration alone, exactly as in 0.6.0. */
+  audio?: RenderAudio;
 }
 
-export const RENDER_LIMITS = { maxShots: 60, maxSeconds: 1800, maxCaptions: 300, minShotSeconds: 0.5 } as const;
+/** Mirror of `CaptionSpec` in apps/portal/lib/studio/caption-spec.ts, already scaled to the frame. */
+export interface RenderCaptionStyle {
+  fontAssetId: string | null;
+  fontSizePx: number;
+  minFontSizePx: number;
+  maxFontSizePx: number;
+  lineSpacingPx: number;
+  outlinePx: number;
+  shadowPx: number;
+  marginXPx: number;
+  marginBottomPx: number;
+  maxWidthPx: number;
+  narrowFace: boolean;
+  safeAreaPct: number;
+}
+
+/** Mirror of `BedSpec` in apps/portal/lib/studio/audio-plan.ts. */
+export interface RenderAudioBed {
+  assetId: string;
+  sourceLufs: number;
+  gainDb: number;
+  duck: { threshold: number; ratio: number; attackMs: number; releaseMs: number; makeup: number };
+  cover: "loop" | "trim";
+}
+
+/** Mirror of `AudioPlan` in apps/portal/lib/studio/audio-plan.ts. */
+export interface RenderAudio {
+  master: { targetLufs: number; maxTruePeakDb: number };
+  bed: RenderAudioBed | null;
+  ambient: { color: AmbientColor; bandHz: [number, number]; gainDb: number } | null;
+  sfx: Array<{ atSec: number; assetId: string }>;
+}
+
+export type AmbientColor = "brown" | "pink" | "white";
+const AMBIENT_COLORS: readonly string[] = ["brown", "pink", "white"];
+
+/**
+ * What one render-video job may hold. Derived from the portal's catalogue, not guessed: the longest video is 1200 s
+ * and the fastest style cuts every 2 s, so a legitimate long explainer has up to 600 shots, and the portal sends at
+ * most two caption lines a shot. Same numbers as apps/portal/lib/studio/render-limits.ts (render-engines.test.ts
+ * checks both agree), so a plan the portal accepts is never refused here after its images were paid for.
+ */
+export const RENDER_LIMITS = { maxShots: 600, maxSeconds: 1800, maxCaptions: 1200, minShotSeconds: 0.5 } as const;
+/** Accents in one mix. Each distinct file is one ffmpeg input, so this also bounds the mux's inputs. */
+export const MAX_SFX_CUES = 120;
+/**
+ * The largest stills graph rendered in one ffmpeg process: the sizes 0.6.0 accepted (60 shots, 300 captions), which
+ * is what has run on a 2 vCPU / 8 GB Muse VM. A longer job is rendered in chunks of at most this size and joined
+ * without re-encoding; one graph of 600 inputs would open 600 decoders at once and outgrow the kernel's 128 KiB limit
+ * on a single argument.
+ */
+export const STILLS_GRAPH_LIMITS = { shots: 60, captions: 300 } as const;
+/** ffmpeg filters the audio mix needs. The worker reports "audio-mix" only when its ffmpeg has every one. */
+export const AUDIO_MIX_FILTERS: readonly string[] = [
+  "loudnorm", "aresample", "aformat", "apad", "asplit", "aloop", "atrim", "volume", "sidechaincompress", "anoisesrc",
+  "highpass", "lowpass", "adelay", "amix",
+];
 /** Tempo a render-video payload may ask for. The portal offers 0.9 to 1.15; a little more is accepted here. */
 export const NARRATION_TEMPO_LIMITS: readonly [number, number] = [0.8, 1.25];
 const MOTIONS: readonly string[] = ["zoom-in", "zoom-out", "pan-left", "pan-right"];
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : NaN;
+}
+
+const within = (v: number, lo: number, hi: number) => Number.isFinite(v) && v >= lo && v <= hi;
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Strict check of payload.captionStyle. Every number must be finite and fit the frame; the font, when named, must be a
+ * listed input. Throws NonRetryableError: a style that cannot be drawn is a portal bug, and retrying will not fix it.
+ */
+export function parseCaptionStyle(raw: unknown, ctx: { width: number; height: number; inputs: readonly string[] }): RenderCaptionStyle {
+  const bad = (m: string): never => {
+    throw new NonRetryableError(`render-video captionStyle: ${m}`);
+  };
+  if (!isRecord(raw)) return bad("must be an object");
+  const px = (k: string, lo: number, hi: number): number => {
+    const v = num(raw[k]);
+    if (!within(v, lo, hi)) bad(`${k} must be a number from ${lo} to ${hi}, got ${String(raw[k])}`);
+    return Math.round(v);
+  };
+  const short = Math.min(ctx.width, ctx.height);
+  const fontSizePx = px("fontSizePx", 8, Math.round(short / 4));
+  const minFontSizePx = px("minFontSizePx", 8, Math.round(short / 4));
+  const maxFontSizePx = px("maxFontSizePx", 8, Math.round(short / 4));
+  if (!(minFontSizePx <= fontSizePx && fontSizePx <= maxFontSizePx)) bad(`fontSizePx ${fontSizePx} is outside its own range ${minFontSizePx}-${maxFontSizePx}`);
+  const lineSpacingPx = px("lineSpacingPx", 0, fontSizePx * 2);
+  const outlinePx = px("outlinePx", 0, 40);
+  if (outlinePx * 2 >= fontSizePx) bad(`a ${outlinePx} px outline swallows ${fontSizePx} px text`);
+  const shadowPx = px("shadowPx", 0, 40);
+  const marginXPx = px("marginXPx", 0, Math.floor(ctx.width / 2) - 1);
+  const marginBottomPx = px("marginBottomPx", 0, Math.floor(ctx.height / 2));
+  const maxWidthPx = px("maxWidthPx", fontSizePx * 2, ctx.width);
+  if (maxWidthPx + 2 * marginXPx > ctx.width + 2) bad(`${maxWidthPx} px of text with ${marginXPx} px margins does not fit a ${ctx.width} px frame`);
+  if (fontSizePx * 2 + lineSpacingPx > ctx.height - marginBottomPx) bad(`two lines of ${fontSizePx} px text do not fit above a ${marginBottomPx} px bottom margin`);
+  if (raw.narrowFace !== undefined && typeof raw.narrowFace !== "boolean") bad("narrowFace must be true or false");
+  const safeAreaPct = raw.safeAreaPct === undefined ? 0 : num(raw.safeAreaPct);
+  if (!within(safeAreaPct, 0, 40)) bad("safeAreaPct must be from 0 to 40");
+  let fontAssetId: string | null = null;
+  if (raw.fontAssetId !== undefined && raw.fontAssetId !== null) {
+    if (typeof raw.fontAssetId !== "string" || !UUID_RE.test(raw.fontAssetId)) bad("fontAssetId is not an asset id");
+    if (!ctx.inputs.includes(raw.fontAssetId as string)) bad("the caption font is not listed in inputs");
+    fontAssetId = raw.fontAssetId as string;
+  }
+  return {
+    fontAssetId,
+    fontSizePx,
+    minFontSizePx,
+    maxFontSizePx,
+    lineSpacingPx,
+    outlinePx,
+    shadowPx,
+    marginXPx,
+    marginBottomPx,
+    maxWidthPx,
+    narrowFace: raw.narrowFace === true,
+    safeAreaPct,
+  };
+}
+
+/**
+ * Strict check of payload.audio. Numbers must sit inside what the ffmpeg filters accept, enums must be known, and
+ * every asset must be a listed input. The master loudness must be the payload's targetLufs: one target, not two that
+ * happen to agree. Throws NonRetryableError.
+ */
+export function parseAudioPlan(raw: unknown, ctx: { durationSec: number; targetLufs: number; inputs: readonly string[] }): RenderAudio {
+  const bad = (m: string): never => {
+    throw new NonRetryableError(`render-video audio: ${m}`);
+  };
+  if (!isRecord(raw)) return bad("must be an object");
+  const n = (obj: Record<string, unknown>, at: string, k: string, lo: number, hi: number): number => {
+    const v = num(obj[k]);
+    if (!within(v, lo, hi)) bad(`${at}${k} must be a number from ${lo} to ${hi}, got ${String(obj[k])}`);
+    return v;
+  };
+  const asset = (v: unknown, what: string): string => {
+    if (typeof v !== "string" || !UUID_RE.test(v)) return bad(`${what} is not an asset id`);
+    if (!ctx.inputs.includes(v)) bad(`${what} is not listed in inputs`);
+    return v;
+  };
+  if (!isRecord(raw.master)) return bad("master is missing");
+  const targetLufs = n(raw.master, "master.", "targetLufs", -30, -5);
+  const maxTruePeakDb = n(raw.master, "master.", "maxTruePeakDb", -9, 0);
+  if (Math.abs(targetLufs - ctx.targetLufs) > 0.01) bad(`master.targetLufs is ${targetLufs}, but the payload targets ${ctx.targetLufs} LUFS`);
+
+  let bed: RenderAudioBed | null = null;
+  if (raw.bed !== null && raw.bed !== undefined) {
+    const b = raw.bed;
+    if (!isRecord(b)) return bad("bed must be an object or null");
+    if (!isRecord(b.duck)) return bad("bed.duck is missing");
+    if (b.cover !== "loop" && b.cover !== "trim") bad(`bed.cover must be "loop" or "trim", got ${String(b.cover)}`);
+    bed = {
+      assetId: asset(b.assetId, "bed.assetId"),
+      sourceLufs: n(b, "bed.", "sourceLufs", -40, -5),
+      gainDb: n(b, "bed.", "gainDb", -30, 12),
+      duck: {
+        threshold: n(b.duck, "bed.duck.", "threshold", 0.000977, 1),
+        ratio: n(b.duck, "bed.duck.", "ratio", 1, 20),
+        attackMs: n(b.duck, "bed.duck.", "attackMs", 0.01, 2000),
+        releaseMs: n(b.duck, "bed.duck.", "releaseMs", 0.01, 9000),
+        makeup: n(b.duck, "bed.duck.", "makeup", 1, 64),
+      },
+      cover: b.cover as "loop" | "trim",
+    };
+  }
+
+  let ambient: RenderAudio["ambient"] = null;
+  if (raw.ambient !== null && raw.ambient !== undefined) {
+    const a = raw.ambient;
+    if (!isRecord(a)) return bad("ambient must be an object or null");
+    if (typeof a.color !== "string" || !AMBIENT_COLORS.includes(a.color)) bad(`ambient.color must be one of ${AMBIENT_COLORS.join(", ")}, got ${String(a.color)}`);
+    const band = Array.isArray(a.bandHz) ? (a.bandHz as unknown[]).map(num) : [];
+    if (band.length !== 2 || !within(band[0], 20, 20000) || !within(band[1], 20, 20000) || !(band[0] < band[1])) bad("ambient.bandHz must be [low, high] in Hz, low below high, within 20-20000");
+    ambient = { color: a.color as AmbientColor, bandHz: [band[0], band[1]], gainDb: n(a, "ambient.", "gainDb", -60, 0) };
+  }
+
+  const rawSfx = raw.sfx === undefined || raw.sfx === null ? [] : raw.sfx;
+  if (!Array.isArray(rawSfx)) return bad("sfx must be a list");
+  if (rawSfx.length > MAX_SFX_CUES) bad(`there are ${rawSfx.length} accents; the limit is ${MAX_SFX_CUES}`);
+  const sfx = (rawSfx as unknown[]).map((r, i) => {
+    if (!isRecord(r)) return bad(`accent ${i + 1} must be an object`);
+    const atSec = n(r, `sfx[${i}].`, "atSec", 0, ctx.durationSec);
+    if (!(atSec < ctx.durationSec)) bad(`accent ${i + 1} at ${atSec} s is outside a ${ctx.durationSec} s video`);
+    return { atSec: round3(atSec), assetId: asset(r.assetId, `accent ${i + 1}`) };
+  });
+  return { master: { targetLufs, maxTruePeakDb }, bed, ambient, sfx };
 }
 
 /**
@@ -1263,7 +1468,7 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   const targetLufs = payload.targetLufs === undefined ? -16 : num(payload.targetLufs);
   if (!(targetLufs >= -30 && targetLufs <= -5)) bad("targetLufs must be between -30 and -5");
   const rawCaps = Array.isArray(payload.captions) ? (payload.captions as unknown[]) : [];
-  if (rawCaps.length > RENDER_LIMITS.maxCaptions) bad("too many captions");
+  if (rawCaps.length > RENDER_LIMITS.maxCaptions) bad(`there are ${rawCaps.length} captions; the limit is ${RENDER_LIMITS.maxCaptions}`);
   const captions = rawCaps.flatMap((raw) => {
     const c = (raw ?? {}) as Record<string, unknown>;
     const start = num(c.start);
@@ -1271,7 +1476,14 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     if (typeof c.text !== "string" || !c.text.trim() || !(start >= 0) || !(end > start)) return [];
     return [{ start, end, text: c.text.trim().slice(0, 300) }];
   });
-  const fontAssetId = typeof payload.fontAssetId === "string" && UUID_RE.test(payload.fontAssetId) && inputs.includes(payload.fontAssetId) ? payload.fontAssetId : null;
+  const payloadFont = typeof payload.fontAssetId === "string" && UUID_RE.test(payload.fontAssetId) && inputs.includes(payload.fontAssetId) ? payload.fontAssetId : null;
+  const captionStyle = payload.captionStyle === undefined || payload.captionStyle === null ? null : parseCaptionStyle(payload.captionStyle, { width, height, inputs });
+  // The font is named twice, on the payload and in the style. Two names that disagree would burn the wrong face.
+  if (captionStyle?.fontAssetId && payloadFont && captionStyle.fontAssetId !== payloadFont) {
+    bad(`captionStyle names font ${captionStyle.fontAssetId}, but the payload names ${payloadFont}`);
+  }
+  const fontAssetId = payloadFont ?? captionStyle?.fontAssetId ?? null;
+  const audio = payload.audio === undefined || payload.audio === null ? null : parseAudioPlan(payload.audio, { durationSec, targetLufs, inputs });
   const engine = renderEngineOf(payload);
   // Only an animating engine reads the scene plan; the stills engine has everything it needs in the shots.
   const scenePlan = engine === "ffmpeg-stills" ? null : parseScenePlan(payload.scenePlan, { engine, width, height, fps, shotRefs: shots.map((s) => s.shotRef) });
@@ -1292,6 +1504,9 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     targetLufs,
     fontAssetId,
     inputs,
+    // Only when sent, so a payload without them parses to exactly the 0.6.0 spec.
+    ...(captionStyle ? { captionStyle } : {}),
+    ...(audio ? { audio } : {}),
   };
 }
 
@@ -1302,6 +1517,10 @@ export interface RenderPaths {
   output: string;
   /** Font file for caption burn-in. Only used when caps.drawtext is true. */
   font?: string;
+  /** Music bed file. Needed when spec.audio has a bed. */
+  bed?: string;
+  /** One file per distinct accent asset, in the order of audioSfxAssets(spec). */
+  sfx?: string[];
 }
 
 export interface RenderArgs {
@@ -1351,14 +1570,114 @@ export function xfadeTimelineFor(spec: Pick<RenderSpec, "shots" | "transitionSec
   return t;
 }
 
+/** The narration chain up to its padding, without an output label. Shared by narrationFilter and the mix. */
+function voiceChain(spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo">, input: number): string {
+  // atempo first, so loudness is measured on the narration as it plays. No tempo: the chain is unchanged.
+  const tempo = spec.narrationTempo !== undefined && spec.narrationTempo !== 1 ? `atempo=${spec.narrationTempo},` : "";
+  return `[${input}:a]${tempo}loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}`;
+}
+
 /**
  * The narration as every engine delivers it: loudness-normalised to the template's target, 48 kHz stereo, padded
  * with silence to the video's length. `input` is the narration's ffmpeg input index.
  */
 export function narrationFilter(spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo">, input: number): string {
-  // atempo first, so loudness is measured on the narration as it plays. No tempo: the chain is unchanged.
-  const tempo = spec.narrationTempo !== undefined && spec.narrationTempo !== 1 ? `atempo=${spec.narrationTempo},` : "";
-  return `[${input}:a]${tempo}loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`;
+  return `${voiceChain(spec, input)}[a]`;
+}
+
+/** Distinct accent assets of a mix, in first-use order. Each is one ffmpeg input after the narration and the bed. */
+export function audioSfxAssets(spec: Pick<RenderSpec, "audio">): string[] {
+  return Array.from(new Set((spec.audio?.sfx ?? []).map((s) => s.assetId)));
+}
+
+/** Where the mix's files sit among the ffmpeg inputs. */
+export interface AudioInputs {
+  narration: number;
+  /** Null when the plan has no bed. */
+  bed: number | null;
+  /** One per entry of audioSfxAssets(spec). */
+  sfx: number[];
+}
+
+/** The input indexes of the audio files when they follow `first` (the narration's index) in this order. */
+export function audioInputsFrom(spec: Pick<RenderSpec, "audio">, first: number): AudioInputs {
+  const bed = spec.audio?.bed ? first + 1 : null;
+  const base = first + (bed === null ? 1 : 2);
+  return { narration: first, bed, sfx: audioSfxAssets(spec).map((_, i) => base + i) };
+}
+
+/** A number as an ffmpeg option value: at most three decimals, no exponent. */
+const opt = (n: number) => String(Math.round(n * 1000) / 1000);
+
+/**
+ * The whole soundtrack as one filter chain ending in `[a]`, in the order of the spec in docs/kiro-tasks.md:
+ *
+ *   voice:   (atempo) loudnorm to targetLufs, 48 kHz stereo, padded to the video, cut at it
+ *   bed:     48 kHz stereo, aloop then atrim (cover "loop") or atrim then apad ("trim"), loudnorm to sourceLufs,
+ *            + gainDb, then sidechaincompress keyed by the voice (duck threshold, ratio, attack, release, makeup)
+ *   ambient: anoisesrc (color), highpass + lowpass at bandHz, at gainDb
+ *   sfx:     each accent delayed to atSec, padded to the video
+ *   master:  amix of the layers, loudnorm to master.targetLufs with true peak at master.maxTruePeakDb, cut at the video
+ *
+ * Every layer runs exactly the video's length, so amix never drops an input part-way (which would jump the level).
+ * aloop's buffer grows only to what the bed has, so a short bed costs its own length in memory. A spec without
+ * `audio` gets narrationFilter, byte for byte.
+ */
+export function audioMixFilter(spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo" | "audio">, inputs: AudioInputs): string {
+  const a = spec.audio;
+  if (!a) return narrationFilter(spec, inputs.narration);
+  const D = spec.durationSec;
+  const parts: string[] = [];
+  const layers: string[] = ["[voice]"];
+  const bed = a.bed && inputs.bed !== null ? a.bed : null;
+  if (a.bed && inputs.bed === null) throw new NonRetryableError("render-video: the mix has a bed, but no bed file was given");
+  parts.push(`${voiceChain(spec, inputs.narration)},atrim=duration=${D}${bed ? ",asplit=2[voice][duckkey]" : "[voice]"}`);
+  if (bed) {
+    // Looping happens before loudnorm, so the bed is measured as it will play. The size is the video's length in
+    // samples: a longer bed then simply plays its first D seconds.
+    const cover = bed.cover === "loop" ? `aloop=loop=-1:size=${Math.ceil(D * 48000)},atrim=duration=${D}` : `atrim=duration=${D},apad=whole_dur=${D}`;
+    parts.push(
+      `[${inputs.bed}:a]aresample=48000,aformat=channel_layouts=stereo,${cover},` +
+        `loudnorm=I=${opt(bed.sourceLufs)}:TP=-1.5:LRA=11,aresample=48000,volume=${opt(bed.gainDb)}dB[bedlevel]`,
+    );
+    const d = bed.duck;
+    parts.push(`[bedlevel][duckkey]sidechaincompress=threshold=${opt(d.threshold)}:ratio=${opt(d.ratio)}:attack=${opt(d.attackMs)}:release=${opt(d.releaseMs)}:makeup=${opt(d.makeup)}[bed]`);
+    layers.push("[bed]");
+  }
+  if (a.ambient) {
+    const m = a.ambient;
+    // A fixed seed: the same plan renders the same noise, so two renders of one job are the same file.
+    parts.push(
+      `anoisesrc=color=${m.color}:sample_rate=48000:amplitude=1:seed=1:duration=${D},` +
+        `highpass=f=${opt(m.bandHz[0])},lowpass=f=${opt(m.bandHz[1])},volume=${opt(m.gainDb)}dB,aformat=channel_layouts=stereo[ambient]`,
+    );
+    layers.push("[ambient]");
+  }
+  if (a.sfx.length > 0) {
+    const assets = audioSfxAssets(spec);
+    if (inputs.sfx.length !== assets.length) throw new NonRetryableError("render-video: there must be one accent file per accent asset");
+    const cues: string[] = [];
+    assets.forEach((id, k) => {
+      const uses = a.sfx.filter((s) => s.assetId === id);
+      const labels = uses.map((_, j) => `[fxsrc${k}_${j}]`);
+      parts.push(`[${inputs.sfx[k]}:a]aresample=48000,aformat=channel_layouts=stereo${uses.length > 1 ? `,asplit=${uses.length}` : ""}${labels.join("")}`);
+      uses.forEach((u, j) => {
+        const ms = Math.round(u.atSec * 1000);
+        const label = `[fx${cues.length}]`;
+        parts.push(`${labels[j]}adelay=${ms}|${ms},apad=whole_dur=${D},atrim=duration=${D}${label}`);
+        cues.push(label);
+      });
+    });
+    if (cues.length === 1) layers.push(cues[0]);
+    else {
+      // amix scales each input by 1/n; volume=n undoes it, so many accents are not each made quieter.
+      parts.push(`${cues.join("")}amix=inputs=${cues.length}:duration=first:dropout_transition=0,volume=${cues.length}[sfx]`);
+      layers.push("[sfx]");
+    }
+  }
+  const master = `loudnorm=I=${opt(a.master.targetLufs)}:TP=${opt(a.master.maxTruePeakDb)}:LRA=11,aresample=48000,aformat=channel_layouts=stereo,atrim=duration=${D}[a]`;
+  parts.push(layers.length === 1 ? `[voice]${master}` : `${layers.join("")}amix=inputs=${layers.length}:duration=first:dropout_transition=0,${master}`);
+  return parts.join(";");
 }
 
 /** Where each shot starts in the finished video, in seconds. */
@@ -1367,65 +1686,151 @@ export function sceneStartsOf(spec: Pick<RenderSpec, "shots" | "transitionSec">)
   return plan.ok ? plan.starts : [];
 }
 
-/** Builds the ffmpeg arguments for the final render. Pure. Plain H.264/AAC mp4 with faststart so qc-video can read it. */
-export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { drawtext: boolean }): RenderArgs {
-  if (paths.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image file per shot");
+/** Characters a caption line may hold before it wraps. */
+export function captionLineChars(spec: Pick<RenderSpec, "width" | "height" | "captionStyle">): number {
+  const st = spec.captionStyle;
+  if (!st) {
+    const size = Math.round(Math.min(spec.width, spec.height) / 18);
+    return Math.max(12, Math.floor(spec.width / (size * 0.55)));
+  }
+  // An average glyph is about half an em in a wide face, a little less in a narrow one.
+  return Math.max(8, Math.floor(st.maxWidthPx / (st.fontSizePx * (st.narrowFace ? 0.46 : 0.55))));
+}
+
+/**
+ * drawtext filters for the captions that overlap [fromSec, toSec), with times relative to fromSec. Without a
+ * captionStyle these are the 0.6.0 filters, byte for byte; with one, its size, outline, shadow, line spacing and
+ * margins. Caption i reads its text from cap<i>.txt.
+ */
+function captionDraws(spec: RenderSpec, font: string, fromSec: number, toSec: number): { draws: string[]; files: Array<{ file: string; text: string }> } {
+  const draws: string[] = [];
+  const files: Array<{ file: string; text: string }> = [];
+  const st = spec.captionStyle;
+  const size = st ? st.fontSizePx : Math.round(Math.min(spec.width, spec.height) / 18);
+  const maxChars = captionLineChars(spec);
+  spec.captions.forEach((c, i) => {
+    if (!(c.start < toSec && c.end > fromSec)) return;
+    const file = `cap${i}.txt`;
+    files.push({ file, text: wrapText(c.text, maxChars) });
+    const at = `enable='between(t,${round2(Math.max(0, c.start - fromSec))},${round2(c.end - fromSec)})'`;
+    if (!st) {
+      draws.push(
+        `drawtext=fontfile=${font}:textfile=${file}:fontcolor=white:fontsize=${size}:borderw=3:bordercolor=black:` +
+          `line_spacing=${Math.round(size / 4)}:x=(w-text_w)/2:y=h-h/6-text_h:${at}`,
+      );
+      return;
+    }
+    const shadow = st.shadowPx > 0 ? `shadowcolor=black@0.6:shadowx=${st.shadowPx}:shadowy=${st.shadowPx}:` : "";
+    draws.push(
+      `drawtext=fontfile=${font}:textfile=${file}:fontcolor=white:fontsize=${size}:borderw=${st.outlinePx}:bordercolor=black:${shadow}` +
+        `line_spacing=${st.lineSpacingPx}:x='max(${st.marginXPx},(w-text_w)/2)':y=h-${st.marginBottomPx}-text_h:${at}`,
+    );
+  });
+  return { draws, files };
+}
+
+/** Frames of each shot on the finished timeline, with or without fades. */
+interface StillsTimeline {
+  fade: XfadeTimeline | null;
+  frames: number[];
+  startFrames: number[];
+  totalFrames: number;
+}
+
+function stillsTimeline(spec: RenderSpec): StillsTimeline {
+  const fade = spec.transitionSec > 0 ? xfadeTimelineFor(spec) : null;
+  if (fade) return { fade, frames: fade.frames, startFrames: fade.startFrames, totalFrames: fade.totalFrames };
+  const frames = spec.shots.map((s) => Math.max(1, Math.round(s.seconds * spec.fps)));
+  const startFrames: number[] = [];
+  let at = 0;
+  for (const f of frames) {
+    startFrames.push(at);
+    at += f;
+  }
+  return { fade: null, frames, startFrames, totalFrames: at };
+}
+
+/** The zoompan chain of shot i from input `input`, labelled `label`, with `extra` appended. The 0.6.0 chain when extra is "". */
+function shotChain(spec: RenderSpec, tl: StillsTimeline, i: number, input: number, label: string, extra: string): string {
   const { width: w, height: h, fps } = spec;
-  const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
-  for (const img of paths.images) args.push("-i", img);
-  args.push("-i", paths.narration);
-  const chains: string[] = [];
   // Zoompan works on a larger picture so the slow motion stays smooth, then scales down to the output size.
   const bigW = Math.round((w * 1.5) / 2) * 2;
   const bigH = Math.round((h * 1.5) / 2) * 2;
-  const fade = spec.transitionSec > 0 ? xfadeTimelineFor(spec) : null;
-  const last = spec.shots.length - 1;
-  spec.shots.forEach((s, i) => {
-    const frames = fade ? fade.frames[i] : Math.max(1, Math.round(s.seconds * fps));
-    // With fades, every shot but the last runs XFADE_PAD_FRAMES past its fade. xfade drops those frames; without
-    // them an ffmpeg whose first input ends inside the fade ends the whole output there.
-    const length = fade && i < last ? frames + XFADE_PAD_FRAMES : frames;
-    chains.push(
-      `[${i}:v]scale=${bigW}:${bigH}:force_original_aspect_ratio=increase,crop=${bigW}:${bigH},setsar=1,` +
-        `zoompan=${zoompanFor(s.motion, frames)}:d=${length}:s=${w}x${h}:fps=${fps},format=yuv420p[v${i}]`,
+  const frames = tl.frames[i];
+  // With fades, every shot but the last runs XFADE_PAD_FRAMES past its fade. xfade drops those frames; without
+  // them an ffmpeg whose first input ends inside the fade ends the whole output there.
+  const length = tl.fade && i < spec.shots.length - 1 ? frames + XFADE_PAD_FRAMES : frames;
+  return (
+    `[${input}:v]scale=${bigW}:${bigH}:force_original_aspect_ratio=increase,crop=${bigW}:${bigH},setsar=1,` +
+    `zoompan=${zoompanFor(spec.shots[i].motion, frames)}:d=${length}:s=${w}x${h}:fps=${fps},format=yuv420p${extra}[${label}]`
+  );
+}
+
+/**
+ * Joins labelled streams into `out`: hard cuts with concat, or a chain of xfades. `streams[k].shot` is the global
+ * shot index whose start the stream is placed at (its transition is fixed by that position); `fromFrame` is where
+ * this graph starts on the whole timeline.
+ */
+function joinStreams(spec: RenderSpec, tl: StillsTimeline, streams: Array<{ label: string; shot: number }>, fromFrame: number, out: string): string[] {
+  if (!tl.fade) return [`${streams.map((s) => `[${s.label}]`).join("")}concat=n=${streams.length}:v=1:a=0[${out}]`];
+  if (streams.length === 1) return [`[${streams[0].label}]null[${out}]`];
+  const fps = spec.fps;
+  const steps: string[] = [];
+  for (let k = 1; k < streams.length; k++) {
+    const from = k === 1 ? `[${streams[0].label}]` : `[x${streams[k].shot - 1}]`;
+    const to = k === streams.length - 1 ? `[${out}]` : `[x${streams[k].shot}]`;
+    // offset is where the shot starts on this graph's timeline, which is also the length so far of the chain it joins.
+    steps.push(
+      `${from}[${streams[k].label}]xfade=transition=${transitionFor(streams[k].shot)}:duration=${secs(tl.fade.fadeFrames / fps)}:` +
+        `offset=${secs((tl.fade.startFrames[streams[k].shot] - fromFrame) / fps)}${to}`,
     );
-  });
-  const joined = spec.shots.map((_, i) => `[v${i}]`).join("");
-  /** Joins the shot streams into one labelled `out`: hard cuts with concat, or a chain of xfades. */
-  const join = (out: string): string[] => {
-    if (!fade) return [`${joined}concat=n=${spec.shots.length}:v=1:a=0[${out}]`];
-    const steps: string[] = [];
-    for (let i = 1; i <= last; i++) {
-      const from = i === 1 ? "[v0]" : `[x${i - 1}]`;
-      const to = i === last ? `[${out}]` : `[x${i}]`;
-      // offset is where shot i starts on the whole timeline, which is also the length so far of the chain it joins.
-      steps.push(`${from}[v${i}]xfade=transition=${transitionFor(i)}:duration=${secs(fade.fadeFrames / fps)}:offset=${secs(fade.startFrames[i] / fps)}${to}`);
-    }
-    return steps;
-  };
-  const captionFiles: Array<{ file: string; text: string }> = [];
-  const canBurn = caps.drawtext && Boolean(paths.font) && spec.captions.length > 0;
-  let captionNote: string | null = null;
-  if (spec.captions.length > 0 && !canBurn) {
-    captionNote = !caps.drawtext ? "this ffmpeg build has no drawtext filter" : "no font in Assets";
   }
+  return steps;
+}
+
+/** Whether captions can be burned, and the note when they cannot. */
+function captionPlan(spec: RenderSpec, font: string | undefined, caps: { drawtext: boolean }): { canBurn: boolean; note: string | null } {
+  const canBurn = caps.drawtext && Boolean(font) && spec.captions.length > 0;
+  if (spec.captions.length === 0 || canBurn) return { canBurn, note: null };
+  return { canBurn, note: !caps.drawtext ? "this ffmpeg build has no drawtext filter" : "no font in Assets" };
+}
+
+/** The audio inputs after the narration, as ffmpeg arguments. Empty for a spec without `audio`. */
+function audioFileArgs(spec: RenderSpec, paths: Pick<RenderPaths, "bed" | "sfx">): string[] {
+  if (!spec.audio) return [];
+  const out: string[] = [];
+  if (spec.audio.bed) {
+    if (!paths.bed) throw new NonRetryableError("render-video: the mix has a bed, but no bed file was given");
+    out.push("-i", paths.bed);
+  }
+  const sfx = audioSfxAssets(spec);
+  if ((paths.sfx ?? []).length !== sfx.length) throw new NonRetryableError("render-video: there must be one accent file per accent asset");
+  for (const f of paths.sfx ?? []) out.push("-i", f);
+  return out;
+}
+
+/** Builds the ffmpeg arguments for the final render. Pure. Plain H.264/AAC mp4 with faststart so qc-video can read it. */
+export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { drawtext: boolean }): RenderArgs {
+  if (paths.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image file per shot");
+  const { fps } = spec;
+  const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
+  for (const img of paths.images) args.push("-i", img);
+  args.push("-i", paths.narration);
+  args.push(...audioFileArgs(spec, paths));
+  const tl = stillsTimeline(spec);
+  const chains: string[] = spec.shots.map((_, i) => shotChain(spec, tl, i, i, `v${i}`, ""));
+  const streams = spec.shots.map((_, i) => ({ label: `v${i}`, shot: i }));
+  const { canBurn, note: captionNote } = captionPlan(spec, paths.font, caps);
+  let captionFiles: Array<{ file: string; text: string }> = [];
   if (canBurn) {
-    chains.push(...join("vc"));
-    const size = Math.round(Math.min(w, h) / 18);
-    const maxChars = Math.max(12, Math.floor(w / (size * 0.55)));
-    const draws = spec.captions.map((c, i) => {
-      const file = `cap${i}.txt`;
-      captionFiles.push({ file, text: wrapText(c.text, maxChars) });
-      return (
-        `drawtext=fontfile=${paths.font}:textfile=${file}:fontcolor=white:fontsize=${size}:borderw=3:bordercolor=black:` +
-        `line_spacing=${Math.round(size / 4)}:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,${round2(c.start)},${round2(c.end)})'`
-      );
-    });
-    chains.push(`[vc]${draws.join(",")}[v]`);
+    chains.push(...joinStreams(spec, tl, streams, 0, "vc"));
+    const c = captionDraws(spec, paths.font as string, 0, Infinity);
+    captionFiles = c.files;
+    chains.push(`[vc]${c.draws.join(",")}[v]`);
   } else {
-    chains.push(...join("v"));
+    chains.push(...joinStreams(spec, tl, streams, 0, "v"));
   }
-  chains.push(narrationFilter(spec, spec.shots.length));
+  chains.push(audioMixFilter(spec, audioInputsFrom(spec, spec.shots.length)));
   args.push(
     "-filter_complex", chains.join(";"),
     "-map", "[v]", "-map", "[a]",
@@ -1437,6 +1842,116 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
     paths.output,
   );
   return { args, captionsBurned: canBurn, captionNote, captionFiles };
+}
+
+/**
+ * One piece of a long stills render: shots first..last, on the timeline from startFrame for `frames` frames. With
+ * fades, a piece after the first opens with the tail of the shot before it (the part that fades into `first`), and a
+ * piece before the last stops where its last shot starts fading out. Both halves are cut from the same zoompan
+ * output a single graph would make, so the joined picture is the single graph's, frame for frame.
+ */
+export interface StillsChunk {
+  first: number;
+  last: number;
+  startFrame: number;
+  frames: number;
+  /** Opens with the tail of shot first - 1. */
+  head: boolean;
+  /** Its last shot is cut where it starts fading into the next piece. */
+  trimLast: boolean;
+}
+
+/**
+ * How a stills job is split into pieces no bigger than `limits`, or null when it fits one graph (which keeps every
+ * job 0.6.0 accepted on exactly the 0.6.0 arguments). Pieces are near-equal in shots; one with too many captions is
+ * cut shorter. Throws NonRetryableError when a single shot carries more captions than one graph may draw.
+ */
+export function planStillsChunks(spec: RenderSpec, limits: { shots: number; captions: number } = STILLS_GRAPH_LIMITS): StillsChunk[] | null {
+  const n = spec.shots.length;
+  if (n <= limits.shots && spec.captions.length <= limits.captions) return null;
+  const tl = stillsTimeline(spec);
+  const endOf = (last: number) => (last < n - 1 ? tl.startFrames[last + 1] : tl.totalFrames);
+  const captionsIn = (first: number, last: number) => {
+    const from = tl.startFrames[first] / spec.fps;
+    const to = endOf(last) / spec.fps;
+    return spec.captions.filter((c) => c.start < to && c.end > from).length;
+  };
+  // Room for the tail of the shot before: a piece opened by one has one input more than its own shots.
+  const per = Math.max(1, (tl.fade ? limits.shots - 1 : limits.shots));
+  const target = Math.ceil(n / Math.ceil(n / per));
+  const chunks: StillsChunk[] = [];
+  for (let first = 0; first < n; ) {
+    let last = Math.min(n - 1, first + target - 1);
+    while (last > first && captionsIn(first, last) > limits.captions) last--;
+    if (captionsIn(first, last) > limits.captions) {
+      throw new NonRetryableError(`render-video: shot ${first + 1} carries more than ${limits.captions} captions`);
+    }
+    chunks.push({ first, last, startFrame: tl.startFrames[first], frames: endOf(last) - tl.startFrames[first], head: false, trimLast: false });
+    first = last + 1;
+  }
+  if (tl.fade) {
+    chunks.forEach((c, k) => {
+      c.head = k > 0;
+      c.trimLast = k < chunks.length - 1;
+    });
+  }
+  return chunks;
+}
+
+/** File name of piece k in the work dir. */
+export const stillsChunkFile = (k: number) => `chunk-${String(k).padStart(3, "0")}.mp4`;
+
+/**
+ * ffmpeg arguments for one piece: video only, exactly `chunk.frames` frames, same encoder settings as the single
+ * graph, captions shifted to the piece's own clock. Pure.
+ */
+export function buildStillsChunkArgs(spec: RenderSpec, chunk: StillsChunk, paths: Pick<RenderPaths, "images" | "font">, caps: { drawtext: boolean }, output: string): RenderArgs {
+  if (paths.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image file per shot");
+  const tl = stillsTimeline(spec);
+  const fade = tl.fade;
+  const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
+  const chains: string[] = [];
+  const streams: Array<{ label: string; shot: number }> = [];
+  let input = 0;
+  if (chunk.head && fade) {
+    const p = chunk.first - 1;
+    args.push("-i", paths.images[p]);
+    // The frames of shot p from where it starts fading into `first`: the fade and the spare frames after it.
+    chains.push(shotChain(spec, tl, p, input++, "h", `,trim=start_frame=${tl.frames[p] - fade.fadeFrames},setpts=PTS-STARTPTS`));
+    streams.push({ label: "h", shot: p });
+  }
+  for (let i = chunk.first; i <= chunk.last; i++) {
+    args.push("-i", paths.images[i]);
+    const cut = chunk.trimLast && fade && i === chunk.last ? `,trim=end_frame=${tl.frames[i] - fade.fadeFrames}` : "";
+    chains.push(shotChain(spec, tl, i, input++, `v${i}`, cut));
+    streams.push({ label: `v${i}`, shot: i });
+  }
+  const { canBurn, note } = captionPlan(spec, paths.font, caps);
+  const fromSec = chunk.startFrame / spec.fps;
+  const toSec = (chunk.startFrame + chunk.frames) / spec.fps;
+  let captionFiles: Array<{ file: string; text: string }> = [];
+  const c = canBurn ? captionDraws(spec, paths.font as string, fromSec, toSec) : { draws: [], files: [] };
+  if (c.draws.length > 0) {
+    chains.push(...joinStreams(spec, tl, streams, chunk.startFrame, "vc"));
+    captionFiles = c.files;
+    chains.push(`[vc]${c.draws.join(",")}[v]`);
+  } else {
+    chains.push(...joinStreams(spec, tl, streams, chunk.startFrame, "v"));
+  }
+  args.push(
+    "-filter_complex", chains.join(";"),
+    "-map", "[v]", "-an",
+    "-frames:v", String(chunk.frames),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-threads", "2", "-pix_fmt", "yuv420p", "-r", String(spec.fps),
+    "-progress", "pipe:1", "-nostats",
+    output,
+  );
+  return { args, captionsBurned: canBurn, captionNote: note, captionFiles };
+}
+
+/** The concat demuxer list that joins the pieces, in order. */
+export function stillsConcatList(count: number): string {
+  return Array.from({ length: count }, (_, k) => `file '${stillsChunkFile(k)}'`).join("\n") + "\n";
 }
 
 /** Largest "Peak level dB" from ffmpeg astats output. Null when absent or -inf. */
@@ -1627,6 +2142,8 @@ export function buildRemotionProps(spec: RenderSpec, files: RemotionFiles): Temp
     narration: null,
     font: files.font,
     timeline,
+    // Only when the portal sent one: without it the template keeps its own caption look.
+    ...(spec.captionStyle ? { captionStyle: { ...spec.captionStyle } } : {}),
   };
 }
 
@@ -1671,12 +2188,38 @@ export function remotionRenderArgs(o: RemotionRenderOptions): string[] {
   ];
 }
 
-/** ffmpeg arguments that add the narration to Remotion's muted video, with the same audio chain as the stills path. */
-export function buildMuxArgs(spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo">, video: string, narration: string, output: string): string[] {
+/** Extra inputs of a mux: the mix's files, and whether `video` is a concat list of stills pieces. */
+export interface MuxOptions {
+  /** `video` is a concat demuxer list (a long stills render), not a video file. */
+  concat?: boolean;
+  bed?: string;
+  sfx?: string[];
+}
+
+/**
+ * ffmpeg arguments that add the soundtrack to a finished picture (Remotion's muted video, or the joined pieces of a
+ * long stills render), with the same audio chain as the stills path. Without `audio` and options: 0.6.0's arguments.
+ */
+export function buildMuxArgs(
+  spec: Pick<RenderSpec, "targetLufs" | "durationSec" | "narrationTempo" | "audio">,
+  video: string,
+  narration: string,
+  output: string,
+  opts: MuxOptions = {},
+): string[] {
+  const extra: string[] = [];
+  if (spec.audio?.bed) {
+    if (!opts.bed) throw new NonRetryableError("render-video: the mix has a bed, but no bed file was given");
+    extra.push("-i", opts.bed);
+  }
+  if ((opts.sfx ?? []).length !== audioSfxAssets(spec).length) throw new NonRetryableError("render-video: there must be one accent file per accent asset");
+  for (const f of opts.sfx ?? []) extra.push("-i", f);
   return [
     "-y", "-hide_banner", "-loglevel", "error",
+    ...(opts.concat ? ["-f", "concat", "-safe", "0"] : []),
     "-i", video, "-i", narration,
-    "-filter_complex", narrationFilter(spec, 1),
+    ...extra,
+    "-filter_complex", audioMixFilter(spec, audioInputsFrom(spec, 1)),
     "-map", "0:v:0", "-map", "[a]",
     "-t", String(spec.durationSec),
     "-c:v", "copy",
@@ -1791,9 +2334,9 @@ async function renderRemotionVideo(
     ctx.signal,
   );
   if (!((await stat(muted).catch(() => null))?.size ?? 0)) throw new Error("Remotion finished but wrote no video");
-  ctx.progress(0.8, "Adding the narration");
+  ctx.progress(0.8, spec.audio ? "Mixing the soundtrack" : "Adding the narration");
   await runFfmpeg(
-    buildMuxArgs(spec, muted, named.get(spec.narrationAssetId) as string, "video.part.mp4"),
+    buildMuxArgs(spec, muted, named.get(spec.narrationAssetId) as string, "video.part.mp4", audioFilesOf(spec, named)),
     spec.durationSec,
     (f) => ctx.progress(0.8 + f * 0.07, "Adding the narration"),
     ctx.signal,
@@ -1804,6 +2347,65 @@ async function renderRemotionVideo(
     captionsBurned: spec.captions.length > 0,
     captionNote: spec.captions.length > 0 && !spec.fontAssetId ? "no font in Assets; captions use the renderer's system font" : null,
   };
+}
+
+/** The mix's files (bed, accents) by their names in the work dir. Empty for a spec without `audio`. */
+function audioFilesOf(spec: RenderSpec, named: ReadonlyMap<string, string>): MuxOptions {
+  if (!spec.audio) return {};
+  return {
+    ...(spec.audio.bed ? { bed: named.get(spec.audio.bed.assetId) as string } : {}),
+    sfx: audioSfxAssets(spec).map((id) => named.get(id) as string),
+  };
+}
+
+/** Every asset a render downloads: shots, narration, font, and the mix's bed and accents. */
+export function renderInputsOf(spec: RenderSpec): string[] {
+  return Array.from(
+    new Set([
+      ...spec.shots.map((s) => s.assetId),
+      spec.narrationAssetId,
+      ...(spec.fontAssetId ? [spec.fontAssetId] : []),
+      ...(spec.audio?.bed ? [spec.audio.bed.assetId] : []),
+      ...audioSfxAssets(spec),
+    ]),
+  );
+}
+
+/**
+ * A long stills render: each piece rendered on its own (video only), then joined by the concat demuxer without
+ * re-encoding while the soundtrack is mixed in. The pieces are deleted once the video exists.
+ */
+async function renderStillsInChunks(
+  ctx: JobContext,
+  spec: RenderSpec,
+  chunks: StillsChunk[],
+  named: ReadonlyMap<string, string>,
+  canDrawText: boolean,
+): Promise<{ captionsBurned: boolean; captionNote: string | null }> {
+  const paths = { images: spec.shots.map((s) => named.get(s.assetId) as string), font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined };
+  let captions = { captionsBurned: false, captionNote: null as string | null };
+  const total = chunks.reduce((n, c) => n + c.frames, 0);
+  let doneFrames = 0;
+  for (const [k, chunk] of chunks.entries()) {
+    const plan = buildStillsChunkArgs(spec, chunk, paths, { drawtext: canDrawText }, stillsChunkFile(k));
+    for (const f of plan.captionFiles) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
+    const label = `Rendering part ${k + 1} of ${chunks.length}`;
+    ctx.progress(0.15 + (doneFrames / total) * 0.65, label);
+    await runFfmpeg(plan.args, chunk.frames / spec.fps, (f) => ctx.progress(0.15 + ((doneFrames + f * chunk.frames) / total) * 0.65, label), ctx.signal, ctx.workDir);
+    doneFrames += chunk.frames;
+    captions = { captionsBurned: plan.captionsBurned, captionNote: plan.captionNote };
+  }
+  await writeFile(path.join(ctx.workDir, "chunks.txt"), stillsConcatList(chunks.length), "utf8");
+  ctx.progress(0.8, spec.audio ? "Joining the parts and mixing the soundtrack" : "Joining the parts and adding the narration");
+  await runFfmpeg(
+    buildMuxArgs(spec, "chunks.txt", named.get(spec.narrationAssetId) as string, "video.part.mp4", { concat: true, ...audioFilesOf(spec, named) }),
+    spec.durationSec,
+    (f) => ctx.progress(0.8 + f * 0.07, "Joining the parts"),
+    ctx.signal,
+    ctx.workDir,
+  );
+  for (const [k] of chunks.entries()) await rm(path.join(ctx.workDir, stillsChunkFile(k)), { force: true });
+  return captions;
 }
 
 async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unknown>> {
@@ -1817,11 +2419,21 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
   const spec = parseRenderSpec(ctx.job.payload);
   // A template without a composition is refused here too, before the downloads.
   const composition = spec.engine === "remotion-2d" ? remotionCompositionFor(spec) : null;
+  // The portal sends `audio` only to a fleet that reports audio-mix; a machine whose ffmpeg changed since says so
+  // here, before the downloads, instead of failing halfway through the mix.
+  const missing = spec.audio ? missingAudioMixFilters() : [];
+  if (missing.length > 0) {
+    throw new NonRetryableError(
+      `This job mixes music and ambience, but this worker's ffmpeg has no ${missing.join(", ")} filter. Nothing was rendered. ` +
+        `Install a full ffmpeg build on the worker, then press Retry.`,
+    );
+  }
   const inDir = path.join(ctx.workDir, "in");
   await mkdir(inDir, { recursive: true });
   const canDrawText = ffmpegHasFilter("drawtext");
 
-  const wanted = Array.from(new Set([...spec.shots.map((s) => s.assetId), spec.narrationAssetId, ...(spec.fontAssetId ? [spec.fontAssetId] : [])]));
+  const wanted = renderInputsOf(spec);
+  const mixAudio = new Set([...(spec.audio?.bed ? [spec.audio.bed.assetId] : []), ...audioSfxAssets(spec)]);
   const local = new Map<string, string>();
   let done = 0;
   for (const id of wanted) {
@@ -1845,6 +2457,7 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     const wantImage = spec.shots.some((s) => s.assetId === id);
     if (wantImage && info.kind !== "image") throw new NonRetryableError(`Asset ${id} is used as a picture but is ${info.mime}`);
     if (id === spec.narrationAssetId && info.kind !== "audio") throw new NonRetryableError(`The narration asset is ${info.mime}, not audio`);
+    if (mixAudio.has(id) && info.kind !== "audio") throw new NonRetryableError(`Asset ${id} is used as ${id === spec.audio?.bed?.assetId ? "the music bed" : "a sound effect"} but is ${info.mime}`);
     const target = path.join(inDir, `${id}.${info.ext}`);
     if (src !== target) await rename(src, target);
     named.set(id, path.join("in", `${id}.${info.ext}`));
@@ -1869,8 +2482,11 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
   const narrationClipped = peakDb !== null ? peakDb >= -0.1 : null;
   const started = Date.now();
   let captions: { captionsBurned: boolean; captionNote: string | null };
+  const chunks = composition ? null : planStillsChunks(spec);
   if (composition) {
     captions = await renderRemotionVideo(ctx, spec, composition, named);
+  } else if (chunks) {
+    captions = await renderStillsInChunks(ctx, spec, chunks, named, canDrawText);
   } else {
     const plan = buildRenderArgs(
       spec,
@@ -1879,6 +2495,7 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
         narration: narrationRel,
         output: "video.part.mp4",
         font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined,
+        ...audioFilesOf(spec, named),
       },
       { drawtext: canDrawText },
     );
@@ -1913,6 +2530,12 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     sceneStarts: sceneStartsOf(spec),
     captionsBurned: captions.captionsBurned,
     captionNote: captions.captionNote,
+    // 0.7.0: what the soundtrack holds, so the run page can say "music: yes" from the render, not from the plan.
+    ...(spec.audio
+      ? { audioMix: { bed: spec.audio.bed ? { assetId: spec.audio.bed.assetId, cover: spec.audio.bed.cover } : null, ambient: spec.audio.ambient !== null, sfx: spec.audio.sfx.length, targetLufs: spec.audio.master.targetLufs } }
+      : {}),
+    ...(spec.captionStyle ? { captionStyle: true } : {}),
+    ...(chunks ? { stillsParts: chunks.length } : {}),
     renderSeconds: round2(renderSeconds),
     bytes: up.bytes,
     sha256: up.sha256,

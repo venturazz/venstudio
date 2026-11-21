@@ -1,0 +1,660 @@
+{
+ "note": "Captured from worker 0.6.0 (git 266c911) on fixtures/render/explainer-payload.json without captionStyle and audio.",
+ "payload": {
+  "format": "short",
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "engine": "remotion-2d",
+  "transitionSec": 0.5,
+  "shots": [
+   {
+    "shotRef": "shot-01",
+    "assetId": "f1f70000-0000-4000-8000-000000000001",
+    "seconds": 4.667,
+    "motion": "zoom-in"
+   },
+   {
+    "shotRef": "shot-02",
+    "assetId": "f1f70000-0000-4000-8000-000000000002",
+    "seconds": 5.333,
+    "motion": "pan-left"
+   },
+   {
+    "shotRef": "shot-03",
+    "assetId": "f1f70000-0000-4000-8000-000000000003",
+    "seconds": 6,
+    "motion": "zoom-out"
+   },
+   {
+    "shotRef": "shot-04",
+    "assetId": "f1f70000-0000-4000-8000-000000000004",
+    "seconds": 5.333,
+    "motion": "pan-right"
+   },
+   {
+    "shotRef": "shot-05",
+    "assetId": "f1f70000-0000-4000-8000-000000000005",
+    "seconds": 4.667,
+    "motion": "zoom-in"
+   }
+  ],
+  "narrationAssetId": "f1f70000-0000-4000-8000-000000000006",
+  "narrationSec": 24,
+  "durationSec": 24,
+  "captions": [
+   {
+    "start": 0,
+    "end": 3.378,
+    "text": "Iron is everywhere."
+   },
+   {
+    "start": 3.378,
+    "end": 9.244,
+    "text": "The furnace reaches 1400 degrees."
+   },
+   {
+    "start": 9.244,
+    "end": 14.4,
+    "text": "The hammer draws the bar out."
+   },
+   {
+    "start": 14.4,
+    "end": 19.022,
+    "text": "Quenching locks the grain."
+   },
+   {
+    "start": 19.022,
+    "end": 24,
+    "text": "That is how a blade is born."
+   }
+  ],
+  "targetLufs": -14,
+  "fontAssetId": "f1f70000-0000-4000-8000-000000000007",
+  "inputs": [
+   "f1f70000-0000-4000-8000-000000000001",
+   "f1f70000-0000-4000-8000-000000000002",
+   "f1f70000-0000-4000-8000-000000000003",
+   "f1f70000-0000-4000-8000-000000000004",
+   "f1f70000-0000-4000-8000-000000000005",
+   "f1f70000-0000-4000-8000-000000000006",
+   "f1f70000-0000-4000-8000-000000000007",
+   "f1f70000-0000-4000-8000-000000000008"
+  ],
+  "scenePlan": {
+   "version": 1,
+   "engine": "remotion-2d",
+   "template": "explainer-flat-vector",
+   "family": "explainer",
+   "width": 1080,
+   "height": 1920,
+   "fps": 30,
+   "transitionSec": 0.5,
+   "scenes": [
+    {
+     "shotRef": "shot-01",
+     "seconds": 4,
+     "beatRole": "hook",
+     "elements": [
+      {
+       "kind": "heading",
+       "text": "Iron is everywhere"
+      },
+      {
+       "kind": "plate"
+      }
+     ],
+     "tokens": [
+      "pop"
+     ],
+     "camera": true,
+     "layers": [
+      {
+       "id": "plate",
+       "frames": 1,
+       "fps": 1
+      },
+      {
+       "id": "scene",
+       "frames": 120,
+       "fps": 30
+      }
+     ]
+    },
+    {
+     "shotRef": "shot-02",
+     "seconds": 5,
+     "beatRole": "setup",
+     "elements": [
+      {
+       "kind": "counter",
+       "text": "degrees",
+       "value": 1400
+      },
+      {
+       "kind": "plate"
+      }
+     ],
+     "tokens": [
+      "counter"
+     ],
+     "camera": false,
+     "layers": [
+      {
+       "id": "plate",
+       "frames": 1,
+       "fps": 1
+      },
+      {
+       "id": "scene",
+       "frames": 150,
+       "fps": 30
+      }
+     ]
+    },
+    {
+     "shotRef": "shot-03",
+     "seconds": 6,
+     "beatRole": "body",
+     "elements": [
+      {
+       "kind": "bar",
+       "text": "draw ratio",
+       "series": [
+        0.2,
+        0.45,
+        0.7,
+        0.95
+       ]
+      },
+      {
+       "kind": "plate"
+      }
+     ],
+     "tokens": [
+      "draw",
+      "bar"
+     ],
+     "camera": true,
+     "layers": [
+      {
+       "id": "plate",
+       "frames": 1,
+       "fps": 1
+      },
+      {
+       "id": "scene",
+       "frames": 180,
+       "fps": 30
+      }
+     ]
+    },
+    {
+     "shotRef": "shot-04",
+     "seconds": 5,
+     "beatRole": "body",
+     "elements": [
+      {
+       "kind": "callout",
+       "text": "the grain locks"
+      },
+      {
+       "kind": "plate"
+      }
+     ],
+     "tokens": [
+      "pop"
+     ],
+     "camera": false,
+     "layers": [
+      {
+       "id": "plate",
+       "frames": 1,
+       "fps": 1
+      },
+      {
+       "id": "scene",
+       "frames": 150,
+       "fps": 30
+      }
+     ]
+    },
+    {
+     "shotRef": "shot-05",
+     "seconds": 4,
+     "beatRole": "outro",
+     "elements": [
+      {
+       "kind": "heading",
+       "text": "That is how a blade is born"
+      },
+      {
+       "kind": "plate"
+      }
+     ],
+     "tokens": [
+      "dim"
+     ],
+     "camera": true,
+     "layers": [
+      {
+       "id": "plate",
+       "frames": 1,
+       "fps": 1
+      },
+      {
+       "id": "scene",
+       "frames": 120,
+       "fps": 30
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "stillsWithFont": {
+  "args": [
+   "-y",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-i",
+   "in/shot-0.png",
+   "-i",
+   "in/shot-1.png",
+   "-i",
+   "in/shot-2.png",
+   "-i",
+   "in/shot-3.png",
+   "-i",
+   "in/shot-4.png",
+   "-i",
+   "in/n.wav",
+   "-filter_complex",
+   "[0:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1+0.12*on/140':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=143:s=1080x1920:fps=30,format=yuv420p[v0];[1:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z=1.12:x='(iw-iw/zoom)*(1-on/160)':y='ih/2-(ih/zoom/2)':d=163:s=1080x1920:fps=30,format=yuv420p[v1];[2:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1.12-0.12*on/180':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=183:s=1080x1920:fps=30,format=yuv420p[v2];[3:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z=1.12:x='(iw-iw/zoom)*on/160':y='ih/2-(ih/zoom/2)':d=163:s=1080x1920:fps=30,format=yuv420p[v3];[4:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1+0.12*on/140':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=140:s=1080x1920:fps=30,format=yuv420p[v4];[v0][v1]xfade=transition=fade:duration=0.5:offset=4.166667[x1];[x1][v2]xfade=transition=slideup:duration=0.5:offset=9[x2];[x2][v3]xfade=transition=fade:duration=0.5:offset=14.5[x3];[x3][v4]xfade=transition=wipeleft:duration=0.5:offset=19.333333[vc];[vc]drawtext=fontfile=in/f.ttf:textfile=cap0.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,0,3.38)',drawtext=fontfile=in/f.ttf:textfile=cap1.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,3.38,9.24)',drawtext=fontfile=in/f.ttf:textfile=cap2.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,9.24,14.4)',drawtext=fontfile=in/f.ttf:textfile=cap3.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,14.4,19.02)',drawtext=fontfile=in/f.ttf:textfile=cap4.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,19.02,24)'[v];[5:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=24[a]",
+   "-map",
+   "[v]",
+   "-map",
+   "[a]",
+   "-t",
+   "24",
+   "-c:v",
+   "libx264",
+   "-preset",
+   "veryfast",
+   "-crf",
+   "21",
+   "-threads",
+   "2",
+   "-pix_fmt",
+   "yuv420p",
+   "-r",
+   "30",
+   "-c:a",
+   "aac",
+   "-b:a",
+   "160k",
+   "-ar",
+   "48000",
+   "-movflags",
+   "+faststart",
+   "-progress",
+   "pipe:1",
+   "-nostats",
+   "video.part.mp4"
+  ],
+  "captionsBurned": true,
+  "captionNote": null,
+  "captionFiles": [
+   {
+    "file": "cap0.txt",
+    "text": "Iron is everywhere."
+   },
+   {
+    "file": "cap1.txt",
+    "text": "The furnace reaches 1400\ndegrees."
+   },
+   {
+    "file": "cap2.txt",
+    "text": "The hammer draws the bar out."
+   },
+   {
+    "file": "cap3.txt",
+    "text": "Quenching locks the grain."
+   },
+   {
+    "file": "cap4.txt",
+    "text": "That is how a blade is born."
+   }
+  ]
+ },
+ "stillsNoDrawtext": {
+  "args": [
+   "-y",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-i",
+   "in/shot-0.png",
+   "-i",
+   "in/shot-1.png",
+   "-i",
+   "in/shot-2.png",
+   "-i",
+   "in/shot-3.png",
+   "-i",
+   "in/shot-4.png",
+   "-i",
+   "in/n.wav",
+   "-filter_complex",
+   "[0:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1+0.12*on/140':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=143:s=1080x1920:fps=30,format=yuv420p[v0];[1:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z=1.12:x='(iw-iw/zoom)*(1-on/160)':y='ih/2-(ih/zoom/2)':d=163:s=1080x1920:fps=30,format=yuv420p[v1];[2:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1.12-0.12*on/180':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=183:s=1080x1920:fps=30,format=yuv420p[v2];[3:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z=1.12:x='(iw-iw/zoom)*on/160':y='ih/2-(ih/zoom/2)':d=163:s=1080x1920:fps=30,format=yuv420p[v3];[4:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1+0.12*on/140':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=140:s=1080x1920:fps=30,format=yuv420p[v4];[v0][v1]xfade=transition=fade:duration=0.5:offset=4.166667[x1];[x1][v2]xfade=transition=slideup:duration=0.5:offset=9[x2];[x2][v3]xfade=transition=fade:duration=0.5:offset=14.5[x3];[x3][v4]xfade=transition=wipeleft:duration=0.5:offset=19.333333[v];[5:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=24[a]",
+   "-map",
+   "[v]",
+   "-map",
+   "[a]",
+   "-t",
+   "24",
+   "-c:v",
+   "libx264",
+   "-preset",
+   "veryfast",
+   "-crf",
+   "21",
+   "-threads",
+   "2",
+   "-pix_fmt",
+   "yuv420p",
+   "-r",
+   "30",
+   "-c:a",
+   "aac",
+   "-b:a",
+   "160k",
+   "-ar",
+   "48000",
+   "-movflags",
+   "+faststart",
+   "-progress",
+   "pipe:1",
+   "-nostats",
+   "video.part.mp4"
+  ],
+  "captionsBurned": false,
+  "captionNote": "this ffmpeg build has no drawtext filter",
+  "captionFiles": []
+ },
+ "remotionMux": [
+  "-y",
+  "-hide_banner",
+  "-loglevel",
+  "error",
+  "-i",
+  "remotion.part.mp4",
+  "-i",
+  "in/n.wav",
+  "-filter_complex",
+  "[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=24[a]",
+  "-map",
+  "0:v:0",
+  "-map",
+  "[a]",
+  "-t",
+  "24",
+  "-c:v",
+  "copy",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "160k",
+  "-ar",
+  "48000",
+  "-movflags",
+  "+faststart",
+  "-progress",
+  "pipe:1",
+  "-nostats",
+  "video.part.mp4"
+ ],
+ "remotionProps": {
+  "template": "explainer-flat-vector",
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "transitionSec": 0.5,
+  "durationSec": 24,
+  "shots": [
+   {
+    "shotRef": "shot-01",
+    "seconds": 4.667,
+    "image": "in/shot-0.png"
+   },
+   {
+    "shotRef": "shot-02",
+    "seconds": 5.333,
+    "image": "in/shot-1.png"
+   },
+   {
+    "shotRef": "shot-03",
+    "seconds": 6,
+    "image": "in/shot-2.png"
+   },
+   {
+    "shotRef": "shot-04",
+    "seconds": 5.333,
+    "image": "in/shot-3.png"
+   },
+   {
+    "shotRef": "shot-05",
+    "seconds": 4.667,
+    "image": "in/shot-4.png"
+   }
+  ],
+  "scenes": [
+   {
+    "shotRef": "shot-01",
+    "seconds": 4,
+    "beatRole": "hook",
+    "elements": [
+     {
+      "kind": "heading",
+      "text": "Iron is everywhere"
+     },
+     {
+      "kind": "plate"
+     }
+    ],
+    "tokens": [
+     "pop"
+    ],
+    "camera": true,
+    "layers": [
+     {
+      "id": "plate",
+      "frames": 1,
+      "fps": 1
+     },
+     {
+      "id": "scene",
+      "frames": 120,
+      "fps": 30
+     }
+    ]
+   },
+   {
+    "shotRef": "shot-02",
+    "seconds": 5,
+    "beatRole": "setup",
+    "elements": [
+     {
+      "kind": "counter",
+      "text": "degrees",
+      "value": 1400
+     },
+     {
+      "kind": "plate"
+     }
+    ],
+    "tokens": [
+     "counter"
+    ],
+    "camera": false,
+    "layers": [
+     {
+      "id": "plate",
+      "frames": 1,
+      "fps": 1
+     },
+     {
+      "id": "scene",
+      "frames": 150,
+      "fps": 30
+     }
+    ]
+   },
+   {
+    "shotRef": "shot-03",
+    "seconds": 6,
+    "beatRole": "body",
+    "elements": [
+     {
+      "kind": "bar",
+      "text": "draw ratio",
+      "series": [
+       0.2,
+       0.45,
+       0.7,
+       0.95
+      ]
+     },
+     {
+      "kind": "plate"
+     }
+    ],
+    "tokens": [
+     "draw",
+     "bar"
+    ],
+    "camera": true,
+    "layers": [
+     {
+      "id": "plate",
+      "frames": 1,
+      "fps": 1
+     },
+     {
+      "id": "scene",
+      "frames": 180,
+      "fps": 30
+     }
+    ]
+   },
+   {
+    "shotRef": "shot-04",
+    "seconds": 5,
+    "beatRole": "body",
+    "elements": [
+     {
+      "kind": "callout",
+      "text": "the grain locks"
+     },
+     {
+      "kind": "plate"
+     }
+    ],
+    "tokens": [
+     "pop"
+    ],
+    "camera": false,
+    "layers": [
+     {
+      "id": "plate",
+      "frames": 1,
+      "fps": 1
+     },
+     {
+      "id": "scene",
+      "frames": 150,
+      "fps": 30
+     }
+    ]
+   },
+   {
+    "shotRef": "shot-05",
+    "seconds": 4,
+    "beatRole": "outro",
+    "elements": [
+     {
+      "kind": "heading",
+      "text": "That is how a blade is born"
+     },
+     {
+      "kind": "plate"
+     }
+    ],
+    "tokens": [
+     "dim"
+    ],
+    "camera": true,
+    "layers": [
+     {
+      "id": "plate",
+      "frames": 1,
+      "fps": 1
+     },
+     {
+      "id": "scene",
+      "frames": 120,
+      "fps": 30
+     }
+    ]
+   }
+  ],
+  "captions": [
+   {
+    "start": 0,
+    "end": 3.378,
+    "text": "Iron is everywhere."
+   },
+   {
+    "start": 3.378,
+    "end": 9.244,
+    "text": "The furnace reaches 1400 degrees."
+   },
+   {
+    "start": 9.244,
+    "end": 14.4,
+    "text": "The hammer draws the bar out."
+   },
+   {
+    "start": 14.4,
+    "end": 19.022,
+    "text": "Quenching locks the grain."
+   },
+   {
+    "start": 19.022,
+    "end": 24,
+    "text": "That is how a blade is born."
+   }
+  ],
+  "narration": null,
+  "font": "f.ttf",
+  "timeline": {
+   "fadeFrames": 15,
+   "startFrames": [
+    0,
+    125,
+    270,
+    435,
+    580
+   ],
+   "frames": [
+    140,
+    160,
+    180,
+    160,
+    140
+   ],
+   "totalFrames": 720
+  }
+ }
+}

@@ -9,7 +9,7 @@
 import React, { useEffect, useState } from "react";
 import { AbsoluteFill, Audio, Sequence, continueRender, delayRender, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { DATA_KINDS, DataElement, Particles, Plate, TEXT_KINDS, TextElement, ramp } from "./elements.tsx";
-import { captionAt, layerFrame, timelineFor, transitionFor, type Scene, type TemplateProps, type TransitionName } from "./props.ts";
+import { captionAt, captionLayout, layerFrame, timelineFor, transitionFor, type Scene, type TemplateProps, type TransitionName } from "./props.ts";
 import { FONT_FAMILY, paletteFor, type Palette } from "./theme.ts";
 
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
@@ -157,7 +157,7 @@ function SceneView({ scene, index, image, dur, fadeFrames }: { scene: Scene; ind
   );
 }
 
-function Captions({ captions }: { captions: TemplateProps["captions"] }) {
+function Captions({ captions, style }: { captions: TemplateProps["captions"]; style: TemplateProps["captionStyle"] }) {
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
   const u = Math.min(width, height) / 100;
@@ -165,22 +165,28 @@ function Captions({ captions }: { captions: TemplateProps["captions"] }) {
   if (!c) return null;
   const fadeIn = interpolate(frame / fps, [c.start, c.start + 0.2], [0, 1], clamp);
   const fadeOut = interpolate(frame / fps, [c.end - 0.15, c.end], [1, 0], clamp);
-  const portrait = height >= width;
+  // With a captionStyle the numbers are the portal's (measured on the reference, scaled to this frame); without one,
+  // the dark card this template always had.
+  const box = captionLayout(style, width, height);
   return (
-    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: height * (portrait ? 0.07 : 0.06) }}>
+    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: box.paddingBottom }}>
       <div
         style={{
-          maxWidth: width * 0.86,
-          background: "rgba(14, 17, 28, 0.8)",
+          maxWidth: box.maxWidth,
           color: "#FFFFFF",
           fontFamily: FONT_FAMILY,
           fontWeight: 700,
-          fontSize: u * (portrait ? 4.2 : 3.6),
-          lineHeight: 1.25,
+          fontSize: box.fontSize,
+          lineHeight: box.lineHeight,
           textAlign: "center",
-          padding: `${u * 1.4}px ${u * 2.6}px`,
-          borderRadius: u * 2,
           opacity: Math.min(fadeIn, fadeOut),
+          ...(box.boxed
+            ? { background: "rgba(14, 17, 28, 0.8)", padding: `${u * 1.4}px ${u * 2.6}px`, borderRadius: u * 2 }
+            : {
+                WebkitTextStroke: `${box.strokeWidth}px #000000`,
+                paintOrder: "stroke fill",
+                ...(box.textShadow ? { textShadow: box.textShadow } : {}),
+              }),
         }}
       >
         {c.text}
@@ -224,7 +230,7 @@ export const FlatVectorExplainer: React.FC<TemplateProps> = (props) => {
           </Sequence>
         );
       })}
-      <Captions captions={props.captions} />
+      <Captions captions={props.captions} style={props.captionStyle} />
       {props.narration ? <Audio src={staticFile(props.narration)} /> : null}
     </AbsoluteFill>
   );

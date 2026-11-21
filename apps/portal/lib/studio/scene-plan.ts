@@ -11,6 +11,7 @@
  */
 import { ENGINES, STYLE_BY_ID, VIDEO_FORMATS, assetModelOf, frameOf, type AssetModel, type Family, type Format, type Frame, type Style } from "./catalog.ts";
 import { MAX_ELEMENTS, type ElementKind, type Shot, type ShotElement } from "./director.ts";
+import { RENDER_LIMITS } from "./render-limits.ts";
 export type { ElementKind, ShotElement };
 import type { BeatRole } from "./templates.ts";
 import {
@@ -27,9 +28,10 @@ import {
 /**
  * The most scenes a plan holds. Derived, not guessed: the longest video the catalogue allows is 1200 s
  * and the fastest shot a style allows is 2 s, so a legitimate plan can reach 600. An 80-scene cap made
- * every long-format explainer impossible to plan and failed it as if the storyboard were wrong.
+ * every long-format explainer impossible to plan and failed it as if the storyboard were wrong. The same
+ * number the worker takes (render-limits.ts), so a plan that passes here also renders.
  */
-export const MAX_SCENES = 600;
+export const MAX_SCENES = RENDER_LIMITS.maxShots;
 export const MAX_ELEMENTS_PER_SCENE = MAX_ELEMENTS;
 export const MAX_ELEMENT_CHARS = 140;
 export const MAX_ISSUES_REPORTED = 8;

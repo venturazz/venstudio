@@ -11,6 +11,7 @@ import type { ProductionStage, RunStage } from "./engine.ts";
 import type { ReviewKind } from "./review.ts";
 import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
 import { bareProviderName, isShotNeed, type ShotNeed } from "./providers.ts";
+import { RENDER_LIMITS } from "./render-limits.ts";
 
 /** Hermes image attempts per shot before the CC0 library (each attempt already re-asks Hermes up to 2 times). */
 export const HERMES_IMAGE_ATTEMPTS = 2;
@@ -27,7 +28,8 @@ export const ORDER_STUCK_MINUTES = Math.ceil(ORDER_WORST_CASE_SEC / 60) + 6;
 export const PRODUCTION_STUCK_MINUTES = Math.ceil((9 * HERMES_ASK_WORST_SEC) / 60) + 6;
 /** Most captions the worker accepts is 300; lines are cut at this many characters. */
 export const CAPTION_LINE_CHARS = 90;
-export const MAX_CAPTION_LINES = 300;
+/** As many caption lines as one render takes (render-limits.ts): a 20-minute script needs more than 300. */
+export const MAX_CAPTION_LINES = RENDER_LIMITS.maxCaptions;
 
 export interface OrderSpec {
   prompt: string;
