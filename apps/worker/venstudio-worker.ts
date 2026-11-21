@@ -35,6 +35,7 @@ import type {
   HeartbeatResponse,
   WorkerMode,
 } from "../../packages/protocol/src/index.ts";
+import type { TemplateProps } from "../render-remotion/src/props.ts";
 
 export const VERSION = "0.5.0";
 
@@ -234,13 +235,17 @@ function hasCommand(cmd: string, args: string[] = ["-version"]): boolean {
   }
 }
 
-export async function detectCapabilities(): Promise<Capability[]> {
+/** What this machine can run. `home` locates the Remotion project (default: the worker home). */
+export async function detectCapabilities(home?: string): Promise<Capability[]> {
   const caps: Capability[] = ["echo"];
   if (hasCommand(process.env.FFMPEG_PATH ?? "ffmpeg")) {
     caps.push("ffmpeg");
     // The portal starts asking for cross-fades the moment any worker reports this, so it is reported only where
     // render-video can build them: this ffmpeg has the filter, and parseRenderSpec accepts the faded timeline.
     if (ffmpegHasFilter("xfade")) caps.push("xfade");
+    // remotion-2d also needs ffmpeg, which adds the narration. Reported only when the project is installed here and
+    // its probe passes (a still of every template rendered once at install time, through this machine's browser).
+    if (!(await remotionUnavailableReason(remotionDir(home)))) caps.push("remotion-2d");
   }
   const kokoro = process.env.KOKORO_URL;
   if (kokoro) {
@@ -1331,6 +1336,20 @@ export function xfadeTimelineFor(spec: Pick<RenderSpec, "shots" | "transitionSec
   return t;
 }
 
+/**
+ * The narration as every engine delivers it: loudness-normalised to the template's target, 48 kHz stereo, padded
+ * with silence to the video's length. `input` is the narration's ffmpeg input index.
+ */
+export function narrationFilter(spec: Pick<RenderSpec, "targetLufs" | "durationSec">, input: number): string {
+  return `[${input}:a]loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`;
+}
+
+/** Where each shot starts in the finished video, in seconds. */
+export function sceneStartsOf(spec: Pick<RenderSpec, "shots" | "transitionSec">): number[] {
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  return plan.ok ? plan.starts : [];
+}
+
 /** Builds the ffmpeg arguments for the final render. Pure. Plain H.264/AAC mp4 with faststart so qc-video can read it. */
 export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { drawtext: boolean }): RenderArgs {
   if (paths.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image file per shot");
@@ -1389,10 +1408,7 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
   } else {
     chains.push(...join("v"));
   }
-  const n = spec.shots.length;
-  chains.push(
-    `[${n}:a]loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`,
-  );
+  chains.push(narrationFilter(spec, spec.shots.length));
   args.push(
     "-filter_complex", chains.join(";"),
     "-map", "[v]", "-map", "[a]",
@@ -1431,12 +1447,341 @@ export function narrationLengthIssue(realSec: number | null, plannedSec: number)
   return `The narration is ${round2(realSec)} s but the shots were planned for ${round2(plannedSec)} s. Make the narration again so the shots match it.`;
 }
 
+// ---------------------------------------------------------------------------
+// remotion-2d: the Remotion project from apps/render-remotion, installed next to the worker by
+// `install.sh --with-remotion` (see docs/remotion-worker.md).
+
 /**
- * Why this machine cannot run the Remotion engine, or null when it can.
- * This worker version has no Remotion path yet, so the answer is always a reason.
+ * Scene-plan template (the style id) to Remotion composition id. One composition per template; a template without
+ * one is refused by name rather than drawn with another template's look.
  */
-async function remotionUnavailable(_ctx: JobContext): Promise<string | null> {
-  return "this worker version has no Remotion render path";
+export const REMOTION_COMPOSITIONS: Readonly<Record<string, string>> = {
+  "explainer-flat-vector": "flat-vector-explainer",
+};
+
+/** Where the Remotion project lives: $VENSTUDIO_REMOTION_DIR, else <home>/remotion (on Muse, under /home/hatch). */
+export function remotionDir(home?: string): string {
+  const fromEnv = process.env.VENSTUDIO_REMOTION_DIR;
+  if (fromEnv) return path.resolve(fromEnv);
+  return path.join(home ?? defaultHome(), "remotion");
+}
+
+const remotionProbes = new Map<string, Promise<string | null>>();
+
+/** Forgets cached probe results. For tests, and after an install in the same process. */
+export function clearRemotionProbeCache() {
+  remotionProbes.clear();
+}
+
+/**
+ * Why the Remotion renderer cannot run from `dir`, or null when it can. Runs the project's quick probe (installed
+ * packages, versions, and a passed full probe for these exact templates) once per process and directory.
+ */
+export function remotionUnavailableReason(dir: string): Promise<string | null> {
+  let p = remotionProbes.get(dir);
+  if (!p) {
+    p = probeRemotion(dir);
+    remotionProbes.set(dir, p);
+  }
+  return p;
+}
+
+function probeRemotion(dir: string): Promise<string | null> {
+  const script = path.join(dir, "scripts", "probe.mjs");
+  if (!existsSync(script)) return Promise.resolve(`the Remotion renderer is not installed at ${dir}`);
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c: string) => {
+      out = (out + c).slice(-4000);
+    });
+    child.stderr.resume();
+    child.on("error", (err) => resolve(`the Remotion probe could not start: ${err.message}`));
+    child.on("close", (code) => {
+      const last = out.trim().split("\n").pop() ?? "";
+      let parsed: { ok?: unknown; reason?: unknown } = {};
+      try {
+        parsed = JSON.parse(last) as { ok?: unknown; reason?: unknown };
+      } catch {}
+      if (code === 0 && parsed.ok === true) return resolve(null);
+      resolve(typeof parsed.reason === "string" ? parsed.reason : `the Remotion probe exited with ${String(code)}`);
+    });
+  });
+}
+
+export const BUNDLE_LIMITS = { files: 200, fileBytes: 1024 * 1024, totalBytes: 5 * 1024 * 1024 } as const;
+
+/**
+ * Writes a project bundle (the portal's /install/render-remotion.json) into `dir`. Used by install.sh, so a Muse VM
+ * installs the templates from the portal and never needs GitHub. Paths are checked before anything is written; the
+ * top-level folders the bundle carries (src/, scripts/) are replaced whole, so a file dropped upstream does not linger.
+ * node_modules and the probe marker are left alone. Returns the number of files written.
+ */
+export async function writeProjectBundle(raw: unknown, dir: string): Promise<number> {
+  const bad = (m: string): never => {
+    throw new Error(`project bundle: ${m}`);
+  };
+  const files = (raw as { files?: unknown } | null)?.files;
+  if (!Array.isArray(files) || files.length === 0) return bad("it lists no files");
+  if (files.length > BUNDLE_LIMITS.files) bad(`it lists ${files.length} files; the limit is ${BUNDLE_LIMITS.files}`);
+  let total = 0;
+  const checked = files.map((f, i): { rel: string; content: string } => {
+    const rel = (f as { path?: unknown })?.path;
+    const content = (f as { content?: unknown })?.content;
+    if (typeof rel !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/.test(rel) || rel.split("/").some((seg) => seg === "" || seg === "." || seg === "..")) {
+      return bad(`file ${i + 1} has an unsafe path`);
+    }
+    if (rel.startsWith("node_modules/") || rel === ".venstudio-probe.json") return bad(`file ${i + 1} would overwrite ${rel}`);
+    if (typeof content !== "string") return bad(`${rel} has no content`);
+    const bytes = Buffer.byteLength(content);
+    if (bytes > BUNDLE_LIMITS.fileBytes) bad(`${rel} is larger than ${BUNDLE_LIMITS.fileBytes} bytes`);
+    total += bytes;
+    return { rel, content };
+  });
+  if (total > BUNDLE_LIMITS.totalBytes) bad(`it is larger than ${BUNDLE_LIMITS.totalBytes} bytes`);
+  const root = path.resolve(dir);
+  await mkdir(root, { recursive: true });
+  for (const top of new Set(checked.map((f) => f.rel.split("/")).filter((parts) => parts.length > 1).map((parts) => parts[0]))) {
+    await rm(path.join(root, top), { recursive: true, force: true });
+  }
+  for (const f of checked) {
+    const dest = path.join(root, f.rel);
+    if (!dest.startsWith(root + path.sep)) bad(`${f.rel} leaves the project directory`);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(`${dest}.part`, f.content, "utf8");
+    await rename(`${dest}.part`, dest);
+  }
+  return checked.length;
+}
+
+/** Why this job's machine cannot run the Remotion engine, or null when it can. */
+async function remotionUnavailable(ctx: JobContext): Promise<string | null> {
+  return remotionUnavailableReason(remotionDir(ctx.home));
+}
+
+/** Composition for a spec's template. Throws NonRetryableError for a template this worker has none for. */
+export function remotionCompositionFor(spec: Pick<RenderSpec, "engine" | "scenePlan">): string {
+  const template = spec.scenePlan?.template ?? "";
+  const id = Object.hasOwn(REMOTION_COMPOSITIONS, template) ? REMOTION_COMPOSITIONS[template] : undefined;
+  if (!id) {
+    const known = Object.keys(REMOTION_COMPOSITIONS).join(", ");
+    throw new NonRetryableError(
+      `Template "${template}" has no ${spec.engine} composition in this worker (${VERSION}); it has ${known}. ` +
+        `Nothing was rendered, and it is not drawn with another template instead.`,
+    );
+  }
+  return id;
+}
+
+/** Files of a Remotion render, as names inside its public dir. */
+export interface RemotionFiles {
+  /** One per shot, same order. */
+  images: Array<string | null>;
+  font: string | null;
+}
+
+/**
+ * The props the template renders from. Pure. Scenes come straight from the parsed scene plan (value and series only
+ * where declared), timing from the shots and the fade, with the same frame timeline the xfade path uses. The
+ * narration is left out: the render is muted and the narration is added afterwards exactly as for stills.
+ */
+export function buildRemotionProps(spec: RenderSpec, files: RemotionFiles): TemplateProps {
+  if (!spec.scenePlan) throw new NonRetryableError(`render-video: engine "${spec.engine}" needs a scene plan`);
+  if (files.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image entry per shot");
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  if (!plan.ok) throw new NonRetryableError(`render-video: ${plan.issues.join("; ")}`);
+  const timeline = xfadeTimeline(plan.starts, plan.totalSec, plan.transitionSec, spec.fps);
+  return {
+    template: spec.scenePlan.template,
+    width: spec.width,
+    height: spec.height,
+    fps: spec.fps,
+    transitionSec: plan.transitionSec,
+    durationSec: spec.durationSec,
+    shots: spec.shots.map((s, i) => ({ shotRef: s.shotRef, seconds: s.seconds, image: files.images[i] })),
+    scenes: spec.scenePlan.scenes.map((s) => ({ ...s, elements: s.elements.map((e) => ({ ...e })), tokens: [...s.tokens], layers: s.layers.map((l) => ({ ...l })) })),
+    captions: spec.captions.map((c) => ({ ...c })),
+    narration: null,
+    font: files.font,
+    timeline,
+  };
+}
+
+/** Browser tabs Remotion renders with. One on a 2 vCPU Muse VM, two on bigger machines, or VENSTUDIO_REMOTION_CONCURRENCY. */
+export function remotionConcurrency(env: NodeJS.ProcessEnv = process.env, cpus: number = os.cpus().length): number {
+  const asked = Number(env.VENSTUDIO_REMOTION_CONCURRENCY);
+  if (Number.isInteger(asked) && asked >= 1 && asked <= 8) return asked;
+  return cpus <= 2 ? 1 : 2;
+}
+
+/** Wall-clock limit for one Remotion render: ten minutes, or 40 s per second of video, whichever is longer. */
+export function remotionTimeoutMs(durationSec: number): number {
+  return Math.max(10 * 60_000, Math.round(durationSec * 40_000));
+}
+
+export interface RemotionRenderOptions {
+  /** The CLI entry script (node_modules/@remotion/cli/<bin>). */
+  cli: string;
+  projectDir: string;
+  composition: string;
+  propsFile: string;
+  publicDir: string;
+  output: string;
+  concurrency: number;
+}
+
+/** Arguments for `node <cli> render`. Pure. Muted H.264: the narration is added afterwards, as for stills. */
+export function remotionRenderArgs(o: RemotionRenderOptions): string[] {
+  return [
+    o.cli, "render", path.join(o.projectDir, "src", "index.ts"), o.composition, o.output,
+    `--props=${o.propsFile}`,
+    `--public-dir=${o.publicDir}`,
+    `--concurrency=${o.concurrency}`,
+    // No GPU on Muse. The templates are SVG and CSS, so software GL is only there for Chromium itself.
+    "--gl=swangle",
+    "--muted",
+    "--codec=h264",
+    "--crf=20",
+    "--timeout=120000",
+    "--log=info",
+    "--overwrite",
+  ];
+}
+
+/** ffmpeg arguments that add the narration to Remotion's muted video, with the same audio chain as the stills path. */
+export function buildMuxArgs(spec: Pick<RenderSpec, "targetLufs" | "durationSec">, video: string, narration: string, output: string): string[] {
+  return [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-i", video, "-i", narration,
+    "-filter_complex", narrationFilter(spec, 1),
+    "-map", "0:v:0", "-map", "[a]",
+    "-t", String(spec.durationSec),
+    "-c:v", "copy",
+    "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+    "-movflags", "+faststart",
+    "-progress", "pipe:1", "-nostats",
+    output,
+  ];
+}
+
+/** Path of the Remotion CLI entry script in an installed project, from its package.json "bin". */
+export async function remotionCli(dir: string): Promise<string> {
+  const pkgFile = path.join(dir, "node_modules", "@remotion", "cli", "package.json");
+  let bin: unknown;
+  try {
+    bin = (JSON.parse(await readFile(pkgFile, "utf8")) as { bin?: unknown }).bin;
+  } catch {
+    throw new NonRetryableError(`The Remotion CLI is not installed at ${dir}`);
+  }
+  const rel = typeof bin === "string" ? bin : bin && typeof bin === "object" ? (bin as Record<string, unknown>).remotion : undefined;
+  if (typeof rel !== "string") throw new NonRetryableError(`The Remotion CLI at ${dir} names no entry script`);
+  return path.join(path.dirname(pkgFile), rel);
+}
+
+/** Progress from a line of Remotion CLI output ("Rendered 120/720"), as a fraction, or null. */
+export function parseRemotionProgress(line: string, totalFrames: number): number | null {
+  const m = /(?:Rendered|Rendering frames|Encoded|Stitched)[^\d]{0,20}(\d+)\s*\/\s*(\d+)/i.exec(line);
+  if (!m) return null;
+  const total = Number(m[2]) || totalFrames;
+  return total > 0 ? Math.min(1, Number(m[1]) / total) : null;
+}
+
+/** Runs the Remotion CLI. Kills its whole process group (Chromium included) on abort or timeout. */
+function runRemotion(args: string[], cwd: string, totalFrames: number, timeoutMs: number, onProgress: (f: number) => void, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, env: { ...process.env, CI: process.env.CI ?? "1" } });
+    let tail = "";
+    let lastReport = 0;
+    let timedOut = false;
+    const killAll = () => {
+      try {
+        if (child.pid) process.kill(-child.pid, "SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch {}
+      }, 10_000).unref();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killAll();
+    }, timeoutMs);
+    const onAbort = () => killAll();
+    signal.addEventListener("abort", onAbort, { once: true });
+    const onData = (c: string) => {
+      tail = (tail + c).slice(-6000);
+      for (const line of c.split(/\r|\n/)) {
+        const f = parseRemotionProgress(line, totalFrames);
+        if (f !== null && Date.now() - lastReport > 2000) {
+          lastReport = Date.now();
+          onProgress(f);
+        }
+      }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", onData);
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", onData);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) return reject(new Error("Aborted"));
+      if (timedOut) return reject(new Error(`Remotion did not finish within ${Math.round(timeoutMs / 60_000)} min`));
+      if (code === 0) resolve();
+      else reject(new Error(`Remotion exited with ${String(code)}: ${tail.trim().slice(-1500)}`));
+    });
+  });
+}
+
+/**
+ * Renders a remotion-2d job into `video.part.mp4` in the work dir: props and inputs into the work dir, the CLI renders
+ * a muted video from the installed project, then ffmpeg adds the narration with the stills path's audio chain.
+ */
+async function renderRemotionVideo(
+  ctx: JobContext,
+  spec: RenderSpec,
+  composition: string,
+  named: Map<string, string>,
+): Promise<{ captionsBurned: boolean; captionNote: string | null }> {
+  const dir = remotionDir(ctx.home);
+  const cli = await remotionCli(dir);
+  const props = buildRemotionProps(spec, {
+    images: spec.shots.map((s) => path.basename(named.get(s.assetId) as string)),
+    font: spec.fontAssetId ? path.basename(named.get(spec.fontAssetId) as string) : null,
+  });
+  const propsFile = path.join(ctx.workDir, "remotion-props.json");
+  await writeFile(propsFile, JSON.stringify(props));
+  const muted = path.join(ctx.workDir, "remotion.part.mp4");
+  const totalFrames = props.timeline?.totalFrames ?? Math.round(spec.durationSec * spec.fps);
+  ctx.progress(0.15, `Rendering ${composition} with Remotion`);
+  await runRemotion(
+    remotionRenderArgs({ cli, projectDir: dir, composition, propsFile, publicDir: path.join(ctx.workDir, "in"), output: muted, concurrency: remotionConcurrency() }),
+    dir,
+    totalFrames,
+    remotionTimeoutMs(spec.durationSec),
+    (f) => ctx.progress(0.15 + f * 0.65, `Rendering ${Math.round(f * 100)}%`),
+    ctx.signal,
+  );
+  if (!((await stat(muted).catch(() => null))?.size ?? 0)) throw new Error("Remotion finished but wrote no video");
+  ctx.progress(0.8, "Adding the narration");
+  await runFfmpeg(
+    buildMuxArgs(spec, muted, named.get(spec.narrationAssetId) as string, "video.part.mp4"),
+    spec.durationSec,
+    (f) => ctx.progress(0.8 + f * 0.07, "Adding the narration"),
+    ctx.signal,
+    ctx.workDir,
+  );
+  await rm(muted, { force: true });
+  return {
+    captionsBurned: spec.captions.length > 0,
+    captionNote: spec.captions.length > 0 && !spec.fontAssetId ? "no font in Assets; captions use the renderer's system font" : null,
+  };
 }
 
 async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unknown>> {
@@ -1448,6 +1793,8 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     if (why) throw new NonRetryableError(engineUnavailable(engine, [], why) as string);
   }
   const spec = parseRenderSpec(ctx.job.payload);
+  // A template without a composition is refused here too, before the downloads.
+  const composition = spec.engine === "remotion-2d" ? remotionCompositionFor(spec) : null;
   const inDir = path.join(ctx.workDir, "in");
   await mkdir(inDir, { recursive: true });
   const canDrawText = ffmpegHasFilter("drawtext");
@@ -1498,23 +1845,26 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     (await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", path.join(ctx.workDir, narrationRel), "-af", "astats=metadata=0", "-f", "null", "-"], ctx.signal)).stderr,
   );
   const narrationClipped = peakDb !== null ? peakDb >= -0.1 : null;
-  if (spec.engine !== "ffmpeg-stills") throw new NonRetryableError(`Engine "${spec.engine}" has no render path in this worker (${VERSION})`);
-
-  const plan = buildRenderArgs(
-    spec,
-    {
-      images: spec.shots.map((s) => named.get(s.assetId) as string),
-      narration: narrationRel,
-      output: "video.part.mp4",
-      font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined,
-    },
-    { drawtext: canDrawText },
-  );
-  for (const f of plan.captionFiles) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
-
-  ctx.progress(0.15, "Rendering");
   const started = Date.now();
-  await runFfmpeg(plan.args, spec.durationSec, (f) => ctx.progress(0.15 + f * 0.7, `Rendering ${Math.round(f * 100)}%`), ctx.signal, ctx.workDir);
+  let captions: { captionsBurned: boolean; captionNote: string | null };
+  if (composition) {
+    captions = await renderRemotionVideo(ctx, spec, composition, named);
+  } else {
+    const plan = buildRenderArgs(
+      spec,
+      {
+        images: spec.shots.map((s) => named.get(s.assetId) as string),
+        narration: narrationRel,
+        output: "video.part.mp4",
+        font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined,
+      },
+      { drawtext: canDrawText },
+    );
+    for (const f of plan.captionFiles) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
+    ctx.progress(0.15, "Rendering");
+    await runFfmpeg(plan.args, spec.durationSec, (f) => ctx.progress(0.15 + f * 0.7, `Rendering ${Math.round(f * 100)}%`), ctx.signal, ctx.workDir);
+    captions = { captionsBurned: plan.captionsBurned, captionNote: plan.captionNote };
+  }
   const out = path.join(ctx.workDir, "video.mp4");
   await rename(path.join(ctx.workDir, "video.part.mp4"), out);
   const renderSeconds = (Date.now() - started) / 1000;
@@ -1534,8 +1884,12 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     narrationClipped,
     narrationPeakDb: peakDb,
     shots: spec.shots.length,
-    captionsBurned: plan.captionsBurned,
-    captionNote: plan.captionNote,
+    ...(composition ? { composition, template: spec.scenePlan?.template ?? null } : {}),
+    // Where each shot starts on the timeline. A cross-fade is not a cut qc-video's detector can see, so this is
+    // the record of where the shots change.
+    sceneStarts: sceneStartsOf(spec),
+    captionsBurned: captions.captionsBurned,
+    captionNote: captions.captionNote,
     renderSeconds: round2(renderSeconds),
     bytes: up.bytes,
     sha256: up.sha256,
@@ -1955,7 +2309,7 @@ export async function loop(opts: {
   process.once("SIGINT", stop);
 
   try {
-    const capabilities = await detectCapabilities();
+    const capabilities = await detectCapabilities(opts.home);
     const budget = opts.mode === "daemon" ? "" : `, budget ${opts.maxMinutes} min`;
     log(`${cfg.name} v${VERSION} ${opts.mode} mode${budget}, capabilities: ${capabilities.join(", ")}`);
     let ran = 0;
@@ -2012,7 +2366,7 @@ export async function loop(opts: {
 
 export async function enroll(opts: { home: string; portal: string; code: string; name: string }) {
   const client = new PortalClient(opts.portal);
-  const capabilities = await detectCapabilities();
+  const capabilities = await detectCapabilities(opts.home);
   const res = await client.json<EnrollResponse>("POST", "/api/worker/enroll", {
     code: opts.code,
     name: opts.name,
@@ -2029,7 +2383,9 @@ async function status(home: string) {
   console.log(JSON.stringify({ name: cfg.name, workerId: cfg.workerId, portalUrl: cfg.portalUrl, version: VERSION, home }, null, 2));
   const res = await fetch(`${cfg.portalUrl}/api/health`, { signal: AbortSignal.timeout(10_000) });
   console.log(`portal health: HTTP ${res.status}`);
-  console.log(`capabilities: ${(await detectCapabilities()).join(", ")}`);
+  console.log(`capabilities: ${(await detectCapabilities(home)).join(", ")}`);
+  const why = await remotionUnavailableReason(remotionDir(home));
+  console.log(`remotion-2d: ${why ? `no (${why})` : `yes (${remotionDir(home)})`}`);
 }
 
 export function parseArgs(argv: string[]) {
@@ -2056,7 +2412,8 @@ Usage:
   node venstudio-worker.ts hold   [--max-minutes 55]   stay online for the budget (Muse hourly task)
   node venstudio-worker.ts daemon [--poll 30]
   node venstudio-worker.ts status
-Env: VENSTUDIO_HOME, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
+  node venstudio-worker.ts unpack-bundle --file <bundle.json> --dir <dir>   (used by install.sh --with-remotion)
+Env: VENSTUDIO_HOME, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
 
 /**
  * Node's fetch only uses HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1 is set at startup.
@@ -2088,6 +2445,13 @@ export async function main(argv: string[]) {
       return loop({ home, mode: "daemon", maxMinutes: Infinity, pollSeconds: Number(flags.poll ?? 30) });
     case "status":
       return status(home);
+    case "unpack-bundle": {
+      // Used by install.sh --with-remotion.
+      if (!flags.file || !flags.dir) throw new Error("unpack-bundle needs --file and --dir");
+      const count = await writeProjectBundle(JSON.parse(await readFile(flags.file, "utf8")), flags.dir);
+      log(`unpacked ${count} files into ${path.resolve(flags.dir)}`);
+      return;
+    }
     default:
       console.log(HELP);
   }

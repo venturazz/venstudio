@@ -28,6 +28,21 @@ bash install.sh --portal {{PORTAL_URL}} --code VS-XXXX-XXXX-XXXX --name "Muse 01
 johnvansickle.com if the machine lacks them, verifying their published checksums, then downloads the worker and
 enrolls it with the one-time code. It ends with `install complete`.
 
+### Optional: the Remotion renderer (engine `remotion-2d`)
+
+Animated styles such as the flat-vector explainer render with Remotion, not with ffmpeg alone. To let this worker
+run them, add `--with-remotion` (on a first install or on an update):
+
+```bash
+bash install.sh --portal {{PORTAL_URL}} --mode hold --with-remotion
+```
+
+It downloads the templates from {{PORTAL_URL}}/install/render-remotion.json into `/home/hatch/venstudio/remotion`,
+installs their npm packages from the npm registry and the headless Chromium Remotion downloads for itself (about
+400 MB together, a few minutes; both go through the egress proxy), then renders one test still. The worker reports `remotion-2d` only once that
+still rendered. `run.sh status` says whether it does, and why not. Remotion is free for individuals and companies of
+up to three people; larger companies need a Remotion company licence.
+
 ## Hourly schedule (Muse)
 
 A recurring hourly task runs:
@@ -61,6 +76,9 @@ runs every queued job and exits when the queue is empty.
 | `fetch-asset` | yes | Downloads one public-domain picture from an approved site (Wikimedia, NASA, Library of Congress, Met Museum, Openverse). https only, no redirect to another site, size limit, file type checked by its first bytes, uploaded as `asset.<ext>`. |
 | `tts` | only with `VENSTUDIO_KOKORO_URL` | Sends text chunks to your Kokoro server (`POST /v1/audio/speech`, WAV), joins them and uploads `narration.wav`. The worker never receives a Kokoro key, so use an address that needs none. |
 | `agent-task` | only with `VENSTUDIO_AGENT_TASKS=1`, hold mode | **UNVERIFIED.** Writes `/home/hatch/venstudio/inbox/<jobId>/TASK.md`, waits for the Muse agent to put files in `out/` and create `out/DONE`, then uploads them. Needs Muse tests 12 to 16 before anyone relies on it. |
+
+Rendering variables: `VENSTUDIO_REMOTION_DIR` (where the Remotion project is, default `/home/hatch/venstudio/remotion`)
+and `VENSTUDIO_REMOTION_CONCURRENCY` (browser tabs, default 1 on a 2 vCPU machine, 2 on larger ones).
 
 A worker without those variables does not advertise `tts` or `agent-task`, so the portal never sends them. Set a
 variable in the scheduled task command, for example

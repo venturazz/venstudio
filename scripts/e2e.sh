@@ -38,6 +38,9 @@ curl -sI "$APP_URL/setup" | grep -qi "x-frame-options: DENY" || fail "X-Frame-Op
 curl -fsS "$APP_URL/install/SETUP.md" | grep -q "$APP_URL/install/install.sh" || fail "SETUP.md not templated"
 curl -fsS "$APP_URL/install/AGENT_DEPLOY.md" | grep -q "VenStudio worker setup" || fail "old setup link broken"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$APP_URL/install/../../etc/passwd")" != "200" ] || fail "install path traversal"
+curl -fsS "$APP_URL/install/render-remotion.json" -o "$WORK/render-remotion.json" || fail "render-remotion.json not served"
+node "$ROOT/apps/worker/venstudio-worker.ts" unpack-bundle --file "$WORK/render-remotion.json" --dir "$WORK/remotion-unpacked" >/dev/null || fail "render-remotion.json does not unpack"
+diff -r "$ROOT/apps/render-remotion/src" "$WORK/remotion-unpacked/src" >/dev/null || fail "unpacked Remotion templates differ from the repo"
 
 echo "== worker API rejects bad tokens and codes"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$APP_URL/api/worker/claim" -H 'authorization: Bearer nope-nope-nope-nope-nope' -d '{}')" = "401" ] || fail "claim without valid token not 401"

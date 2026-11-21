@@ -19,3 +19,9 @@ apps/worker/config.json
 # os / editor
 .DS_Store
 *.log
+
+# Remotion renderer: installed dependencies, lockfile and probe results stay local
+apps/render-remotion/node_modules/
+apps/render-remotion/package-lock.json
+apps/render-remotion/.venstudio-probe.json
+/.e2e-remotion/

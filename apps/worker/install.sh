@@ -9,6 +9,10 @@
 #   --name NAME    worker name shown in the portal
 #   --mode MODE    hold (Muse hourly task, default on Muse), tick, or daemon (always-on VPS)
 #   --home DIR     install directory (default /home/hatch/venstudio on Muse, else ~/.venstudio)
+#   --with-remotion
+#                  also install the Remotion renderer for the remotion-2d engine into <home>/remotion: the templates
+#                  from this portal, their npm packages and Remotion's own headless Chromium (about 400 MB, a few
+#                  minutes). Safe to repeat; run it again after a portal update to refresh the templates.
 set -euo pipefail
 
 PORTAL="{{PORTAL_URL}}"
@@ -16,8 +20,10 @@ CODE=""
 NAME="$(hostname)"
 MODE=""
 HOME_DIR=""
+WITH_REMOTION=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --with-remotion) WITH_REMOTION=1; shift ;;
     --portal) PORTAL="$2"; shift 2 ;;
     --code) CODE="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
@@ -125,6 +131,39 @@ else
   exit 1
 fi
 
+# --- Remotion renderer (opt-in) ---------------------------------------------------------
+# After enrollment, so a failed Remotion install still leaves a working stills worker.
+REMOTION_FAILED=0
+if [ "$WITH_REMOTION" = 1 ]; then
+  RDIR="$HOME_DIR/remotion"
+  NPM_BIN="$(dirname "$NODE_BIN")/npm"
+  [ -x "$NPM_BIN" ] || NPM_BIN="$(command -v npm || true)"
+  say "installing the Remotion renderer into $RDIR (about 400 MB with its browser; a few minutes)"
+  if [ -z "$NPM_BIN" ]; then
+    echo "npm not found next to $NODE_BIN; it is needed to install Remotion" >&2
+    REMOTION_FAILED=1
+  # Chained with &&: errexit does not apply inside a subshell whose status an if tests. npm and Remotion's browser
+  # download go through the egress proxy, if any (both honour HTTPS_PROXY). The full probe renders one still of every
+  # template through that browser; the worker reports remotion-2d only once it has passed.
+  elif ! (
+    curl -fsSL -o "$HOME_DIR/app/render-remotion.json.new" "$PORTAL/install/render-remotion.json" &&
+      NODE_USE_ENV_PROXY=1 "$NODE_BIN" --no-warnings "$HOME_DIR/app/venstudio-worker.ts" unpack-bundle --file "$HOME_DIR/app/render-remotion.json.new" --dir "$RDIR" &&
+      rm -f "$HOME_DIR/app/render-remotion.json.new" &&
+      cd "$RDIR" &&
+      export PATH="$(dirname "$NODE_BIN"):$PATH" &&
+      "$NPM_BIN" install --omit=dev --no-audit --no-fund --loglevel=error &&
+      ./node_modules/.bin/remotion browser ensure &&
+      "$NODE_BIN" scripts/probe.mjs --full
+  ); then
+    REMOTION_FAILED=1
+  fi
+  if [ "$REMOTION_FAILED" = 0 ]; then
+    say "remotion: $("$NODE_BIN" "$RDIR/scripts/probe.mjs")"
+  else
+    echo "the Remotion install failed (see above). The worker runs without remotion-2d; the probe says: $("$NODE_BIN" "$RDIR/scripts/probe.mjs" 2>/dev/null || true)" >&2
+  fi
+fi
+
 say "install complete (mode: $MODE)"
 if [ "$MODE" != "daemon" ]; then
   say "schedule this command every hour: $HOME_DIR/run.sh $MODE"
@@ -132,3 +171,4 @@ if [ "$MODE" != "daemon" ]; then
 else
   say "start it with: nohup $HOME_DIR/run.sh daemon >/dev/null 2>&1 &   (or a systemd service)"
 fi
+[ "$REMOTION_FAILED" = 0 ] || exit 1

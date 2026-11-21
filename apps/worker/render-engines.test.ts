@@ -4,46 +4,39 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   NonRetryableError,
   RENDER_ENGINES,
   VERSION,
+  XFADE_PAD_FRAMES,
   buildRenderArgs,
+  detectCapabilities,
   engineUnavailable,
+  ffmpegHasFilter,
   handlers,
+  makeWavPcm16,
   parseRenderSpec,
   parseScenePlan,
+  planCrossFades,
   renderEngineOf,
+  transitionFor,
+  xfadeTimeline,
+  xfadeTimelineFor,
   type JobContext,
 } from "./venstudio-worker.ts";
+import { planCrossFades as portalPlanCrossFades, transitionFor as portalTransitionFor } from "../portal/lib/studio/render-engine.ts";
+import { fixture, fixtureWithUuids } from "./testdata/fixture.ts";
 
 const golden = JSON.parse(readFileSync(new URL("./testdata/stills-args.golden.json", import.meta.url), "utf8")) as {
   payload: Record<string, unknown>;
   withFont: unknown;
   noDrawtext: unknown;
 };
-const fixture = JSON.parse(readFileSync(new URL("../../fixtures/render/explainer-payload.json", import.meta.url), "utf8")) as Record<string, unknown>;
-
-/**
- * The golden payload as a worker receives it. The fixture uses readable placeholder ids ("asset-shot-01"); the worker
- * only accepts UUID asset ids, because they become URL paths and file names. Everything else is the fixture's bytes.
- */
-export function fixtureWithUuids(): Record<string, unknown> {
-  const ids = new Map<string, string>();
-  const uuid = (id: string) => {
-    if (!ids.has(id)) ids.set(id, `f1f70000-0000-4000-8000-${String(ids.size + 1).padStart(12, "0")}`);
-    return ids.get(id) as string;
-  };
-  const p = structuredClone(fixture) as Record<string, unknown> & { shots: Array<Record<string, unknown>>; inputs: string[] };
-  p.shots = p.shots.map((s) => ({ ...s, assetId: uuid(String(s.assetId)) }));
-  p.narrationAssetId = uuid(String(p.narrationAssetId));
-  p.inputs = p.inputs.map(uuid);
-  return p;
-}
 
 const PATHS = { images: ["in/a.png", "in/b.png", "in/c.jpg"], narration: "in/n.wav", output: "video.part.mp4", font: "in/f.ttf" };
 
@@ -172,20 +165,6 @@ test("parseScenePlan refuses a plan that does not line up with the shots or woul
 
 // ---------------------------------------------------------------------------
 // Cross-fades
-
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
-import {
-  XFADE_PAD_FRAMES,
-  detectCapabilities,
-  ffmpegHasFilter,
-  makeWavPcm16,
-  planCrossFades,
-  transitionFor,
-  xfadeTimeline,
-  xfadeTimelineFor,
-} from "./venstudio-worker.ts";
-import { planCrossFades as portalPlanCrossFades, transitionFor as portalTransitionFor } from "../portal/lib/studio/render-engine.ts";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 
@@ -398,4 +377,10 @@ test("xfade is reported only with an ffmpeg that has the filter", async (t) => {
     const caps = await detectCapabilities();
     assert.equal(caps.includes("xfade"), ffmpegHasFilter("xfade"));
   }
+});
+
+test("sceneStartsOf records where shots change, fades included", async () => {
+  const { sceneStartsOf } = await import("./venstudio-worker.ts");
+  assert.deepEqual(sceneStartsOf(parseRenderSpec(fixtureWithUuids())), [0, 4.167, 9, 14.5, 19.333]);
+  assert.deepEqual(sceneStartsOf(parseRenderSpec(golden.payload)), [0, 3.4, 7.5]);
 });
