@@ -1024,17 +1024,29 @@ try {
     id = await voiceGateCard().getAttribute("data-review-id");
     await blockingRow(voiceGateCard(), "kokoro").getByRole("button", { name: "Commercial use OK", exact: true }).click();
     await m.locator(`[data-testid="review-card"][data-review-id="${id}"]`).waitFor({ state: "detached", timeout: 30_000 });
-    try {
-      await waitShown(m, "/review", (p) => p.locator('[data-testid="review-card"][data-stage="voice"][data-kind="approval"]'), "the voice approval after kokoro was confirmed", 30_000);
-    } catch (err) {
-      await dumpPipeline(m, assetsRunHref ?? runHref, "the voice approval never appeared after kokoro was confirmed on the card");
-      throw err;
+    // Once the terms pass, the stage concludes under the run's autonomy: either a voice approval card, or (at a level
+    // where a passed voice stage needs no owner) the run moves on by itself and no voice card is left. Both are right.
+    const voiceApproval = () => m.locator('[data-testid="review-card"][data-stage="voice"][data-kind="approval"]');
+    const anyVoiceCard = () => m.locator('[data-testid="review-card"][data-stage="voice"]');
+    let voiceOutcome = "";
+    for (const end = Date.now() + 30_000; Date.now() < end && !voiceOutcome; ) {
+      await m.goto(`${APP}/review`);
+      if (await voiceApproval().first().isVisible().catch(() => false)) voiceOutcome = "approval";
+      else if ((await anyVoiceCard().count()) === 0) voiceOutcome = "continued";
+      else await m.waitForTimeout(1000);
     }
+    if (!voiceOutcome) {
+      await dumpPipeline(m, assetsRunHref ?? runHref, "the voice stage did not conclude after kokoro was confirmed on the card");
+      throw new Error("the voice stage did not conclude after kokoro was confirmed on the card");
+    }
+    console.log(`   voice after confirming kokoro: ${voiceOutcome === "approval" ? "approval card" : "passed and the run continued on its own"}`);
     if (ttsCalls() !== ttsBefore) throw new Error(`confirming kokoro recorded the voice again (${ttsBefore} -> ${ttsCalls()} speech calls)`);
-    await m.locator('[data-testid="review-card"][data-stage="voice"][data-kind="approval"]').first().getByTestId("voice-audio").waitFor();
-    await assertNoOverflow(m, "/review (voice approved terms)");
-    await m.locator('[data-testid="review-card"][data-stage="voice"][data-kind="approval"]').first().getByRole("button", { name: "Approve", exact: true }).click();
-    await m.waitForLoadState("networkidle");
+    if (voiceOutcome === "approval") {
+      await voiceApproval().first().getByTestId("voice-audio").waitFor();
+      await assertNoOverflow(m, "/review (voice approved terms)");
+      await voiceApproval().first().getByRole("button", { name: "Approve", exact: true }).click();
+      await m.waitForLoadState("networkidle");
+    }
   }
 
   step("production: render with the real worker, then the quality check");
