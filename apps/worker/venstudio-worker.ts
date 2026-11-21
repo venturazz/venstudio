@@ -10,19 +10,22 @@
  *   node venstudio-worker.ts hold     # stay online ~55 min, starting jobs within seconds (Muse hourly task)
  *   node venstudio-worker.ts daemon   # poll forever (VPS / GPU box)
  *   node venstudio-worker.ts status   # show config and check the portal is reachable
+ *   node venstudio-worker.ts selftest # load, check the portal and capabilities, print one JSON line (no jobs)
  *
  * State lives in $VENSTUDIO_HOME (default /home/hatch/venstudio on Muse, else ./.venstudio):
  *   config.json   portal URL + worker token (chmod 600)
  *   work/<jobId>/ job scratch space; kept until the job finishes so a restarted VM can resume
  *   worker.lock   prevents two workers running at once
+ *   app/          this file (app/venstudio-worker.ts), and for signed self-updates: next/ (staged), prev/ (backup),
+ *                 update-state.json and update-pending (see "Self-update" below and docs/worker-updates.md)
  */
 
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { chmod, mkdir, open, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, open, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify as verifySignature, type KeyObject } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
@@ -33,11 +36,16 @@ import type {
   ClaimResponse,
   EnrollResponse,
   HeartbeatResponse,
+  UpdateCheckResponse,
+  UpdateInfoResponse,
+  UpdateManifest,
+  UpdateManifestFile,
+  UpdateReportRequest,
   WorkerMode,
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -47,6 +55,11 @@ export interface WorkerConfig {
   token: string;
   workerId: string;
   name: string;
+  /**
+   * The portal's update signing key (Ed25519, SPKI DER base64), pinned by install.sh. The worker installs only updates
+   * signed by this key; without it, automatic updates are off.
+   */
+  updateKey?: string;
 }
 
 export function defaultHome(): string {
@@ -220,6 +233,29 @@ export class PortalClient {
       await sleep(2000 * (i + 1));
     }
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  /**
+   * Downloads a public install file (/install/<name>) into memory, at most `maxBytes`. Sends no token: these files are
+   * public. The caller verifies the bytes against a signed manifest before anything uses them.
+   */
+  async installFile(name: string, maxBytes: number): Promise<Buffer> {
+    const res = await fetch(`${this.base}/install/${encodeURIComponent(name)}`, {
+      headers: { "user-agent": `venstudio-worker/${VERSION}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(5 * 60_000),
+    });
+    if (!res.ok || !res.body) throw new HttpError(res.status, `download ${name} -> ${res.status}`);
+    const declared = Number(res.headers.get("content-length") ?? "0");
+    if (declared > maxBytes) throw new UpdateRefused(`${name} is ${declared} bytes; the signed manifest allows ${maxBytes} (tampered or changed in transit)`);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>)) {
+      total += (chunk as Buffer).length;
+      if (total > maxBytes) throw new UpdateRefused(`${name} is larger than the ${maxBytes} bytes the signed manifest allows (tampered or changed in transit)`);
+      chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks);
   }
 }
 
@@ -2813,6 +2849,696 @@ export function runFfmpeg(
 }
 
 // ---------------------------------------------------------------------------
+// Self-update (0.8.0+). See docs/worker-updates.md.
+//
+// The portal signs a short-lived manifest (Ed25519) naming the worker file and the Remotion bundle with their SHA-256
+// and size. The worker trusts only the public key pinned at install time (config.json `updateKey`, written by
+// install.sh, whose sha256 the owner checked once). Nothing from an update runs before the signature, the key, the
+// worker id, the expiry, the version order and every file hash have passed. The new worker file is staged in
+// <home>/app/next/, must pass its own `selftest`, and is swapped in between jobs, never during one; the previous file
+// stays in <home>/app/prev/. A new version that exits with an error twice before its first successful claim is rolled
+// back (by the old process, which supervises it, or by run.sh after a crash), and the portal is told why.
+
+export const UPDATE_WORKER_FILE = "venstudio-worker.ts";
+export const UPDATE_BUNDLE_FILE = "render-remotion.json";
+/** Prefix of the signed bytes. Same as MANIFEST_CONTEXT in apps/portal/lib/update-manifest.ts. */
+export const MANIFEST_CONTEXT = "venstudio-update-manifest-v1\n";
+/** Clock difference tolerated between the portal and this machine. */
+export const UPDATE_CLOCK_SKEW_MS = 5 * 60_000;
+/** Longest manifest lifetime accepted (the portal signs for 10 minutes). */
+export const UPDATE_MAX_LIFETIME_MS = 60 * 60_000;
+export const UPDATE_MAX_FILE_BYTES = 10 * 1024 * 1024;
+/** How often an idle worker asks for an update (VENSTUDIO_UPDATE_CHECK_SECONDS overrides, 5 to 86400). */
+export const UPDATE_CHECK_SECONDS = 600;
+/** Written next to an unpacked Remotion project: the SHA-256 of the bundle it was unpacked from. */
+export const BUNDLE_MARKER = ".venstudio-bundle.sha256";
+/** Start failures (non-zero exits before the first claim) after which a new version is rolled back. */
+export const UPDATE_START_ATTEMPTS = 2;
+
+/** A verification failure: the update is not used, and the portal is told. */
+export class UpdateRefused extends Error {}
+
+/** Same encoding as canonicalJson in apps/portal/lib/update-manifest.ts (tests check both agree). */
+export function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value);
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      if (!Number.isFinite(value)) throw new Error("canonicalJson: numbers must be finite");
+      return JSON.stringify(value);
+    case "object": {
+      if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
+      const rec = value as Record<string, unknown>;
+      const keys = Object.keys(rec)
+        .filter((k) => rec[k] !== undefined)
+        .sort();
+      return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(rec[k])}`).join(",")}}`;
+    }
+    default:
+      throw new Error(`canonicalJson: cannot encode ${typeof value}`);
+  }
+}
+
+/** Key id: the first 16 hex of the SHA-256 of the public key (SPKI DER). */
+export function updateKeyId(publicKeySpkiB64: string): string {
+  return createHash("sha256").update(Buffer.from(publicKeySpkiB64, "base64")).digest("hex").slice(0, 16);
+}
+
+/** Parses a pinned key. Throws unless it is an Ed25519 public key. */
+export function parseUpdateKey(publicKeySpkiB64: string): KeyObject {
+  if (!/^[A-Za-z0-9+/]{40,200}={0,2}$/.test(publicKeySpkiB64)) throw new Error("the update key is not base64");
+  const key = createPublicKey({ key: Buffer.from(publicKeySpkiB64, "base64"), format: "der", type: "spki" });
+  if (key.asymmetricKeyType !== "ed25519") throw new Error(`the update key is ${key.asymmetricKeyType}, not ed25519`);
+  return key;
+}
+
+/** Compares dotted numeric versions ("0.8.0" < "0.10.0"). NaN when either is not of that form. */
+export function compareVersions(a: string, b: string): number {
+  const re = /^\d{1,6}(\.\d{1,6}){0,3}$/;
+  if (!re.test(a) || !re.test(b)) return Number.NaN;
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+export type ManifestCheck = { ok: true; manifest: UpdateManifest } | { ok: false; reason: string };
+
+/**
+ * Verifies a manifest from the portal: shape, the pinned key, the signature, this worker's id, the lifetime and expiry,
+ * and that it is newer than the last manifest this worker accepted (no replay). Pure apart from the clock in `ctx`.
+ */
+export function checkManifest(
+  raw: unknown,
+  ctx: { publicKey: string; workerId: string; now: number; lastIssuedAt?: string | null },
+): ManifestCheck {
+  const no = (reason: string): ManifestCheck => ({ ok: false, reason });
+  if (!isRecord(raw)) return no("the manifest is not an object");
+  if (raw.format !== 1) return no(`unknown manifest format ${String(raw.format)}`);
+  for (const k of ["keyId", "workerId", "version", "release", "issuedAt", "expiresAt", "signature"]) {
+    if (typeof raw[k] !== "string" || (raw[k] as string).length > 200) return no(`the manifest has no valid ${k}`);
+  }
+  if (typeof raw.pin !== "boolean") return no("the manifest has no valid pin");
+  const files = raw.files;
+  if (!Array.isArray(files) || files.length === 0 || files.length > 2) return no("the manifest lists no valid files");
+  const seen = new Set<string>();
+  for (const f of files) {
+    if (!isRecord(f) || (f.name !== UPDATE_WORKER_FILE && f.name !== UPDATE_BUNDLE_FILE) || seen.has(f.name)) return no("the manifest lists an unknown or repeated file");
+    if (typeof f.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(f.sha256)) return no(`${f.name} has no valid sha256`);
+    if (!Number.isInteger(f.bytes) || (f.bytes as number) < 1 || (f.bytes as number) > UPDATE_MAX_FILE_BYTES) return no(`${f.name} has no valid size`);
+    seen.add(f.name);
+  }
+  let key: KeyObject;
+  try {
+    key = parseUpdateKey(ctx.publicKey);
+  } catch (err) {
+    return no(`the pinned update key is unusable: ${(err as Error).message}`);
+  }
+  const pinnedId = updateKeyId(ctx.publicKey);
+  if (raw.keyId !== pinnedId) return no(`signed by key ${String(raw.keyId)}, but this worker trusts key ${pinnedId}`);
+  const { signature, ...unsigned } = raw;
+  let good = false;
+  try {
+    good = verifySignature(null, Buffer.from(MANIFEST_CONTEXT + canonicalJson(unsigned), "utf8"), key, Buffer.from(signature as string, "base64"));
+  } catch {
+    good = false;
+  }
+  if (!good) return no("bad signature: the manifest was not signed by the pinned key, or was changed after signing");
+  // From here on the fields are the portal's own.
+  if (raw.workerId !== ctx.workerId) return no(`the manifest is for worker ${String(raw.workerId)}, not this one`);
+  const issued = Date.parse(raw.issuedAt as string);
+  const expires = Date.parse(raw.expiresAt as string);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued) return no("the manifest has unreadable times");
+  if (expires - issued > UPDATE_MAX_LIFETIME_MS) return no("the manifest is valid for too long");
+  if (ctx.now > expires + UPDATE_CLOCK_SKEW_MS) return no(`the manifest expired at ${String(raw.expiresAt)} (an old manifest replayed, or this machine's clock is wrong)`);
+  if (issued > ctx.now + UPDATE_CLOCK_SKEW_MS) return no(`the manifest was issued in the future (${String(raw.issuedAt)}); check this machine's clock`);
+  if (ctx.lastIssuedAt) {
+    const last = Date.parse(ctx.lastIssuedAt);
+    if (Number.isFinite(last) && issued <= last) return no("the manifest is not newer than the last one this worker accepted (replayed)");
+  }
+  if (Number.isNaN(compareVersions(raw.version as string, VERSION))) return no(`unreadable version ${String(raw.version)}`);
+  return { ok: true, manifest: raw as unknown as UpdateManifest };
+}
+
+export interface UpdatePlan {
+  /** The worker file to install, or null. */
+  worker: UpdateManifestFile | null;
+  /** The Remotion bundle to install (only where a project is installed, and only when the worker file is current). */
+  bundle: UpdateManifestFile | null;
+  /** Why (part of) the manifest is refused; reported to the portal. */
+  refused: string | null;
+  /** Something skipped on purpose (a release that failed here before); logged, not reported again. */
+  notice: string | null;
+}
+
+/** What to do with a verified manifest. Never installs an older worker unless the owner pinned exactly that version. */
+export function planUpdate(
+  m: Pick<UpdateManifest, "version" | "pin" | "files">,
+  local: { version: string; workerSha: string; bundleSha: string | null; failed: Readonly<Record<string, string>> },
+): UpdatePlan {
+  const plan: UpdatePlan = { worker: null, bundle: null, refused: null, notice: null };
+  const cmp = compareVersions(m.version, local.version);
+  if (Number.isNaN(cmp)) return { ...plan, refused: `unreadable version ${m.version}` };
+  if (cmp < 0 && !m.pin) {
+    return { ...plan, refused: `v${m.version} is older than this worker (v${local.version}); downgrades are refused unless the owner pins that version` };
+  }
+  const wf = m.files.find((f) => f.name === UPDATE_WORKER_FILE) ?? null;
+  if (wf && wf.sha256 !== local.workerSha) {
+    if (cmp === 0 && !m.pin) plan.refused = `v${m.version} has different content but the same version as this worker; refused (bump VERSION, or pin it)`;
+    else if (local.failed[wf.sha256]) plan.notice = `skipping v${m.version}: it failed here before (${local.failed[wf.sha256]}); waiting for a newer release`;
+    else plan.worker = wf;
+  }
+  const bf = m.files.find((f) => f.name === UPDATE_BUNDLE_FILE) ?? null;
+  if (!plan.worker && bf && local.bundleSha !== null && bf.sha256 !== local.bundleSha) {
+    if (local.failed[bf.sha256]) plan.notice = plan.notice ?? `skipping the Remotion templates ${bf.sha256.slice(0, 12)}: they failed here before`;
+    else plan.bundle = bf;
+  }
+  return plan;
+}
+
+export function updatePaths(home: string) {
+  const app = path.join(home, "app");
+  return {
+    app,
+    live: path.join(app, UPDATE_WORKER_FILE),
+    nextDir: path.join(app, "next"),
+    next: path.join(app, "next", UPDATE_WORKER_FILE),
+    prevDir: path.join(app, "prev"),
+    prev: path.join(app, "prev", UPDATE_WORKER_FILE),
+    state: path.join(app, "update-state.json"),
+    /** Start failures of a freshly swapped-in version, as a plain number; run.sh reads and writes it too. */
+    pending: path.join(app, "update-pending"),
+  };
+}
+
+export interface UpdateState {
+  /** issuedAt of the last manifest that passed verification; older or equal ones are refused. */
+  lastIssuedAt?: string;
+  /** Set when a new worker file is swapped in, cleared by that version's first successful claim. */
+  pending?: { version: string; from: string; sha256: string; at: string };
+  /** SHA-256 of files that failed here (self-test, start, Remotion probe) -> why. Not tried again. */
+  failed?: Record<string, string>;
+  /** Last refusal or notice reported/logged, so the same one is not repeated every check. */
+  lastNotice?: string;
+}
+
+export async function readUpdateState(home: string): Promise<UpdateState> {
+  try {
+    const raw = JSON.parse(await readFile(updatePaths(home).state, "utf8")) as unknown;
+    return isRecord(raw) ? (raw as UpdateState) : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function writeUpdateState(home: string, state: UpdateState): Promise<void> {
+  const p = updatePaths(home);
+  const failed = Object.entries(state.failed ?? {});
+  const trimmed: UpdateState = { ...state, failed: Object.fromEntries(failed.slice(-20)) };
+  await mkdir(p.app, { recursive: true });
+  await writeFile(`${p.state}.part`, JSON.stringify(trimmed, null, 2), { mode: 0o600 });
+  await rename(`${p.state}.part`, p.state);
+}
+
+/** Checks downloaded bytes against the signed entry. Throws UpdateRefused on any difference. */
+export function verifyUpdateBytes(file: UpdateManifestFile, body: Uint8Array): void {
+  if (body.length !== file.bytes) throw new UpdateRefused(`${file.name} is ${body.length} bytes, the signed manifest says ${file.bytes} (tampered or changed in transit)`);
+  const sha = createHash("sha256").update(body).digest("hex");
+  if (sha !== file.sha256) throw new UpdateRefused(`${file.name} checksum mismatch: got ${sha.slice(0, 12)}…, signed ${file.sha256.slice(0, 12)}… (tampered or changed in transit)`);
+}
+
+/** Verifies and writes the new worker file to <home>/app/next/. Nothing is written when verification fails. */
+export async function stageWorkerFile(home: string, file: UpdateManifestFile, body: Uint8Array): Promise<string> {
+  verifyUpdateBytes(file, body);
+  const p = updatePaths(home);
+  await rm(p.nextDir, { recursive: true, force: true });
+  await mkdir(p.nextDir, { recursive: true, mode: 0o700 });
+  await writeFile(`${p.next}.part`, body, { mode: 0o600 });
+  await rename(`${p.next}.part`, p.next);
+  return p.next;
+}
+
+/**
+ * Swaps the staged file in: the current one is copied to prev/, one rename puts the new one in place, then the start
+ * counter is armed (after the rename, so a crash in between is never mistaken for a failed start of the new version).
+ */
+export async function swapInWorker(home: string, pending: { version: string; sha256: string }): Promise<void> {
+  const p = updatePaths(home);
+  await mkdir(p.prevDir, { recursive: true, mode: 0o700 });
+  await copyFile(p.live, `${p.prev}.part`);
+  await rename(`${p.prev}.part`, p.prev);
+  await rename(p.next, p.live);
+  await rm(p.nextDir, { recursive: true, force: true });
+  const state = await readUpdateState(home);
+  state.pending = { version: pending.version, from: VERSION, sha256: pending.sha256, at: new Date().toISOString() };
+  await writeUpdateState(home, state);
+  await writeFile(p.pending, "0\n");
+}
+
+/** Puts prev/ back in place of the live file and disarms the start counter. */
+export async function restorePreviousWorker(home: string): Promise<boolean> {
+  const p = updatePaths(home);
+  if (!existsSync(p.prev)) return false;
+  await rename(p.prev, p.live);
+  await rm(p.pending, { force: true });
+  return true;
+}
+
+/**
+ * Counts one failed start of a freshly swapped-in version (it exited with an error before its first claim). The same
+ * rule as run.sh: on the second failure the previous file is restored. "none" when no update is pending.
+ */
+export async function noteStartFailure(home: string): Promise<"none" | "retry" | "rolled-back"> {
+  const p = updatePaths(home);
+  let text: string;
+  try {
+    text = await readFile(p.pending, "utf8");
+  } catch {
+    return "none";
+  }
+  const n = (Number.parseInt(text.trim(), 10) || 0) + 1;
+  if (n >= UPDATE_START_ATTEMPTS) {
+    if (await restorePreviousWorker(home)) return "rolled-back";
+    await rm(p.pending, { force: true });
+    return "none";
+  }
+  await writeFile(p.pending, `${n}\n`);
+  return "retry";
+}
+
+export type StartReconcile =
+  | { kind: "none" }
+  | { kind: "starting"; pending: NonNullable<UpdateState["pending"]> }
+  | { kind: "rolled-back"; version: string; reason: string };
+
+/**
+ * Run at start. A pending update whose file is this one: we are the new version, confirmed by the first claim. A
+ * pending update whose file is not this one: the new version was rolled back (by run.sh or the old process), so record
+ * it as failed and say so.
+ */
+export async function reconcileUpdateOnStart(home: string, ownSha: string): Promise<StartReconcile> {
+  const p = updatePaths(home);
+  const state = await readUpdateState(home);
+  if (!state.pending) {
+    await rm(p.pending, { force: true });
+    return { kind: "none" };
+  }
+  if (state.pending.sha256 === ownSha) return { kind: "starting", pending: state.pending };
+  const reason = `v${state.pending.version} exited with an error ${UPDATE_START_ATTEMPTS} times before its first claim; the previous version was restored`;
+  state.failed = { ...state.failed, [state.pending.sha256]: reason };
+  const version = state.pending.version;
+  delete state.pending;
+  await writeUpdateState(home, state);
+  await rm(p.pending, { force: true });
+  return { kind: "rolled-back", version, reason };
+}
+
+/** The new version's first claim worked: it stays. */
+export async function confirmUpdateStarted(home: string): Promise<void> {
+  const state = await readUpdateState(home);
+  delete state.pending;
+  await writeUpdateState(home, state);
+  await rm(updatePaths(home).pending, { force: true });
+}
+
+/** Arguments for the restarted worker: the same command, with what is left of the time budget. */
+export function restartArgv(argv: readonly string[], deadline: number, now: number): string[] {
+  const [command = "tick", ...rest] = argv;
+  if (command === "daemon" || !Number.isFinite(deadline)) return [command, ...rest];
+  const out = [command];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--max-minutes") {
+      if (rest[i + 1] !== undefined && !rest[i + 1].startsWith("--")) i++;
+      continue;
+    }
+    out.push(rest[i]);
+  }
+  const minutes = Math.max(0.1, Math.round((deadline - now) / 600) / 100);
+  out.push("--max-minutes", String(minutes));
+  return out;
+}
+
+/** Why this process does not update itself, or null when it does. */
+export function selfUpdateDisabledReason(cfg: Pick<WorkerConfig, "updateKey">, home: string, self: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.VENSTUDIO_AUTO_UPDATE === "0") return "VENSTUDIO_AUTO_UPDATE=0";
+  if (!cfg.updateKey) return "no update key is pinned yet (run install.sh once more, see Workers > Manual update)";
+  if (path.resolve(self) !== path.resolve(updatePaths(home).live)) return `this file is not the installed worker ${updatePaths(home).live}`;
+  return null;
+}
+
+export function updateCheckSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.VENSTUDIO_UPDATE_CHECK_SECONDS);
+  return Number.isFinite(n) && n >= 5 && n <= 86_400 ? n : UPDATE_CHECK_SECONDS;
+}
+
+/** The Remotion project an update may replace: <home>/remotion only. A VENSTUDIO_REMOTION_DIR project is hand-managed. */
+export function updatableRemotionDir(home: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.VENSTUDIO_REMOTION_DIR) return null;
+  const dir = path.join(home, "remotion");
+  return existsSync(path.join(dir, "scripts", "probe.mjs")) ? dir : null;
+}
+
+/** SHA-256 of the bundle the installed project was unpacked from; "unknown" without a marker; null without a project. */
+export async function installedBundleSha(home: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const dir = updatableRemotionDir(home, env);
+  if (!dir) return null;
+  const text = (await readFile(path.join(dir, BUNDLE_MARKER), "utf8").catch(() => "")).trim();
+  return /^[0-9a-f]{64}$/.test(text) ? text : "unknown";
+}
+
+/** Runs one step of a Remotion install; rejects with the tail of its output. */
+function runStep(cmd: string, args: string[], cwd: string, signal: AbortSignal, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let tail = "";
+    const child = spawn(cmd, args, { cwd, signal, timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
+    const keep = (c: Buffer) => {
+      tail = (tail + c.toString("utf8")).slice(-1500);
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+    child.on("error", (err) => reject(err));
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`${path.basename(cmd)} ${args[0] ?? ""} exited with ${String(code)}: ${tail.trim().slice(-600)}`))));
+  });
+}
+
+function npmPath(): string {
+  const beside = path.join(path.dirname(process.execPath), "npm");
+  return existsSync(beside) ? beside : "npm";
+}
+
+/**
+ * Builds the new Remotion project next to the live one (<home>/remotion.next) and runs the full probe there. The live
+ * project keeps rendering, and remotion-2d stays reported from it, until swapRemotionInstall. Unchanged dependencies
+ * are hard-linked from the live project (its build cache excluded, so nothing shared is written); changed ones are
+ * installed fresh.
+ */
+export async function stageRemotionBundle(
+  home: string,
+  body: Uint8Array,
+  sha256: string,
+  signal: AbortSignal,
+  run: typeof runStep = runStep,
+): Promise<void> {
+  const live = path.join(home, "remotion");
+  const next = `${live}.next`;
+  await rm(next, { recursive: true, force: true });
+  await writeProjectBundle(JSON.parse(Buffer.from(body).toString("utf8")), next);
+  const deps = async (dir: string) => {
+    try {
+      return canonicalJson((JSON.parse(await readFile(path.join(dir, "package.json"), "utf8")) as { dependencies?: unknown }).dependencies ?? {});
+    } catch {
+      return null;
+    }
+  };
+  const same = existsSync(path.join(live, "node_modules")) && (await deps(live)) !== null && (await deps(live)) === (await deps(next));
+  if (same) {
+    await run("cp", ["-al", path.join(live, "node_modules"), path.join(next, "node_modules")], next, signal, 10 * 60_000);
+    await rm(path.join(next, "node_modules", ".cache"), { recursive: true, force: true });
+  } else {
+    await run(npmPath(), ["install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"], next, signal, 30 * 60_000);
+    await run(path.join(next, "node_modules", ".bin", "remotion"), ["browser", "ensure"], next, signal, 15 * 60_000);
+  }
+  await run(process.execPath, [path.join(next, "scripts", "probe.mjs"), "--full"], next, signal, 20 * 60_000);
+  await run(process.execPath, [path.join(next, "scripts", "probe.mjs")], next, signal, 2 * 60_000);
+  await writeFile(path.join(next, BUNDLE_MARKER), `${sha256}\n`);
+}
+
+/** Replaces <home>/remotion with the staged project; the old one is kept as remotion.prev. Between jobs only. */
+export async function swapRemotionInstall(home: string): Promise<void> {
+  const live = path.join(home, "remotion");
+  const next = `${live}.next`;
+  const prev = `${live}.prev`;
+  if (!existsSync(next)) throw new Error("no staged Remotion project");
+  await rm(prev, { recursive: true, force: true });
+  await rename(live, prev);
+  try {
+    await rename(next, live);
+  } catch (err) {
+    await rename(prev, live);
+    throw err;
+  }
+  clearRemotionProbeCache();
+}
+
+/** Runs `selftest` from a file and returns what it printed. */
+export function runSelftest(file: string, home: string, timeoutMs = 120_000): Promise<{ ok: boolean; version: string | null; reason: string }> {
+  return new Promise((resolve) => {
+    let out = "";
+    let err = "";
+    const child = spawn(process.execPath, ["--no-warnings", file, "selftest", "--home", home], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+      env: process.env,
+    });
+    child.stdout.on("data", (c: Buffer) => {
+      out = (out + c.toString("utf8")).slice(-4000);
+    });
+    child.stderr.on("data", (c: Buffer) => {
+      err = (err + c.toString("utf8")).slice(-1000);
+    });
+    child.on("error", (e) => resolve({ ok: false, version: null, reason: `the self-test could not start: ${e.message}` }));
+    child.on("close", (code) => {
+      let parsed: { ok?: unknown; version?: unknown; reason?: unknown } = {};
+      try {
+        parsed = JSON.parse(out.trim().split("\n").pop() ?? "") as typeof parsed;
+      } catch {}
+      const version = typeof parsed.version === "string" ? parsed.version : null;
+      if (code === 0 && parsed.ok === true) return resolve({ ok: true, version, reason: "" });
+      const why = typeof parsed.reason === "string" ? parsed.reason : (err.trim() || out.trim()).slice(-300) || "no output";
+      resolve({ ok: false, version, reason: `the self-test exited with ${String(code)}: ${why}` });
+    });
+  });
+}
+
+/** `selftest`: loads, checks the portal and this machine's capabilities, claims nothing. Prints one JSON line. */
+export async function selftest(home: string): Promise<boolean> {
+  const out: Record<string, unknown> = { ok: false, version: VERSION };
+  try {
+    const cfg = await loadConfig(home);
+    const health = await fetch(`${cfg.portalUrl}/api/health`, { signal: AbortSignal.timeout(15_000) });
+    if (!health.ok) throw new Error(`portal health returned HTTP ${health.status}`);
+    const client = new PortalClient(cfg.portalUrl, cfg.token);
+    const info = await client.json<UpdateInfoResponse>("GET", "/api/worker/update", undefined, 2);
+    out.portalKeyId = info?.keyId ?? null;
+    if (cfg.updateKey && info?.keyId && info.keyId !== updateKeyId(cfg.updateKey)) {
+      throw new Error(`the portal signs with key ${info.keyId}, but this worker trusts ${updateKeyId(cfg.updateKey)}`);
+    }
+    const caps = await detectCapabilities(home);
+    out.capabilities = caps;
+    if (!caps.includes("echo")) throw new Error("no capabilities detected");
+    out.ok = true;
+  } catch (err) {
+    out.reason = err instanceof Error ? err.message : String(err);
+  }
+  console.log(JSON.stringify(out));
+  return out.ok === true;
+}
+
+/** `pin-key`: stores the portal's update key in config.json (install.sh runs this with the key it carries). */
+export async function pinUpdateKey(home: string, key: string): Promise<"pinned" | "unchanged" | "replaced"> {
+  parseUpdateKey(key);
+  const cfg = await loadConfig(home);
+  if (cfg.updateKey === key) return "unchanged";
+  const had = Boolean(cfg.updateKey);
+  await saveConfig(home, { ...cfg, updateKey: key });
+  return had ? "replaced" : "pinned";
+}
+
+async function reportUpdate(client: PortalClient, body: UpdateReportRequest): Promise<void> {
+  try {
+    await client.json("POST", "/api/worker/update/report", { ...body, detail: body.detail.slice(0, 500) }, 2);
+  } catch (err) {
+    log(`could not report the update result: ${(err as Error).message}`);
+  }
+}
+
+export type UpdateCheckOutcome = { restart: boolean; bundle?: { file: UpdateManifestFile; body: Buffer } };
+
+/**
+ * One update check, between jobs. Returns restart: true once a verified, self-tested new worker file is in place.
+ * Verification failures are reported to the portal; network trouble is only logged and tried again later.
+ */
+export async function checkForUpdate(client: PortalClient, cfg: WorkerConfig, home: string): Promise<UpdateCheckOutcome> {
+  const p = updatePaths(home);
+  const key = cfg.updateKey as string;
+  const ownSha = await sha256File(p.live);
+  const bundleSha = await installedBundleSha(home);
+  let res: UpdateCheckResponse | null;
+  try {
+    res = await client.json<UpdateCheckResponse>(
+      "POST",
+      "/api/worker/update",
+      { version: VERSION, files: { [UPDATE_WORKER_FILE]: ownSha, [UPDATE_BUNDLE_FILE]: bundleSha }, keyId: updateKeyId(key) },
+      2,
+    );
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) return { restart: false }; // portal older than 0.8.0's
+    throw err;
+  }
+  const raw = res?.manifest;
+  if (!raw) return { restart: false };
+  const claimed = typeof (raw as { version?: unknown }).version === "string" ? String((raw as { version: string }).version).slice(0, 40) : "unknown";
+  const state = await readUpdateState(home);
+  const check = checkManifest(raw, { publicKey: key, workerId: cfg.workerId, now: Date.now(), lastIssuedAt: state.lastIssuedAt ?? null });
+  if (!check.ok) {
+    log(`update refused: ${check.reason}`);
+    await reportUpdate(client, { status: "refused", version: claimed, detail: check.reason });
+    return { restart: false };
+  }
+  const m = check.manifest;
+  state.lastIssuedAt = m.issuedAt;
+  const plan = planUpdate(m, { version: VERSION, workerSha: ownSha, bundleSha, failed: state.failed ?? {} });
+  const said = plan.refused ?? plan.notice;
+  const fresh = said !== null && state.lastNotice !== `${m.release}: ${said}`;
+  if (said !== null) state.lastNotice = `${m.release}: ${said}`;
+  await writeUpdateState(home, state);
+  if (fresh) {
+    log(plan.refused ? `update refused: ${plan.refused}` : plan.notice!);
+    if (plan.refused) await reportUpdate(client, { status: "refused", version: m.version, detail: plan.refused });
+  }
+  if (plan.worker) {
+    const file = plan.worker;
+    try {
+      await stageWorkerFile(home, file, await client.installFile(file.name, file.bytes));
+    } catch (err) {
+      if (err instanceof UpdateRefused) {
+        log(`update refused: ${err.message}`);
+        await reportUpdate(client, { status: "refused", version: m.version, detail: err.message });
+        return { restart: false };
+      }
+      throw err;
+    }
+    log(`update v${m.version}: signature and checksum verified; running its self-test`);
+    const st = await runSelftest(p.next, home);
+    const reason = !st.ok ? st.reason : st.version !== m.version ? `the self-test reported v${st.version ?? "?"}, the manifest says v${m.version}` : null;
+    if (reason) {
+      await rm(p.nextDir, { recursive: true, force: true });
+      const latest = await readUpdateState(home);
+      latest.failed = { ...latest.failed, [file.sha256]: `self-test failed: ${reason}` };
+      await writeUpdateState(home, latest);
+      log(`update v${m.version} rolled back: self-test failed: ${reason}`);
+      await reportUpdate(client, { status: "rolled_back", version: m.version, detail: `self-test failed: ${reason}` });
+      return { restart: false };
+    }
+    await swapInWorker(home, { version: m.version, sha256: file.sha256 });
+    log(`update v${m.version}: installed (previous v${VERSION} kept in ${p.prevDir}); restarting`);
+    return { restart: true };
+  }
+  if (plan.bundle) {
+    let body: Buffer;
+    try {
+      body = await client.installFile(plan.bundle.name, plan.bundle.bytes);
+      verifyUpdateBytes(plan.bundle, body);
+    } catch (err) {
+      if (!(err instanceof UpdateRefused)) throw err;
+      log(`update refused: ${err.message}`);
+      await reportUpdate(client, { status: "refused", version: m.version, detail: err.message });
+      return { restart: false };
+    }
+    return { restart: false, bundle: { file: plan.bundle, body } };
+  }
+  return { restart: false };
+}
+
+/** A Remotion project being built in the background (see stageRemotionBundle). */
+interface BundleTask {
+  file: UpdateManifestFile;
+  abort: AbortController;
+  promise: Promise<void>;
+  result?: { ok: true } | { ok: false; reason: string };
+}
+
+function startBundleTask(home: string, file: UpdateManifestFile, body: Buffer): BundleTask {
+  const abort = new AbortController();
+  const task: BundleTask = { file, abort, promise: Promise.resolve() };
+  log(`Remotion templates ${file.sha256.slice(0, 12)} verified; building and probing them in the background (remotion-2d stays on the current ones)`);
+  task.promise = stageRemotionBundle(home, body, file.sha256, abort.signal).then(
+    () => {
+      task.result = { ok: true };
+    },
+    (err: unknown) => {
+      task.result = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    },
+  );
+  return task;
+}
+
+/** Between jobs: puts a finished Remotion build in place, or records why it failed. */
+async function finishBundleTask(task: BundleTask, client: PortalClient, home: string): Promise<void> {
+  const r = task.result;
+  if (!r) return;
+  if (r.ok) {
+    await swapRemotionInstall(home);
+    log(`Remotion templates ${task.file.sha256.slice(0, 12)} installed; the previous project is kept in ${path.join(home, "remotion.prev")}`);
+    await reportUpdate(client, { status: "ok", version: VERSION, detail: `Remotion templates updated (${task.file.sha256.slice(0, 12)})` });
+    return;
+  }
+  await rm(path.join(home, "remotion.next"), { recursive: true, force: true });
+  const state = await readUpdateState(home);
+  state.failed = { ...state.failed, [task.file.sha256]: `Remotion templates failed: ${r.reason.slice(0, 200)}` };
+  await writeUpdateState(home, state);
+  log(`Remotion templates update failed; remotion-2d stays on the current ones: ${r.reason}`);
+  await reportUpdate(client, { status: "failed", version: VERSION, detail: `Remotion templates failed their probe, kept the current ones: ${r.reason}` });
+}
+
+/** Runs the new version as a child with this process's output, passing stop signals on. Resolves with its exit. */
+function runChildWorker(file: string, args: string[]): Promise<{ code: number; signalled: boolean }> {
+  return new Promise((resolve) => {
+    let signalled = false;
+    // Its own process group, so a signal sent to this group reaches it exactly once, through `forward` (a second
+    // SIGTERM would stop it mid-job instead of after the job).
+    const child = spawn(process.execPath, [...process.execArgv, file, ...args], {
+      stdio: "inherit",
+      detached: true,
+      env: { ...process.env, VENSTUDIO_UPDATED_FROM: VERSION },
+    });
+    const forward = (sig: NodeJS.Signals) => {
+      signalled = true;
+      child.kill(sig);
+    };
+    const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
+    for (const s of signals) process.on(s, forward);
+    const done = (code: number) => {
+      for (const s of signals) process.removeListener(s, forward);
+      resolve({ code, signalled });
+    };
+    child.on("error", () => done(1));
+    child.on("exit", (code, sig) => done(code ?? (sig ? 128 : 1)));
+  });
+}
+
+/**
+ * Starts the swapped-in version in place of this process and waits for it, passing stop signals on. If it exits with
+ * an error before its first claim, it is started once more; after the second failure the previous file is restored
+ * and this (old) process carries on. Same rule as run.sh, which covers the case where this process is gone. In daemon
+ * mode this process stays as the new version's parent (about 40 MB) until the daemon stops.
+ */
+export async function superviseUpdatedWorker(home: string, argv: readonly string[], deadline: number): Promise<{ kind: "exited"; code: number } | { kind: "rolled-back" }> {
+  const live = updatePaths(home).live;
+  for (;;) {
+    const args = restartArgv(argv, deadline, Date.now());
+    const r = await runChildWorker(live, args);
+    const code = r.code;
+    // Stopped from outside (scheduler, systemd, Ctrl-C): not a failed start.
+    if (code === 0 || r.signalled) return { kind: "exited", code };
+    const step = await noteStartFailure(home);
+    if (step === "none") return { kind: "exited", code };
+    if (step === "retry") {
+      log(`the new version exited with ${code} before its first claim; starting it once more`);
+      continue;
+    }
+    log(`the new version exited with ${code} twice before its first claim; restored v${VERSION}`);
+    return { kind: "rolled-back" };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Running a job
 
 export async function runJob(client: PortalClient, job: ClaimedJob, home: string): Promise<void> {
@@ -2933,7 +3659,8 @@ export const CLAIM_WAIT_SECONDS = 25;
  *   tick   - run until the queue is empty, then exit.
  *   hold   - stay online until the time budget is used, picking up jobs within seconds (Muse hourly task).
  *   daemon - run forever.
- * A job that starts before the budget ends always runs to completion.
+ * A job that starts before the budget ends always runs to completion. Update checks run only between jobs; when one
+ * installs a new worker file, the loop ends with `restart: true` and the caller starts the new version.
  */
 export async function loop(opts: {
   home: string;
@@ -2941,11 +3668,13 @@ export async function loop(opts: {
   maxMinutes: number;
   pollSeconds: number;
   claimWaitSeconds?: number;
-}) {
+}): Promise<{ restart: boolean; deadline: number }> {
   const cfg = await loadConfig(opts.home);
   const client = new PortalClient(cfg.portalUrl, cfg.token);
   const release = await acquireLock(opts.home);
   const deadline = Date.now() + opts.maxMinutes * 60_000;
+  let restart = false;
+  let bundleTask: BundleTask | null = null;
   const timeLeft = () => deadline - Date.now();
   let stopping = false;
   const stop = () => {
@@ -2955,15 +3684,50 @@ export async function loop(opts: {
   process.once("SIGINT", stop);
 
   try {
-    const capabilities = await detectCapabilities(opts.home);
+    let capabilities = await detectCapabilities(opts.home);
     const budget = opts.mode === "daemon" ? "" : `, budget ${opts.maxMinutes} min`;
     log(`${cfg.name} v${VERSION} ${opts.mode} mode${budget}, capabilities: ${capabilities.join(", ")}`);
+
+    // Self-update bookkeeping: are we a freshly installed version, or was one just rolled back?
+    const self = fileURLToPath(import.meta.url);
+    const start = await reconcileUpdateOnStart(opts.home, await sha256File(self).catch(() => ""));
+    if (start.kind === "rolled-back") {
+      log(`update v${start.version} rolled back: ${start.reason}`);
+      await reportUpdate(client, { status: "rolled_back", version: start.version, detail: start.reason });
+    }
+    let confirming = start.kind === "starting" ? start.pending : null;
+    const updatesOff = selfUpdateDisabledReason(cfg, opts.home, self);
+    if (updatesOff) log(`automatic updates are off here: ${updatesOff}`);
+    const checkEveryMs = updateCheckSeconds() * 1000;
+    // A version still being confirmed does not look for another one first.
+    let nextUpdateCheck = updatesOff || confirming ? Infinity : 0;
+
     let ran = 0;
     let idleBackoff = opts.pollSeconds;
     while (!stopping) {
       if (opts.mode !== "daemon" && timeLeft() <= 0) {
         log(`time budget used after ${ran} job(s); exiting until next wake`);
         break;
+      }
+      // Between jobs: put a finished Remotion build in place, then look for an update.
+      if (bundleTask?.result) {
+        const task: BundleTask = bundleTask;
+        bundleTask = null;
+        await finishBundleTask(task, client, opts.home).catch((err) => log(`Remotion templates update: ${(err as Error).message}`));
+        capabilities = await detectCapabilities(opts.home);
+      }
+      if (Date.now() >= nextUpdateCheck) {
+        nextUpdateCheck = Date.now() + checkEveryMs;
+        try {
+          const outcome = await checkForUpdate(client, cfg, opts.home);
+          if (outcome.restart) {
+            restart = true;
+            break;
+          }
+          if (outcome.bundle && !bundleTask) bundleTask = startBundleTask(opts.home, outcome.bundle.file, outcome.bundle.body);
+        } catch (err) {
+          log(`update check failed (will try again later): ${(err as Error).message}`);
+        }
       }
       // Never hold a claim open past the budget.
       const maxWait = opts.claimWaitSeconds ?? CLAIM_WAIT_SECONDS;
@@ -2980,6 +3744,8 @@ export async function loop(opts: {
         });
       } catch (err) {
         if (err instanceof HttpError && err.status === 401) throw new Error("Portal rejected the worker token (revoked?). Enroll again.");
+        // A freshly installed version whose claims the portal refuses is broken: exit with an error so it is rolled back.
+        if (confirming && err instanceof HttpError && err.status < 500) throw new Error(`v${VERSION} was just installed and the portal refuses its claim: ${err.message}`);
         log(`claim failed: ${(err as Error).message}`);
         if (opts.mode === "tick") break;
         const pause = Math.min(idleBackoff * 1000, opts.mode === "hold" ? Math.max(0, timeLeft()) : 300_000);
@@ -2988,6 +3754,14 @@ export async function loop(opts: {
         continue;
       }
       idleBackoff = opts.pollSeconds;
+      if (confirming) {
+        const from = confirming.from;
+        confirming = null;
+        await confirmUpdateStarted(opts.home);
+        log(`update to v${VERSION} confirmed (from v${from})`);
+        await reportUpdate(client, { status: "ok", version: VERSION, detail: `updated from v${from}` });
+        if (!updatesOff) nextUpdateCheck = Date.now() + checkEveryMs;
+      }
       if (!res) {
         if (opts.mode === "tick") {
           log(ran === 0 ? "queue empty" : `queue empty after ${ran} job(s)`);
@@ -3001,10 +3775,20 @@ export async function loop(opts: {
       ran++;
     }
   } finally {
+    if (bundleTask && !bundleTask.result) {
+      // A one-shot tick waits for the build; hold and daemon stop it (it starts again on the next check).
+      if (opts.mode !== "tick" || stopping) bundleTask.abort.abort();
+      await bundleTask.promise;
+      if (bundleTask.abort.signal.aborted) await rm(path.join(opts.home, "remotion.next"), { recursive: true, force: true });
+      else await finishBundleTask(bundleTask, client, opts.home).catch((err) => log(`Remotion templates update: ${(err as Error).message}`));
+    } else if (bundleTask?.result) {
+      await finishBundleTask(bundleTask, client, opts.home).catch((err) => log(`Remotion templates update: ${(err as Error).message}`));
+    }
     process.removeListener("SIGTERM", stop);
     process.removeListener("SIGINT", stop);
     await release();
   }
+  return { restart, deadline };
 }
 
 // ---------------------------------------------------------------------------
@@ -3026,7 +3810,8 @@ export async function enroll(opts: { home: string; portal: string; code: string;
 
 async function status(home: string) {
   const cfg = await loadConfig(home);
-  console.log(JSON.stringify({ name: cfg.name, workerId: cfg.workerId, portalUrl: cfg.portalUrl, version: VERSION, home }, null, 2));
+  const updateKey = cfg.updateKey ? updateKeyId(cfg.updateKey) : null;
+  console.log(JSON.stringify({ name: cfg.name, workerId: cfg.workerId, portalUrl: cfg.portalUrl, version: VERSION, home, updateKey }, null, 2));
   const res = await fetch(`${cfg.portalUrl}/api/health`, { signal: AbortSignal.timeout(10_000) });
   console.log(`portal health: HTTP ${res.status}`);
   console.log(`capabilities: ${(await detectCapabilities(home)).join(", ")}`);
@@ -3058,8 +3843,10 @@ Usage:
   node venstudio-worker.ts hold   [--max-minutes 55]   stay online for the budget (Muse hourly task)
   node venstudio-worker.ts daemon [--poll 30]
   node venstudio-worker.ts status
+  node venstudio-worker.ts selftest                    load, check the portal and capabilities; claims nothing
+  node venstudio-worker.ts pin-key --key <base64>      pin the portal's update key (used by install.sh)
   node venstudio-worker.ts unpack-bundle --file <bundle.json> --dir <dir>   (used by install.sh --with-remotion)
-Env: VENSTUDIO_HOME, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
+Env: VENSTUDIO_HOME, VENSTUDIO_AUTO_UPDATE=0 (no self-update), VENSTUDIO_UPDATE_CHECK_SECONDS, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
 
 /**
  * Node's fetch only uses HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1 is set at startup.
@@ -3075,6 +3862,20 @@ function ensureProxyEnv(): boolean {
   process.exit(child.status ?? 1);
 }
 
+/** Runs a mode; when an update was installed, runs the new version in its place (see superviseUpdatedWorker). */
+async function runMode(home: string, mode: WorkerMode, argv: string[], maxMinutes: number, pollSeconds: number): Promise<void> {
+  const r = await loop({ home, mode, maxMinutes, pollSeconds });
+  if (!r.restart) return;
+  const outcome = await superviseUpdatedWorker(home, argv, r.deadline);
+  if (outcome.kind === "exited") {
+    if (outcome.code !== 0) process.exitCode = outcome.code;
+    return;
+  }
+  // Rolled back: this process is the previous version again; carry on for the rest of the budget.
+  const left = mode === "daemon" ? Infinity : Math.max(0, (r.deadline - Date.now()) / 60_000);
+  return runMode(home, mode, argv, left, pollSeconds);
+}
+
 export async function main(argv: string[]) {
   const { command, flags } = parseArgs(argv);
   const home = flags.home ? path.resolve(flags.home) : defaultHome();
@@ -3084,17 +3885,30 @@ export async function main(argv: string[]) {
       if (!flags.portal || !flags.code) throw new Error("enroll needs --portal and --code");
       return enroll({ home, portal: flags.portal, code: flags.code, name: flags.name ?? os.hostname() });
     case "tick":
-      return loop({ home, mode: "tick", maxMinutes: Number(flags["max-minutes"] ?? 50), pollSeconds: 30 });
+      return runMode(home, "tick", argv, Number(flags["max-minutes"] ?? 50), 30);
     case "hold":
-      return loop({ home, mode: "hold", maxMinutes: Number(flags["max-minutes"] ?? 55), pollSeconds: 20 });
+      return runMode(home, "hold", argv, Number(flags["max-minutes"] ?? 55), 20);
     case "daemon":
-      return loop({ home, mode: "daemon", maxMinutes: Infinity, pollSeconds: Number(flags.poll ?? 30) });
+      return runMode(home, "daemon", argv, Infinity, Number(flags.poll ?? 30));
     case "status":
       return status(home);
+    case "selftest":
+      if (!(await selftest(home))) process.exitCode = 1;
+      return;
+    case "pin-key": {
+      // Used by install.sh, with the key the portal templated into it.
+      if (!flags.key) throw new Error("pin-key needs --key");
+      const r = await pinUpdateKey(home, flags.key);
+      log(`update key ${updateKeyId(flags.key)} ${r === "unchanged" ? "already pinned" : r === "replaced" ? "pinned (replaced the previous key)" : "pinned"}`);
+      return;
+    }
     case "unpack-bundle": {
       // Used by install.sh --with-remotion.
       if (!flags.file || !flags.dir) throw new Error("unpack-bundle needs --file and --dir");
-      const count = await writeProjectBundle(JSON.parse(await readFile(flags.file, "utf8")), flags.dir);
+      const bytes = await readFile(flags.file);
+      const count = await writeProjectBundle(JSON.parse(bytes.toString("utf8")), flags.dir);
+      // Which bundle this project came from, so update checks can tell when the portal serves a newer one.
+      await writeFile(path.join(path.resolve(flags.dir), BUNDLE_MARKER), `${createHash("sha256").update(bytes).digest("hex")}\n`);
       log(`unpacked ${count} files into ${path.resolve(flags.dir)}`);
       return;
     }

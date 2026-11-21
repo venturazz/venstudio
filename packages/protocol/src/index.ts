@@ -10,6 +10,9 @@
  *   PUT  /api/worker/jobs/:id/artifacts/:name    raw body       -> ArtifactResponse
  *   POST /api/worker/jobs/:id/complete           CompleteRequest -> { ok: true }
  *   POST /api/worker/jobs/:id/fail               FailRequest    -> { ok: true }
+ *   GET  /api/worker/update                      -> UpdateInfoResponse (the worker's self-test)
+ *   POST /api/worker/update                      UpdateCheckRequest -> UpdateCheckResponse (worker 0.8.0+)
+ *   POST /api/worker/update/report               UpdateReportRequest -> { ok: true }
  *
  * This file contains types only, so the worker can import it with
  * `import type` and run without any npm dependencies.
@@ -85,7 +88,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.7.0";
+export const WORKER_VERSION = "0.8.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
@@ -143,4 +146,53 @@ export interface FailRequest {
 
 export interface ApiError {
   error: string;
+}
+
+// ---------------------------------------------------------------------------
+// Signed self-update (worker 0.8.0+). See docs/worker-updates.md and apps/portal/lib/update-manifest.ts.
+
+export interface UpdateManifestFile {
+  name: "venstudio-worker.ts" | "render-remotion.json";
+  sha256: string;
+  bytes: number;
+}
+
+/** Signed by the portal's Ed25519 key over "venstudio-update-manifest-v1\n" + canonical JSON without `signature`. */
+export interface UpdateManifest {
+  format: 1;
+  keyId: string;
+  workerId: string;
+  version: string;
+  pin: boolean;
+  release: string;
+  issuedAt: string;
+  expiresAt: string;
+  files: UpdateManifestFile[];
+  signature: string;
+}
+
+export interface UpdateCheckRequest {
+  version: string;
+  /** SHA-256 of each file the worker has; the bundle is null without a Remotion project, "unknown" without its marker. */
+  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null };
+  /** Id of the key this worker pinned, if any. */
+  keyId?: string;
+}
+
+export interface UpdateCheckResponse {
+  /** Null when nothing is offered (current, updates off, or waiting for the owner's approval). */
+  manifest: UpdateManifest | null;
+  reason: "current" | "off" | "awaiting-approval" | "approved" | "auto";
+}
+
+export interface UpdateInfoResponse {
+  keyId: string;
+  mode: "auto" | "approve" | "off";
+}
+
+export interface UpdateReportRequest {
+  status: "ok" | "refused" | "rolled_back" | "failed";
+  /** The version this result is about (the one installed for "ok", the one refused or rolled back otherwise). */
+  version: string;
+  detail: string;
 }
