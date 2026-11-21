@@ -9,7 +9,7 @@
 import React, { useEffect, useState } from "react";
 import { AbsoluteFill, Audio, Sequence, continueRender, delayRender, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { DATA_KINDS, DataElement, Particles, Plate, TEXT_KINDS, TextElement, ramp } from "./elements.tsx";
-import { captionAt, captionLayout, layerFrame, timelineFor, transitionFor, type Scene, type TemplateProps, type TransitionName } from "./props.ts";
+import { captionAt, captionLayout, layerFrame, timelineFor, transitionFor, type Scene, type TemplateProps, type TransitionName } from "../../props.ts";
 import { FONT_FAMILY, paletteFor, type Palette } from "./theme.ts";
 
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;

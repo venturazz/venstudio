@@ -8,7 +8,7 @@
  */
 import React from "react";
 import { Easing, Img, interpolate, spring, staticFile } from "remotion";
-import { barHeights, formatCount, gaugeFraction, seeded, type SceneElement } from "./props.ts";
+import { barHeights, formatCount, gaugeFraction, seeded, type SceneElement } from "../../props.ts";
 import { FONT_FAMILY, type Palette } from "./theme.ts";
 
 export type ElementProps = {
