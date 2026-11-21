@@ -1,5 +1,6 @@
 /** Builds the render-video job payload from the storyboard, the picked assets and the narration. Pure. */
 import { VIDEO_FORMATS, type Format } from "./catalog.ts";
+import { DEFAULT_RENDER_ENGINE, engineExists, planCrossFades } from "./render-engine.ts";
 
 export type Motion = "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
 const MOTIONS: readonly Motion[] = ["zoom-in", "pan-left", "zoom-out", "pan-right"];
@@ -37,6 +38,10 @@ export interface RenderPayload {
   width: number;
   height: number;
   fps: number;
+  /** Engine the worker must dispatch to. Until this field exists nothing dispatches. */
+  engine: string;
+  /** Cross-fade between adjacent shots. 0 means hard cuts. */
+  transitionSec: number;
   shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion }>;
   narrationAssetId: string;
   narrationSec: number;
@@ -62,6 +67,10 @@ export interface RenderInput {
   /** Caption lines in speaking order. Timed across the narration by length. */
   captions: string[];
   targetLufs: number;
+  /** Engine to plan for. Defaults to the stills engine, which is the only one a worker runs today. */
+  engine?: string;
+  /** Cross-fade between adjacent shots. 0 or absent means hard cuts, which is what the worker did before. */
+  transitionSec?: number;
   /** Template pacing limit for one shot. */
   maxShotSeconds: number;
   /** Newest font in the library, if any. */
@@ -110,10 +119,18 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
   if (missing.length > 0) issues.push(`No image for ${missing.join(", ")}`);
   if (!i.narrationAssetId) issues.push("There is no narration to render");
   if (!(i.narrationSec > 0)) issues.push("The narration length is unknown");
+  const engine = i.engine ?? DEFAULT_RENDER_ENGINE;
+  if (!engineExists(engine)) issues.push(`Unknown render engine "${engine}"`);
   if (issues.length > 0) return { ok: false, issues };
 
-  const secs = rescale(i.shots.map((s) => s.seconds), i.narrationSec, i.maxShotSeconds);
-  const total = secs.reduce((a, b) => a + b, 0);
+  // A cross-fade shortens the timeline by the overlap, so the shots must grow by it or the narration
+  // would run past the video. With no transition this is exactly the old target.
+  const fadeSec = i.shots.length > 1 ? i.transitionSec ?? 0 : 0;
+  const target = i.narrationSec + (i.shots.length - 1) * fadeSec;
+  const secs = rescale(i.shots.map((s) => s.seconds), target, i.maxShotSeconds);
+  const fade = planCrossFades(secs, fadeSec);
+  if (!fade.ok) return { ok: false, issues: fade.issues };
+  const total = fade.totalSec;
   if (total < i.narrationSec - COVER_TOLERANCE_SEC) {
     return {
       ok: false,
@@ -135,6 +152,8 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
     width: f.width,
     height: f.height,
     fps: f.fps,
+    engine,
+    transitionSec: fade.transitionSec,
     shots,
     narrationAssetId: i.narrationAssetId as string,
     narrationSec: round(i.narrationSec),

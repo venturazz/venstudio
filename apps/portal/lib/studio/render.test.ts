@@ -75,3 +75,35 @@ test("buildRenderPayload sends the font asset and lists it as an input", () => {
   assert.ok(none.ok);
   if (none.ok) assert.equal(none.payload.fontAssetId, null);
 });
+
+test("buildRenderPayload names the engine, stills unless asked otherwise", () => {
+  const d = buildRenderPayload(base);
+  assert.ok(d.ok);
+  if (d.ok) {
+    assert.equal(d.payload.engine, "ffmpeg-stills");
+    assert.equal(d.payload.transitionSec, 0);
+  }
+  const r = buildRenderPayload({ ...base, engine: "remotion-2d" });
+  assert.ok(r.ok);
+  if (r.ok) assert.equal(r.payload.engine, "remotion-2d");
+  const bad = buildRenderPayload({ ...base, engine: "no-such-engine" });
+  assert.equal(bad.ok, false);
+  assert.match(!bad.ok ? bad.issues[0] : "", /Unknown render engine/);
+});
+
+test("a cross-fade lengthens the shots by the overlap so the narration still fits", () => {
+  const r = buildRenderPayload({ ...base, transitionSec: 0.5 });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const sum = r.payload.shots.reduce((n, s) => n + s.seconds, 0);
+  // three shots, two overlaps of 0.5 s: the shots grow to 16 s and the video is 15 s
+  assert.ok(Math.abs(sum - 16) < 0.01, String(sum));
+  assert.equal(r.payload.transitionSec, 0.5);
+  assert.ok(Math.abs(r.payload.durationSec - 15) < 0.01, String(r.payload.durationSec));
+});
+
+test("buildRenderPayload refuses a cross-fade that would eat a shot", () => {
+  const r = buildRenderPayload({ ...base, transitionSec: 4 });
+  assert.equal(r.ok, false);
+  assert.match(!r.ok ? r.issues[0] : "", /leaves shot/);
+});
