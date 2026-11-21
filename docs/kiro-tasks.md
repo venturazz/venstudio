@@ -86,3 +86,50 @@ Hanya setelah P0–P4. Belum pernah dijalankan.
 
 Untuk setiap P: perintah, keluaran, dan hasilnya (lolos/gagal). Kalau ragu maksud sebuah modul
 studio, tanya dulu — jangan tebak.
+
+---
+
+# Fase berikutnya — mesin render
+
+Status: **paruh portal sudah selesai dan ter-push** (`bc4f9c8`, CI hijau). Yang tersisa hanya paruh
+worker, dan itu milikmu — `apps/worker/venstudio-worker.ts` satu berkas, jadi aku tidak menyentuhnya.
+
+## Kenapa
+
+Render yang keluar berupa slideshow bernarasi. Sebabnya bukan planner: `catalog.ts` mendeklarasikan
+enam mesin, tapi worker tidak menyebut kata `engine` sekali pun, dan satu-satunya jalur render
+(`buildRenderArgs`) **mewajibkan satu gambar per shot** dengan empat varian `zoompan` linear dan
+`concat` keras. Renderer dengan satu primitif hanya bisa menghasilkan primitif itu.
+
+## Yang sudah ada di pohon — pakai, jangan tulis ulang
+
+`apps/portal/lib/studio/render-engine.ts` (murni, 16 tes):
+
+- `engineIssues({ engine, reported })` — menolak mesin yang kapabilitasnya tidak dilaporkan worker,
+  dan mesin yang katalognya tandai tidak dijalankan worker (`provider`/`blender`).
+- `planCrossFades(seconds, transitionSec)` — `offsets` (argumen `offset=` tiap `xfade`), `starts`
+  (mulai tiap shot), `totalSec`, dan penolakan kalau fade memakan shot.
+- `transitionFor(index)` — transisi ditentukan posisi, jadi render ulang storyboard sama hasilnya.
+- `MOTION_TOKENS` / `parseMotionTokens` / `motionCoverage` / `coverageIssues` / `engineMotionIssues` —
+  gerbang variasi dari `flat-vector-explainer-video`.
+
+`render.ts` kini membawa `engine` (default `ffmpeg-stills`) dan `transitionSec` (default 0) di
+payload. **Dengan `transitionSec: 0` rencananya identik dengan sebelumnya** — tidak ada tes lama yang
+berubah perilaku.
+
+## Yang perlu kamu kerjakan
+
+1. **Dispatch.** Baca `engine` dan pilih jalur render. `ffmpeg-stills` = `buildRenderArgs` yang
+   sekarang. Mesin lain: tolak dengan pesan jelas — **jangan diam-diam jatuh ke stills**, justru
+   fallthrough itu yang menghasilkan slideshow.
+2. **Laporkan kapabilitas.** `detectCapabilities()` sekarang melaporkan `ffmpeg` (+`tts-kokoro`).
+   Tambahkan lewat `VENSTUDIO_EXTRA_CAPS` sesuai kemampuan nyata mesin Muse. Sampai dilaporkan,
+   planner tidak akan pernah boleh memilih mesin itu.
+3. **Pakai `transitionSec`.** Kalau > 0, susun `xfade` memakai `planCrossFades` — jangan hitung offset
+   sendiri di dalam string shell. Durasi akhir video adalah `totalSec`; `render.ts` sudah memanjangkan
+   shot sebesar tumpang tindihnya supaya narasi tidak melewati video.
+4. **Jangan pasang `xfade` kalau `transitionSec` 0** — perilaku lama harus tetap byte-identik.
+5. Tipe payload di worker perlu mendapat `engine` dan `transitionSec` juga.
+
+Kalau aritmetikanya tidak cocok dengan bentuk filtergraph yang sudah ada, tulis di balasan: aku
+menaruh angkanya, kamu yang punya grafnya.

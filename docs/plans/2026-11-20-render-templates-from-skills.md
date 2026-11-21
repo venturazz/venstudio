@@ -1,7 +1,10 @@
 # Render templates, derived from the Hermes skills
 
-Date: 2026-11-20. Status: design note plus the phased plan. Nothing here is implemented yet except
-where it says so.
+Date: 2026-11-20. Status: design note plus the phased plan. **Phase 0's portal half is implemented**
+(`bc4f9c8`, CI green): `lib/studio/render-engine.ts` holds the engine gate, the cross-fade arithmetic
+and the variation gate, and the render payload now carries `engine` and `transitionSec`. The worker
+half — dispatch, capability report, `xfade` — is Kiro's, specified in `docs/kiro-tasks.md`. Phases 1
+onward are not started.
 
 ## Why this document
 
