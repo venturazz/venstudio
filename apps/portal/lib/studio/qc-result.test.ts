@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { measureFromQcResult, technicalReportFor } from "./qc-result.ts";
+import { measureFromQcResult, technicalReportFor, withPlannedCuts } from "./qc-result.ts";
 import { seedTemplates } from "./templates.ts";
 
 const good = {
@@ -59,4 +59,32 @@ test("a failed job, an unreadable result and a missing template each give a fail
   assert.match(missing.gate.issues[0], /tpl-x was not found/);
   assert.ok(missing.measure);
   assert.equal(technicalReportFor({ status: "succeeded", result: good }, t, "short", t.id).gate.executor, "worker qc-video");
+});
+
+test("planned scene starts are added to the detected cuts: inside the video only, sorted, no near-duplicates", () => {
+  const m = measureFromQcResult(good);
+  assert.ok(m);
+  const merged = withPlannedCuts(m, [0, 2.05, 7, 3, 30, 31, -1, "x", Number.NaN]);
+  // 0 and 30 are the video's edges, 2.05 is the detected cut at 2, and junk values are skipped.
+  assert.deepEqual(merged.cuts, [2, 3, 4, 7]);
+  assert.deepEqual(m.cuts, [2, 4], "the input measure is not changed");
+  assert.equal(withPlannedCuts(m, undefined), m);
+  assert.equal(withPlannedCuts(m, "2,3"), m);
+});
+
+test("a cross-faded render whose fades the detector cannot see passes the cut checks with the renderer's scene starts", () => {
+  const t = seedTemplates()[0];
+  const step = Math.min(t.pacing.maxShotSeconds, t.pacing.hookByMs / 1000) * 0.9;
+  const starts: number[] = [];
+  for (let s = step; s < 40 - 0.5; s += step) starts.push(Math.round(s * 1000) / 1000);
+  const faded = {
+    schemaVersion: 1, width: 1080, height: 1920, fps: 30, durationSec: 40, hasAudio: true, integratedLufs: t.audio.targetLufs, truePeakDb: -2,
+    blackRuns: [], silenceRuns: [], freezeRuns: [], cuts: [],
+  };
+  const cutIssue = (issues: string[]) => issues.filter((i) => /cut|shot/i.test(i));
+  const blind = technicalReportFor({ status: "succeeded", result: faded }, t, "short", t.id);
+  assert.ok(cutIssue(blind.gate.issues).length > 0, "without the plan, no detected cut means the cut checks fail");
+  const planned = technicalReportFor({ status: "succeeded", result: faded }, t, "short", t.id, [0, ...starts]);
+  assert.deepEqual(cutIssue(planned.gate.issues), [], planned.gate.issues.join("; "));
+  assert.deepEqual(planned.measure?.cuts, starts);
 });

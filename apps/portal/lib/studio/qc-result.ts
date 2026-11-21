@@ -50,6 +50,26 @@ export function measureFromQcResult(result: unknown): TechnicalMeasure | null {
   };
 }
 
+/**
+ * Adds the scene boundaries the renderer placed to the cuts qc-video detected. The detector looks for an abrupt
+ * picture change, so a cross-fade or an animated scene change is never seen as a cut, and every faded render would
+ * fail the shot-length and hook checks. The planned boundaries are real scene changes by construction (the renderer
+ * started a new scene there). Only finite times strictly inside the video are used, and times within 0.1 s of a
+ * detected cut are not added twice.
+ */
+export function withPlannedCuts(m: TechnicalMeasure, planned: unknown): TechnicalMeasure {
+  if (!Array.isArray(planned)) return m;
+  const cuts = [...m.cuts];
+  for (const p of planned.slice(0, 500)) {
+    const t = num(p);
+    if (t === null || t <= 0 || t >= m.durationSec) continue;
+    if (cuts.some((c) => Math.abs(c - t) < 0.1)) continue;
+    cuts.push(t);
+  }
+  cuts.sort((a, b) => a - b);
+  return { ...m, cuts };
+}
+
 const QC_EXECUTOR = "worker qc-video";
 const failedTechnical = (issue: string): GateResult => ({ gate: "G-technical", passed: false, issues: [issue], executor: QC_EXECUTOR });
 
@@ -57,14 +77,22 @@ const failedTechnical = (issue: string): GateResult => ({ gate: "G-technical", p
  * The G-technical report for one finished qc-video job. A failed job, an unreadable result and a missing
  * template each give a failed report, never "no report", so a production always ends with a QC record.
  */
-export function technicalReportFor(job: { status: string; error?: unknown; result?: unknown }, template: Template | null, format: Format, templateId: string): {
+export function technicalReportFor(
+  job: { status: string; error?: unknown; result?: unknown },
+  template: Template | null,
+  format: Format,
+  templateId: string,
+  /** Scene boundaries the renderer placed, in seconds (see withPlannedCuts). Optional. */
+  plannedCuts?: unknown,
+): {
   gate: GateResult;
   measure: TechnicalMeasure | null;
 } {
   if (job.status === "failed") {
     return { gate: failedTechnical(`The quality check job failed: ${String(job.error ?? "no reason recorded").slice(0, 300)}`), measure: null };
   }
-  const measure = measureFromQcResult(job.result);
+  const read = measureFromQcResult(job.result);
+  const measure = read ? withPlannedCuts(read, plannedCuts) : null;
   if (!measure) return { gate: failedTechnical("The quality check result could not be read"), measure: null };
   if (!template) return { gate: failedTechnical(`Template ${templateId} was not found, so the video could not be checked`), measure };
   return { gate: { ...technicalGate(measure, template, format), executor: QC_EXECUTOR }, measure };

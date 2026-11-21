@@ -70,7 +70,8 @@ async function evaluateRunQc(jobId: string, runId: string, job: { status: string
   const assetId = Array.isArray(payload.inputs) && typeof payload.inputs[0] === "string" ? (payload.inputs[0] as string) : null;
   let template: Template | null = null;
   if (job.status === "succeeded" && templateId) template = await getTemplate(templateId);
-  const { gate, measure } = technicalReportFor({ status: job.status, error: job.error, result: job.result }, template, format, templateId);
+  // The render's own scene boundaries, so a cross-fade or an animated scene change counts as the cut it is.
+  const { gate, measure } = technicalReportFor({ status: job.status, error: job.error, result: job.result }, template, format, templateId, payload.plannedCuts);
   await saveQcReport({ result: gate, runId, jobId, assetId, details: { stage: "qc", ...(measure ? { measure } : {}) } });
 }
 

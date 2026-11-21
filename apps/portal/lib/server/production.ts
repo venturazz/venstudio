@@ -802,6 +802,8 @@ async function completeRender(jobId: string): Promise<boolean> {
     narrationClipped: r.narrationClipped === true,
     captionsBurned: r.captionsBurned === true,
     captionNote: text(r.captionNote),
+    // Where each scene starts (worker 0.5+). The qc stage hands these to the cut check.
+    sceneStarts: Array.isArray(r.sceneStarts) ? (r.sceneStarts as unknown[]).filter((v): v is number => num(v) !== null).slice(0, 500) : [],
   };
   await concludeStage(run, st, template, { result, gate: null, extra: { jobId }, media: { videoAssetId: assetId } });
   return true;
@@ -821,14 +823,19 @@ async function runQcStage(run: RunInfo, st: StageRow): Promise<void> {
     }
   }
   const renderOut = await latestPassedOutput(db(), run.id, "render");
-  const assetId = asUuid(toObject(renderOut?.result).assetId);
+  const renderResult = toObject(renderOut?.result);
+  const assetId = asUuid(renderResult.assetId);
   if (!assetId) {
     await recordStageError(run.id, st.id, "qc", "There is no rendered video to check");
     return;
   }
+  // Scene starts after the first one are the renderer's own cuts; fades and animated changes hide them from the detector.
+  const plannedCuts = Array.isArray(renderResult.sceneStarts)
+    ? (renderResult.sceneStarts as unknown[]).filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0).slice(0, 500)
+    : [];
   const jobId = await createJob({
     type: "qc-video",
-    payload: { inputs: [assetId], runId: run.id },
+    payload: { inputs: [assetId], runId: run.id, ...(plannedCuts.length > 0 ? { plannedCuts } : {}) },
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,
