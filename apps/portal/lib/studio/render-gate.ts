@@ -86,3 +86,43 @@ export function tempoReadyFor(workers: ReadonlyArray<readonly string[]>): boolea
 export function tempoWorkerMessage(tempo: number): string {
   return `This narration is set to play at ${tempo}x so it fits the shots, and every render worker must be 0.6.0 or later to do that. Update the worker (install.sh, same command as before), then press Retry.`;
 }
+
+/** Capability a worker (0.7.0+) reports when render-video mixes `audio` (bed, ducking, ambience, accents, master). */
+export const AUDIO_MIX_CAPABILITY = "audio-mix";
+/** Capability a worker (0.7.0+) reports when render-video draws captions with `captionStyle`. */
+export const CAPTION_STYLE_CAPABILITY = "caption-style";
+
+/** What a render may carry beyond the 0.6.0 payload, and the line the run shows when it carries less. */
+export interface MixFeatures {
+  /** Send `audio` (and so pick a music bed). */
+  audio: boolean;
+  /** Send `captionStyle`. */
+  captionStyle: boolean;
+  /** Plain note for the render stage when either is held back. Null when both are sent. */
+  note: string | null;
+}
+
+/**
+ * Whether the render payload may carry `audio` and `captionStyle`. Same rule as the tempo: a render job is queued
+ * under its engine's capability, so any render worker (one that reports ffmpeg) may claim it, and an older one would
+ * ignore the fields and quietly render the 0.6.0 video. So a field is sent only when every render worker reports the
+ * capability that honours it. Unknown (null) or no render worker at all: nothing new is sent, so whichever worker
+ * enrolls later renders exactly what the payload says, and the bed's licence is never listed for a video without it.
+ */
+export function mixFeaturesFor(workers: ReadonlyArray<readonly string[]> | null): MixFeatures {
+  const renderers = (workers ?? []).filter((caps) => caps.includes("ffmpeg"));
+  const all = (cap: string) => renderers.length > 0 && renderers.every((caps) => caps.includes(cap));
+  const audio = all(AUDIO_MIX_CAPABILITY);
+  const captionStyle = all(CAPTION_STYLE_CAPABILITY);
+  if (audio && captionStyle) return { audio, captionStyle, note: null };
+  const missing = [...(audio ? [] : ["music, ambience and the mastered loudness"]), ...(captionStyle ? [] : ["the measured caption style"])].join(" and ");
+  const why =
+    renderers.length === 0
+      ? "no render worker has reported what it can do yet"
+      : "every render worker must be 0.7.0 or later for that, and at least one is older";
+  return {
+    audio,
+    captionStyle,
+    note: `This video renders without ${missing}: ${why}. Update the worker (install.sh, same command as before); the next render carries them.`,
+  };
+}

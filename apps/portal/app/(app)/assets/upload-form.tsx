@@ -27,6 +27,7 @@ export function UploadForm({ channels }: { channels: Array<{ id: string; name: s
       license: get("license"),
       originUrl: get("originUrl"),
       tags: get("tags"),
+      music: fd.get("music") === "on" ? "1" : "",
       channelId: get("channelId"),
       filename: file.name,
     });
@@ -91,6 +92,17 @@ export function UploadForm({ channels }: { channels: Array<{ id: string; name: s
       <Field label="Tags" htmlFor="tags" hint="Comma separated, e.g. history, rome, map">
         <Input id="tags" name="tags" maxLength={200} />
       </Field>
+      <label className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
+        <input type="checkbox" name="music" className="mt-0.5 size-4 accent-[var(--vs-accent)]" />
+        <span>
+          <span className="font-medium">This is a music track for video beds</span>
+          <span className="block text-xs text-muted">
+            Audio only. Renders may play it quietly under the narration, looped to the video&apos;s length. It needs a licence
+            and an origin link like any upload, and its licence is listed in every video it plays in. Voices and narration are
+            never used as music.
+          </span>
+        </span>
+      </label>
       <Field label="Channel" htmlFor="channelId" hint="Optional.">
         <Select id="channelId" name="channelId" defaultValue="">
           <option value="">Shared</option>

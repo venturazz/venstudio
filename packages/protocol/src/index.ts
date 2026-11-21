@@ -25,6 +25,14 @@ export type Capability =
   | "xfade"
   /** render-video honours narrationTempo: the narration is played at a small tempo change (ffmpeg atempo). Worker 0.6.0+. */
   | "narration-tempo"
+  /**
+   * render-video honours payload.audio: a music bed ducked under the narration (looped or trimmed to the cut),
+   * synthesised ambience, accents and a mastered loudness. Reported only where ffmpeg has every filter of that chain.
+   * Worker 0.7.0+.
+   */
+  | "audio-mix"
+  /** render-video draws captions with payload.captionStyle (size, outline, shadow, margins, wrap width). Worker 0.7.0+. */
+  | "caption-style"
   | "tts-kokoro"
   | "remotion-2d"
   | "remotion-3d"
@@ -36,6 +44,8 @@ export const CAPABILITIES: readonly Capability[] = [
   "ffmpeg",
   "xfade",
   "narration-tempo",
+  "audio-mix",
+  "caption-style",
   "tts-kokoro",
   "remotion-2d",
   "remotion-3d",
