@@ -135,7 +135,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Shell syntax
-        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs
+        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs && node --check scripts/e2e-update-proxy.mjs
 
   docker:
     runs-on: ubuntu-latest
