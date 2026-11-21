@@ -304,7 +304,7 @@ validator in `lib/studio/director.ts` (pure, no zod, so it runs under `node --te
 or failed validation the portal asks again up to 2 more times, feeding the validation issues back. After the last
 try the stage fails with the reason and the owner sees a stage-error item with Retry. No `response_format` parameter is
 sent because the gateway may reject it; whether live Hermes keeps to the schema is measured with the "Test Hermes JSON"
-button on `/studio/runs`. Model output is data and is never executed. Prompts contain no secrets. The Hermes runs API
+button on `/studio/test-render`. Model output is data and is never executed. Prompts contain no secrets. The Hermes runs API
 for long tasks and its vision support are **unverified** and still unused. Every model turn goes through the shared
 gate described next; a rate limit is not retried in this loop.
 
@@ -343,7 +343,7 @@ because pages render on the server). `output.waitSince` marks when the wait bega
 Resuming, and why both: an in-process timer (`scheduleResume`) calls `advanceRun` when the not-before passes, so a
 short wait resumes within a second. A timer dies with the process, so the worker claim route also calls
 `nudgeRecovery()` after its response: a reaper pass at most once a minute. Workers in hold mode call claim every ~25 s,
-so recovery no longer depends on someone opening `/review`, `/studio/runs` or a run page (those still reap too). The
+so recovery no longer depends on someone opening `/review`, `/studio` or a run page (those still reap too). The
 reaper's orphan query only restarts runs whose pending stage is due. Trade-off: with no worker polling and no page
 open, a wait that outlives a restart resumes on the next claim or page load, not at the exact minute.
 
@@ -484,12 +484,34 @@ Phase 4 cards (`ReviewPayload.media` and `.checks`):
 - **Video** and **Quality check**: a `<video controls playsInline>` player, the one-line results of each check, and a
   note that the presentation check is manual in Phase 4.
 
-Routes: `/review` (inbox), `/studio/runs` (start a run, recent runs, Test Hermes JSON), `/studio/runs/[id]` (stage
+Routes: `/review` (inbox), `/studio` (runs grouped as waiting for you, working, finished; `/studio/runs` redirects
+here), `/studio/new` (New video, section 7.1), `/studio/test-render` (test render, saved plans, Test Hermes JSON), `/studio/runs/[id]` (stage
 timeline with a summary for every stage including the production stages, a link to the render job, a work order list
 with state, provider, attempts and error per shot, the checks, cancel). Settings has the Kokoro health card with **Test
 voice**, **Test Hermes image** (lists the providers Hermes reports and makes one small picture, saving nothing) and the
 owner-only Asset providers list. `scripts/ui-e2e.mjs` drives the whole path against a fake Hermes and a fake Kokoro at
 390 px and on desktop.
+
+### 7.1 One Studio flow (New video)
+
+The old planner (`/studio` "New production") saved a plan that nothing ran, beside a separate Hermes run form with
+other options. Both are now one form, `/studio/new`, that starts a run. Only the channel is required.
+
+| Field | Stored in `pipeline_runs.config` | Used by |
+|---|---|---|
+| channel | `channel_id` (category, plan and autonomy shown read only) | every stage |
+| brief (optional, 2000 chars) | `topicHint`; `topic` is its first line until an idea is chosen | idea, research, script, storyboard as the DATA block `owner brief`. Empty: the idea prompt says to pick from the owner plan |
+| style | `template_id`, `styleId`. *Suggest from brief* runs `suggestStyles` in the browser. The engine line shows the Muse placement and whether a stored worker row reports the engine's capability (no worker call) | as before |
+| format | `format`, `durationSec` | as before |
+| theme | `themeId`, `themeSource` (`channel`, `owner` or `none`). Starts as the channel category; a change is stored on the run only, never on the channel | prompts: DATA block `theme` with the theme rules; `requiresSources` |
+| purposes | `purposes` | prompts: DATA block `video purpose` (description, the catalog `extraStages` as planning-step intent, rules) and per-stage lines, e.g. affiliate: disclosure early and a call to action, a disclosure card; series: episode continuity and a hook to the next episode. `educate` makes research ask for sources |
+| narration language | `language` (form shows the Kokoro flag) | as before |
+| subtitles | `subtitles` | prompts: DATA block `subtitle languages`; the script is asked for short, plain sentences and the storyboard for a clear bottom fifth. Subtitle translation itself is not built |
+
+The new config fields are additive jsonb, read with defaults by `parseRunConfig` (`lib/studio/run-config.ts`), so no
+migration. Starting from a saved plan (`/studio/new?from=<production id>`) pre-fills the form and sets
+`pipeline_runs.production_id`. Test renders live on `/studio/test-render`; the plan they save is marked
+`testRender: true` in `productions.plan` and is not offered as a saved plan.
 
 ## 8. Security rules
 
@@ -580,7 +602,7 @@ typecheck and build cannot run in the offline sandbox, so types are written cons
 
 `reapStuckStages` fails a stage that has been running longer than `STUCK_MINUTES` (21, above the 900 s worst case of
 `hermesJson` with its gate waits), in one transaction with the run update and the `stage-error` review. It also calls
-`advanceRun` for running runs that have a due pending stage and no running one. It runs when `/review`, `/studio/runs`
+`advanceRun` for running runs that have a due pending stage and no running one. It runs when `/review`, `/studio`
 or a run page renders, and, since migration 0011, from the worker claim route through `nudgeRecovery` (at most once a
 minute), so a phone that never opens those pages still gets recovery while a worker polls. A blocked stage (for
 example a retired template) opens a `stage-error` review instead of failing the run silently.

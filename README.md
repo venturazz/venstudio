@@ -84,14 +84,17 @@ Use `docker-compose.coolify.yml` (Docker Compose build pack). Step-by-step: [doc
 
 For a VPS or your own PC, use the `curl … install.sh … --mode daemon` command shown in the same dialog.
 
-## Studio and Assets (planning and library)
+## Studio and Assets
 
-- **Studio** (`/studio`): choose a format (short or long), a theme and a style. Suggest styles from a brief, preview the
-  stage plan, and save it as a production. Stages marked *Runs now* can run today; the rest are planned until their
-  workers are built. The style library is at `/studio/styles`.
-- **Hermes runs and Review** (`/studio/runs`, `/review`): Hermes proposes ideas, researches, writes the script and
-  the storyboard for a channel. You approve an idea, ask for a change with a note, or reject, from a phone-friendly
-  inbox. Asset sourcing and rendering come in later phases.
+- **Studio** (`/studio`): one place to start a video. **New video** (`/studio/new`) asks only for the channel; the
+  brief, style (with *Suggest from brief*), format, theme (starts as the channel category, changed for this video
+  only), purposes, narration language (with its Kokoro flag) and subtitle languages are optional. Hermes then proposes
+  ideas, researches, writes the script and the storyboard, and the workers make the video; you decide in Review
+  (`/review`). `/studio` lists the runs: waiting for you, working, finished. Run pages stay at `/studio/runs/<id>`, and
+  `/studio/runs` opens `/studio`.
+- **Test render** (`/studio/test-render`): placeholder cards and a test tone, to check that a worker can render. Plans
+  saved with the old planner are listed there, readable, with *Start a video from this plan*. **Test Hermes JSON** is
+  there too. The style library is at `/studio/styles`, templates at `/studio/templates`.
 - **Assets** (`/assets`): every reference, image, audio file or worker output, with its source, licence and origin.
   Publishing checks these notes. Reference videos can be analyzed for cuts, pacing, hook timing and loudness; they
   can never appear in a published video.

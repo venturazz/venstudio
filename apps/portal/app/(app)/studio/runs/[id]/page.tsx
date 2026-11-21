@@ -11,6 +11,7 @@ import { stageLabel } from "@/lib/studio/review.ts";
 import { isEngineStage, isProductionStage, stageSummary } from "@/lib/studio/engine.ts";
 import { productionSummary } from "@/lib/studio/production.ts";
 import { waitingText } from "@/lib/studio/pacing.ts";
+import { parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
 import { cancelRunAction } from "../actions.ts";
 import { RunStateBadge, StageStateBadge } from "../run-status.tsx";
 
@@ -68,7 +69,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         description={`${run.channelName || "No channel"} · ${run.templateId} · started ${timeAgo(run.createdAt)}`}
         actions={
           <>
-            <LinkButton href="/studio/runs" variant="secondary">
+            <LinkButton href="/studio" variant="secondary">
               All runs
             </LinkButton>
             {open && (
@@ -97,6 +98,17 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           </Alert>
         </div>
       )}
+      <details className="mb-4 rounded-lg border border-border px-3 py-2 text-sm" data-testid="run-settings">
+        <summary className="min-h-8 cursor-pointer py-1 font-medium">Video settings</summary>
+        <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-[auto_minmax(0,1fr)]">
+          {runSettings(parseRunConfig(run.config)).map((r) => (
+            <div key={r.label} className="contents">
+              <dt className="text-muted">{r.label}</dt>
+              <dd className="break-words">{r.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
       {run.state === "waiting-human" && !open && (
         <div className="mb-4">
           <Alert tone="warn">This run is waiting for you, but no open item was found. Open Review to check.</Alert>
