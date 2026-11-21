@@ -75,9 +75,10 @@ test("frozen picture fails except for ambient", () => {
 
 test("shot length uses 1.5 times the template limit and the hook window applies to shorts", () => {
   const t = explainer();
-  assert.equal(t.pacing.maxShotSeconds, 6);
-  assert.equal(technicalGate({ ...good(), cuts: [2, 9, 17, 25, 33] }, t, "short").passed, true);
-  const long = technicalGate({ ...good(), cuts: [2, 12, 20, 28, 34] }, t, "short");
+  assert.equal(t.pacing.maxShotSeconds, 4);
+  // 1.5 times the limit is 6 s: five-second shots pass, an eight-second gap does not
+  assert.equal(technicalGate({ ...good(), cuts: [2, 7, 12, 17, 22, 27, 32, 37] }, t, "short").passed, true);
+  const long = technicalGate({ ...good(), cuts: [2, 10, 16, 22, 28] }, t, "short");
   assert.equal(long.passed, false);
   assert.match(long.issues.join(), /shot longer/);
   const late = technicalGate({ ...good(), cuts: [3.5, 8, 14, 20, 26, 32, 38] }, t, "short");

@@ -7,6 +7,9 @@ import {
   THEME_BY_ID,
   THEMES,
   VIDEO_FORMATS,
+  assetModelOf,
+  frameForFormat,
+  frameOf,
   type Executor,
   type Family,
   type Format,
@@ -132,6 +135,15 @@ function visualStage(style: Style): Pick<PlanStage, "label" | "role" | "detail">
     return { label: "AI video clips", role: "ai-clip", detail: "One clip per shot. Each output's terms are logged with it." };
   }
   if (style.assetKinds.includes("image")) {
+    // A template that draws its own diagrams needs a handful of plates, not one picture per shot. Saying
+    // so here is the difference between a plan the user can read and a surprise on the assets bill.
+    if (assetModelOf(style) === "plates-and-diagrams") {
+      return {
+        label: "Plates and diagrams",
+        role: "image",
+        detail: "A few plates and character cut-outs, reused across shots. Every diagram is drawn by the template, so the image count does not grow with the script.",
+      };
+    }
     return { label: "Images and stills", role: "image", detail: "Generated or licensed images, one art style per series." };
   }
   return undefined;
@@ -188,7 +200,7 @@ function buildStages(style: Style, workflow: Workflow, format: Format, targetSho
       detail: `Caption files for ${subtitles.map((l) => l.label).join(", ")}, timed from the narration. Each file is checked before upload.`,
     });
   }
-  stages.push({ id: "music", label: "Music and sound", executor: "worker", role: "audio", runnable: false, detail: "Self-composed or licensed tracks only. Each one is logged with its licence." });
+  stages.push({ id: "music", label: "Music and sound", executor: "worker", role: "audio", runnable: false, detail: "A bed ducked under the voice, brown-noise ambience filling the gaps between beats, and sparse accents. Self-composed or licensed tracks only, each logged with its licence." });
   stages.push({
     id: "render",
     label: "Render",
@@ -216,6 +228,13 @@ function buildWarnings(style: Style, format: Format, workflow: Workflow, primary
   if (engine.muse === "external") warnings.push("Clips come from a paid AI provider. Check its commercial-use terms for every output.");
   if (format === "long" && engine.tier === "heavy") warnings.push("A long video with a heavy engine can take many hours to render. Split it into chapters.");
   if (workflow === "copycat-structure") warnings.push("Copy-cat mode learns structure only. Script, footage, characters and music must be your own.");
+  const natural = frameOf(style);
+  const jobFrame = frameForFormat(format);
+  if (natural !== "both" && natural !== jobFrame) {
+    warnings.push(
+      `${style.label} was measured in a ${natural} frame, but this job is ${VIDEO_FORMATS[format].label} (${jobFrame}). The layout has to be re-derived for this frame; a landscape composition dropped into a portrait frame is not the same video.`,
+    );
+  }
   if (style.narration && primary.tts !== "kokoro") warnings.push(`Narration in ${primary.label}: ${primary.ttsNote}`);
   for (const id of purposes) {
     const purpose = PURPOSE_BY_ID[id];

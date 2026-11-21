@@ -9,7 +9,7 @@
  * This is the data half of `docs/plans/2026-11-20-render-templates-from-skills.md`. The code half —
  * the template components — lives with the renderer.
  */
-import { ENGINES, STYLE_BY_ID, VIDEO_FORMATS, type Family, type Format, type Style } from "./catalog.ts";
+import { ENGINES, STYLE_BY_ID, VIDEO_FORMATS, assetModelOf, frameOf, type AssetModel, type Family, type Format, type Frame, type Style } from "./catalog.ts";
 import { MAX_ELEMENTS, type ElementKind, type Shot, type ShotElement } from "./director.ts";
 export type { ElementKind, ShotElement };
 import type { BeatRole } from "./templates.ts";
@@ -24,7 +24,12 @@ import {
   type MotionToken,
 } from "./render-engine.ts";
 
-export const MAX_SCENES = 80;
+/**
+ * The most scenes a plan holds. Derived, not guessed: the longest video the catalogue allows is 1200 s
+ * and the fastest shot a style allows is 2 s, so a legitimate plan can reach 600. An 80-scene cap made
+ * every long-format explainer impossible to plan and failed it as if the storyboard were wrong.
+ */
+export const MAX_SCENES = 600;
 export const MAX_ELEMENTS_PER_SCENE = MAX_ELEMENTS;
 export const MAX_ELEMENT_CHARS = 140;
 export const MAX_ISSUES_REPORTED = 8;
@@ -262,6 +267,10 @@ export interface StyleRenderParams {
   transitionSec: number;
   /** True when the engine animates elements, not only the camera. */
   elementAnimation: boolean;
+  /** What the template should expect from the assets stage. */
+  assetModel: AssetModel;
+  /** The frame the art direction was measured on. */
+  naturalFrame: Frame;
 }
 
 /**
@@ -271,5 +280,12 @@ export interface StyleRenderParams {
 export function renderParamsForStyle(styleId: string): StyleRenderParams | null {
   const style = STYLE_BY_ID[styleId];
   if (!style) return null;
-  return { engine: style.engine, template: style.id, transitionSec: DEFAULT_TRANSITION_SEC, elementAnimation: elementAnimationFor(style.engine) };
+  return {
+    engine: style.engine,
+    template: style.id,
+    transitionSec: DEFAULT_TRANSITION_SEC,
+    elementAnimation: elementAnimationFor(style.engine),
+    assetModel: assetModelOf(style),
+    naturalFrame: frameOf(style),
+  };
 }

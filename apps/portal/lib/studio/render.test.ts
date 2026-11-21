@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRenderPayload, captionCues, motionFor } from "./render.ts";
+import { buildAudioPlan } from "./audio-plan.ts";
+import { captionSpecFor } from "./caption-spec.ts";
 import { buildScenePlan } from "./scene-plan.ts";
 
 const shots = [
@@ -157,4 +159,36 @@ test("buildRenderPayload: a fitted narration carries narrationTempo and plans fo
   assert.equal(fitted.payload.captions.at(-1)?.end, 17.994);
   // Without the tempo the same narration does not fit.
   assert.equal(buildRenderPayload({ ...base, narrationSec: raw }).ok, false);
+});
+
+test("the payload carries caption geometry and the audio layers, and lists the bed as an input", () => {
+  const captionSpec = captionSpecFor({ width: 1080, height: 1920, fontAssetId: "f1" });
+  const audio = buildAudioPlan({ policy: "self-or-licensed", narrated: true, durationSec: 15, bed: { assetId: "bed-1", durationSec: 10 } });
+  assert.ok(audio.ok);
+  if (!audio.ok) return;
+  const r = buildRenderPayload({ ...base, fontAssetId: "f1", captionSpec, audioPlan: audio.plan });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.equal(r.payload.captionStyle?.fontSizePx, captionSpec.fontSizePx);
+  assert.equal(r.payload.audio?.bed?.assetId, "bed-1");
+  assert.equal(r.payload.audio?.bed?.cover, "loop");
+  assert.equal(r.payload.audio?.ambient?.color, "brown");
+  // the worker can only mix what it can download
+  assert.ok(r.payload.inputs.includes("bed-1"));
+});
+
+test("an audio plan that masters somewhere else is refused, so one number wins", () => {
+  const audio = buildAudioPlan({ policy: "self-or-licensed", narrated: true, durationSec: 15, targetLufs: -16 });
+  assert.ok(audio.ok);
+  if (!audio.ok) return;
+  const r = buildRenderPayload({ ...base, audioPlan: audio.plan });
+  assert.equal(r.ok, false);
+  assert.match(!r.ok ? r.issues.join(" | ") : "", /masters at -16 LUFS/);
+});
+
+test("caption geometry that leaves the words nowhere to go fails the plan", () => {
+  const spec = { ...captionSpecFor({ width: 1080, height: 1920 }), fontAssetId: null };
+  const r = buildRenderPayload({ ...base, captionSpec: spec, captionRequired: true });
+  assert.equal(r.ok, false);
+  assert.match(!r.ok ? r.issues.join(" | ") : "", /no font/);
 });

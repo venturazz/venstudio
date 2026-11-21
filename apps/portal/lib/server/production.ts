@@ -44,6 +44,9 @@ import { countWords, type Pace } from "../studio/speech-rate.ts";
 import { fitWindow, parseTightenRequest, tempoOf, tightenRequest, type LengthDirection, type TightenRequest } from "../studio/voice-fit.ts";
 import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
+import { buildAudioPlan } from "../studio/audio-plan.ts";
+import { captionSpecFor } from "../studio/caption-spec.ts";
+import { VIDEO_FORMATS } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
 import { gateCapabilities, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
@@ -844,6 +847,9 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   for (const d of done) shotAssets[(d.shot_ref as string | null) ?? ""] = d.asset_id as string;
   // Same pick as the preview render: the newest font in the library. Without one the render runs without captions.
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
+  // The one audio layer that needs a real track. Ambience is synthesised, so a library with no music still
+  // gets something in the gaps instead of digital silence.
+  const [bed] = await sql`SELECT id FROM assets WHERE kind = 'audio' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
   const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
@@ -880,6 +886,30 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     }
   }
   const fontAssetId = font ? asUuid(font.id) : null;
+  // The length the shots, the captions and the mix are all planned for: a fitted voice plays at its tempo.
+  const narrationSec = tempo !== 1 ? rawNarrationSec / tempo : rawNarrationSec;
+  const frame = VIDEO_FORMATS[run.config.format];
+  // Geometry, not taste. The spec scales by frame height, so a portrait job and a landscape job both get
+  // numbers that were measured instead of numbers that happened to be typed for one frame.
+  const captionSpec = captionSpecFor({ width: frame.width, height: frame.height, fontAssetId, safeAreaPct: template.captions.safeAreaPct });
+  // Ambience needs no asset. The bed is the one layer that does, so a library without music produces a plan
+  // with bed: null rather than pretending the mix is complete.
+  const bedAssetId = bed ? asUuid(bed.id) : null;
+  const audio =
+    narrationSec > 0
+      ? buildAudioPlan({
+          policy: template.audio.musicPolicy,
+          narrated: template.audio.narrated,
+          durationSec: narrationSec,
+          targetLufs: template.audio.targetLufs,
+          maxTruePeakDb: template.audio.maxTruePeakDb,
+          bed: bedAssetId ? { assetId: bedAssetId } : null,
+        })
+      : null;
+  if (audio && !audio.ok) {
+    await recordStageError(run.id, st.id, "render", audio.issues.join(". "));
+    return;
+  }
   const planFor = (transitionSec: number): RenderPlan => {
     const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: boardShots, transitionSec }) : null;
     if (scenes && !scenes.ok) return { ok: false, issues: scenes.issues };
@@ -889,12 +919,14 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
       shots: shotSpecs,
       shotAssets,
       narrationAssetId: asUuid(voiceResult.assetId),
-      narrationSec: tempo !== 1 ? rawNarrationSec / tempo : rawNarrationSec,
+      narrationSec,
       ...(tempo !== 1 ? { narrationTempo: tempo } : {}),
       captions,
       targetLufs: template.audio.targetLufs,
       maxShotSeconds: template.pacing.maxShotSeconds,
       runId: run.id,
+      captionSpec,
+      ...(audio?.ok ? { audioPlan: audio.plan } : {}),
       ...(renderParams ? { engine: renderParams.engine, transitionSec } : {}),
       ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
       ...(gate ? { workerCapabilities: gate } : {}),

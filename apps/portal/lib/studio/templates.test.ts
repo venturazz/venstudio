@@ -33,7 +33,9 @@ test("seed beats and pacing follow the style", () => {
   const explainer = seeds.find((t) => t.styleId === "explainer-flat-vector");
   assert.deepEqual(explainer?.beats.map((b) => b.role), ["hook", "setup", "body", "payoff", "cta"]);
   assert.equal(explainer?.audio.narrated, true);
-  assert.equal(explainer?.pacing.maxShotSeconds, 6);
+  assert.equal(explainer?.pacing.maxShotSeconds, 4);
+  // the range that brackets the reference's measured 23.8 cuts a minute
+  assert.deepEqual(explainer?.pacing.cutsPerMinute, [15, 30]);
   const ambient = seeds.find((t) => t.family === "ambient");
   assert.deepEqual(ambient?.beats.map((b) => b.role), ["body"]);
   assert.equal(ambient?.captions.required, false);

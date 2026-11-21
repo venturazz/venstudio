@@ -184,6 +184,30 @@ stills. Perubahan itu ada di `runRenderStage`, sekitar baris 589.
 digagalkan saat render. Itu disengaja — menggagalkannya sekarang mematikan produksi yang sedang jalan
 sebelum worker punya jalur `remotion-2d`. Sambungkan setelah dispatch-mu jadi.
 
+## Kontrak payload yang bertambah — baca sebelum menulis template
+
+Tiga blok baru ikut di payload, semuanya opsional supaya worker lama tetap jalan apa adanya. Kalau ada,
+**pakai**, jangan hitung ulang sendiri:
+
+- **`captionStyle`** — `fontSizePx`, `minFontSizePx`, `maxFontSizePx`, `lineSpacingPx`, `outlinePx`,
+  `shadowPx`, `marginXPx`, `marginBottomPx`, `maxWidthPx`, `narrowFace`, `fontAssetId`. Angkanya sudah
+  diskalakan ke tinggi frame (referensi 1920×1080 → 1080×1920) dan diambil dari video acuan, bukan
+  dikarang. `fontAssetId` di sini dan di payload harus sama; portal sudah menolak rencana yang berbeda.
+- **`audio`** — `master {targetLufs, maxTruePeakDb}`, `bed {assetId, sourceLufs, gainDb, duck{threshold,
+  ratio, attackMs, releaseMs, makeup}, cover}`, `ambient {color, bandHz, gainDb}`, `sfx[]`.
+  `bed` **boleh null** (pustaka belum punya track). `ambient` tidak butuh aset: sintesis sendiri,
+  `anoisesrc=color=brown`, saring `bandHz`, gain `gainDb`.
+- **`assetModel` / `naturalFrame`** tidak di payload — keduanya dari `renderParamsForStyle()`, untuk
+  template memutuskan tata letak (`plates-and-diagrams`, `landscape`).
+
+Urutan mix yang dimaksud: voice → `loudnorm` → bed dinormalisasi ke `sourceLufs`, dinaikkan `gainDb`,
+**duck 4:1** (threshold 0.02, attack 15 ms, release 350 ms) → ambient pada `gainDb` → SFX → master
+`targetLufs`. Kalau `bed.cover === "loop"`, **aloop dulu baru atrim** — kalau tidak, sepertiga akhir
+video senyap dan tidak ada yang menyadarinya sampai review.
+
+Batas scene naik ke 600 (dari 80): 1200 s dibagi shot tercepat 2 s. Cap lama membuat video panjang
+mustahil direncanakan dan gagalnya terbaca seolah storyboard yang salah.
+
 ## Fixture emas — ujilah terhadap byte ini, bukan terhadap prosa
 
 `fixtures/render/explainer-payload.json` adalah satu payload `render-video` utuh yang dihasilkan

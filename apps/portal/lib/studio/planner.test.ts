@@ -230,3 +230,19 @@ test("provenance v2: AI disclosure and likeness rules", async () => {
   assert.equal(likenessIssues([{ ...rec, tags: ["brand-logo", "person-likeness"], permissionNote: "release 2025" }]).length, 0);
   assert.equal(provenanceIssues([{ ...rec, tags: ["person-likeness"] }], "publish").length, 0, "provenanceIssues is unchanged");
 });
+
+test("a style measured in landscape says so when the job is a portrait short", () => {
+  const brief = "explain how iron becomes steel, from the furnace to the finished blade";
+  const short = buildPlan({ brief, format: "short", styleId: "explainer-flat-vector" });
+  assert.ok(short.ok);
+  if (!short.ok) return;
+  assert.ok(short.plan.warnings.some((w) => /measured in a landscape frame/.test(w)), short.plan.warnings.join(" | "));
+
+  const wide = buildPlan({ brief, format: "long", styleId: "explainer-flat-vector" });
+  assert.ok(wide.ok);
+  if (wide.ok) assert.ok(!wide.plan.warnings.some((w) => /measured in a landscape frame/.test(w)));
+
+  // and the visuals stage names the asset model the template actually needs
+  const visuals = short.plan.stages.find((s) => s.role === "image");
+  assert.equal(visuals?.label, "Plates and diagrams");
+});

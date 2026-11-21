@@ -1,5 +1,7 @@
 /** Builds the render-video job payload from the storyboard, the picked assets and the narration. Pure. */
 import { VIDEO_FORMATS, type Format } from "./catalog.ts";
+import type { AudioPlan } from "./audio-plan.ts";
+import { captionSpecIssues, type CaptionSpec } from "./caption-spec.ts";
 import { DEFAULT_RENDER_ENGINE, engineExists, engineIssues, planCrossFades } from "./render-engine.ts";
 import { scenePlanIssues, type ScenePlan } from "./scene-plan.ts";
 
@@ -57,6 +59,10 @@ export interface RenderPayload {
   durationSec: number;
   captions: CaptionCue[];
   targetLufs: number;
+  /** Caption geometry the burn-in has to use. Absent means the worker keeps its own numbers. */
+  captionStyle?: CaptionSpec;
+  /** The audio layers and the numbers to mix them at. Absent means narration alone. */
+  audio?: AudioPlan;
   runId?: string;
   /** Font asset for burned-in captions. Null when the library has none, and the worker then skips captions. */
   fontAssetId: string | null;
@@ -85,6 +91,12 @@ export interface RenderInput {
   transitionSec?: number;
   /** Scene plan from `buildScenePlan`, for an animating engine. */
   scenePlan?: ScenePlan;
+  /** Caption geometry for this frame. Without one the worker keeps its own numbers. */
+  captionSpec?: CaptionSpec;
+  /** True when the template requires captions, which makes a missing font a plan failure. */
+  captionRequired?: boolean;
+  /** The audio plan from `buildAudioPlan`. Its master loudness has to agree with `targetLufs`. */
+  audioPlan?: AudioPlan;
   /** Capabilities the target worker reported. When given, an engine it cannot run fails here instead of silently rendering stills. */
   workerCapabilities?: readonly string[];
   /** Template pacing limit for one shot. */
@@ -142,6 +154,19 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
     if (i.scenePlan.engine !== engine) issues.push(`The scene plan is for engine "${i.scenePlan.engine}", but this render is for "${engine}"`);
     issues.push(...scenePlanIssues(i.scenePlan, i.workerCapabilities ? { reported: i.workerCapabilities } : {}));
   }
+  if (i.captionSpec) {
+    const f = VIDEO_FORMATS[i.format];
+    issues.push(...captionSpecIssues(i.captionSpec, { width: f.width, height: f.height }, { required: i.captionRequired === true }));
+    // The font is named twice — on the payload and inside the spec — and the worker downloads by the
+    // payload list. Two names that disagree would silently drop the caption.
+    if (i.captionSpec.fontAssetId && i.fontAssetId && i.captionSpec.fontAssetId !== i.fontAssetId) {
+      issues.push(`The caption spec names font ${i.captionSpec.fontAssetId}, but the payload names ${i.fontAssetId}`);
+    }
+  }
+  // One loudness target, not two that happen to agree today.
+  if (i.audioPlan && Math.abs(i.audioPlan.master.targetLufs - i.targetLufs) > 0.01) {
+    issues.push(`The audio plan masters at ${i.audioPlan.master.targetLufs} LUFS, but the payload targets ${i.targetLufs} LUFS`);
+  }
   if (issues.length > 0) return { ok: false, issues };
 
   // A cross-fade shortens the timeline by the overlap, so the shots must grow by it or the narration
@@ -166,8 +191,9 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
   }
   const f = VIDEO_FORMATS[i.format];
   const shots = i.shots.map((s, idx) => ({ shotRef: s.shotRef, assetId: i.shotAssets[s.shotRef] as string, seconds: secs[idx], motion: motionFor(idx) }));
-  const fontAssetId = i.fontAssetId || null;
-  const inputs = Array.from(new Set([...shots.map((s) => s.assetId), i.narrationAssetId as string, ...(fontAssetId ? [fontAssetId] : [])]));
+  const fontAssetId = i.fontAssetId || i.captionSpec?.fontAssetId || null;
+  const audioInputs = [...(i.audioPlan?.bed ? [i.audioPlan.bed.assetId] : []), ...(i.audioPlan?.sfx.map((s) => s.assetId) ?? [])];
+  const inputs = Array.from(new Set([...shots.map((s) => s.assetId), i.narrationAssetId as string, ...(fontAssetId ? [fontAssetId] : []), ...audioInputs]));
   const payload: RenderPayload = {
     format: i.format,
     width: f.width,
@@ -185,6 +211,8 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
     inputs,
   };
   if (i.scenePlan) payload.scenePlan = i.scenePlan;
+  if (i.captionSpec) payload.captionStyle = i.captionSpec;
+  if (i.audioPlan) payload.audio = i.audioPlan;
   if (i.runId) payload.runId = i.runId;
   if (typeof i.narrationTempo === "number" && Number.isFinite(i.narrationTempo) && i.narrationTempo > 0 && i.narrationTempo !== 1) {
     payload.narrationTempo = Math.round(i.narrationTempo * 1000) / 1000;

@@ -5,6 +5,14 @@
  */
 
 export type Format = "short" | "long";
+/** The frame an art direction was measured on. */
+export type Frame = "landscape" | "portrait" | "both";
+/**
+ * Which shape of assets a template expects. `image-per-shot` is the stills model, where image count grows
+ * with beat count. `plates-and-diagrams` means a few reused plates and character cut-outs, with every
+ * diagram drawn by the template in code, so image count stops growing with the script.
+ */
+export type AssetModel = "image-per-shot" | "plates-and-diagrams";
 export type Workflow = "original" | "copycat-structure";
 export type Family =
   | "explainer"
@@ -64,6 +72,23 @@ export const VIDEO_FORMATS: Record<Format, { label: string; width: number; heigh
   short: { label: "Short (vertical 9:16)", width: 1080, height: 1920, fps: 30, durationSec: [15, 60] },
   long: { label: "Long video (16:9)", width: 1920, height: 1080, fps: 30, durationSec: [480, 1200] },
 };
+
+/** The frame a format actually produces, so a style's natural frame can be compared against it. */
+export function frameForFormat(format: Format): Frame {
+  const f = VIDEO_FORMATS[format];
+  if (f.width === f.height) return "both";
+  return f.width > f.height ? "landscape" : "portrait";
+}
+
+/** The frame a style's art direction was built for. Most styles fit any. */
+export function frameOf(style: Style): Frame {
+  return style.naturalFrame ?? "both";
+}
+
+/** The asset shape a style's template expects. Most styles still take one image per shot. */
+export function assetModelOf(style: Style): AssetModel {
+  return style.assetModel ?? "image-per-shot";
+}
 
 export const WORKFLOWS: Record<Workflow, { label: string; description: string }> = {
   original: { label: "Original", description: "Everything is written and made from your brief." },
@@ -335,6 +360,13 @@ export interface Style {
   narration: boolean;
   /** Typical shot length, used to size the storyboard. */
   shotSeconds: [number, number];
+  /**
+   * The frame the art direction was measured on. A job in another frame needs its layout re-derived, so
+   * the planner says so instead of quietly reusing a 16:9 composition inside a 9:16 frame.
+   */
+  naturalFrame?: Frame;
+  /** Which asset shape the template expects. Defaults to the stills model. */
+  assetModel?: AssetModel;
   /** Themes this style suits; used to rank suggestions. */
   themes: string[];
   /** Words and phrases that match a brief (matched as whole words). */
@@ -354,7 +386,13 @@ export const STYLES: Style[] = [
     formats: ["short", "long"],
     engine: "remotion-2d",
     narration: true,
-    shotSeconds: [3, 6],
+    // Measured on the reference rather than guessed: 196 cuts in 8:14 is 23.8 cuts a minute with a 2.27 s
+    // median shot, which lands inside the 15-30 a minute this range implies and outside what 3-6 implies.
+    shotSeconds: [2, 4],
+    // The art direction was measured at 1920x1080: safe box, colour bands and caption margins all assume it.
+    naturalFrame: "landscape",
+    // A few plates and cut-outs reused across beats, with the diagrams drawn by the template in code.
+    assetModel: "plates-and-diagrams",
     themes: ["science", "space", "tech", "history"],
     keywords: ["explainer", "explain", "how it works", "why", "science", "biology", "facts", "animated facts", "documentary style"],
     assetKinds: ["image"],

@@ -1,17 +1,27 @@
 # Render templates, derived from the Hermes skills
 
 Date: 2026-11-20. Status: design note plus the phased plan. **The whole portal half of Phase 0 and
-Phase 1 is implemented** (358 unit tests, CI green):
+Phase 1 is implemented** (380 unit tests, CI green), including the gaps the first real render exposed —
+captions, the audio layers, frame and rhythm:
 
-- `lib/studio/render-engine.ts` — the engine gate, the cross-fade arithmetic, `fitTransitionSec`, and
-  the variation gate (`MOTION_TOKENS`, `coverageIssues`, `engineMotionIssues`).
+- `lib/studio/render-engine.ts` — the engine gate, the cross-fade arithmetic, `fitTransitionSec`, the
+  capability switch (`transitionForWorker`), and the variation gate (`MOTION_TOKENS`,
+  `coverageIssues`, `engineMotionIssues`).
 - `lib/studio/scene-plan.ts` — the scene contract an animating template renders from: elements,
   motion tokens and per-layer clocks, derived from the storyboard and the style, with
-  `scenePlanIssues` and `renderParamsForStyle`.
-- `render.ts` — the payload now carries `engine`, `transitionSec` and an optional `scenePlan`.
-- `planner.ts` — warns when a style's engine is one the worker does not report.
-- `production.ts` — the render stage resolves the style to its engine, builds the scene plan, and
-  fails loudly instead of falling through to stills.
+  `scenePlanIssues` and `renderParamsForStyle`. Scene cap derived from the catalogue (600).
+- `lib/studio/caption-spec.ts` — caption geometry as data, scaled from the measured reference to any
+  frame, so a landscape number stops landing on a portrait frame.
+- `lib/studio/audio-plan.ts` — the three layers the reference mixes (ducked bed, synthesised brown-noise
+  ambience, sparse accents) with the numbers that measured right, and `bed.cover` so a short track is
+  looped instead of leaving the last third silent.
+- `catalog.ts` — the style now declares its `naturalFrame` and `assetModel`, and its rhythm is the
+  measured one (2-4 s a shot, 15-30 cuts a minute, against a measured 23.8).
+- `render.ts` — the payload carries `engine`, `transitionSec`, `scenePlan`, `captionStyle` and `audio`.
+- `planner.ts` — warns when a style's engine is one the worker does not report, and when a job's frame
+  fights the frame the style was measured in.
+- `production.ts` — the render stage resolves the style to its engine, builds the scene plan, the caption
+  spec and the audio plan, and fails loudly instead of falling through to stills.
 
 What is left is the code half of the templates — dispatch, the capability report, `xfade`, and the
 Remotion/Compositor components — specified in `docs/kiro-tasks.md`.

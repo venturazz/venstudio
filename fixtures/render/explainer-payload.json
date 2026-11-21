@@ -9,73 +9,111 @@
     {
       "shotRef": "shot-01",
       "assetId": "asset-shot-01",
-      "seconds": 4.667,
+      "seconds": 3.438,
       "motion": "zoom-in"
     },
     {
       "shotRef": "shot-02",
       "assetId": "asset-shot-02",
-      "seconds": 5.333,
+      "seconds": 3.438,
       "motion": "pan-left"
     },
     {
       "shotRef": "shot-03",
       "assetId": "asset-shot-03",
-      "seconds": 6,
+      "seconds": 3.438,
       "motion": "zoom-out"
     },
     {
       "shotRef": "shot-04",
       "assetId": "asset-shot-04",
-      "seconds": 5.333,
+      "seconds": 3.438,
       "motion": "pan-right"
     },
     {
       "shotRef": "shot-05",
       "assetId": "asset-shot-05",
-      "seconds": 4.667,
+      "seconds": 3.438,
       "motion": "zoom-in"
+    },
+    {
+      "shotRef": "shot-06",
+      "assetId": "asset-shot-06",
+      "seconds": 3.438,
+      "motion": "pan-left"
+    },
+    {
+      "shotRef": "shot-07",
+      "assetId": "asset-shot-07",
+      "seconds": 3.438,
+      "motion": "zoom-out"
+    },
+    {
+      "shotRef": "shot-08",
+      "assetId": "asset-shot-08",
+      "seconds": 3.438,
+      "motion": "pan-right"
     }
   ],
   "narrationAssetId": "asset-narration",
   "narrationSec": 24,
-  "durationSec": 24,
+  "durationSec": 24.004,
   "captions": [
     {
       "start": 0,
-      "end": 3.378,
+      "end": 1.81,
       "text": "Iron is everywhere."
     },
     {
-      "start": 3.378,
-      "end": 9.244,
+      "start": 1.81,
+      "end": 4.952,
       "text": "The furnace reaches 1400 degrees."
     },
     {
-      "start": 9.244,
-      "end": 14.4,
+      "start": 4.952,
+      "end": 7.714,
       "text": "The hammer draws the bar out."
     },
     {
-      "start": 14.4,
-      "end": 19.022,
-      "text": "Quenching locks the grain."
+      "start": 7.714,
+      "end": 11.429,
+      "text": "Carbon decides what the metal can take."
     },
     {
-      "start": 19.022,
+      "start": 11.429,
+      "end": 15.81,
+      "text": "Quenching locks the grain before it can relax."
+    },
+    {
+      "start": 15.81,
+      "end": 19.048,
+      "text": "Twelve blows, and the edge is set."
+    },
+    {
+      "start": 19.048,
+      "end": 21.333,
+      "text": "Three phases, one blade."
+    },
+    {
+      "start": 21.333,
       "end": 24,
       "text": "That is how a blade is born."
     }
   ],
   "targetLufs": -14,
-  "fontAssetId": null,
+  "fontAssetId": "asset-font",
   "inputs": [
     "asset-shot-01",
     "asset-shot-02",
     "asset-shot-03",
     "asset-shot-04",
     "asset-shot-05",
-    "asset-narration"
+    "asset-shot-06",
+    "asset-shot-07",
+    "asset-shot-08",
+    "asset-narration",
+    "asset-font",
+    "asset-bed"
   ],
   "scenePlan": {
     "version": 1,
@@ -89,7 +127,7 @@
     "scenes": [
       {
         "shotRef": "shot-01",
-        "seconds": 4,
+        "seconds": 3,
         "beatRole": "hook",
         "elements": [
           {
@@ -112,14 +150,14 @@
           },
           {
             "id": "scene",
-            "frames": 120,
+            "frames": 90,
             "fps": 30
           }
         ]
       },
       {
         "shotRef": "shot-02",
-        "seconds": 5,
+        "seconds": 3,
         "beatRole": "setup",
         "elements": [
           {
@@ -143,14 +181,14 @@
           },
           {
             "id": "scene",
-            "frames": 150,
+            "frames": 90,
             "fps": 30
           }
         ]
       },
       {
         "shotRef": "shot-03",
-        "seconds": 6,
+        "seconds": 3,
         "beatRole": "body",
         "elements": [
           {
@@ -180,26 +218,27 @@
           },
           {
             "id": "scene",
-            "frames": 180,
+            "frames": 90,
             "fps": 30
           }
         ]
       },
       {
         "shotRef": "shot-04",
-        "seconds": 5,
+        "seconds": 3,
         "beatRole": "body",
         "elements": [
           {
-            "kind": "callout",
-            "text": "the grain locks"
+            "kind": "gauge",
+            "text": "carbon",
+            "value": 0.7
           },
           {
             "kind": "plate"
           }
         ],
         "tokens": [
-          "pop"
+          "gauge"
         ],
         "camera": false,
         "layers": [
@@ -210,14 +249,113 @@
           },
           {
             "id": "scene",
-            "frames": 150,
+            "frames": 90,
             "fps": 30
           }
         ]
       },
       {
         "shotRef": "shot-05",
-        "seconds": 4,
+        "seconds": 3,
+        "beatRole": "body",
+        "elements": [
+          {
+            "kind": "callout",
+            "text": "the grain locks"
+          },
+          {
+            "kind": "arrow"
+          },
+          {
+            "kind": "plate"
+          }
+        ],
+        "tokens": [
+          "arrow",
+          "pop"
+        ],
+        "camera": true,
+        "layers": [
+          {
+            "id": "plate",
+            "frames": 1,
+            "fps": 1
+          },
+          {
+            "id": "scene",
+            "frames": 90,
+            "fps": 30
+          }
+        ]
+      },
+      {
+        "shotRef": "shot-06",
+        "seconds": 3,
+        "beatRole": "body",
+        "elements": [
+          {
+            "kind": "tally",
+            "text": "blows",
+            "value": 12
+          },
+          {
+            "kind": "plate"
+          }
+        ],
+        "tokens": [
+          "tally"
+        ],
+        "camera": false,
+        "layers": [
+          {
+            "id": "plate",
+            "frames": 1,
+            "fps": 1
+          },
+          {
+            "id": "scene",
+            "frames": 90,
+            "fps": 30
+          }
+        ]
+      },
+      {
+        "shotRef": "shot-07",
+        "seconds": 3,
+        "beatRole": "payoff",
+        "elements": [
+          {
+            "kind": "diagram",
+            "text": "phases"
+          },
+          {
+            "kind": "particles"
+          },
+          {
+            "kind": "plate"
+          }
+        ],
+        "tokens": [
+          "draw",
+          "particles"
+        ],
+        "camera": true,
+        "layers": [
+          {
+            "id": "plate",
+            "frames": 1,
+            "fps": 1
+          },
+          {
+            "id": "scene",
+            "frames": 90,
+            "fps": 30
+          }
+        ]
+      },
+      {
+        "shotRef": "shot-08",
+        "seconds": 3,
         "beatRole": "outro",
         "elements": [
           {
@@ -231,7 +369,7 @@
         "tokens": [
           "dim"
         ],
-        "camera": true,
+        "camera": false,
         "layers": [
           {
             "id": "plate",
@@ -240,11 +378,53 @@
           },
           {
             "id": "scene",
-            "frames": 120,
+            "frames": 90,
             "fps": 30
           }
         ]
       }
     ]
+  },
+  "captionStyle": {
+    "fontAssetId": "asset-font",
+    "fontSizePx": 78,
+    "minFontSizePx": 64,
+    "maxFontSizePx": 78,
+    "lineSpacingPx": 26,
+    "outlinePx": 7,
+    "shadowPx": 5,
+    "marginXPx": 51,
+    "marginBottomPx": 154,
+    "maxWidthPx": 978,
+    "narrowFace": false,
+    "safeAreaPct": 8
+  },
+  "audio": {
+    "master": {
+      "targetLufs": -14,
+      "maxTruePeakDb": -1
+    },
+    "bed": {
+      "assetId": "asset-bed",
+      "sourceLufs": -20,
+      "gainDb": 3.5,
+      "duck": {
+        "threshold": 0.02,
+        "ratio": 4,
+        "attackMs": 15,
+        "releaseMs": 350,
+        "makeup": 1
+      },
+      "cover": "loop"
+    },
+    "ambient": {
+      "color": "brown",
+      "bandHz": [
+        90,
+        3200
+      ],
+      "gainDb": -26
+    },
+    "sfx": []
   }
 }
