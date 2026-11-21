@@ -41,6 +41,9 @@ Autonomous studio workflow, templates and QC: [research](docs/research/04-autono
 - Roles: owner (everything), editor (channels and jobs), viewer (read only).
 - Workers get a single token from a one-time, 30-minute enrollment code. Tokens are stored hashed and can be
   revoked instantly. Workers never receive 9router keys, YouTube tokens or user credentials.
+- Worker updates are signed with the portal's Ed25519 key (private half encrypted with `ENCRYPTION_KEY`); workers
+  install only files whose signature and sha256 check out, refuse downgrades and expired manifests, self-test the new
+  version and roll back on failure (`docs/worker-updates.md`).
 - Strict security headers (CSP, frame-ancestors none, HSTS in production, nosniff).
 
 ## Run locally
@@ -83,6 +86,9 @@ Use `docker-compose.coolify.yml` (Docker Compose build pack). Step-by-step: [doc
 4. Queue an **Echo** job, then a **Render smoke test**, to check connectivity and render speed.
 
 For a VPS or your own PC, use the `curl … install.sh … --mode daemon` command shown in the same dialog.
+
+Workers 0.8.0+ update themselves with signed releases from the portal (Workers → Worker updates: Automatic,
+Approve each update, or Off). Older workers need one manual update first: see `docs/worker-updates.md`.
 
 ## Studio and Assets
 

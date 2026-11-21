@@ -65,10 +65,15 @@ runs every queued job and exits when the queue is empty.
 
 ## Update or remove
 
-- Update: run the install commands again without `--code`; the enrollment is kept.
+- Automatic (worker 0.8.0+): the worker updates itself between jobs, installing only files signed by the portal key
+  that `install.sh` pinned in `config.json`, after checking each file's sha256 and a self-test of the new version; it
+  switches back by itself if the new version fails. The owner chooses Automatic, Approve each update or Off under
+  **Workers**. Details: `docs/worker-updates.md` in the repository.
+- Manual (fallback, and once for workers older than 0.8.0): run the install commands again without `--code`; the
+  enrollment is kept and the update key is pinned.
 - Remove: revoke the worker in the portal, delete the scheduled task, then `rm -rf /home/hatch/venstudio`.
 
-## Job types and optional environment (worker 0.7.0)
+## Job types and optional environment (worker 0.8.0)
 
 | Job type | Always on | What it does |
 |---|---|---|

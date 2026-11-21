@@ -36,6 +36,9 @@ no remotion-2d composition", by name. Use a stills style for those until their t
 
 ## Update the Muse workers
 
+From worker 0.8.0 on, workers update themselves (signed releases, between jobs, including the Remotion templates);
+see `docs/worker-updates.md`. The steps below are the manual fallback, and the one-time step for older workers.
+
 On each Muse VM (or in the Muse agent's terminal), from `/home/hatch/venstudio`:
 
 ```bash
