@@ -3,6 +3,7 @@ import { db } from "./db.ts";
 import type { GateId, GateResult } from "../studio/qc.ts";
 import type { ReviewKind, ReviewMedia, ReviewPayload, ReviewState } from "../studio/review.ts";
 import { parseProviderRows } from "../studio/terms-review.ts";
+import { parseVoiceFix } from "../studio/voice-fit.ts";
 
 export interface ReviewCard {
   id: string;
@@ -61,6 +62,12 @@ function toPayload(raw: unknown): ReviewPayload {
   const providers = parseProviderRows(p.providers);
   if (providers.length > 0) payload.providers = providers;
   if (typeof p.recheckedAt === "string" && !Number.isNaN(Date.parse(p.recheckedAt))) payload.recheckedAt = p.recheckedAt;
+  if (Array.isArray(p.notes)) {
+    const notes = p.notes.filter((i): i is string => typeof i === "string").slice(0, 10);
+    if (notes.length > 0) payload.notes = notes;
+  }
+  const voice = parseVoiceFix(p.voice);
+  if (voice) payload.voice = voice;
   return payload;
 }
 

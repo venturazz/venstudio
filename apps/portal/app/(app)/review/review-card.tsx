@@ -29,6 +29,10 @@ export interface ReviewCardView {
   canSetTerms: boolean;
   /** When the card replaced another after a re-check (relative time), or empty. */
   recheckedAge: string;
+  /** Approve anyway is shown to the owner only. */
+  isOwner: boolean;
+  /** Every render worker can play a narration at a changed tempo (worker 0.6.0+), so Fit the narration can be offered. */
+  tempoReady: boolean;
 }
 
 const BTN = "min-h-12 w-full sm:w-auto";
@@ -127,6 +131,20 @@ function TermsBlock({ rows, canSetTerms, recheckedAge }: { rows: BlockingRow[]; 
   );
 }
 
+/** Lines that do not fail the check, for example a narration longer than its estimate. */
+function NotesBlock({ notes }: { notes: string[] | undefined }) {
+  if (!notes || notes.length === 0) return null;
+  return (
+    <ul className="space-y-1 rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid="review-notes">
+      {notes.map((line, i) => (
+        <li key={`${i}-${line}`} className="break-words">
+          {line}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function MediaBlock({ stage, payload, termsShown }: { stage: string; payload: ReviewPayload; termsShown: boolean }) {
   const media = payload.media;
   const checks = payload.checks ?? [];
@@ -189,8 +207,13 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
   const p = item.payload;
   const issues = p.issues && p.issues.length > 0 ? p.issues : item.gateLines;
   const ideas = p.ideas ?? [];
-  const actions = decisionOptions(item.kind, { stage: item.stage, issues: p.issues ?? [] });
-  const reviseHint = decisionHint("revise", item.kind, item.stage);
+  const ctx = { stage: item.stage, issues: p.issues ?? [], voice: p.voice ?? null, tempoReady: item.tempoReady };
+  const actions = decisionOptions(item.kind, ctx);
+  const reviseHint = decisionHint("revise", item.kind, item.stage, ctx);
+  const rejectHint = decisionHint("reject", item.kind, item.stage, ctx);
+  // The choices shown as their own buttons; revise and reject live in the note form below.
+  const buttons = actions.filter((d) => d !== "approve" && d !== "revise" && d !== "reject" && (d !== "override" || item.isOwner));
+  const fitWaitsForWorker = item.kind === "gate-failure" && item.stage === "voice" && Boolean(p.voice?.fitTempo) && !item.tempoReady;
   return (
     <Card data-testid="review-card" data-kind={item.kind} data-stage={item.stage} data-review-id={item.id}>
       <CardBody className="space-y-4">
@@ -244,9 +267,12 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             {p.reason && <p className="text-xs text-muted">{p.reason}</p>}
             {item.recheckedAge && (
               <p className="text-xs text-muted" data-testid="rechecked">
-                The provider terms were checked again {item.recheckedAge} and pass now. Nothing was made again.
+                {item.stage === "voice"
+                  ? `The narration was checked again ${item.recheckedAge} and passes now. Nothing was recorded again.`
+                  : `The provider terms were checked again ${item.recheckedAge} and pass now. Nothing was made again.`}
               </p>
             )}
+            <NotesBlock notes={p.notes} />
             <MediaBlock stage={item.stage} payload={p} termsShown={false} />
             <form action={formAction}>
               <input type="hidden" name="reviewId" value={item.id} />
@@ -270,8 +296,20 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
                 </li>
               ))}
             </ul>
+            <NotesBlock notes={p.notes} />
             <MediaBlock stage={item.stage} payload={p} termsShown={item.blocking !== null} />
             {item.blocking !== null && <TermsBlock rows={item.blocking} canSetTerms={item.canSetTerms} recheckedAge={item.recheckedAge} />}
+            {item.blocking === null && item.recheckedAge && (
+              <p className="text-xs text-muted" data-testid="rechecked">
+                Checked again {item.recheckedAge}. Nothing was made again.
+              </p>
+            )}
+            {fitWaitsForWorker && (
+              <p className="break-words text-xs text-muted" data-testid="fit-needs-worker">
+                A small speed change ({p.voice?.fitTempo}x) would make this narration fit, but every render worker needs version 0.6.0 or later
+                for it. Update the worker, then press Check again.
+              </p>
+            )}
           </>
         )}
 
@@ -282,24 +320,26 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
         )}
 
         {(item.kind === "gate-failure" || item.kind === "stage-error") &&
-          // Re-check and retry, the main one first. Revise and reject are in the note form below.
-          actions
-            .filter((d) => d === "recheck" || d === "retry")
-            .map((d, i) => {
-              const hint = decisionHint(d, item.kind, item.stage);
-              return (
-                <form key={d} action={formAction} className="space-y-1">
-                  <input type="hidden" name="reviewId" value={item.id} />
-                  <input type="hidden" name="decision" value={d} />
-                  <input type="hidden" name="ideaIndex" value="" />
-                  <input type="hidden" name="note" value="" />
-                  <SubmitButton variant={i === 0 ? "primary" : "secondary"} className={BTN} pendingLabel={d === "recheck" ? "Checking…" : "Saving…"}>
-                    {decisionLabel(d, item.kind, item.stage)}
-                  </SubmitButton>
-                  {hint && <p className="text-xs text-muted">{hint}</p>}
-                </form>
-              );
-            })}
+          // Fixes, re-check and retry, the main one first. Revise and reject are in the note form below.
+          buttons.map((d, i) => {
+            const hint = decisionHint(d, item.kind, item.stage, ctx);
+            return (
+              <form key={d} action={formAction} className="space-y-1">
+                <input type="hidden" name="reviewId" value={item.id} />
+                <input type="hidden" name="decision" value={d} />
+                <input type="hidden" name="ideaIndex" value="" />
+                <input type="hidden" name="note" value="" />
+                <SubmitButton
+                  variant={i === 0 ? "primary" : "secondary"}
+                  className={BTN}
+                  pendingLabel={d === "recheck" ? "Checking…" : d === "fit" ? "Fitting…" : "Saving…"}
+                >
+                  {decisionLabel(d, item.kind, item.stage, ctx)}
+                </SubmitButton>
+                {hint && <p className="text-xs text-muted">{hint}</p>}
+              </form>
+            );
+          })}
 
         <form action={formAction} className="space-y-3 border-t border-border pt-4">
           <input type="hidden" name="reviewId" value={item.id} />
@@ -317,6 +357,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             </SubmitButton>
           </div>
           {reviseHint && <p className="text-xs text-muted">{reviseHint}</p>}
+          {rejectHint && (
+            <p className="text-xs text-muted" data-testid="reject-hint">
+              Reject: {rejectHint}
+            </p>
+          )}
         </form>
       </CardBody>
     </Card>

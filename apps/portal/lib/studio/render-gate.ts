@@ -67,3 +67,22 @@ export function renderStageError(issues: readonly string[], engine: string): str
       : `Enable "${need}" on a worker. `;
   return `${text} This style renders with "${engine}", and it is not rendered as a slideshow instead. ${how}Then press Retry.`;
 }
+
+/** Capability a worker (0.6.0+) reports when render-video honours `narrationTempo` (ffmpeg atempo on the narration). */
+export const NARRATION_TEMPO_CAPABILITY = "narration-tempo";
+
+/**
+ * Whether a narration with a changed tempo can be rendered: at least one worker can render (reports ffmpeg) and every
+ * worker that can render also reports NARRATION_TEMPO_CAPABILITY. A render job is queued under its engine's
+ * capability, so an older worker could claim it and ignore the tempo; requiring all of them rules that out.
+ * `workers` holds each non-revoked worker's reported capabilities.
+ */
+export function tempoReadyFor(workers: ReadonlyArray<readonly string[]>): boolean {
+  const renderers = workers.filter((caps) => caps.includes("ffmpeg"));
+  return renderers.length > 0 && renderers.every((caps) => caps.includes(NARRATION_TEMPO_CAPABILITY));
+}
+
+/** The render stage error for a fitted narration that no worker can play at its tempo yet. */
+export function tempoWorkerMessage(tempo: number): string {
+  return `This narration is set to play at ${tempo}x so it fits the shots, and every render worker must be 0.6.0 or later to do that. Update the worker (install.sh, same command as before), then press Retry.`;
+}

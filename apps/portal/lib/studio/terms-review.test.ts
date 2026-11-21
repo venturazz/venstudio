@@ -4,6 +4,7 @@ import {
   autoRecheckMatches,
   blockingRows,
   canRecheck,
+  termsHeld,
   confirmHint,
   parseProviderRows,
   providerRowsUsed,
@@ -104,11 +105,15 @@ const termsIssue = "Confirm the commercial-use terms for kokoro in Settings (Ass
 const refusedIssue = "1 asset from fake-img cannot be published: Settings says fake-img is not cleared for commercial use. Make them again with another provider.";
 const otherIssue = "The narration has clipped samples";
 
-test("canRecheck: assets and voice gate failures with a terms issue only", () => {
+test("canRecheck: assets gate failures with a terms issue, and every voice gate failure", () => {
   assert.ok(canRecheck("gate-failure", "assets", [termsIssue]));
   assert.ok(canRecheck("gate-failure", "voice", [otherIssue, termsIssue]));
   assert.ok(canRecheck("gate-failure", "assets", [refusedIssue]));
-  assert.ok(!canRecheck("gate-failure", "voice", [otherIssue]));
+  // A voice card is judged again on the narration it has, so a card made under older rules can continue.
+  assert.ok(canRecheck("gate-failure", "voice", [otherIssue]));
+  assert.ok(!termsHeld("gate-failure", "voice", [otherIssue]));
+  assert.ok(termsHeld("gate-failure", "voice", [otherIssue, termsIssue]));
+  assert.ok(!canRecheck("gate-failure", "assets", [otherIssue]));
   assert.ok(!canRecheck("gate-failure", "render", [termsIssue]));
   assert.ok(!canRecheck("stage-error", "assets", [termsIssue]));
   assert.ok(!canRecheck("approval", "voice", []));
@@ -132,6 +137,7 @@ test("recheckRefusal: open card, waiting run and waiting stage only", () => {
   assert.equal(recheckRefusal(ok), null);
   assert.match(recheckRefusal({ ...ok, reviewState: "superseded" }) ?? "", /already decided or checked again/);
   assert.match(recheckRefusal({ ...ok, issues: [otherIssue] }) ?? "", /held up by provider terms/);
+  assert.equal(recheckRefusal({ ...ok, stage: "voice", issues: [otherIssue] }), null);
   assert.match(recheckRefusal({ ...ok, runState: "cancelled" }) ?? "", /no longer waiting/);
   assert.match(recheckRefusal({ ...ok, stageState: "pending" }) ?? "", /no longer waiting/);
   assert.match(recheckRefusal({ ...ok, stageState: null }) ?? "", /no longer waiting/);
@@ -144,7 +150,7 @@ test("a re-check that now passes concludes; one still blocked yields a new card 
   assert.deepEqual(providerTermsIssues(uses, allYes), []);
   assert.deepEqual(blockingRows(providerRowsUsed(uses), allYes), []);
   assert.match(recheckMessage("assets", "asked-approval", []), /checks pass now\. Nothing was made again: approve the assets/);
-  assert.match(recheckMessage("voice", "approved", []), /narration were kept/);
+  assert.match(recheckMessage("voice", "approved", []), /narration was kept/);
   const someYes = [t("canva", "image", "yes")];
   const still = blockingRows(providerRowsUsed(uses), someYes).map((r) => r.name);
   assert.deepEqual(still, ["unlisted-cloudflare-9router", "fake-img"]);
@@ -157,8 +163,15 @@ test("decisionOptions and labels for terms cards", () => {
   assert.deepEqual(decisionOptions("gate-failure", { stage: "voice", issues: [termsIssue] }), ["recheck", "retry", "revise", "reject"]);
   // Mixed issues: Retry stays first, the re-check is offered too.
   assert.deepEqual(decisionOptions("gate-failure", { stage: "voice", issues: [otherIssue, termsIssue] }), ["retry", "recheck", "revise", "reject"]);
+  // A voice card without terms issues can be checked again too. A card from before the voice-length rules has no fix
+  // details, so Check again leads: that is how the owner's stuck "limit 10 percent" card continues.
+  assert.deepEqual(decisionOptions("gate-failure", { stage: "voice", issues: [otherIssue] }), ["recheck", "retry", "revise", "reject"]);
+  const oldLengthCard = ["Narration is 55.01 s, the script estimate is 47.6 s (limit 10 percent)"];
+  assert.deepEqual(decisionOptions("gate-failure", { stage: "voice", issues: oldLengthCard }), ["recheck", "retry", "revise", "reject"]);
+  assert.equal(decisionLabel("recheck", "gate-failure", "voice", { issues: oldLengthCard }), "Check again");
+  assert.equal(decisionLabel("recheck", "gate-failure", "voice", { issues: [otherIssue] }), "Check again");
+  assert.equal(decisionLabel("recheck", "gate-failure", "voice", { issues: [termsIssue] }), "Check the terms again");
   // Other gate failures, and calls without context, are unchanged.
-  assert.deepEqual(decisionOptions("gate-failure", { stage: "voice", issues: [otherIssue] }), ["retry", "revise", "reject"]);
   assert.deepEqual(decisionOptions("gate-failure", { stage: "render", issues: [termsIssue] }), ["retry", "revise", "reject"]);
   assert.deepEqual(decisionOptions("gate-failure"), ["retry", "revise", "reject"]);
   assert.ok(!decisionOptions("stage-error", { stage: "assets", issues: [termsIssue] }).includes("recheck"));
@@ -173,5 +186,7 @@ test("decisionOptions and labels for terms cards", () => {
   assert.match(decisionHint("recheck", "gate-failure", "assets") ?? "", /Nothing is made again/);
   assert.match(decisionHint("revise", "gate-failure", "assets") ?? "", /every image again/);
   assert.match(decisionHint("retry", "gate-failure", "voice") ?? "", /whole narration again/);
-  assert.equal(decisionHint("revise", "gate-failure", "voice"), null);
+  // Revise on a voice card says where length and voice notes go.
+  assert.match(decisionHint("revise", "gate-failure", "voice") ?? "", /length or speed rewrites the script to fit and keeps the pictures/);
+  assert.equal(decisionHint("revise", "gate-failure", "render"), null);
 });

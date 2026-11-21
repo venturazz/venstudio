@@ -7,6 +7,7 @@ import { COVER_TOLERANCE_SEC, MIN_SHOT_SECONDS, NARRATION_ESTIMATE_TOLERANCE, ma
 import type { ProductionPlan } from "./planner.ts";
 import { likenessIssues, provenanceIssues, type ProvenanceRecord } from "./provenance.ts";
 import type { Template } from "./templates.ts";
+import { assessNarrationLength, type VoiceAssessInput, type VoiceFix, type VoiceProblem } from "./voice-fit.ts";
 
 export type GateId = "G-script" | "G-storyboard" | "G-assets" | "G-voice" | "G-technical" | "G-presentation" | "G-compliance" | "G-claims";
 
@@ -15,6 +16,8 @@ export interface GateResult {
   passed: boolean;
   score?: number;
   issues: string[];
+  /** Things the owner should know that do not fail the gate (G-voice: a narration longer than its estimate). */
+  notes?: string[];
   executor: string;
 }
 
@@ -47,6 +50,7 @@ export const SHOT_LENGTH_SLACK = 1.5;
 export const SCRIPT_LENGTH_TOLERANCE = 0.15;
 export const MAX_SOURCE_OVERLAP = 0.08;
 export const MIN_HOOK_VARIANTS = 3;
+/** Since the voice-length fix this only decides when the card shows a note; see VOICE_GROSS_MISMATCH in voice-fit.ts. */
 export const VOICE_DURATION_TOLERANCE = 0.1;
 export const MIN_CLAIM_WAIT_HOURS = 6;
 export const PRESENTATION_PASS = 75;
@@ -213,7 +217,7 @@ export function assetsGate(records: ProvenanceRecord[], usage: AssetUsage): Gate
   return result("G-assets", issues, "portal+hermes vision");
 }
 
-export interface VoiceInput {
+export interface VoiceInput extends Omit<VoiceAssessInput, "narrationSec" | "scriptEstimateSec"> {
   languageCode: string;
   /** Voice provider named when Kokoro does not cover the language. */
   provider: string | null;
@@ -222,18 +226,37 @@ export interface VoiceInput {
   clipped: boolean;
 }
 
-export function voiceGate(v: VoiceInput): GateResult {
-  const issues: string[] = [];
+export interface VoiceGateResult extends GateResult {
+  problems: VoiceProblem[];
+  fix: VoiceFix;
+}
+
+/**
+ * G-voice. Fails on what breaks the video: an unknown or uncovered language, clipped samples, a narration outside the
+ * format's limits or one the storyboard's shots cannot cover even stretched to maxShotSeconds (given format and
+ * shots), or a narration so far from its estimate (VOICE_GROSS_MISMATCH) that the audio is probably broken. A moderate
+ * difference from the estimate is a note. `fix` says which fixes the card can offer.
+ */
+export function voiceAssessment(v: VoiceInput): VoiceGateResult {
+  const problems: VoiceProblem[] = [];
   const lang = LANGUAGE_BY_CODE[v.languageCode];
-  if (!lang) issues.push(`Unknown language ${v.languageCode}`);
+  if (!lang) problems.push({ code: "language", text: `Unknown language ${v.languageCode}` });
   else if (lang.tts !== "kokoro" && !(v.provider ?? "").trim()) {
-    issues.push(`${lang.label} is not covered by Kokoro: name the voice provider`);
+    problems.push({ code: "language", text: `${lang.label} is not covered by Kokoro: name the voice provider` });
   }
-  if (v.scriptEstimateSec > 0 && Math.abs(v.narrationSec - v.scriptEstimateSec) / v.scriptEstimateSec > VOICE_DURATION_TOLERANCE) {
-    issues.push(`Narration is ${fmt(v.narrationSec)} s, the script estimate is ${fmt(v.scriptEstimateSec)} s (limit 10 percent)`);
-  }
-  if (v.clipped) issues.push("The narration has clipped samples");
-  return result("G-voice", issues, "9router/tts");
+  const length = assessNarrationLength(v);
+  problems.push(...length.problems);
+  if (v.clipped) problems.push({ code: "clipped", text: "The narration has clipped samples" });
+  const g = result("G-voice", problems.map((p) => p.text), "9router/tts");
+  if (length.notes.length > 0) g.notes = length.notes;
+  return { ...g, problems, fix: { ...length.fix, problems: problems.map((p) => p.code) } };
+}
+
+export function voiceGate(v: VoiceInput): GateResult {
+  const a = voiceAssessment(v);
+  const gate: GateResult = { gate: a.gate, passed: a.passed, issues: a.issues, executor: a.executor };
+  if (a.notes) gate.notes = a.notes;
+  return gate;
 }
 
 export function presentationGate(score: number, min: number = PRESENTATION_PASS, notes: string[] = []): GateResult {

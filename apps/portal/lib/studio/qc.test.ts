@@ -148,7 +148,12 @@ test("voice gate", () => {
   assert.equal(voiceGate({ ...base, languageCode: "id" }).passed, false);
   assert.equal(voiceGate({ ...base, languageCode: "id", provider: "9router tts-1" }).passed, true);
   assert.equal(voiceGate({ ...base, languageCode: "xx" }).passed, false);
-  assert.equal(voiceGate({ ...base, narrationSec: 50 }).passed, false);
+  // 25 percent longer than the estimate is a note, not a failure; more than 40 percent off suggests broken audio.
+  const longer = voiceGate({ ...base, narrationSec: 50 });
+  assert.equal(longer.passed, true);
+  assert.match((longer.notes ?? []).join(" "), /25 percent longer than the script estimate/);
+  assert.equal(voiceGate({ ...base, narrationSec: 57 }).passed, false);
+  assert.equal(voiceGate({ ...base, narrationSec: 23 }).passed, false);
   assert.equal(voiceGate({ ...base, clipped: true }).passed, false);
 });
 
