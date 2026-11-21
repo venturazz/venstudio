@@ -30,7 +30,8 @@ import type { AssetKind, AssetSource } from "../studio/catalog.ts";
 import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
 import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload } from "../studio/render.ts";
-import { transitionForWorker } from "../studio/render-engine.ts";
+import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
+import { gateCapabilities, renderJobCapability, renderStageError } from "../studio/render-gate.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import type { ReviewMedia } from "../studio/review.ts";
@@ -596,17 +597,22 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // A cross-fade is a two-sided change: the worker has to build the xfade and accept a timeline whose
   // shots add up to more than the narration. So the portal only asks once a worker says it can, and a
   // capability read that fails means no fades rather than a failed run.
-  let workerCapabilities: string[] = [];
+  // Null when the read fails: no fades, and no engine gate either, rather than a failed run.
+  let workerCapabilities: string[] | null = null;
   try {
     const rows = (await sql`SELECT DISTINCT unnest(capabilities) AS cap FROM workers WHERE status <> 'revoked'`) as unknown as Array<{ cap: unknown }>;
     workerCapabilities = rows.map((r) => String(r.cap)).filter(Boolean);
   } catch {
-    workerCapabilities = [];
+    workerCapabilities = null;
   }
   const transitionSec = transitionForWorker(workerCapabilities, shotSpecs.map((s) => s.seconds));
+  // Once any worker reports, an engine none of them can run fails here, at planning, instead of being claimed by a
+  // worker that would refuse it (0.5+) or, worse, render it as stills (0.4). With no worker enrolled the job waits.
+  const gate = gateCapabilities(workerCapabilities);
+  const engine = renderParams?.engine ?? DEFAULT_RENDER_ENGINE;
   const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: board.value.shots, transitionSec }) : null;
   if (scenes && !scenes.ok) {
-    await recordStageError(run.id, st.id, "render", scenes.issues.join(". "));
+    await recordStageError(run.id, st.id, "render", renderStageError(scenes.issues, engine));
     return;
   }
   const renderInput = {
@@ -622,10 +628,11 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     runId: run.id,
     ...(renderParams ? { engine: renderParams.engine, transitionSec } : {}),
     ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
+    ...(gate ? { workerCapabilities: gate } : {}),
   };
   const plan = buildRenderPayload(renderInput);
   if (!plan.ok) {
-    await recordStageError(run.id, st.id, "render", plan.issues.join(". "));
+    await recordStageError(run.id, st.id, "render", renderStageError(plan.issues, engine));
     return;
   }
   // Phase 4 has no animatic, so the draft stage is recorded as skipped once.
@@ -640,6 +647,8 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,
+    // Queued under the engine's capability, so only a worker that can run it claims it.
+    capability: renderJobCapability(plan.payload.engine),
   });
   await mergeStageOutput(st.id, { jobId, shots: plan.payload.shots.length, narrationSec: plan.payload.narrationSec });
 }

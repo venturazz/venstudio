@@ -53,11 +53,11 @@ runs every queued job and exits when the queue is empty.
 - Update: run the install commands again without `--code`; the enrollment is kept.
 - Remove: revoke the worker in the portal, delete the scheduled task, then `rm -rf /home/hatch/venstudio`.
 
-## Job types and optional environment (worker 0.4.0)
+## Job types and optional environment (worker 0.5.0)
 
 | Job type | Always on | What it does |
 |---|---|---|
-| `render-video` | yes | Joins the storyboard pictures (slow zoom or pan), the narration and optional captions into an H.264/AAC mp4 with faststart, then uploads `video.mp4`. Narration length sets the timing. Captions are burned in only when this ffmpeg has the `drawtext` filter and a font asset was sent; otherwise the result says why. |
+| `render-video` | yes | Renders with the engine the job names. `ffmpeg-stills` (also any job without an engine): joins the storyboard pictures (slow zoom or pan), the narration and optional captions into an H.264/AAC mp4 with faststart, then uploads `video.mp4`. Narration length sets the timing. Captions are burned in only when this ffmpeg has the `drawtext` filter and a font asset was sent; otherwise the result says why. `remotion-2d`: needs the Remotion renderer on this machine; without it the job fails and names the engine. Any other engine is refused by name. A job is never rendered as stills in place of the engine it asked for. |
 | `fetch-asset` | yes | Downloads one public-domain picture from an approved site (Wikimedia, NASA, Library of Congress, Met Museum, Openverse). https only, no redirect to another site, size limit, file type checked by its first bytes, uploaded as `asset.<ext>`. |
 | `tts` | only with `VENSTUDIO_KOKORO_URL` | Sends text chunks to your Kokoro server (`POST /v1/audio/speech`, WAV), joins them and uploads `narration.wav`. The worker never receives a Kokoro key, so use an address that needs none. |
 | `agent-task` | only with `VENSTUDIO_AGENT_TASKS=1`, hold mode | **UNVERIFIED.** Writes `/home/hatch/venstudio/inbox/<jobId>/TASK.md`, waits for the Muse agent to put files in `out/` and create `out/DONE`, then uploads them. Needs Muse tests 12 to 16 before anyone relies on it. |

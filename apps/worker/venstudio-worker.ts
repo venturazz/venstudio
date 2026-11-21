@@ -36,7 +36,7 @@ import type {
   WorkerMode,
 } from "../../packages/protocol/src/index.ts";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -255,6 +255,8 @@ export async function detectCapabilities(): Promise<Capability[]> {
 export interface JobContext {
   job: ClaimedJob;
   workDir: string;
+  /** The worker's home ($VENSTUDIO_HOME). Optional so a test can call a handler with only a work dir. */
+  home?: string;
   signal: AbortSignal;
   progress: (fraction: number, message?: string) => void;
   upload: (name: string, file: string, contentType: string) => Promise<{ bytes: number; sha256: string }>;
@@ -903,14 +905,61 @@ const CLIP_RATIO_LIMIT = 0.001;
 
 export type RenderMotion = "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
 
+/** One thing drawn on screen in a scene. `value` and `series` are only there when the storyboard declared them. */
+export interface RenderSceneElement {
+  kind: string;
+  text?: string;
+  /** For a counter: the number it counts to. */
+  value?: number;
+  /** For a bar or gauge: the values it plots. */
+  series?: number[];
+}
+
+export interface RenderSceneLayer {
+  id: string;
+  frames: number;
+  fps: number;
+}
+
+/** Mirror of `Scene` in apps/portal/lib/studio/scene-plan.ts (the worker cannot import portal code). */
+export interface RenderScene {
+  shotRef: string;
+  seconds: number;
+  beatRole: string;
+  elements: RenderSceneElement[];
+  tokens: string[];
+  camera: boolean;
+  layers: RenderSceneLayer[];
+}
+
+/** Mirror of `ScenePlan` in apps/portal/lib/studio/scene-plan.ts. */
+export interface RenderScenePlan {
+  version: 1;
+  engine: string;
+  template: string;
+  family: string;
+  width: number;
+  height: number;
+  fps: number;
+  transitionSec: number;
+  scenes: RenderScene[];
+}
+
 export interface RenderSpec {
   format: string;
   width: number;
   height: number;
   fps: number;
+  /** Engine the portal asked for. A payload from a portal older than 0.5 has none and means ffmpeg-stills. */
+  engine: string;
+  /** Cross-fade between adjacent shots. 0 means hard cuts. */
+  transitionSec: number;
+  /** What an animating engine draws. Null for the stills engine. */
+  scenePlan: RenderScenePlan | null;
   shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: RenderMotion }>;
   narrationAssetId: string;
   narrationSec: number;
+  /** Length of the finished video. The sum of the shots with hard cuts; less the fade overlaps with cross-fades. */
   durationSec: number;
   captions: Array<{ start: number; end: number; text: string }>;
   targetLufs: number;
@@ -923,6 +972,138 @@ const MOTIONS: readonly string[] = ["zoom-in", "zoom-out", "pan-left", "pan-righ
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : NaN;
+}
+
+/**
+ * Render engines this worker dispatches to, and the capability each needs. Same ids and capabilities as ENGINES in
+ * apps/portal/lib/studio/catalog.ts. An engine missing here is refused; it never falls through to stills, because that
+ * fallthrough is what turned every animated style into a slideshow.
+ */
+export const RENDER_ENGINES: Readonly<Record<string, Capability>> = {
+  "ffmpeg-stills": "ffmpeg",
+  "remotion-2d": "remotion-2d",
+};
+export const DEFAULT_RENDER_ENGINE = "ffmpeg-stills";
+
+/** The engine a render-video payload asks for. Throws NonRetryableError for an engine this worker has no path for. */
+export function renderEngineOf(payload: Record<string, unknown>): string {
+  const raw = payload.engine;
+  // Portals before the engine field existed only ever meant stills.
+  if (raw === undefined || raw === null) return DEFAULT_RENDER_ENGINE;
+  if (typeof raw !== "string" || !raw.trim()) throw new NonRetryableError("render-video payload: engine must be an engine name");
+  const engine = raw.trim().slice(0, 40);
+  if (!Object.hasOwn(RENDER_ENGINES, engine)) {
+    throw new NonRetryableError(
+      `render-video: engine "${engine}" is not one this worker (${VERSION}) can run; it runs ${Object.keys(RENDER_ENGINES).join(", ")}. ` +
+        `Nothing was rendered, and the job is not rendered as stills instead.`,
+    );
+  }
+  return engine;
+}
+
+/**
+ * Plain reason the engine cannot run on this machine, or null when it can. `caps` are this worker's capabilities;
+ * `detail` says what is missing when the capability is absent.
+ */
+export function engineUnavailable(engine: string, caps: readonly string[], detail?: string): string | null {
+  const need = RENDER_ENGINES[engine];
+  if (!need || caps.includes(need)) return null;
+  return (
+    `Engine "${engine}" needs capability "${need}", which this worker (${VERSION}) does not have` +
+    (detail ? `: ${detail}` : "") +
+    `. Nothing was rendered. ` +
+    (engine === "remotion-2d"
+      ? "Install the Remotion renderer on the worker (install.sh --with-remotion, see docs/remotion-worker.md), then press Retry."
+      : "Install it on the worker, then press Retry.")
+  );
+}
+
+/** Motion tokens from `flat-vector-explainer-video`. Mirror of MOTION_TOKENS in apps/portal/lib/studio/render-engine.ts. */
+export const MOTION_TOKENS: readonly string[] = [
+  "draw", "pop", "gauge", "counter", "bar", "arrow", "tally", "particles", "pull", "push",
+  "whip", "shake", "drift", "parallax", "scribble", "blot", "flicker", "morph", "dim",
+];
+const SCENE_LIMITS = { elements: 6, text: 140, series: 6, tokens: 12, layers: 8 } as const;
+
+/**
+ * Strict check of payload.scenePlan against the shots it belongs to. Throws NonRetryableError with a plain message.
+ *
+ * The template draws exactly what this returns, so anything that is not plain data is dropped here: element text is
+ * cut to length, `value` and `series` survive only as finite numbers, and unknown motion tokens are ignored. A scene
+ * with neither a motion token nor a camera move is refused, which is the coverage rule of the explainer skill.
+ */
+export function parseScenePlan(raw: unknown, ctx: { engine: string; width: number; height: number; fps: number; shotRefs: readonly string[] }): RenderScenePlan {
+  const bad = (m: string): never => {
+    throw new NonRetryableError(`render-video scenePlan: ${m}`);
+  };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return bad(`engine "${ctx.engine}" draws from a scene plan, and the payload has none`);
+  const p = raw as Record<string, unknown>;
+  if (p.version !== 1) bad(`version ${String(p.version)} is not one this worker (${VERSION}) reads; it reads version 1`);
+  if (p.engine !== ctx.engine) bad(`the plan is for engine "${String(p.engine)}", but the job is for "${ctx.engine}"`);
+  const template = typeof p.template === "string" ? p.template.trim() : "";
+  if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(template)) bad("the plan names no template");
+  if (num(p.width) !== ctx.width || num(p.height) !== ctx.height || num(p.fps) !== ctx.fps) {
+    bad(`the plan is ${String(p.width)}x${String(p.height)} at ${String(p.fps)} fps, but the job is ${ctx.width}x${ctx.height} at ${ctx.fps} fps`);
+  }
+  const transitionSec = p.transitionSec === undefined ? 0 : num(p.transitionSec);
+  if (!(transitionSec >= 0)) bad("transitionSec is not a usable length");
+  if (!Array.isArray(p.scenes)) return bad("there are no scenes");
+  const rawScenes = p.scenes as unknown[];
+  if (rawScenes.length !== ctx.shotRefs.length) bad(`there are ${rawScenes.length} scenes for ${ctx.shotRefs.length} shots`);
+  const scenes = rawScenes.map((r, i): RenderScene => {
+    const s = (r ?? {}) as Record<string, unknown>;
+    const at = `scene ${i + 1}`;
+    if (s.shotRef !== ctx.shotRefs[i]) bad(`${at} is for "${String(s.shotRef)}", but shot ${i + 1} is "${ctx.shotRefs[i]}"; scenes and shots must line up`);
+    const seconds = num(s.seconds);
+    if (!(seconds > 0)) bad(`${at} has no usable length`);
+    const elementsRaw = Array.isArray(s.elements) ? (s.elements as unknown[]) : [];
+    if (elementsRaw.length === 0) bad(`${at} has nothing on screen`);
+    const elements = elementsRaw.slice(0, SCENE_LIMITS.elements).flatMap((er): RenderSceneElement[] => {
+      const e = (er ?? {}) as Record<string, unknown>;
+      if (typeof e.kind !== "string" || !/^[a-z][a-z-]{0,23}$/.test(e.kind)) return [];
+      const out: RenderSceneElement = { kind: e.kind };
+      if (typeof e.text === "string" && e.text.trim()) out.text = e.text.trim().slice(0, SCENE_LIMITS.text);
+      if (Number.isFinite(num(e.value))) out.value = e.value as number;
+      if (Array.isArray(e.series)) {
+        const series = (e.series as unknown[]).map(num).filter((v) => Number.isFinite(v)).slice(0, SCENE_LIMITS.series);
+        if (series.length > 0) out.series = series;
+      }
+      return [out];
+    });
+    if (elements.length === 0) bad(`${at} has no element this worker can read`);
+    const tokens = (Array.isArray(s.tokens) ? (s.tokens as unknown[]) : [])
+      .filter((t): t is string => typeof t === "string" && MOTION_TOKENS.includes(t))
+      .slice(0, SCENE_LIMITS.tokens);
+    const camera = s.camera === true;
+    if (tokens.length === 0 && !camera) bad(`${at} (${ctx.shotRefs[i]}) has neither a motion token nor a camera move, so it would render as a still`);
+    const layers = (Array.isArray(s.layers) ? (s.layers as unknown[]) : []).slice(0, SCENE_LIMITS.layers).flatMap((lr): RenderSceneLayer[] => {
+      const l = (lr ?? {}) as Record<string, unknown>;
+      const frames = num(l.frames);
+      const fps = num(l.fps);
+      if (typeof l.id !== "string" || !(frames >= 1) || !(fps > 0)) return [];
+      return [{ id: l.id.slice(0, 40), frames: Math.round(frames), fps }];
+    });
+    return {
+      shotRef: ctx.shotRefs[i],
+      seconds,
+      beatRole: typeof s.beatRole === "string" ? s.beatRole.slice(0, 20) : "body",
+      elements,
+      tokens,
+      camera,
+      layers,
+    };
+  });
+  return {
+    version: 1,
+    engine: ctx.engine,
+    template,
+    family: typeof p.family === "string" ? p.family.slice(0, 40) : "",
+    width: ctx.width,
+    height: ctx.height,
+    fps: ctx.fps,
+    transitionSec,
+    scenes,
+  };
 }
 
 /** Strict check of a render-video payload. Throws NonRetryableError with a plain message. */
@@ -954,6 +1135,10 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   if (!inputs.includes(narrationAssetId as string)) bad("the narration asset is not listed in inputs");
   const narrationSec = num(payload.narrationSec);
   if (!(narrationSec > 0) || narrationSec > RENDER_LIMITS.maxSeconds) bad(`narrationSec must be above 0 and at most ${RENDER_LIMITS.maxSeconds}`);
+  const transitionSec = payload.transitionSec === undefined || payload.transitionSec === null ? 0 : num(payload.transitionSec);
+  if (!(transitionSec >= 0) || transitionSec > 5) bad("transitionSec must be from 0 to 5 seconds");
+  // A cross-fade makes the shots add up to more than the narration, so the timing check below would be wrong for it.
+  if (transitionSec > 0) bad(`this worker (${VERSION}) does not build cross-fades yet; the job asks for ${transitionSec} s fades`);
   const total = shots.reduce((n, s) => n + s.seconds, 0);
   if (total > RENDER_LIMITS.maxSeconds) bad(`the shots add up to ${Math.round(total)} s; the limit is ${RENDER_LIMITS.maxSeconds} s`);
   if (Math.abs(total - narrationSec) > 1) bad(`the shots add up to ${round2(total)} s but the narration is ${round2(narrationSec)} s`);
@@ -969,11 +1154,17 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     return [{ start, end, text: c.text.trim().slice(0, 300) }];
   });
   const fontAssetId = typeof payload.fontAssetId === "string" && UUID_RE.test(payload.fontAssetId) && inputs.includes(payload.fontAssetId) ? payload.fontAssetId : null;
+  const engine = renderEngineOf(payload);
+  // Only an animating engine reads the scene plan; the stills engine has everything it needs in the shots.
+  const scenePlan = engine === "ffmpeg-stills" ? null : parseScenePlan(payload.scenePlan, { engine, width, height, fps, shotRefs: shots.map((s) => s.shotRef) });
   return {
     format: typeof payload.format === "string" ? payload.format.slice(0, 20) : "custom",
     width,
     height,
     fps,
+    engine,
+    transitionSec,
+    scenePlan,
     shots,
     narrationAssetId: narrationAssetId as string,
     narrationSec,
@@ -1101,7 +1292,22 @@ export function narrationLengthIssue(realSec: number | null, plannedSec: number)
   return `The narration is ${round2(realSec)} s but the shots were planned for ${round2(plannedSec)} s. Make the narration again so the shots match it.`;
 }
 
+/**
+ * Why this machine cannot run the Remotion engine, or null when it can.
+ * This worker version has no Remotion path yet, so the answer is always a reason.
+ */
+async function remotionUnavailable(_ctx: JobContext): Promise<string | null> {
+  return "this worker version has no Remotion render path";
+}
+
 async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unknown>> {
+  // Dispatch before anything else: a job for an engine this machine cannot run fails here, before a single download,
+  // and names the engine. It is never rendered as stills instead.
+  const engine = renderEngineOf(ctx.job.payload);
+  if (engine !== "ffmpeg-stills") {
+    const why = await remotionUnavailable(ctx);
+    if (why) throw new NonRetryableError(engineUnavailable(engine, [], why) as string);
+  }
   const spec = parseRenderSpec(ctx.job.payload);
   const inDir = path.join(ctx.workDir, "in");
   await mkdir(inDir, { recursive: true });
@@ -1153,6 +1359,7 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     (await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", path.join(ctx.workDir, narrationRel), "-af", "astats=metadata=0", "-f", "null", "-"], ctx.signal)).stderr,
   );
   const narrationClipped = peakDb !== null ? peakDb >= -0.1 : null;
+  if (spec.engine !== "ffmpeg-stills") throw new NonRetryableError(`Engine "${spec.engine}" has no render path in this worker (${VERSION})`);
 
   const plan = buildRenderArgs(
     spec,
@@ -1182,6 +1389,8 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     width: probe.width,
     height: probe.height,
     fps: probe.fps,
+    engine: spec.engine,
+    transitionSec: spec.transitionSec,
     narrationSec: spec.narrationSec,
     narrationClipped,
     narrationPeakDb: peakDb,
@@ -1505,6 +1714,7 @@ export async function runJob(client: PortalClient, job: ClaimedJob, home: string
     const result = await handler({
       job,
       workDir,
+      home,
       signal: controller.signal,
       progress: (f, msg) => {
         lastProgress = f;

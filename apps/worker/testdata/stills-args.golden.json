@@ -1,0 +1,163 @@
+{
+  "payload": {
+    "format": "short",
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "shots": [
+      {
+        "shotRef": "shot-01",
+        "assetId": "aaaaaaaa-1111-4111-8111-000000000001",
+        "seconds": 3.4,
+        "motion": "zoom-in"
+      },
+      {
+        "shotRef": "shot-02",
+        "assetId": "aaaaaaaa-1111-4111-8111-000000000002",
+        "seconds": 4.1,
+        "motion": "pan-left"
+      },
+      {
+        "shotRef": "shot-03",
+        "assetId": "aaaaaaaa-1111-4111-8111-000000000003",
+        "seconds": 2.5,
+        "motion": "zoom-out"
+      }
+    ],
+    "narrationAssetId": "aaaaaaaa-1111-4111-8111-0000000000ff",
+    "narrationSec": 10,
+    "durationSec": 10,
+    "captions": [
+      {
+        "start": 0,
+        "end": 4,
+        "text": "Iron is everywhere, and it starts in the furnace."
+      },
+      {
+        "start": 4,
+        "end": 10,
+        "text": "The hammer draws the bar out."
+      }
+    ],
+    "targetLufs": -14,
+    "fontAssetId": "aaaaaaaa-1111-4111-8111-0000000000f0",
+    "inputs": [
+      "aaaaaaaa-1111-4111-8111-000000000001",
+      "aaaaaaaa-1111-4111-8111-000000000002",
+      "aaaaaaaa-1111-4111-8111-000000000003",
+      "aaaaaaaa-1111-4111-8111-0000000000ff",
+      "aaaaaaaa-1111-4111-8111-0000000000f0"
+    ]
+  },
+  "withFont": {
+    "args": [
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      "in/a.png",
+      "-i",
+      "in/b.png",
+      "-i",
+      "in/c.jpg",
+      "-i",
+      "in/n.wav",
+      "-filter_complex",
+      "[0:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1+0.12*on/102':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=102:s=1080x1920:fps=30,format=yuv420p[v0];[1:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z=1.12:x='(iw-iw/zoom)*(1-on/123)':y='ih/2-(ih/zoom/2)':d=123:s=1080x1920:fps=30,format=yuv420p[v1];[2:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1.12-0.12*on/75':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=75:s=1080x1920:fps=30,format=yuv420p[v2];[v0][v1][v2]concat=n=3:v=1:a=0[vc];[vc]drawtext=fontfile=in/f.ttf:textfile=cap0.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,0,4)',drawtext=fontfile=in/f.ttf:textfile=cap1.txt:fontcolor=white:fontsize=60:borderw=3:bordercolor=black:line_spacing=15:x=(w-text_w)/2:y=h-h/6-text_h:enable='between(t,4,10)'[v];[3:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=10[a]",
+      "-map",
+      "[v]",
+      "-map",
+      "[a]",
+      "-t",
+      "10",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "21",
+      "-threads",
+      "2",
+      "-pix_fmt",
+      "yuv420p",
+      "-r",
+      "30",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-ar",
+      "48000",
+      "-movflags",
+      "+faststart",
+      "-progress",
+      "pipe:1",
+      "-nostats",
+      "video.part.mp4"
+    ],
+    "captionsBurned": true,
+    "captionNote": null,
+    "captionFiles": [
+      {
+        "file": "cap0.txt",
+        "text": "Iron is everywhere, and it\nstarts in the furnace."
+      },
+      {
+        "file": "cap1.txt",
+        "text": "The hammer draws the bar out."
+      }
+    ]
+  },
+  "noDrawtext": {
+    "args": [
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      "in/a.png",
+      "-i",
+      "in/b.png",
+      "-i",
+      "in/c.jpg",
+      "-i",
+      "in/n.wav",
+      "-filter_complex",
+      "[0:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1+0.12*on/102':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=102:s=1080x1920:fps=30,format=yuv420p[v0];[1:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z=1.12:x='(iw-iw/zoom)*(1-on/123)':y='ih/2-(ih/zoom/2)':d=123:s=1080x1920:fps=30,format=yuv420p[v1];[2:v]scale=1620:2880:force_original_aspect_ratio=increase,crop=1620:2880,setsar=1,zoompan=z='1.12-0.12*on/75':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=75:s=1080x1920:fps=30,format=yuv420p[v2];[v0][v1][v2]concat=n=3:v=1:a=0[v];[3:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=10[a]",
+      "-map",
+      "[v]",
+      "-map",
+      "[a]",
+      "-t",
+      "10",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "21",
+      "-threads",
+      "2",
+      "-pix_fmt",
+      "yuv420p",
+      "-r",
+      "30",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-ar",
+      "48000",
+      "-movflags",
+      "+faststart",
+      "-progress",
+      "pipe:1",
+      "-nostats",
+      "video.part.mp4"
+    ],
+    "captionsBurned": false,
+    "captionNote": "this ffmpeg build has no drawtext filter",
+    "captionFiles": []
+  }
+}
