@@ -30,6 +30,8 @@ import type { AssetKind, AssetSource } from "../studio/catalog.ts";
 import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
 import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload } from "../studio/render.ts";
+import { fitTransitionSec } from "../studio/render-engine.ts";
+import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import type { ReviewMedia } from "../studio/review.ts";
 import {
@@ -586,10 +588,19 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   for (const d of done) shotAssets[(d.shot_ref as string | null) ?? ""] = d.asset_id as string;
   // Same pick as the preview render: the newest font in the library. Without one the render runs without captions.
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
-  const plan = buildRenderPayload({
+  // The style decides the engine, and an engine the worker has no path for must fail here rather
+  // than fall through to stills. Same for the scene plan: it is what an animating template renders.
+  const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
+  const renderParams = renderParamsForStyle(template.styleId);
+  const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: board.value.shots }) : null;
+  if (scenes && !scenes.ok) {
+    await recordStageError(run.id, st.id, "render", scenes.issues.join(". "));
+    return;
+  }
+  const renderInput = {
     fontAssetId: font ? asUuid(font.id) : null,
     format: run.config.format,
-    shots: workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds })),
+    shots: shotSpecs,
     shotAssets,
     narrationAssetId: asUuid(voiceResult.assetId),
     narrationSec: typeof voiceResult.narrationSec === "number" ? voiceResult.narrationSec : 0,
@@ -597,7 +608,10 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     targetLufs: template.audio.targetLufs,
     maxShotSeconds: template.pacing.maxShotSeconds,
     runId: run.id,
-  });
+    ...(renderParams ? { engine: renderParams.engine, transitionSec: fitTransitionSec(shotSpecs.map((s) => s.seconds), renderParams.transitionSec) } : {}),
+    ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
+  };
+  const plan = buildRenderPayload(renderInput);
   if (!plan.ok) {
     await recordStageError(run.id, st.id, "render", plan.issues.join(". "));
     return;

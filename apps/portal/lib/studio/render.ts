@@ -1,6 +1,7 @@
 /** Builds the render-video job payload from the storyboard, the picked assets and the narration. Pure. */
 import { VIDEO_FORMATS, type Format } from "./catalog.ts";
-import { DEFAULT_RENDER_ENGINE, engineExists, planCrossFades } from "./render-engine.ts";
+import { DEFAULT_RENDER_ENGINE, engineExists, engineIssues, planCrossFades } from "./render-engine.ts";
+import { scenePlanIssues, type ScenePlan } from "./scene-plan.ts";
 
 export type Motion = "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
 const MOTIONS: readonly Motion[] = ["zoom-in", "pan-left", "zoom-out", "pan-right"];
@@ -42,6 +43,8 @@ export interface RenderPayload {
   engine: string;
   /** Cross-fade between adjacent shots. 0 means hard cuts. */
   transitionSec: number;
+  /** Scene plan, for engines that animate elements. Absent when the stills engine has enough. */
+  scenePlan?: ScenePlan;
   shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion }>;
   narrationAssetId: string;
   narrationSec: number;
@@ -71,6 +74,10 @@ export interface RenderInput {
   engine?: string;
   /** Cross-fade between adjacent shots. 0 or absent means hard cuts, which is what the worker did before. */
   transitionSec?: number;
+  /** Scene plan from `buildScenePlan`, for an animating engine. */
+  scenePlan?: ScenePlan;
+  /** Capabilities the target worker reported. When given, an engine it cannot run fails here instead of silently rendering stills. */
+  workerCapabilities?: readonly string[];
   /** Template pacing limit for one shot. */
   maxShotSeconds: number;
   /** Newest font in the library, if any. */
@@ -121,6 +128,11 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
   if (!(i.narrationSec > 0)) issues.push("The narration length is unknown");
   const engine = i.engine ?? DEFAULT_RENDER_ENGINE;
   if (!engineExists(engine)) issues.push(`Unknown render engine "${engine}"`);
+  if (i.workerCapabilities) issues.push(...engineIssues({ engine, reported: i.workerCapabilities }));
+  if (i.scenePlan) {
+    if (i.scenePlan.engine !== engine) issues.push(`The scene plan is for engine "${i.scenePlan.engine}", but this render is for "${engine}"`);
+    issues.push(...scenePlanIssues(i.scenePlan, i.workerCapabilities ? { reported: i.workerCapabilities } : {}));
+  }
   if (issues.length > 0) return { ok: false, issues };
 
   // A cross-fade shortens the timeline by the overlap, so the shots must grow by it or the narration
@@ -163,6 +175,7 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
     fontAssetId,
     inputs,
   };
+  if (i.scenePlan) payload.scenePlan = i.scenePlan;
   if (i.runId) payload.runId = i.runId;
   return { ok: true, payload };
 }

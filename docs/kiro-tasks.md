@@ -103,7 +103,7 @@ enam mesin, tapi worker tidak menyebut kata `engine` sekali pun, dan satu-satuny
 
 ## Yang sudah ada di pohon — pakai, jangan tulis ulang
 
-`apps/portal/lib/studio/render-engine.ts` (murni, 16 tes):
+`apps/portal/lib/studio/render-engine.ts` (murni, 19 tes):
 
 - `engineIssues({ engine, reported })` — menolak mesin yang kapabilitasnya tidak dilaporkan worker,
   dan mesin yang katalognya tandai tidak dijalankan worker (`provider`/`blender`).
@@ -113,23 +113,65 @@ enam mesin, tapi worker tidak menyebut kata `engine` sekali pun, dan satu-satuny
 - `MOTION_TOKENS` / `parseMotionTokens` / `motionCoverage` / `coverageIssues` / `engineMotionIssues` —
   gerbang variasi dari `flat-vector-explainer-video`.
 
-`render.ts` kini membawa `engine` (default `ffmpeg-stills`) dan `transitionSec` (default 0) di
-payload. **Dengan `transitionSec: 0` rencananya identik dengan sebelumnya** — tidak ada tes lama yang
-berubah perilaku.
+`render.ts` kini membawa `engine` (default `ffmpeg-stills`), `transitionSec` (default 0), dan
+`scenePlan` opsional di payload. **Dengan `transitionSec: 0` dan tanpa `scenePlan`, rencananya identik
+dengan sebelumnya** — tidak ada tes lama yang berubah perilaku.
+
+`apps/portal/lib/studio/scene-plan.ts` (murni, 15 tes) — **inilah data yang dirender template**:
+
+- `buildScenePlan({ styleId, format, shots, transitionSec?, cameraEvery? })` → `{ plan, warnings }`.
+  Menurunkan scene dari storyboard + style: elemen (`heading`/`plate`/`counter`/`bar`/`gauge`/…),
+  token gerak per beat, penanda kamera, dan layer dengan clock masing-masing.
+- `scenePlanIssues(plan, { reported? })` → daftar masalah: gerbang mesin, gerbang cakupan gerak,
+  elemen kekenyangan, layer tanpa clock, layer berlapis yang clock-nya seragam.
+- `renderParamsForStyle(styleId)` → `{ engine, template, transitionSec, elementAnimation }` atau
+  `null` untuk style tak dikenal.
+- `elementAnimationFor(engineId)` → `true` kalau mesin menganimasikan isi frame, bukan hanya kamera.
+
+Bentuk `Scene` yang akan kamu render:
+
+```
+{ shotRef, seconds, beatRole,
+  elements: [{ kind, text? }],        // apa yang ada di layar
+  tokens: ["draw","counter",…],       // apa yang bergerak, ditafsirkan template
+  camera: boolean,                    // kamera ikut bergerak
+  layers: [{ id, frames, fps }] }     // clock per-layer; frames 1 = tidak berubah
+```
+
+`shotRef` sama persis dengan `payload.shots[].shotRef` (`shot-01`, `shot-02`, …), jadi urutan scene
+dan urutan gambar selalu sejajar.
+
+**`production.ts` sudah kusambungkan** (jangan ditulis ulang): stage render kini mengambil
+`renderParamsForStyle(template.styleId)`, membangun `scenePlan` bila style-nya beranimasi, dan
+**menggagalkan stage dengan pesan jelas** kalau scene plan tidak lolos — bukan diam-diam merender
+stills. Perubahan itu ada di `runRenderStage`, sekitar baris 589.
 
 ## Yang perlu kamu kerjakan
 
 1. **Dispatch.** Baca `engine` dan pilih jalur render. `ffmpeg-stills` = `buildRenderArgs` yang
-   sekarang. Mesin lain: tolak dengan pesan jelas — **jangan diam-diam jatuh ke stills**, justru
-   fallthrough itu yang menghasilkan slideshow.
+   sekarang. `remotion-2d` = baca `payload.scenePlan` dan render dari situ. Mesin lain: tolak dengan
+   pesan jelas — **jangan diam-diam jatuh ke stills**, justru fallthrough itu yang menghasilkan
+   slideshow.
 2. **Laporkan kapabilitas.** `detectCapabilities()` sekarang melaporkan `ffmpeg` (+`tts-kokoro`).
    Tambahkan lewat `VENSTUDIO_EXTRA_CAPS` sesuai kemampuan nyata mesin Muse. Sampai dilaporkan,
    planner tidak akan pernah boleh memilih mesin itu.
-3. **Pakai `transitionSec`.** Kalau > 0, susun `xfade` memakai `planCrossFades` — jangan hitung offset
+3. **Sambungkan kapabilitas ke payload.** `buildRenderPayload` sudah menerima
+   `workerCapabilities?: readonly string[]`; isi dari baris worker yang melapor. Kalau diisi, engine
+   yang tidak bisa dijalankan **gagal di perencanaan**, bukan di tengah render.
+4. **Pakai `transitionSec`.** Kalau > 0, susun `xfade` memakai `planCrossFades` — jangan hitung offset
    sendiri di dalam string shell. Durasi akhir video adalah `totalSec`; `render.ts` sudah memanjangkan
    shot sebesar tumpang tindihnya supaya narasi tidak melewati video.
-4. **Jangan pasang `xfade` kalau `transitionSec` 0** — perilaku lama harus tetap byte-identik.
-5. Tipe payload di worker perlu mendapat `engine` dan `transitionSec` juga.
+5. **Jangan pasang `xfade` kalau `transitionSec` 0** — perilaku lama harus tetap byte-identik.
+6. **Tipe payload di worker** perlu mendapat `engine`, `transitionSec`, dan `scenePlan`.
+
+## Urutan yang kusarankan untuk paruh worker
+
+1. Dispatch + kapabilitas + tolak-mesin-yang-tak-ada. Ini bisa diuji tanpa Remotion sama sekali:
+   job `ffmpeg-stills` harus keluar **byte-identik** dengan hari ini, dan job `remotion-2d` harus
+   gagal dengan pesan yang menyebut mesinnya.
+2. `xfade`. Uji dengan `transitionSec` 0,5 pada 3 shot: durasi video harus turun tepat sebesar
+   2 × 0,5 s dibanding jumlah shot.
+3. Baru proyek Remotion + template `flat-vector-explainer` dari `payload.scenePlan`.
 
 Kalau aritmetikanya tidak cocok dengan bentuk filtergraph yang sudah ada, tulis di balasan: aku
 menaruh angkanya, kamu yang punya grafnya.

@@ -1,10 +1,20 @@
 # Render templates, derived from the Hermes skills
 
-Date: 2026-11-20. Status: design note plus the phased plan. **Phase 0's portal half is implemented**
-(`bc4f9c8`, CI green): `lib/studio/render-engine.ts` holds the engine gate, the cross-fade arithmetic
-and the variation gate, and the render payload now carries `engine` and `transitionSec`. The worker
-half — dispatch, capability report, `xfade` — is Kiro's, specified in `docs/kiro-tasks.md`. Phases 1
-onward are not started.
+Date: 2026-11-20. Status: design note plus the phased plan. **The whole portal half of Phase 0 and
+Phase 1 is implemented** (358 unit tests, CI green):
+
+- `lib/studio/render-engine.ts` — the engine gate, the cross-fade arithmetic, `fitTransitionSec`, and
+  the variation gate (`MOTION_TOKENS`, `coverageIssues`, `engineMotionIssues`).
+- `lib/studio/scene-plan.ts` — the scene contract an animating template renders from: elements,
+  motion tokens and per-layer clocks, derived from the storyboard and the style, with
+  `scenePlanIssues` and `renderParamsForStyle`.
+- `render.ts` — the payload now carries `engine`, `transitionSec` and an optional `scenePlan`.
+- `planner.ts` — warns when a style's engine is one the worker does not report.
+- `production.ts` — the render stage resolves the style to its engine, builds the scene plan, and
+  fails loudly instead of falling through to stills.
+
+What is left is the code half of the templates — dispatch, the capability report, `xfade`, and the
+Remotion/Compositor components — specified in `docs/kiro-tasks.md`.
 
 ## Why this document
 
@@ -19,7 +29,7 @@ one specific look.
 
 ## 1. Diagnosis (verified in this repo)
 
-`apps/portal/lib/studio/catalog.ts` declares six engines, each with the capability a worker must
+`apps/portal/lib/studio/catalog.ts` declares nine engines, each with the capability a worker must
 report and a Muse placement:
 
 | Engine | Capability | Muse | Implemented |
@@ -30,6 +40,17 @@ report and a Muse placement:
 | `manim` | `manim` | muse-ok | no |
 | `godot-2d` | `godot` | muse-test | no |
 | `remotion-3d` | `remotion-3d` | muse-slow | no |
+| `godot-3d` | `godot` | gpu-preferred | no |
+| `blender-cycles` | `blender` | muse-slow | no — and no worker runs it at all |
+| `provider-video` | `provider` | external | no — a provider door, not a worker |
+
+The last two are why the gate distinguishes "needs a capability nobody reports" from "no worker runs
+this yet": `blender` and `provider` are not worker capabilities, so no amount of reporting will make
+those two runnable.
+
+Fourteen of the twenty styles in the catalog already name a non-stills engine, and two of those
+(`blender-3d` → `blender-cycles`, `ai-character-sketch` → `provider-video`) name engines no worker
+runs at all. So the planner was already choosing engines that cannot run, and doing it silently.
 
 `packages/protocol/src/index.ts` already declares all of them as valid `Capability` values.
 

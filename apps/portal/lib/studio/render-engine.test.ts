@@ -10,6 +10,7 @@ import {
   engineExists,
   engineIssues,
   engineMotionIssues,
+  fitTransitionSec,
   isMotionToken,
   motionCoverage,
   parseMotionTokens,
@@ -150,4 +151,22 @@ test("a plan may not hand motion tokens to the stills engine", () => {
   assert.deepEqual(engineMotionIssues("ffmpeg-stills", [{ camera: true }]), []);
   assert.deepEqual(engineMotionIssues("ffmpeg-stills", [{ text: "a slow drift" }]), []);
   assert.deepEqual(engineMotionIssues("no-such-engine", beats), []);
+});
+
+test("fitTransitionSec keeps a fade inside the shots it joins", () => {
+  assert.equal(fitTransitionSec([6, 6, 6], 0.5), 0.5);
+  // with two shots each one joins a single fade, so the cap is the whole 1.6 s of room
+  assert.equal(fitTransitionSec([2, 2], 3), 1.6);
+  assert.equal(fitTransitionSec([5], 0.5), 0);
+  assert.equal(fitTransitionSec([0.5, 0.5], 0.5), 0);
+  assert.equal(fitTransitionSec([6, 6], 0), 0);
+  assert.equal(fitTransitionSec([6, 6], -1), 0);
+  assert.equal(fitTransitionSec([4, 0], 0.5), 0);
+});
+
+test("whatever fitTransitionSec returns, planCrossFades accepts", () => {
+  for (const secs of [[6, 6, 6], [2, 2], [3, 5, 2], [1, 1, 1], [12]]) {
+    const d = fitTransitionSec(secs, 1.5);
+    if (d > 0) assert.equal(planCrossFades(secs, d).ok, true, `[${secs}] d=${d}`);
+  }
 });

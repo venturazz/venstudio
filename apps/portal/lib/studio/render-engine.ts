@@ -141,6 +141,29 @@ export function planCrossFades(seconds: readonly number[], transitionSec: number
 }
 
 /**
+ * Largest transition at or below `requested` that still leaves every shot
+ * `MIN_EXCLUSIVE_SHOT_SEC` of its own screen time.
+ *
+ * Call this before `planCrossFades` when the shot lengths come from a storyboard: a storyboard can
+ * always produce a shot short enough to break a fixed fade, and degrading to hard cuts keeps a
+ * render that used to work working. Returns 0 when even the smallest fade will not fit.
+ */
+export function fitTransitionSec(seconds: readonly number[], requested: number): number {
+  if (seconds.length < 2) return 0;
+  if (!(requested > 0)) return 0;
+  const n = seconds.length;
+  let cap = Infinity;
+  for (let i = 0; i < n; i++) {
+    const s = seconds[i];
+    if (!Number.isFinite(s) || s <= 0) return 0;
+    const counted = (i > 0 ? 1 : 0) + (i < n - 1 ? 1 : 0);
+    cap = Math.min(cap, (s - MIN_EXCLUSIVE_SHOT_SEC) / counted);
+  }
+  const d = Math.min(requested, cap);
+  return d >= MIN_TRANSITION_SEC ? round(d) : 0;
+}
+
+/**
  * Motion tokens a beat may declare, from `flat-vector-explainer-video`. Machine-readable here so the
  * coverage gate below has something to count.
  */

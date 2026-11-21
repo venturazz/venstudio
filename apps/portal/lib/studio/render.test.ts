@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRenderPayload, captionCues, motionFor } from "./render.ts";
+import { buildScenePlan } from "./scene-plan.ts";
 
 const shots = [
   { shotRef: "shot-01", seconds: 4 },
@@ -106,4 +107,33 @@ test("buildRenderPayload refuses a cross-fade that would eat a shot", () => {
   const r = buildRenderPayload({ ...base, transitionSec: 4 });
   assert.equal(r.ok, false);
   assert.match(!r.ok ? r.issues[0] : "", /leaves shot/);
+});
+
+test("buildRenderPayload carries an animating scene plan and gates its engine", () => {
+  const sceneShots = [
+    { beatRole: "hook" as const, seconds: 5, description: "It starts here.", imagePrompt: "plate one" },
+    { beatRole: "body" as const, seconds: 5, description: "Then a bar rises.", imagePrompt: "plate two" },
+    { beatRole: "outro" as const, seconds: 5, description: "That is all.", imagePrompt: "plate three" },
+  ];
+  const sp = buildScenePlan({ styleId: "explainer-flat-vector", format: "short", shots: sceneShots });
+  assert.ok(sp.ok);
+  if (!sp.ok) return;
+
+  const r = buildRenderPayload({ ...base, engine: "remotion-2d", scenePlan: sp.plan });
+  assert.ok(r.ok);
+  if (r.ok) {
+    assert.equal(r.payload.engine, "remotion-2d");
+    assert.equal(r.payload.scenePlan?.scenes.length, 3);
+  }
+
+  // an engine the worker cannot run is refused here instead of falling through to stills
+  const gated = buildRenderPayload({ ...base, engine: "remotion-2d", workerCapabilities: ["ffmpeg"] });
+  assert.equal(gated.ok, false);
+  assert.match(!gated.ok ? gated.issues.join(" | ") : "", /needs capability "remotion-2d"/);
+  assert.ok(buildRenderPayload({ ...base, engine: "remotion-2d", workerCapabilities: ["ffmpeg", "remotion-2d"] }).ok);
+
+  // a scene plan built for another engine cannot be rendered by this one
+  const mixed = buildRenderPayload({ ...base, engine: "ffmpeg-stills", scenePlan: sp.plan });
+  assert.equal(mixed.ok, false);
+  assert.match(!mixed.ok ? mixed.issues.join(" | ") : "", /scene plan is for engine/);
 });

@@ -17,6 +17,7 @@ import {
   type Theme,
   type Workflow,
 } from "./catalog.ts";
+import { engineIssues } from "./render-engine.ts";
 
 export interface PlanStage {
   id: string;
@@ -111,6 +112,11 @@ export interface BuildInput {
   subtitles?: string[];
   workflow?: Workflow;
   hasReference?: boolean;
+  /**
+   * Capabilities a worker reported. When given, a style whose engine no worker can run is planned
+   * with a warning instead of looking ready to go.
+   */
+  workerCapabilities?: readonly string[];
 }
 
 export type BuildResult = { ok: true; plan: ProductionPlan } | { ok: false; error: string };
@@ -250,6 +256,7 @@ export function buildPlan(input: BuildInput): BuildResult {
   const purposeStages = purposes.flatMap((p) => p.extraStages.map((st) => ({ ...st, runnable: false })));
 
   const warnings = buildWarnings(style, input.format, workflow, primary, purposeIds);
+  if (input.workerCapabilities) warnings.push(...engineIssues({ engine: style.engine, reported: input.workerCapabilities }));
   if (theme) warnings.push(...theme.policy.map((p) => `${theme.label}: ${p}`));
 
   return {

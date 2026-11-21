@@ -104,6 +104,27 @@ test("wrong format, unknown style and empty brief are rejected with a reason", (
   assert.equal(buildPlan({ brief: "   ", format: "short", styleId: "kinetic-facts" }).ok, false);
 });
 
+test("a style whose engine no worker reports is planned with a warning", () => {
+  const brief = { brief: "How a furnace works", format: "long" as const, styleId: "explainer-flat-vector" };
+  const gated = buildPlan({ ...brief, workerCapabilities: ["ffmpeg", "tts-kokoro"] });
+  assert.ok(gated.ok);
+  if (gated.ok) assert.ok(gated.plan.warnings.some((w) => /needs capability "remotion-2d"/.test(w)), gated.plan.warnings.join(" | "));
+
+  const ready = buildPlan({ ...brief, workerCapabilities: ["ffmpeg", "remotion-2d"] });
+  assert.ok(ready.ok);
+  if (ready.ok) assert.ok(!ready.plan.warnings.some((w) => /needs capability/.test(w)));
+
+  // no report means no claim about availability
+  const silent = buildPlan(brief);
+  assert.ok(silent.ok);
+  if (silent.ok) assert.ok(!silent.plan.warnings.some((w) => /needs capability/.test(w)));
+
+  // an engine no worker runs at all is called out differently
+  const blender = buildPlan({ brief: "blender scene of the solar system", format: "long", styleId: "blender-3d", workerCapabilities: ["ffmpeg", "blender"] });
+  assert.ok(blender.ok);
+  if (blender.ok) assert.ok(blender.plan.warnings.some((w) => /not run by a worker yet/.test(w)), blender.plan.warnings.join(" | "));
+});
+
 test("provenance: publishing needs a licence note and an origin for uploads", () => {
   const issues = provenanceIssues(
     [
