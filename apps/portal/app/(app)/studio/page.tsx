@@ -1,126 +1,109 @@
 import Link from "next/link";
 import { requireUser, hasRole } from "@/lib/server/auth.ts";
-import { db } from "@/lib/server/db.ts";
-import { listProductions } from "@/lib/server/productions.ts";
-import { Badge, Card, CardBody, CardHeader, EmptyState, LinkButton, PageHeader, timeAgo } from "@/components/ui.tsx";
-import { SubmitButton } from "@/components/client.tsx";
-import type { ProductionPlan } from "@/lib/studio/planner.ts";
-import { THEMES } from "@/lib/studio/catalog.ts";
-import { PlanView, StudioForm } from "./studio-form.tsx";
-import { queuePreviewAction } from "./actions.ts";
+import { reapStuckStages } from "@/lib/server/director.ts";
+import { listRuns, type RunSummary } from "@/lib/server/runs.ts";
+import { AutoRefresh } from "@/components/auto-refresh.tsx";
+import { Alert, Card, CardHeader, EmptyState, LinkButton, PageHeader, timeAgo } from "@/components/ui.tsx";
+import { stageLabel } from "@/lib/studio/review.ts";
+import { runGroup, type RunGroup } from "@/lib/studio/run-config.ts";
+import { RunStateBadge } from "./runs/run-status.tsx";
+import { StudioNav } from "./studio-nav.tsx";
 
 export const metadata = { title: "Studio" };
+export const dynamic = "force-dynamic";
 
-const THEME_LABEL: Record<string, string> = Object.fromEntries(THEMES.map((t) => [t.id, t.label]));
-const JOB_STATUS: Record<string, { tone: "neutral" | "ok" | "warn" | "danger" | "info"; label: string }> = {
-  queued: { tone: "neutral", label: "queued" },
-  running: { tone: "info", label: "rendering" },
-  succeeded: { tone: "ok", label: "done" },
-  failed: { tone: "danger", label: "failed" },
-  cancelled: { tone: "warn", label: "cancelled" },
-};
+const GROUPS: Array<{ id: RunGroup; title: string; description: string }> = [
+  { id: "waiting", title: "Waiting for you", description: "Open Review to pick an idea, approve or ask for changes." },
+  { id: "working", title: "Working", description: "Hermes and the workers are on it." },
+  { id: "finished", title: "Finished", description: "Done, cancelled or failed." },
+];
 
 export default async function StudioPage() {
   const user = await requireUser();
   const canEdit = hasRole(user.role, "editor");
-  const [channels, references, productions] = await Promise.all([
-    db()`SELECT id, name, category FROM channels ORDER BY name`,
-    db()`SELECT id, title FROM assets WHERE kind IN ('video', 'reference-video') ORDER BY created_at DESC LIMIT 100`,
-    listProductions(),
-  ]);
+  try {
+    await reapStuckStages();
+  } catch (err) {
+    console.error("studio page: reaper failed", err);
+  }
+  let runs: RunSummary[] = [];
+  let loadError = "";
+  try {
+    runs = await listRuns();
+  } catch (err) {
+    console.error("studio page: could not load runs", err);
+    loadError = "Runs could not be loaded. The latest database update may not be applied yet.";
+  }
+  const active = runs.some((r) => r.state === "running");
 
   return (
     <>
+      <AutoRefresh active={active} seconds={5} />
       <PageHeader
         title="Studio"
-        description="Pick a format and a style, describe the video, and preview its plan. Then queue a test render to check the whole path."
-        actions={
-          <div className="flex flex-wrap gap-2">
-            <LinkButton href="/studio/runs" variant="primary">
-              Hermes runs
-            </LinkButton>
-            <LinkButton href="/assets" variant="secondary">
-              Assets
-            </LinkButton>
-            <LinkButton href="/workers" variant="secondary">
-              Workers
-            </LinkButton>
-            <LinkButton href="/studio/templates" variant="secondary">
-              Templates
-            </LinkButton>
-            <LinkButton href="/studio/styles" variant="secondary">
-              Style library
-            </LinkButton>
-          </div>
-        }
+        description="Start a video. Hermes finds the idea, writes it and makes it; you decide in Review."
+        actions={<StudioNav current="runs" />}
       />
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+      {loadError && (
+        <div className="mb-4">
+          <Alert tone="warn">{loadError}</Alert>
+        </div>
+      )}
+      {runs.length === 0 ? (
         <Card>
-          <CardHeader title="New production" description="Planning only for now. Test renders check the path end to end." />
-          <CardBody>
-            {canEdit ? (
-              <StudioForm
-                channels={channels.map((c) => ({
-                  id: c.id,
-                  label: c.category ? `${c.name} · ${THEME_LABEL[c.category] ?? c.category}` : `${c.name} · category not set`,
-                }))}
-                references={references.map((r) => ({ id: r.id, title: r.title }))}
-              />
-            ) : (
-              <p className="text-sm text-muted">You have view-only access. Ask an editor to create productions.</p>
-            )}
-          </CardBody>
+          <EmptyState
+            title="No videos yet"
+            description={canEdit ? "Press New video, choose a channel, and Hermes proposes ideas for you to pick from." : "An editor starts videos here."}
+          />
         </Card>
-
-        <Card className="h-fit">
-          <CardHeader title="Productions" />
-          {productions.length === 0 ? (
-            <EmptyState title="No productions yet" description="Save a plan and it appears here." />
-          ) : (
-            <ul className="divide-y divide-border">
-              {productions.map((p) => {
-                const plan = p.plan as ProductionPlan;
-                const job = JOB_STATUS[p.preview_status ?? ""];
-                return (
-                  <li key={p.id} className="space-y-3 px-4 py-3 sm:px-5">
-                    <details>
-                      <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+      ) : (
+        <div className="space-y-6" data-testid="studio-runs">
+          {GROUPS.map((g) => {
+            const list = runs.filter((r) => runGroup(r.state) === g.id);
+            if (list.length === 0) return null;
+            return (
+              <Card key={g.id} data-group={g.id}>
+                <CardHeader
+                  title={`${g.title} (${list.length})`}
+                  description={g.description}
+                  actions={
+                    g.id === "waiting" ? (
+                      <LinkButton href="/review" variant="primary" className="shrink-0">
+                        Review
+                      </LinkButton>
+                    ) : undefined
+                  }
+                />
+                <ul className="divide-y divide-border">
+                  {list.map((r) => (
+                    <li key={r.id}>
+                      <Link href={`/studio/runs/${r.id}`} className="flex min-h-14 items-start justify-between gap-3 px-4 py-3 hover:bg-surface-2 sm:px-5">
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">{p.title}</span>
-                          <span className="block text-xs text-muted">
-                            {plan.styleLabel ?? p.style_id} · {p.format === "long" ? "Long" : "Short"} · {p.channel ?? "No channel"} · {timeAgo(p.created_at)}
+                          <span className="block break-words text-sm font-medium">{r.topic || "Waiting for an idea"}</span>
+                          <span className="block break-words text-xs text-muted">
+                            {r.channelName || "No channel"} · {r.currentStage ? stageLabel(r.currentStage) : "Starting"} · {timeAgo(r.createdAt)}
                           </span>
                         </span>
-                        <Badge tone={p.status === "planned" ? "neutral" : "info"}>{p.status}</Badge>
-                      </summary>
-                      {plan.stages && (
-                        <div className="mt-3">
-                          <PlanView plan={plan} />
-                        </div>
-                      )}
-                    </details>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {p.preview_job_id && (
-                        <Link href={`/jobs/${p.preview_job_id}`} className="inline-flex items-center gap-2 text-xs">
-                          <Badge tone={job?.tone ?? "neutral"}>Test render: {job?.label ?? "queued"}</Badge>
-                          <span className="text-accent underline-offset-2 hover:underline">open</span>
-                        </Link>
-                      )}
-                      {canEdit && (
-                        <form action={queuePreviewAction.bind(null, p.id)}>
-                          <SubmitButton className="min-h-8 text-xs" pendingLabel="Queuing…">
-                            {p.preview_job_id ? "Queue another test render" : "Queue test render"}
-                          </SubmitButton>
-                        </form>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
-      </div>
+                        <RunStateBadge state={r.state} />
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+      <p className="mt-6 text-xs text-muted">
+        Also:{" "}
+        <Link href="/assets" className="text-accent underline-offset-2 hover:underline">
+          Assets
+        </Link>{" "}
+        ·{" "}
+        <Link href="/workers" className="text-accent underline-offset-2 hover:underline">
+          Workers
+        </Link>
+      </p>
     </>
   );
 }

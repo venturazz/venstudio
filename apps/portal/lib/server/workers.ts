@@ -107,3 +107,9 @@ export function needsAttention(w: { host: string; status: string }, p: Presence,
   if (w.status !== "active" || w.host !== "muse") return false;
   return p === "offline" || p === "never" || (waitingJobs > 0 && p === "sleeping");
 }
+
+/** Capabilities any enrolled, not revoked worker reports, from the stored rows (no call to a worker). */
+export async function reportedCapabilities(): Promise<string[]> {
+  const rows = await db()`SELECT DISTINCT unnest(capabilities) AS cap FROM workers WHERE status <> 'revoked'`;
+  return rows.map((r) => String(r.cap)).filter(Boolean);
+}

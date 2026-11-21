@@ -213,6 +213,9 @@ function directorReply(messages) {
   }
   return "{}";
 }
+// The newest first user message per stage marker (idea, research, script, storyboard ...), so the UI test can check
+// what the New video form carried into the director prompts.
+const lastPrompt = {};
 const fakeStats = { imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
@@ -262,6 +265,7 @@ const fakeHermes = createServer((req, res) => {
       }
       const first = messages.find((m) => m.role === "user")?.content ?? "";
       const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
+      if (stage) lastPrompt[stage] = first;
       if (stage === "image" && fakeStats.hermes429 < HERMES_429_BURST) {
         fakeStats.hermes429++;
         res.writeHead(429, { "content-type": "application/json", "retry-after": String(HERMES_RETRY_AFTER_SEC) });
@@ -602,22 +606,24 @@ try {
   await page.goto(`${APP}/`);
   await shot("07-overview-desktop");
 
-  step("studio: suggest a style from the brief, preview the plan, save it");
+  step("studio: the Studio page leads with New video; the old planner is gone");
   await page.goto(`${APP}/studio`);
-  await page.getByLabel("Describe the video or type keywords").fill("A history documentary about the Roman roads");
-  await page.getByRole("button", { name: "Suggest styles" }).click();
-  await page.getByText("Suggested styles").waitFor();
-  await page.getByRole("button", { name: /Narrated documentary with stills/ }).click();
-  await page.getByRole("button", { name: "Preview plan" }).click();
-  await page.getByText("Your review").waitFor();
-  await page.getByText("Muse: runs well").first().waitFor();
-  await page.getByRole("button", { name: "Save production" }).click();
-  await page.getByText("Saved as a planned production").waitFor();
+  const studioNav = page.getByRole("navigation", { name: "Studio" });
+  await studioNav.getByRole("link", { name: "New video", exact: true }).waitFor();
+  for (const name of ["Runs", "Styles", "Templates", "Test render"]) await studioNav.getByRole("link", { name, exact: true }).waitFor();
+  if ((await page.getByText("New production", { exact: true }).count()) !== 0) throw new Error("/studio still offers New production");
+  if ((await page.getByText(/Planning only/).count()) !== 0) throw new Error("/studio still says Planning only");
+  // Old links keep working: the run list moved to /studio.
+  await page.goto(`${APP}/studio/runs`);
+  await page.waitForURL(`${APP}/studio`);
   await shot("13-studio-desktop");
 
-  step("studio: queue a test render for the saved production, let the worker run it, see the video");
-  await page.goto(`${APP}/studio`);
-  await page.getByRole("button", { name: "Queue test render" }).first().click();
+  step("studio: queue a test render from Test render, let the worker run it, see the video");
+  await page.getByRole("navigation", { name: "Studio" }).getByRole("link", { name: "Test render", exact: true }).click();
+  await page.waitForURL(/\/studio\/test-render$/);
+  await page.selectOption("#test-style", "documentary-stills");
+  await page.selectOption("#test-format", "short");
+  await page.getByRole("button", { name: "Queue test render", exact: true }).click();
   await page.waitForURL(/\/jobs\/[0-9a-f-]{36}$/);
   runWorker([`${OUT}/worker/run.sh`, "tick"]);
   await page.goto(page.url());
@@ -625,6 +631,8 @@ try {
   await page.getByText("Done").first().waitFor({ timeout: 30_000 });
   await page.locator("video").first().waitFor();
   await shot("13b-test-render-desktop");
+  await page.goto(`${APP}/studio/test-render`);
+  await page.getByTestId("saved-production").filter({ hasText: "Test render: Narrated documentary with stills" }).first().waitFor();
 
   step("assets: upload a reference video with its licence");
   const refPath = path.join(OUT, "reference.mp4");
@@ -693,6 +701,8 @@ try {
     ["11-jobs-mobile", "/jobs"],
     ["12-settings-mobile", "/settings"],
     ["13-studio-mobile", "/studio"],
+    ["13c-new-video-mobile", "/studio/new"],
+    ["13d-test-render-mobile", "/studio/test-render"],
     ["14-assets-mobile", "/assets"],
     ["15-styles-mobile", "/studio/styles"],
     ["16-templates-mobile", "/studio/templates"],
@@ -724,16 +734,71 @@ try {
   await shot("16-capabilities-mobile", m);
 
   step("director: Test Hermes JSON passes against the fake Hermes");
-  await page.goto(`${APP}/studio/runs`);
+  await page.goto(`${APP}/studio/test-render`);
   await page.getByRole("button", { name: "Test Hermes JSON" }).click();
   await page.getByText("Hermes returned valid JSON").waitFor();
 
-  step("director: start a run and wait for the idea review item");
+  // Waits until the fake Hermes has seen a prompt for a stage that passes the check.
+  async function waitPrompt(stage, ok, what, ms = 30_000) {
+    const end = Date.now() + ms;
+    while (!(lastPrompt[stage] && ok(lastPrompt[stage]))) {
+      if (Date.now() > end) throw new Error(`the ${stage} prompt never carried ${what}. Last ${stage} prompt:\n${String(lastPrompt[stage] ?? "(none)").slice(0, 3000)}`);
+      await page.waitForTimeout(500);
+    }
+    return lastPrompt[stage];
+  }
+  const dataBlock = (prompt, label) => new RegExp(`<<<DATA ${label}\\n([\\s\\S]*?)\\nDATA ${label}>>>`).exec(prompt)?.[1] ?? "";
+
+  step("director: start a video from /studio with a style, purposes, theme, language and subtitles");
+  const STUDIO_BRIEF = "A myth about the wolf that swallows the sun, told as a mystery";
+  await page.goto(`${APP}/studio`);
+  await page.getByRole("navigation", { name: "Studio" }).getByRole("link", { name: "New video", exact: true }).click();
+  await page.waitForURL(/\/studio\/new$/);
   await page.selectOption("#channelId", { label: "Myth Stories" });
+  // The channel's plan and autonomy are shown, read only.
+  const channelContext = await page.getByTestId("channel-context").innerText();
+  if (!channelContext.includes("Retell one myth per video") || !/Level \d/.test(channelContext)) throw new Error(`the channel context is incomplete: ${channelContext.replace(/\s+/g, " ")}`);
+  await page.fill("#brief", STUDIO_BRIEF);
+  await page.getByRole("button", { name: "Suggest from brief", exact: true }).click();
+  await page.getByTestId("style-suggestions").waitFor();
   await page.selectOption("#templateId", "tpl-explainer-flat-vector");
   await page.selectOption("#format", "short");
+  const engineInfo = await page.getByTestId("engine-info").innerText();
+  if (!engineInfo.includes("Muse: runs well") || !engineInfo.includes("A worker reports remotion-2d")) throw new Error(`the engine line is wrong: ${engineInfo.replace(/\s+/g, " ")}`);
+  await page.selectOption("#themeId", "myth");
+  await page.getByRole("checkbox", { name: /^Affiliate links/ }).check();
+  await page.getByRole("checkbox", { name: /^Series \(recurring episodes\)/ }).check();
+  await page.selectOption("#language", "en");
+  await page.getByTestId("kokoro-flag").getByText("Kokoro voice", { exact: true }).waitFor();
+  await page.getByRole("checkbox", { name: "Spanish", exact: true }).check();
+  // Selects keep their values while the form works (no React form reset).
+  if ((await page.inputValue("#templateId")) !== "tpl-explainer-flat-vector" || (await page.inputValue("#themeId")) !== "myth") throw new Error("a select lost its value");
   await page.getByRole("button", { name: "Ask Hermes for ideas" }).click();
   await page.getByText("Run started.").waitFor();
+  if ((await page.inputValue("#channelId")) === "" || (await page.inputValue("#language")) !== "en") throw new Error("the form was reset after the run started");
+  const startedHref = await page.getByTestId("run-started-link").getAttribute("href");
+  if (!startedHref) throw new Error("no link to the started run");
+
+  step("director: the run config and the idea prompt carry the form's choices");
+  const ideaAsk = await waitPrompt("idea", (t) => t.includes(STUDIO_BRIEF), "the brief");
+  const purposeData = dataBlock(ideaAsk, "video purpose");
+  for (const want of ["Purpose: Affiliate links (affiliate)", "Purpose: Series (recurring episodes) (series)", "Planning step: Series bible"]) {
+    if (!purposeData.includes(want)) throw new Error(`the idea prompt's purpose block misses "${want}": ${purposeData.slice(0, 800)}`);
+  }
+  if (!dataBlock(ideaAsk, "theme").includes("Theme: Myth and folklore (myth)")) throw new Error("the idea prompt has no theme block for myth");
+  if (!dataBlock(ideaAsk, "subtitle languages").includes("Spanish (es)")) throw new Error("the idea prompt has no Spanish subtitles");
+  if (!ideaAsk.includes("language code en")) throw new Error("the idea prompt does not name the narration language");
+  if (!/one episode of a recurring series/.test(ideaAsk)) throw new Error("the idea prompt does not steer the series purpose");
+  await page.goto(`${APP}${startedHref}`);
+  // The section is collapsed; open it like the owner would, so innerText includes the list.
+  await page.getByTestId("run-settings").locator("summary").click();
+  await page.getByTestId("run-settings").locator("dl").waitFor();
+  const settingsText = await page.getByTestId("run-settings").innerText();
+  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF]) {
+    if (!settingsText.includes(want)) throw new Error(`the run settings miss "${want}": ${settingsText.replace(/\s+/g, " ")}`);
+  }
+  await page.goto(`${APP}/studio`);
+  await page.getByTestId("studio-runs").getByRole("link").filter({ hasText: "Myth Stories" }).first().waitFor();
 
   // Polls a page until a locator shows. The server works in the background after the click returns.
   async function waitShown(p, url, locator, what, ms = 45_000) {
@@ -1088,6 +1153,19 @@ try {
   if (await approveQc.isVisible().catch(() => false)) await approveQc.click();
   else await qc.getByRole("button", { name: "Reject" }).click();
 
+  step("director: the script and storyboard prompts carried the purposes and subtitles");
+  {
+    const scriptAsk = lastPrompt.script ?? "";
+    for (const want of ["contains affiliate links", "call to action", "hook to the next episode", "translate well"]) {
+      if (!scriptAsk.includes(want)) throw new Error(`the script prompt misses "${want}"`);
+    }
+    if (!dataBlock(scriptAsk, "owner brief").includes(STUDIO_BRIEF)) throw new Error("the script prompt has no owner brief block");
+    const boardAsk = lastPrompt.storyboard ?? "";
+    for (const want of ["disclosure card", "same in every shot", "bottom fifth of every frame"]) {
+      if (!boardAsk.includes(want)) throw new Error(`the storyboard prompt misses "${want}"`);
+    }
+  }
+
   step("production: the run page lists each work order");
   await m.goto(`${APP}${assetsRunHref ?? runHref}`);
   await m.getByTestId("work-orders").waitFor();
@@ -1103,13 +1181,16 @@ try {
   await m.goto(`${APP}/review`);
   await m.getByText("Nothing waiting for you.").waitFor();
 
-  step("director: invalid JSON from Hermes shows a stage error with Retry");
-  await page.goto(`${APP}/studio/runs`);
+  step("director: invalid JSON from Hermes shows a stage error with Retry (an Indonesian video, no brief beyond the marker)");
+  await page.goto(`${APP}/studio/new`);
   await page.selectOption("#channelId", { label: "Myth Stories" });
   await page.selectOption("#templateId", "tpl-explainer-flat-vector");
-  await page.fill("#topic", "BREAK-JSON please");
+  await page.fill("#brief", "BREAK-JSON please");
+  await page.selectOption("#language", "id");
+  await page.getByTestId("kokoro-flag").getByText("Not in Kokoro", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Ask Hermes for ideas" }).click();
   await page.getByText("Run started.").waitFor();
+  await waitPrompt("idea", (t) => t.includes("BREAK-JSON") && t.includes("language code id"), "the Indonesian narration language");
   await waitShown(m, "/review", (p) => p.locator('[data-kind="stage-error"]'), "the stage error card");
   await m.getByRole("button", { name: "Retry" }).first().waitFor();
   await m.waitForLoadState("networkidle");
