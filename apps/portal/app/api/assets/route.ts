@@ -7,6 +7,7 @@ import { requestMeta } from "@/lib/server/request.ts";
 import { contentTypeFor, saveAsset, TooLargeError } from "@/lib/server/storage.ts";
 import { jsonError } from "@/lib/server/worker-api.ts";
 import { ASSET_KINDS, ASSET_SOURCES } from "@/lib/studio/catalog.ts";
+import { MUSIC_TAG } from "@/lib/studio/music-bed.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,8 @@ const query = z.object({
     .refine((v) => v === "" || /^https?:\/\//.test(v), "The origin must be a web address (https://…)")
     .default(""),
   tags: z.string().max(200).default(""),
+  /** "1" when the owner ticked "This is a music track for video beds": the asset gets the music tag. */
+  music: z.enum(["", "1"]).default(""),
   channelId: z.union([z.uuid(), z.literal("")]).default(""),
   filename: z.string().max(200).default("file"),
 });
@@ -52,6 +55,7 @@ export async function POST(req: Request) {
   if (CREDENTIAL_NAME.test(q.filename)) {
     return jsonError(400, "This looks like a credentials file. Put API keys and OAuth secrets in Coolify environment variables, not in Assets.");
   }
+  if (q.music === "1" && q.kind !== "audio") return jsonError(400, "Only an audio file can be a music track. Choose the audio kind, or untick the music box.");
   const meta = await requestMeta();
 
   const id = await insertAssetRow({
@@ -60,7 +64,8 @@ export async function POST(req: Request) {
     source: q.source,
     license: q.license,
     originUrl: q.originUrl,
-    tags: q.tags,
+    // The render stage takes a bed only from audio tagged music (lib/studio/music-bed.ts).
+    tags: q.music === "1" ? [q.tags, MUSIC_TAG].filter(Boolean).join(",") : q.tags,
     channelId: q.channelId,
     createdBy: session.id,
   });
@@ -80,6 +85,6 @@ export async function POST(req: Request) {
     sha256: saved.sha256,
     storagePath: saved.storagePath,
   });
-  await audit({ userId: session.id, action: "asset.upload", target: id, detail: { kind: q.kind, source: q.source }, ip: meta.ip });
+  await audit({ userId: session.id, action: "asset.upload", target: id, detail: { kind: q.kind, source: q.source, music: q.music === "1" }, ip: meta.ip });
   return Response.json({ id, title: q.title, bytes: saved.bytes, sha256: saved.sha256 }, { status: 201 });
 }

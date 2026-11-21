@@ -48,7 +48,8 @@ import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
 import { VIDEO_FORMATS } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
-import { gateCapabilities, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
+import { gateCapabilities, mixFeaturesFor, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
+import { bedNote, MUSIC_TAG, pickMusicBed, type BedCandidate, type BedPick } from "../studio/music-bed.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import type { ReviewMedia } from "../studio/review.ts";
@@ -66,6 +67,7 @@ import {
   parseOrderSpec,
   productionStageAction,
   renderLicenseText,
+  type RenderLicenseInput,
   type OrderSpec,
 } from "../studio/production.ts";
 import type { ProductionStage } from "../studio/engine.ts";
@@ -847,9 +849,6 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   for (const d of done) shotAssets[(d.shot_ref as string | null) ?? ""] = d.asset_id as string;
   // Same pick as the preview render: the newest font in the library. Without one the render runs without captions.
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
-  // The one audio layer that needs a real track. Ambience is synthesised, so a library with no music still
-  // gets something in the gaps instead of digital silence.
-  const [bed] = await sql`SELECT id FROM assets WHERE kind = 'audio' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
   const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
@@ -889,21 +888,28 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // The length the shots, the captions and the mix are all planned for: a fitted voice plays at its tempo.
   const narrationSec = tempo !== 1 ? rawNarrationSec / tempo : rawNarrationSec;
   const frame = VIDEO_FORMATS[run.config.format];
+  // The mix and the caption style change the video only on a worker that honours them (0.7.0). Any render worker may
+  // claim the job, so they are sent only when every one of them reports the capability; otherwise the payload is the
+  // 0.6.0 one and the stage says what was held back.
+  const mix = mixFeaturesFor(await workerCapabilityLists(sql));
   // Geometry, not taste. The spec scales by frame height, so a portrait job and a landscape job both get
   // numbers that were measured instead of numbers that happened to be typed for one frame.
-  const captionSpec = captionSpecFor({ width: frame.width, height: frame.height, fontAssetId, safeAreaPct: template.captions.safeAreaPct });
-  // Ambience needs no asset. The bed is the one layer that does, so a library without music produces a plan
-  // with bed: null rather than pretending the mix is complete.
-  const bedAssetId = bed ? asUuid(bed.id) : null;
+  const captionSpec = mix.captionStyle
+    ? captionSpecFor({ width: frame.width, height: frame.height, fontAssetId, safeAreaPct: template.captions.safeAreaPct })
+    : null;
+  // Ambience needs no asset. The bed is the one layer that does, and only a track the owner marked as music, with a
+  // licence and confirmed terms, qualifies (music-bed.ts). Never the narration, which is saved as audio too.
+  const bedPick = mix.audio && narrationSec > 0 ? await pickRunBed(sql, run, template, asUuid(voiceResult.assetId)) : null;
+  const bed = bedPick?.bed ?? null;
   const audio =
-    narrationSec > 0
+    mix.audio && narrationSec > 0
       ? buildAudioPlan({
           policy: template.audio.musicPolicy,
           narrated: template.audio.narrated,
           durationSec: narrationSec,
           targetLufs: template.audio.targetLufs,
           maxTruePeakDb: template.audio.maxTruePeakDb,
-          bed: bedAssetId ? { assetId: bedAssetId } : null,
+          bed: bed ? { assetId: bed.id, ...(typeof bed.durationSec === "number" ? { durationSec: bed.durationSec } : {}) } : null,
         })
       : null;
   if (audio && !audio.ok) {
@@ -925,7 +931,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
       targetLufs: template.audio.targetLufs,
       maxShotSeconds: template.pacing.maxShotSeconds,
       runId: run.id,
-      captionSpec,
+      ...(captionSpec ? { captionSpec } : {}),
       ...(audio?.ok ? { audioPlan: audio.plan } : {}),
       ...(renderParams ? { engine: renderParams.engine, transitionSec } : {}),
       ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
@@ -953,7 +959,61 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     // Queued under the engine's capability, so only a worker that can run it claims it.
     capability: renderJobCapability(plan.payload.engine, plan.payload.transitionSec),
   });
-  await mergeStageOutput(st.id, { jobId, shots: plan.payload.shots.length, narrationSec: plan.payload.narrationSec });
+  const music = bedPick ? bedNote(bedPick, template.audio.musicPolicy) : null;
+  await mergeStageOutput(st.id, {
+    jobId,
+    shots: plan.payload.shots.length,
+    narrationSec: plan.payload.narrationSec,
+    ...(music ? { music } : {}),
+    ...(mix.note ? { mixNote: mix.note } : {}),
+  });
+}
+
+/** Every narration this run recorded: the current voice result and every earlier voice attempt. */
+async function runNarrationIds(q: Q, runId: string, current: string | null): Promise<string[]> {
+  const rows = await q`SELECT output->'result'->>'assetId' AS id FROM pipeline_stages WHERE run_id = ${runId} AND stage = 'voice'`;
+  const ids = rows.map((r) => asUuid(r.id)).filter((x): x is string => x !== null);
+  return [...new Set([...(current ? [current] : []), ...ids])];
+}
+
+/**
+ * The music bed for a run, by the rule in music-bed.ts. Only rows tagged as music are read; the rest of the rule
+ * (never speech, the template's policies, provenance, provider terms, channel) is pure code with its own tests.
+ */
+async function pickRunBed(q: Q, run: RunInfo, template: Template, narrationId: string | null): Promise<BedPick> {
+  const rows = await q`
+    SELECT id, title, kind, source, license, origin_url, tags, channel_id, storage_path IS NOT NULL AS has_file, metadata
+    FROM assets
+    WHERE kind = 'audio' AND ${MUSIC_TAG} = ANY(tags)
+    ORDER BY created_at DESC
+    LIMIT 50
+  `;
+  const candidates = rows.map((r): BedCandidate => {
+    const meta = toObject(r.metadata);
+    const seconds = typeof meta.durationSec === "number" && Number.isFinite(meta.durationSec) && meta.durationSec > 0 ? meta.durationSec : null;
+    return {
+      id: String(r.id),
+      title: text(r.title),
+      kind: r.kind as AssetKind,
+      source: r.source as AssetSource,
+      license: text(r.license),
+      originUrl: text(r.origin_url),
+      tags: Array.isArray(r.tags) ? (r.tags as unknown[]).filter((t): t is string => typeof t === "string") : [],
+      provider: text(meta.provider),
+      providerKind: text(meta.providerKind),
+      runId: asUuid(meta.runId),
+      channelId: asUuid(r.channel_id),
+      hasFile: r.has_file === true,
+      durationSec: seconds,
+    };
+  });
+  return pickMusicBed(candidates, {
+    template,
+    runId: run.id,
+    channelId: run.channelId,
+    narrationAssetIds: await runNarrationIds(q, run.id, narrationId),
+    providerTerms: await listProviderTerms(),
+  });
 }
 
 interface FinishedJob {
@@ -1077,10 +1137,22 @@ async function completeRender(jobId: string): Promise<boolean> {
     return true;
   }
   const inputIds = Array.isArray(job.payload.inputs) ? job.payload.inputs.map(asUuid).filter((x): x is string => x !== null) : [];
-  const inputs = await db()`SELECT title, license, metadata FROM assets WHERE id = ANY(${inputIds}::uuid[]) ORDER BY created_at`;
-  const license = renderLicenseText(
-    inputs.map((a) => ({ title: a.title as string, provider: text(toObject(a.metadata).provider), license: a.license as string })),
-  );
+  const inputs = await db()`SELECT id, title, license, source, origin_url, metadata FROM assets WHERE id = ANY(${inputIds}::uuid[]) ORDER BY created_at`;
+  // The bed is named as the music, so its maker and licence are in the video's licence however many pictures it has.
+  const bedId = asUuid(toObject(toObject(job.payload.audio).bed).assetId);
+  const licenseInputs = inputs.map((a): RenderLicenseInput => {
+    const item: RenderLicenseInput = {
+      title: text(a.title),
+      provider: text(toObject(a.metadata).provider),
+      license: text(a.license),
+      source: text(a.source),
+      originUrl: text(a.origin_url),
+    };
+    if (bedId !== null && String(a.id) === bedId) item.role = "Music bed";
+    return item;
+  });
+  const license = renderLicenseText(licenseInputs);
+  const bedInput = licenseInputs.find((i) => i.role === "Music bed");
   const assetId = await assetFromArtifact({
     artifact,
     title: `${run.topic || "Video"} (render)`,
@@ -1102,6 +1174,9 @@ async function completeRender(jobId: string): Promise<boolean> {
     narrationClipped: r.narrationClipped === true,
     captionsBurned: r.captionsBurned === true,
     captionNote: text(r.captionNote),
+    // What plays under the narration, from the payload the worker rendered (0.7.0+): the bed's title and licence.
+    music: bedInput ? `Music bed: ${bedInput.title} (${bedInput.license})` : toObject(job.payload.audio).bed === null ? "No music bed" : "",
+    ...(text(st.output.mixNote) ? { mixNote: text(st.output.mixNote) } : {}),
     // Where each scene starts (worker 0.5+). The qc stage hands these to the cut check.
     sceneStarts: Array.isArray(r.sceneStarts) ? (r.sceneStarts as unknown[]).filter((v): v is number => num(v) !== null).slice(0, 500) : [],
   };

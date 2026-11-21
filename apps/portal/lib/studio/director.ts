@@ -9,6 +9,7 @@ import { LANGUAGE_BY_CODE, PURPOSE_BY_ID, THEME_BY_ID, type Format } from "./cat
 import type { BeatRole, Template } from "./templates.ts";
 import { bareProviderName, HERMES_IMAGE_PLUGINS, isShotNeed, SHOT_NEEDS, type ShotNeed } from "./providers.ts";
 import { MOTION_TOKENS, isMotionToken } from "./render-engine.ts";
+import { RENDER_LIMITS } from "./render-limits.ts";
 
 export type Validated<T> = { ok: true; value: T } | { ok: false; issues: string[] };
 
@@ -111,7 +112,8 @@ export const MAX_IDEAS = 10;
 export const MAX_NOTES = 30;
 export const MIN_HOOKS = 3;
 export const MAX_HOOKS = 10;
-export const MAX_SHOTS = 80;
+/** A storyboard holds at most what one render takes (render-limits.ts), so a long explainer is refused here, before images. */
+export const MAX_SHOTS = RENDER_LIMITS.maxShots;
 export const MAX_SHOT_SECONDS = 120;
 export const MAX_SCRIPT_CHARS = 20000;
 export const MAX_NOTE_CHARS = 1000;

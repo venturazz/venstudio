@@ -34,7 +34,7 @@ import {
 } from "./venstudio-worker.ts";
 import { SAMPLE_PROPS, barHeights, captionAt, formatCount, gaugeFraction, layerFrame, timelineFor, transitionFor as templateTransitionFor } from "../render-remotion/src/props.ts";
 import { projectBundle, REMOTION_PROJECT_FILES } from "../portal/lib/install-bundle.ts";
-import { fixtureWithUuids } from "./testdata/fixture.ts";
+import { fixtureWithUuids, fixtureWithoutMix } from "./testdata/fixture.ts";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 const PROJECT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../render-remotion");
@@ -120,7 +120,8 @@ test("Remotion renders muted, bounded for a 2 vCPU machine, and ffmpeg adds the 
   assert.equal(remotionTimeoutMs(10), 10 * 60_000);
   assert.equal(remotionTimeoutMs(24), 960_000);
   assert.equal(remotionTimeoutMs(180), 7_200_000);
-  const spec = parseRenderSpec(fixtureWithUuids());
+  // A payload without `audio` (what a 0.6.0 portal sent) is muxed exactly as in 0.6.0.
+  const spec = parseRenderSpec(fixtureWithoutMix());
   const mux = buildMuxArgs(spec, "/w/m.mp4", "in/n.wav", "video.part.mp4");
   const graph = mux[mux.indexOf("-filter_complex") + 1];
   assert.equal(graph, narrationFilter(spec, 1));

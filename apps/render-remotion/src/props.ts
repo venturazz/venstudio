@@ -30,6 +30,25 @@ export type Scene = {
 
 export type Caption = { start: number; end: number; text: string };
 
+/**
+ * Caption geometry from the portal, already scaled to the frame (worker 0.7.0+). Same shape as `CaptionSpec` in
+ * apps/portal/lib/studio/caption-spec.ts. Absent: the template keeps its own look.
+ */
+export type CaptionStyle = {
+  fontAssetId: string | null;
+  fontSizePx: number;
+  minFontSizePx: number;
+  maxFontSizePx: number;
+  lineSpacingPx: number;
+  outlinePx: number;
+  shadowPx: number;
+  marginXPx: number;
+  marginBottomPx: number;
+  maxWidthPx: number;
+  narrowFace: boolean;
+  safeAreaPct: number;
+};
+
 /** Where each scene sits, in whole frames. Same numbers as the worker's xfadeTimeline. */
 export type Timeline = {
   fadeFrames: number;
@@ -55,6 +74,8 @@ export type TemplateProps = {
   font: string | null;
   /** Precomputed by the worker. Templates compute it from `shots` when it is absent (Studio preview). */
   timeline?: Timeline;
+  /** Caption geometry to draw with. Absent or null: the template's own caption look. */
+  captionStyle?: CaptionStyle | null;
 };
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -125,6 +146,41 @@ export function formatCount(current: number, target: number): string {
   const [int, frac] = fixed.split(".");
   const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return frac ? `${grouped}.${frac}` : grouped;
+}
+
+/** How the caption box is laid out, in pixels. Pure, so node --test can check it without React. */
+export type CaptionLayout = {
+  /** Box styling: the template's own dark card, or bare outlined text when a style is given. */
+  boxed: boolean;
+  fontSize: number;
+  lineHeight: number;
+  maxWidth: number;
+  paddingBottom: number;
+  /** Outline width drawn behind the fill (a CSS stroke is centred on the edge, so this is twice the outline). */
+  strokeWidth: number;
+  textShadow: string | null;
+};
+
+/**
+ * The caption box for a frame. With a style: its size, line spacing, wrap width, bottom margin, outline and shadow,
+ * exactly. Without one: the look the template had before styles existed.
+ */
+export function captionLayout(style: CaptionStyle | null | undefined, width: number, height: number): CaptionLayout {
+  if (!style) {
+    const u = Math.min(width, height) / 100;
+    const portrait = height >= width;
+    const fontSize = u * (portrait ? 4.2 : 3.6);
+    return { boxed: true, fontSize, lineHeight: 1.25, maxWidth: width * 0.86, paddingBottom: height * (portrait ? 0.07 : 0.06), strokeWidth: 0, textShadow: null };
+  }
+  return {
+    boxed: false,
+    fontSize: style.fontSizePx,
+    lineHeight: (style.fontSizePx + style.lineSpacingPx) / style.fontSizePx,
+    maxWidth: style.maxWidthPx,
+    paddingBottom: style.marginBottomPx,
+    strokeWidth: style.outlinePx * 2,
+    textShadow: style.shadowPx > 0 ? `${style.shadowPx}px ${style.shadowPx}px 0 rgba(0, 0, 0, 0.6)` : null,
+  };
 }
 
 /** The caption on screen at `t` seconds, if any. */

@@ -14,8 +14,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { handlers, makeWavPcm16, remotionUnavailableReason, type JobContext } from "./venstudio-worker.ts";
-import { fixtureWithUuids } from "./testdata/fixture.ts";
+import { existsSync } from "node:fs";
+import { handlers, makeWavPcm16, parseLoudness, remotionUnavailableReason, type JobContext } from "./venstudio-worker.ts";
+import { fixtureUuid, fixtureWithUuids } from "./testdata/fixture.ts";
 
 const DIR = process.env.VENSTUDIO_REMOTION_DIR;
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
@@ -29,6 +30,35 @@ function sine(seconds: number, rate = 24000): Uint8Array {
   const dv = new DataView(pcm.buffer);
   for (let i = 0; i < n; i++) dv.setInt16(i * 2, Math.round(Math.sin((2 * Math.PI * 220 * i) / rate) * 0.3 * 32767), true);
   return makeWavPcm16(rate, 1, pcm);
+}
+
+/** A 10 s music bed, as the fixture describes: a chord with a slow swell, so a loop is audible as a loop. */
+function bedWav(seconds: number, rate = 48000): Uint8Array {
+  const n = Math.round(seconds * rate);
+  const pcm = new Uint8Array(n * 2);
+  const dv = new DataView(pcm.buffer);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    const swell = 0.6 + 0.4 * Math.sin((2 * Math.PI * t) / seconds);
+    const v = (Math.sin(2 * Math.PI * 261.63 * t) + Math.sin(2 * Math.PI * 329.63 * t) + Math.sin(2 * Math.PI * 392 * t)) * 0.12 * swell;
+    dv.setInt16(i * 2, Math.round(v * 32767), true);
+  }
+  return makeWavPcm16(rate, 1, pcm);
+}
+
+/** A real TrueType font from the system (CI's Playwright deps install DejaVu and Liberation). */
+function systemFont(): string | null {
+  const known = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  ];
+  const hit = known.find((f) => existsSync(f));
+  if (hit) return hit;
+  const listed = spawnSync("fc-list", [":", "file"], { encoding: "utf8" });
+  const ttf = (listed.stdout ?? "").split("\n").map((l) => l.replace(/:\s*$/, "").trim()).find((f) => f.endsWith(".ttf") && existsSync(f));
+  return ttf ?? null;
 }
 
 function ctxFor(workDir: string, home: string, type: string, payload: Record<string, unknown>, files: Map<string, string>, kept: Map<string, string>): JobContext {
@@ -69,6 +99,13 @@ test("remotion-2d renders the golden fixture to a 1080x1920, 24 s H.264/AAC mp4 
   const narration = path.join(home, "narration.wav");
   await writeFile(narration, sine(24));
   files.set(payload.narrationAssetId, narration);
+  // The fixture's inputs include its caption font and a 10 s bed that has to loop under 24 s of video.
+  const font = systemFont();
+  assert.ok(font, "no TrueType font on this machine for the fixture's asset-font");
+  files.set(fixtureUuid("asset-font"), font);
+  const bed = path.join(home, "bed.wav");
+  await writeFile(bed, bedWav(10));
+  files.set(fixtureUuid("asset-bed"), bed);
 
   const kept = new Map<string, string>();
   const work = path.join(home, "work", "render");
@@ -93,6 +130,13 @@ test("remotion-2d renders the golden fixture to a 1080x1920, 24 s H.264/AAC mp4 
   assert.equal(v?.codec_name, "h264");
   assert.equal(`${v?.width}x${v?.height}`, "1080x1920");
   assert.equal(a?.codec_name, "aac", "the narration was muxed in");
+  // 0.7.0: the soundtrack is the fixture's mix (bed looped under the narration, ambience, master at -14 LUFS), and the
+  // captions were drawn with its captionStyle in the job's font.
+  assert.deepEqual(result.audioMix, { bed: { assetId: fixtureUuid("asset-bed"), cover: "loop" }, ambient: true, sfx: 0, targetLufs: -14 });
+  assert.equal(result.captionStyle, true);
+  assert.equal(result.captionNote, null);
+  const loud = parseLoudness(spawnSync("ffmpeg", ["-hide_banner", "-nostats", "-i", video, "-af", "ebur128", "-f", "null", "-"], { encoding: "utf8" }).stderr);
+  assert.ok(loud !== null && Math.abs(loud - -14) <= 2, `integrated loudness ${String(loud)} LUFS, target -14`);
 
   // The portal's QC step runs on what the worker uploaded; it must read a Remotion render like a stills one.
   const qcFiles = new Map([["dddddddd-5555-4555-8555-000000000001", video]]);

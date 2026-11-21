@@ -611,8 +611,13 @@ test("parseRenderSpec accepts the portal payload", () => {
 });
 
 test("parseRenderSpec refuses too many shots, unlisted or missing assets and bad timing", () => {
-  const many = Array.from({ length: 61 }, (_, i) => ({ shotRef: `s${i}`, assetId: A1, seconds: 1, motion: "zoom-in" }));
-  assert.throws(() => parseRenderSpec(renderPayload({ shots: many, narrationSec: 61 })), NonRetryableError);
+  // 0.7.0: the limit is the catalogue's (1200 s at 2 s a shot), so 600 shots parse and 601 do not.
+  const shotsOf = (n: number) => Array.from({ length: n }, (_, i) => ({ shotRef: `s${i}`, assetId: A1, seconds: 1, motion: "zoom-in" }));
+  assert.equal(parseRenderSpec(renderPayload({ shots: shotsOf(600), narrationSec: 600 })).shots.length, 600);
+  assert.throws(() => parseRenderSpec(renderPayload({ shots: shotsOf(601), narrationSec: 601 })), /601 shots; the limit is 600/);
+  const caps = (n: number) => Array.from({ length: n }, (_, i) => ({ start: i * 0.1, end: i * 0.1 + 0.1, text: "x" }));
+  assert.equal(parseRenderSpec(renderPayload({ captions: caps(1200) })).captions.length, 1200);
+  assert.throws(() => parseRenderSpec(renderPayload({ captions: caps(1201) })), /1201 captions; the limit is 1200/);
   assert.throws(() => parseRenderSpec(renderPayload({ inputs: [A1, NARR] })), /not listed in inputs/);
   assert.throws(() => parseRenderSpec(renderPayload({ shots: [{ shotRef: "s1", seconds: 2 }] })), /no valid image asset/);
   assert.throws(() => parseRenderSpec(renderPayload({ narrationAssetId: undefined })), /no narration/);

@@ -153,7 +153,7 @@ test("validateStoryboard accepts a good sample and rejects each class of bad inp
   bad(validateStoryboard({ shots: [{ ...shot, imagePrompt: undefined }] }), "imagePrompt must be text");
   bad(validateStoryboard({ shots: [{ ...shot, imagePrompt: "x".repeat(601) }] }), "longer than");
   bad(validateStoryboard({ shots: ["x"] }), "must be an object");
-  bad(validateStoryboard({ shots: Array.from({ length: 81 }, () => shot) }), "1 to 80");
+  bad(validateStoryboard({ shots: Array.from({ length: 601 }, () => shot) }), "1 to 600");
 });
 
 test("validateClassification accepts known stages only", () => {

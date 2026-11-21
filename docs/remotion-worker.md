@@ -89,6 +89,69 @@ like any failed render.
 4. A stills style (for example **Narrated documentary with stills**) renders as before, now with cross-fades
    (`"transitionSec": 0.5` in the result) on a worker that reports `xfade`.
 
+## Worker 0.7.0: music, ambience, caption style, long videos
+
+What changes in the videos once every render worker runs 0.7.0:
+
+- **Sound.** The narration no longer plays alone. Under it: a music bed from your library (normalised to -20 LUFS,
+  lifted 3.5 dB, ducked 4:1 under the voice with a 15 ms attack and a 350 ms release, so it dips while someone speaks
+  and comes back in the pauses and after the last line), looped when it is shorter than the video; brown-noise
+  ambience band-passed 90-3200 Hz at -26 dB, made by the worker, so there is never digital silence between beats; and
+  the whole mix mastered to the template's loudness (-14 LUFS, true peak -1 dB). Without a music track the mix is the
+  narration and the ambience.
+- **Captions.** The size, outline, shadow, line spacing, side and bottom margins and wrap width the portal measured
+  for the frame (a 1080×1920 short: 78 px white text, 7 px black outline, 5 px shadow, 154 px off the bottom, at most
+  978 px wide) instead of one fixed size. Both engines: drawtext for stills, the template for Remotion.
+- **Long videos.** Up to 600 shots and 1200 caption lines, the catalogue's 20 minutes at a 2 s cut. The portal refuses
+  more at the storyboard and render plan, before images are made; the worker takes exactly the same numbers. A stills
+  job of more than 60 shots is rendered in parts of at most 60 inputs (the size 0.6.0 ran on Muse) and joined without
+  re-encoding, so ffmpeg never opens hundreds of inputs at once. Remotion renders frame by frame, so its memory does not
+  grow with the shot count; only its time does (the limit is 40 s per second of video).
+
+The portal sends the mix and the caption style only when **every** render worker reports `audio-mix` and
+`caption-style`. While one older worker is enrolled, renders keep the 0.6.0 sound and captions, and the render's
+result says why (`mixNote`). Nothing is lost by updating late.
+
+### Add a music track (once, in the portal)
+
+1. **Assets → Upload**: choose the audio file (WAV or MP3), kind **audio**, source **upload** (your own track) or
+   **licensed**, the licence (for example "Own composition, all rights" or "Licensed from … , licence no. …") and the
+   origin link (the page you got it from, or your own page for a self-made track).
+2. Tick **This is a music track for video beds**, then **Upload**. The asset shows the tag `music`.
+3. That is all. The next render takes the newest music track of the run's channel, else the newest shared one. A
+   track qualifies only when it is tagged `music`, has a licence and an origin link, and fits the template's music
+   policy; a track made by a provider also needs that provider's terms confirmed in **Settings → Asset providers**.
+   Narration and Test voice files are never used, whatever their tags.
+4. The render stage notes which track plays ("Music bed: … (licence)") or why none does, and the finished video's
+   licence lists the track first, with its origin and licence.
+
+### Update the Muse workers to 0.7.0
+
+Same steps as any update, on each Muse VM from `/home/hatch/venstudio`:
+
+```bash
+cd /home/hatch/venstudio
+curl -fsSL https://<portal>/install/install.sh -o install.sh
+sha256sum install.sh        # must equal "install.sh sha256" under Workers → Add a worker in the portal
+bash install.sh --portal https://<portal> --mode hold --with-remotion
+```
+
+Compare the hash before running the script: the portal computes it from the file it serves, so a different value
+means the download is not the portal's file, and you stop there. `install.sh` then fetches `venstudio-worker.ts`
+(0.7.0) and the Remotion templates from the same portal. The worker's ffmpeg must have `sidechaincompress`,
+`anoisesrc`, `aloop` and the other mix filters (any distribution ffmpeg from 4.4 on, and the static build install.sh
+falls back to, do); without them the worker simply does not report `audio-mix`.
+
+### Check it live
+
+1. **Workers**: each worker shows 0.7.0 (no "out of date" flag) and the capabilities `audio-mix` and `caption-style`.
+   The log line reads `... v0.7.0 hold mode ..., capabilities: echo, ffmpeg, xfade, narration-tempo, audio-mix,
+   caption-style, remotion-2d`.
+2. Run a video. The render job's payload on its Jobs page has `"audio"` with `"bed": {"assetId": "<your track>"}` and
+   `"captionStyle"`. The job's result has `"audioMix": {"bed": {"assetId": …, "cover": "loop"}, "ambient": true, …}`.
+3. Listen to the end of the video: after the last line the music is still playing, louder than under the voice. The
+   captions sit above the bottom strip, outlined, without the dark box.
+
 ## Licence (owner check)
 
 Remotion is free for individuals and for companies of up to three people; larger companies need a company licence

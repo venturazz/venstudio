@@ -11,6 +11,7 @@ import type { ProductionStage, RunStage } from "./engine.ts";
 import type { ReviewKind } from "./review.ts";
 import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
 import { bareProviderName, isShotNeed, type ShotNeed } from "./providers.ts";
+import { RENDER_LIMITS } from "./render-limits.ts";
 
 /** Hermes image attempts per shot before the CC0 library (each attempt already re-asks Hermes up to 2 times). */
 export const HERMES_IMAGE_ATTEMPTS = 2;
@@ -27,7 +28,8 @@ export const ORDER_STUCK_MINUTES = Math.ceil(ORDER_WORST_CASE_SEC / 60) + 6;
 export const PRODUCTION_STUCK_MINUTES = Math.ceil((9 * HERMES_ASK_WORST_SEC) / 60) + 6;
 /** Most captions the worker accepts is 300; lines are cut at this many characters. */
 export const CAPTION_LINE_CHARS = 90;
-export const MAX_CAPTION_LINES = 300;
+/** As many caption lines as one render takes (render-limits.ts): a 20-minute script needs more than 300. */
+export const MAX_CAPTION_LINES = RENDER_LIMITS.maxCaptions;
 
 export interface OrderSpec {
   prompt: string;
@@ -203,10 +205,33 @@ export function failedOrdersMessage(orders: readonly FailedOrder[], max: number 
   return text || "An asset could not be made";
 }
 
+/** One input of a render, as its licence line names it. */
+export interface RenderLicenseInput {
+  title: string;
+  provider: string;
+  license: string;
+  /** Where the file came from when no provider made it: an upload or a licensed file names its origin instead. */
+  source?: string;
+  originUrl?: string;
+  /** What the input is in this video ("Music bed"). Inputs with a role are listed first, so a cut never drops them. */
+  role?: string;
+}
+
+/** Who made an input: the provider, else the owner's upload or licence with its origin, else unknown. */
+function makerOf(i: RenderLicenseInput): string {
+  if (i.provider) return i.provider;
+  const from = i.originUrl?.trim() ? ` from ${i.originUrl.trim()}` : "";
+  if (i.source === "upload") return `uploaded${from}`;
+  if (i.source === "licensed") return `licensed${from}`;
+  return from ? from.trim() : "unknown provider";
+}
+
 /** Licence text for the finished video, listing where each input came from. Written by code, never by a model. */
-export function renderLicenseText(inputs: ReadonlyArray<{ title: string; provider: string; license: string }>): string {
+export function renderLicenseText(inputs: ReadonlyArray<RenderLicenseInput>): string {
   const head = "Own render made with VenStudio from these inputs.";
-  const parts = inputs.map((i) => `${i.title} (${i.provider || "unknown provider"}): ${i.license}`.trim());
+  // A long video has hundreds of pictures; the music and other named inputs go first so the cap never cuts them.
+  const ordered = [...inputs.filter((i) => i.role), ...inputs.filter((i) => !i.role)];
+  const parts = ordered.map((i) => `${i.role ? `${i.role}: ` : ""}${i.title} (${makerOf(i)}): ${i.license}`.trim());
   const text = [head, ...parts].join(" ");
   return text.length > 1800 ? `${text.slice(0, 1797)}...` : text;
 }
@@ -246,7 +271,8 @@ export function productionSummary(stage: ProductionStage, result: unknown): stri
     const sec = num(r.durationSec);
     const note = typeof r.captionNote === "string" ? r.captionNote.trim().slice(0, 80) : "";
     const captions = r.captionsBurned === false && note ? `. No captions burned in: ${note}` : "";
-    return `Video rendered${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${captions}`;
+    const music = typeof r.music === "string" && r.music.trim() ? `. ${r.music.trim().slice(0, 120)}` : "";
+    return `Video rendered${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${captions}${music}`;
   }
   return "Quality check finished";
 }

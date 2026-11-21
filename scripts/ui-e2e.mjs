@@ -371,6 +371,15 @@ async function shot(name, p = page) {
 function step(msg) {
   console.log(`== ${msg}`);
 }
+/**
+ * One value from the UI database (psql -tA), or null when the script has no database access. Throws when the query
+ * fails, so an assertion that needs the database does not pass by accident.
+ */
+function dbValue(sql) {
+  const dbUrl = process.env.UI_DB ?? process.env.DATABASE_URL;
+  if (!dbUrl) return null;
+  return execFileSync("psql", [dbUrl, "-X", "-tA", "-c", sql], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
 function runWorker(args) {
   return execFileSync("bash", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
@@ -664,6 +673,25 @@ try {
   await page.fill("input[name=license]", "Own test clip, study only");
   await page.getByRole("button", { name: "Upload" }).click();
   await page.getByText("Saved Test reference.").waitFor();
+
+  step("assets: upload a music track, marked as music for video beds");
+  const musicPath = path.join(OUT, "music-bed.wav");
+  // Two chords, 6 s: short, so a render has to loop it under the narration.
+  execFileSync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "sine=frequency=262:duration=6", "-f", "lavfi", "-i", "sine=frequency=330:duration=6",
+    "-filter_complex", "[0:a][1:a]amix=inputs=2,volume=0.6[a]", "-map", "[a]", "-ar", "44100", musicPath,
+  ]);
+  await page.goto(`${APP}/assets`);
+  await page.setInputFiles("input[name=file]", musicPath);
+  await page.fill("input[name=title]", "Test music bed");
+  await page.selectOption("select[name=kind]", "audio");
+  await page.fill("input[name=license]", "Own composition for tests, all rights");
+  await page.fill("input[name=originUrl]", "https://example.com/venstudio-test-music");
+  await page.getByLabel("This is a music track for video beds").check();
+  await page.getByRole("button", { name: "Upload" }).click();
+  await page.getByText("Saved Test music bed.").waitFor();
+  await page.locator("li", { hasText: "Test music bed" }).getByText("music", { exact: true }).waitFor();
 
   step("assets: analyze the reference, run the worker, see the cuts");
   await page.locator("li", { hasText: "Test reference" }).getByRole("button", { name: "Analyze" }).click();
@@ -1207,6 +1235,37 @@ try {
   const approveQc = qc.getByRole("button", { name: "Approve", exact: true });
   if (await approveQc.isVisible().catch(() => false)) await approveQc.click();
   else await qc.getByRole("button", { name: "Reject" }).click();
+
+  step("production: the render mixed the tagged music track as its bed, never the narration");
+  {
+    const musicId = dbValue(`SELECT id FROM assets WHERE title = 'Test music bed' AND 'music' = ANY(tags) ORDER BY created_at DESC LIMIT 1`);
+    if (musicId === null) {
+      console.log("   no database access (UI_DB unset): the bed check is skipped");
+    } else {
+      if (!/^[0-9a-f-]{36}$/.test(musicId)) throw new Error(`the uploaded music track has no music tag (got "${musicId}")`);
+      const row = dbValue(
+        `SELECT coalesce(payload->'audio'->'bed'->>'assetId', 'none') || ' ' || coalesce(payload->>'narrationAssetId', '') || ' ' || ` +
+          `coalesce(payload->'audio'->'ambient'->>'color', 'none') || ' ' || (payload->'inputs' ? '${musicId}')::text || ' ' || (payload ? 'captionStyle')::text ` +
+          `FROM jobs WHERE type = 'render-video' AND payload ? 'runId' ORDER BY created_at DESC LIMIT 1`,
+      );
+      const [bedId, narrationId, ambient, listed, styled] = (row ?? "").split(" ");
+      if (bedId !== musicId) {
+        await dumpPipeline(m, productionRunHref, "the render job's bed is not the tagged music track");
+        throw new Error(`the render job's bed is ${bedId}, not the uploaded music track ${musicId}`);
+      }
+      if (!narrationId || bedId === narrationId) throw new Error(`the render job uses its narration ${narrationId} as the bed`);
+      if (ambient !== "brown") throw new Error(`the render job's mix has no ambience (${ambient})`);
+      if (listed !== "true") throw new Error("the music track is not among the render job's inputs, so the worker could not download it");
+      if (styled !== "true") throw new Error("the render job carries no captionStyle, though the worker reports caption-style");
+      const result = dbValue(`SELECT coalesce(result->'audioMix'->'bed'->>'assetId', 'none') FROM jobs WHERE type = 'render-video' AND payload ? 'runId' ORDER BY created_at DESC LIMIT 1`);
+      if (result !== musicId) throw new Error(`the worker did not report mixing the bed (result.audioMix.bed = ${result})`);
+      const licence = dbValue(`SELECT license FROM assets WHERE kind = 'video' AND metadata->>'executor' = 'render-video' ORDER BY created_at DESC LIMIT 1`) ?? "";
+      if (!licence.includes("Music bed: Test music bed (uploaded from https://example.com/venstudio-test-music): Own composition for tests, all rights")) {
+        throw new Error(`the render's licence does not name the music bed: ${licence.slice(0, 300)}`);
+      }
+      console.log(`   bed ${musicId} (looped under the narration ${narrationId}), named in the render's licence`);
+    }
+  }
 
   step("director: the script and storyboard prompts carried the purposes and subtitles");
   {
