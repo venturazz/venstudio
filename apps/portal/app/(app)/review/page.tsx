@@ -58,6 +58,7 @@ export default async function ReviewPage() {
         payload: r.payload,
         topic: r.topic,
         channelName: r.channelName,
+        trial: r.trial,
         gateLines: r.kind === "gate-failure" ? describeGateIssues(r.gates.filter((g) => !g.passed)) : [],
         age: timeAgo(r.createdAt),
         blocking: terms && termsHeld(r.kind, r.stage, r.payload.issues) ? blockingRows(providersFromPayload(r.stage, r.payload), terms) : null,

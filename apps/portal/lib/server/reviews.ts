@@ -18,6 +18,8 @@ export interface ReviewCard {
   channelName: string;
   /** Newest result per gate for the run. */
   gates: GateResult[];
+  /** The run was started with a Trial style pack (pipeline_runs.config.stylePack.trial): research only. */
+  trial: boolean;
 }
 
 function toPayload(raw: unknown): ReviewPayload {
@@ -99,7 +101,8 @@ export async function latestGatesByRun(runIds: string[]): Promise<Map<string, Ga
 /** Open review items, newest last within each kind is decided by the page with sortReviews. */
 export async function listOpenReviews(): Promise<ReviewCard[]> {
   const rows = await db()`
-    SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name
+    SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name,
+      coalesce((r.config->'stylePack'->>'trial')::boolean, false) AS trial
     FROM review_items ri
     JOIN pipeline_runs r ON r.id = ri.run_id
     LEFT JOIN channels c ON c.id = r.channel_id
@@ -120,6 +123,7 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     topic: (r.topic as string | null) ?? "",
     channelName: (r.channel_name as string | null) ?? "",
     gates: gates.get(r.run_id as string) ?? [],
+    trial: r.trial === true,
   }));
 }
 

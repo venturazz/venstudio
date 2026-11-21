@@ -48,7 +48,10 @@ import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
 import { VIDEO_FORMATS } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
-import { gateCapabilities, mixFeaturesFor, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
+import { gateCapabilities, mixFeaturesFor, packRenderIssue, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
+import { runStylePack, type RunStylePack } from "../studio/style-registry.ts";
+import { registryEntry } from "./style-packs.ts";
+import { recordTrialOutcome } from "./style-trials.ts";
 import { bedNote, MUSIC_TAG, pickMusicBed, type BedCandidate, type BedPick } from "../studio/music-bed.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
@@ -944,6 +947,14 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     await recordStageError(run.id, st.id, "render", renderStageError(plan.issues, engine));
     return;
   }
+  // A run started with a style pack renders with the pack version this portal serves now (workers update to it) and
+  // only on a worker that reports it. Runs started before packs keep the engine routing they had.
+  const stylePack = await renderPackFor(run.config.stylePack ?? null);
+  const packIssue = packRenderIssue(stylePack, gate);
+  if (packIssue) {
+    await recordStageError(run.id, st.id, "render", packIssue);
+    return;
+  }
   // Phase 4 has no animatic, so the draft stage is recorded as skipped once.
   await sql`
     INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
@@ -956,8 +967,8 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,
-    // Queued under the engine's capability, so only a worker that can run it claims it.
-    capability: renderJobCapability(plan.payload.engine, plan.payload.transitionSec),
+    // Queued under the pack's capability (or, for runs without a pack, the engine's), so only a worker that can run it claims it.
+    capability: renderJobCapability(plan.payload.engine, plan.payload.transitionSec, stylePack),
   });
   const music = bedPick ? bedNote(bedPick, template.audio.musicPolicy) : null;
   await mergeStageOutput(st.id, {
@@ -966,7 +977,15 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     narrationSec: plan.payload.narrationSec,
     ...(music ? { music } : {}),
     ...(mix.note ? { mixNote: mix.note } : {}),
+    ...(stylePack ? { stylePack } : {}),
   });
+}
+
+/** The pack version a run renders with: the vendored one with the run's pack id, else what the run started with. */
+async function renderPackFor(started: RunStylePack | null): Promise<RunStylePack | null> {
+  if (!started) return null;
+  const entry = await registryEntry(started.id).catch(() => undefined);
+  return entry?.pack ? runStylePack(entry.pack) : started;
 }
 
 /** Every narration this run recorded: the current voice result and every earlier voice attempt. */
@@ -1276,6 +1295,9 @@ async function completeQc(jobId: string): Promise<boolean> {
     media: videoAssetId ? { videoAssetId } : undefined,
     final: true,
   });
+  // A Trial pack's run: its QC result (and an automatic approval, if the autonomy policy gave one) goes into the
+  // curation log the Styles page counts.
+  await recordTrialOutcome(runId);
   return true;
 }
 

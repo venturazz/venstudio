@@ -5,6 +5,8 @@ import { db } from "@/lib/server/db.ts";
 import { ensureSeedTemplates, listTemplates } from "@/lib/server/templates.ts";
 import { getSavedPlan, listSavedPlans, type SavedPlanRow } from "@/lib/server/productions.ts";
 import { reportedCapabilities } from "@/lib/server/workers.ts";
+import { styleRegistry } from "@/lib/server/style-packs.ts";
+import { newVideoStyles } from "@/lib/studio/style-registry.ts";
 import { Alert, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { THEME_BY_ID } from "@/lib/studio/catalog.ts";
 import { autonomyText, EMPTY_PREFILL, prefillFromProduction, type RunFormPrefill } from "@/lib/studio/run-config.ts";
@@ -21,18 +23,22 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
 
   let channels: RunFormChannel[] = [];
   let templates: RunFormTemplate[] = [];
+  let trialTemplates: RunFormTemplate[] = [];
+  let waiting: string[] = [];
   let capabilities: string[] = [];
   let saved: SavedPlanRow[] = [];
   let prefill: RunFormPrefill = EMPTY_PREFILL;
   let loadError = "";
   try {
     await ensureSeedTemplates();
-    const [channelRows, templateList, caps, plans] = await Promise.all([
+    const [channelRows, templateList, caps, plans, registry] = await Promise.all([
       db()`SELECT id, name, category, plan, autonomy_level, autonomy_paused FROM channels ORDER BY name`,
       listTemplates(),
       // Stored worker rows only: no call to a worker while the page renders.
       reportedCapabilities().catch(() => [] as string[]),
       listSavedPlans().catch(() => [] as SavedPlanRow[]),
+      // The vendored style packs, read from disk once per process.
+      styleRegistry(),
     ]);
     channels = channelRows.map((c) => {
       const category = (c.category as string | null) ?? "";
@@ -45,9 +51,19 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
         autonomy: autonomyText(Number(c.autonomy_level), c.autonomy_paused === true),
       };
     });
-    templates = templateList
-      .filter((t) => t.status !== "retired")
-      .map((t) => ({ id: t.id, label: t.label, styleId: t.styleId, formats: [...t.formats] }));
+    // Listed packs a worker reports, and Trial packs (research only) in their own section. Planned, draft, lab,
+    // proven and retired styles are never offered.
+    const offer = newVideoStyles(registry, caps);
+    const usable = templateList.filter((t) => t.status !== "retired");
+    const toForm = (ids: string[], trial: boolean) =>
+      ids.flatMap((styleId) => {
+        const t = usable.find((x) => x.styleId === styleId);
+        const e = registry.find((x) => x.id === styleId);
+        return t && e?.pack ? [{ id: t.id, label: e.label, styleId, formats: [...e.pack.formats], trial, version: e.pack.version }] : [];
+      });
+    templates = toForm(offer.listed.map((e) => e.id), false);
+    trialTemplates = toForm(offer.trial.map((e) => e.id), true);
+    waiting = offer.waiting.map((e) => `${e.label} (${e.pack?.status === "trial" ? "Trial" : "Listed"}, needs pack:${e.id}@${e.pack?.version ?? "?"})`);
     capabilities = caps;
     saved = plans;
     if (from && z.uuid().safeParse(from).success) {
@@ -82,7 +98,15 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
                 .
               </p>
             ) : (
-              <RunForm key={prefill.productionId || "blank"} channels={channels} templates={templates} capabilities={capabilities} prefill={prefill} />
+              <RunForm
+                key={prefill.productionId || "blank"}
+                channels={channels}
+                templates={templates}
+                trialTemplates={trialTemplates}
+                waiting={waiting}
+                capabilities={capabilities}
+                prefill={prefill}
+              />
             )}
           </CardBody>
         </Card>

@@ -7,6 +7,7 @@
 import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, type Format, type MusePlacement } from "./catalog.ts";
 import { DEFAULT_DURATION_SEC } from "./engine.ts";
 import { NON_WORKER_CAPABILITIES } from "./render-engine.ts";
+import { parseRunStylePack, type RunStylePack } from "./style-registry.ts";
 
 /** The brief the owner may type. Empty means Hermes picks ideas from the channel plan. */
 export const MAX_BRIEF_CHARS = 2000;
@@ -32,6 +33,11 @@ export interface RunConfig {
   /** Subtitle language codes besides the narration language. */
   subtitles: string[];
   themeSource: ThemeSource;
+  /**
+   * The style pack the run was started with (additive, set by startRun). `trial` marks a research-only run: shown with
+   * the Trial badge and recorded in the curation log; later publishing must refuse it. Absent on runs from before packs.
+   */
+  stylePack?: RunStylePack;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -58,7 +64,18 @@ export function parseRunConfig(raw: unknown): RunConfig {
     topicHint: typeof c.topicHint === "string" ? c.topicHint : "",
     subtitles: strings(c.subtitles),
     themeSource: source,
+    ...stylePackOf(c.stylePack),
   };
+}
+
+function stylePackOf(raw: unknown): { stylePack?: RunStylePack } {
+  const p = parseRunStylePack(raw);
+  return p ? { stylePack: p } : {};
+}
+
+/** True when the run was started with a Trial style pack (research only, not for publishing). */
+export function isTrialRun(config: Pick<RunConfig, "stylePack">): boolean {
+  return config.stylePack?.trial === true;
 }
 
 /** The theme a run starts with when the owner does not pick one: the channel category, when it is a known theme. */
@@ -230,5 +247,8 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
     { label: "Theme", value: theme ? (from ? `${theme}, ${from}` : theme) : from ? `None, ${from}` : "None" },
     { label: "Purpose", value: config.purposes.map((p) => PURPOSE_BY_ID[p]?.label ?? p).join(", ") || "None" },
     { label: "Brief", value: config.topicHint || "None: Hermes picks from the channel plan" },
+    ...(config.stylePack
+      ? [{ label: "Style pack", value: `${config.stylePack.id} ${config.stylePack.version}${config.stylePack.trial ? ", Trial: research only, not for publishing" : ""}` }]
+      : []),
   ];
 }

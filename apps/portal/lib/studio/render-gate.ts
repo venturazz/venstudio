@@ -7,6 +7,7 @@
  */
 import type { Capability } from "@venstudio/protocol";
 import { capabilityForEngine, XFADE_CAPABILITY } from "./render-engine.ts";
+import { packCapability } from "./style-registry.ts";
 
 /**
  * The capability list to gate a render on, or undefined to skip the gate.
@@ -24,7 +25,10 @@ export function gateCapabilities(reported: readonly string[] | null | undefined)
  * Capability the render-video job is queued under, so only a worker that can run the engine claims it.
  * The stills engine keeps "ffmpeg", which is what every render-video job used before engines existed.
  */
-export function renderJobCapability(engine: string, transitionSec: number = 0): Capability {
+export function renderJobCapability(engine: string, transitionSec: number = 0, pack?: { id: string; version: string } | null): Capability {
+  // A run started with a style pack renders only on a worker that installed and probed exactly that pack version
+  // (0.9.0+). Its probe needs the engine (and xfade for stills), so the pack capability implies both.
+  if (pack) return packCapability(pack.id, pack.version) as Capability;
   // An engine whose capability is not a worker one (provider, blender) never gets here: the gate refused it, or no
   // worker is enrolled and nothing will claim the job anyway.
   const need = (capabilityForEngine(engine) ?? "ffmpeg") as Capability;
@@ -46,6 +50,21 @@ export function withFadeFallback<T extends { ok: boolean }>(transitionSec: numbe
   if (faded.ok || !(transitionSec > 0)) return { result: faded, transitionSec };
   const cut = plan(0);
   return cut.ok ? { result: cut, transitionSec: 0 } : { result: faded, transitionSec };
+}
+
+/**
+ * The render stage error when workers report capabilities but none reports this pack version, or null when one does
+ * (or when the gate is skipped: nothing reported yet, so the job waits in the queue like any render).
+ */
+export function packRenderIssue(pack: { id: string; version: string } | null, gate: readonly string[] | undefined): string | null {
+  if (!pack || !gate) return null;
+  const cap = packCapability(pack.id, pack.version);
+  if (gate.includes(cap)) return null;
+  return (
+    `No worker reports the style pack ${pack.id} ${pack.version} ("${cap}") yet, so nothing was queued. Workers 0.9.0 and later ` +
+    `install style packs from this portal with their signed updates and report each pack once its renderer probe passes; ` +
+    `check the Workers page (update mode, last update result), or run install.sh again. Then press Retry.`
+  );
 }
 
 /** Where the owner finds the Remotion install steps. */

@@ -6,6 +6,7 @@ import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.t
 import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Format } from "@/lib/studio/catalog.ts";
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { defaultThemeFor, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
+import { TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
 import { MUSE } from "../studio-form.tsx";
 import { startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
 
@@ -22,10 +23,19 @@ export interface RunFormTemplate {
   label: string;
   styleId: string;
   formats: Format[];
+  /** A Trial style pack: research only, not for publishing. */
+  trial?: boolean;
+  /** The style pack version. */
+  version?: string;
 }
 export interface RunFormOptions {
   channels: RunFormChannel[];
+  /** Listed style packs a worker reports. */
   templates: RunFormTemplate[];
+  /** Trial style packs a worker reports, offered in their own research-only section. */
+  trialTemplates?: RunFormTemplate[];
+  /** Listed or Trial styles no worker reports yet, as plain labels. */
+  waiting?: string[];
   /** Capabilities enrolled workers report, from the stored rows. */
   capabilities: string[];
   prefill: RunFormPrefill;
@@ -45,7 +55,8 @@ function themeFor(channel: RunFormChannel | undefined): string {
  * The New video form. Every field is controlled and the form submits through onSubmit and a transition, not a form
  * action: React 19 resets a form after its action runs, which would clear the native selects.
  */
-export function RunForm({ channels, templates, capabilities, prefill }: RunFormOptions) {
+export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], capabilities, prefill }: RunFormOptions) {
+  const templates = [...listed, ...trialTemplates];
   const [state, dispatch] = useActionState(startRunAction, undefined);
   const [isPending, startTransition] = useTransition();
   const known = (id: string) => channels.some((c) => c.id === id);
@@ -175,19 +186,73 @@ export function RunForm({ channels, templates, capabilities, prefill }: RunFormO
       </div>
 
       <div className="space-y-2">
-        <Field label="Style" htmlFor="templateId" hint="Retired templates are not listed.">
+        <Field label="Style" htmlFor="templateId" hint="Listed styles a worker can render, then Trial styles. Planned styles are on the Styles page.">
           <Select id="templateId" name="templateId" value={templateId} onChange={(e) => setTemplateId(e.target.value)} required>
             <option value="" disabled>
-              Choose a style
+              {templates.length === 0 ? "No style is available yet" : "Choose a style"}
             </option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.label}
-                {t.formats.includes(format) ? "" : " (not for this format)"}
-              </option>
-            ))}
+            {listed.length > 0 && (
+              <optgroup label="Listed styles">
+                {listed.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}
+                    {t.formats.includes(format) ? "" : " (not for this format)"}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {trialTemplates.length > 0 && (
+              <optgroup label={TRIAL_LABEL}>
+                {trialTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label} (trial)
+                    {t.formats.includes(format) ? "" : " (not for this format)"}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </Select>
         </Field>
+        {template?.trial && (
+          <Alert tone="warn">
+            <span data-testid="trial-style-note">
+              {TRIAL_BADGE}: research only, not for publishing. The run is marked as a trial and its result is recorded for the style&apos;s curation.
+            </span>
+          </Alert>
+        )}
+        {listed.length === 0 && (
+          <p className="text-xs text-muted" data-testid="no-listed-styles">
+            No style is Listed yet. Styles become Listed in the styles repository after their trials pass and the owner approves them.
+          </p>
+        )}
+        <section className="space-y-2 rounded-lg border border-dashed border-warn/60 p-3" data-testid="trial-styles" aria-labelledby="trial-styles-title">
+          <h3 id="trial-styles-title" className="text-sm font-medium">
+            {TRIAL_LABEL}
+          </h3>
+          {trialTemplates.length === 0 ? (
+            <p className="text-xs text-muted">No Trial style can be rendered by a worker right now.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {trialTemplates.map((t) => (
+                <li key={t.id} className="flex flex-wrap items-center gap-2 text-sm" data-testid={`trial-style-${t.styleId}`}>
+                  <Badge tone="warn">{TRIAL_BADGE}</Badge>
+                  <span className="min-w-0 break-words">
+                    {t.label}
+                    {t.version ? <span className="text-xs text-muted"> v{t.version}</span> : null}
+                  </span>
+                  <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${t.label}`}>
+                    {t.id === templateId ? "Chosen" : "Use for research"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {waiting.length > 0 && (
+            <p className="text-xs text-muted" data-testid="waiting-styles">
+              Waiting for a worker that reports the pack: {waiting.join("; ")}. Workers 0.9.0 and later install packs with their signed updates.
+            </p>
+          )}
+        </section>
         <Button type="button" onClick={suggest} disabled={!brief.trim()} className="min-h-11">
           Suggest from brief
         </Button>
