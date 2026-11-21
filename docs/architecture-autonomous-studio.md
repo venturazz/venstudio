@@ -112,11 +112,17 @@ engine writes the channel category, the worker mapping or the autonomy level.
 
 As built in `0009_production_assets.sql` (Phase 4): `asset_providers` (primary key `name`+`kind`; `kind` is `image`, `tts` or
 `library`; `commercial_ok` is `unknown` (default), `yes` or `no`; `note`, `confirmed_by`, `confirmed_at`). A provider row
-is inserted as `unknown` the first time an asset from it is saved, and only the owner's Settings action
-(`setProviderTerms`) ever changes `commercial_ok`. Nothing reads a model's claim about licensing. `work_orders` gains
+is inserted as `unknown` the first time an asset from it is saved, and only the owner ever changes `commercial_ok`:
+in Settings (`setProviderTerms`) or on the Review card (`setTermsOnCardAction`), both through
+`lib/server/provider-terms.ts` `saveProviderTerms`. Nothing reads a model's claim about licensing. `work_orders` gains
 `result` (jsonb), `error`, `provider`, `started_at` and `updated_at`, and an index on (`run_id`, `state`). `G-assets` and
 `G-voice` fail with "Confirm the commercial-use terms for <provider> in Settings" while a provider is `unknown`, and
-with a "cannot be published" issue when it is `no`. `scripts/e2e.sh` checks the tables exist, that no provider starts
+with a "cannot be published" issue when it is `no`. An assets or voice card held up by terms names each blocking row
+(name, kind, status), lets the owner set it inline, and offers **Check the terms again** (`recheckReview`): only the gate
+runs again on the images or narration already made, under the same run, review and stage locks as `decideReview`; no
+work order changes and nothing is generated again. After any terms change, open cards whose only issues are terms and
+that use the changed row are re-checked (bounded to 10, best effort; inline on the card before the page reloads, from
+Settings in `after()`). `scripts/e2e.sh` checks the tables exist, that no provider starts
 cleared, and that a second migrate run says "up to date".
 
 As built in `0010_capabilities.sql` (Phase 4.5): `capability_scans` is a one-row table (`id` text primary key default

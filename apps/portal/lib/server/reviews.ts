@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "./db.ts";
 import type { GateId, GateResult } from "../studio/qc.ts";
 import type { ReviewKind, ReviewMedia, ReviewPayload, ReviewState } from "../studio/review.ts";
+import { parseProviderRows } from "../studio/terms-review.ts";
 
 export interface ReviewCard {
   id: string;
@@ -57,6 +58,9 @@ function toPayload(raw: unknown): ReviewPayload {
     if (typeof m.voiceProvider === "string") media.voiceProvider = m.voiceProvider;
     payload.media = media;
   }
+  const providers = parseProviderRows(p.providers);
+  if (providers.length > 0) payload.providers = providers;
+  if (typeof p.recheckedAt === "string" && !Number.isNaN(Date.parse(p.recheckedAt))) payload.recheckedAt = p.recheckedAt;
   return payload;
 }
 

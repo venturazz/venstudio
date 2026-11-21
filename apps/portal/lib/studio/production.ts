@@ -179,9 +179,14 @@ export function addGateIssues(g: GateResult, extra: readonly string[]): GateResu
   return out;
 }
 
+/** True for an issue providerTermsIssues wrote: a provider whose terms are not confirmed, or one marked "no". */
+export function isTermsIssue(issue: string): boolean {
+  return /commercial-use terms|cannot be published: Settings says/.test(issue);
+}
+
 /** True when every issue is about provider terms, which Settings fixes and a retry only re-checks. */
 export function onlyTermsIssues(issues: readonly string[]): boolean {
-  return issues.length > 0 && issues.every((i) => /commercial-use terms|cannot be published: Settings says/.test(i));
+  return issues.length > 0 && issues.every(isTermsIssue);
 }
 
 export interface FailedOrder {

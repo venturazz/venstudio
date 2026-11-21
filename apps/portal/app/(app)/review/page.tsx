@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { Inbox } from "lucide-react";
-import { requireUser } from "@/lib/server/auth.ts";
+import { hasRole, requireUser } from "@/lib/server/auth.ts";
+import { listProviderTerms } from "@/lib/server/executors/persist.ts";
+import type { ProviderTerms } from "@/lib/studio/asset-plan.ts";
+import { blockingRows, canRecheck, providersFromPayload } from "@/lib/studio/terms-review.ts";
 import { reapStuckStages } from "@/lib/server/director.ts";
 import { listOpenReviews } from "@/lib/server/reviews.ts";
 import { listWaitingRuns, type WaitingRun } from "@/lib/server/runs.ts";
@@ -14,7 +17,8 @@ export const metadata = { title: "Review" };
 export const dynamic = "force-dynamic";
 
 export default async function ReviewPage() {
-  await requireUser("editor");
+  const user = await requireUser("editor");
+  const isOwner = hasRole(user.role, "owner");
   try {
     await reapStuckStages();
   } catch (err) {
@@ -31,6 +35,14 @@ export default async function ReviewPage() {
   const now = Date.now();
   try {
     const items = sortReviews(await listOpenReviews());
+    // Read from the database only when a card needs it. A failed read shows the cards without the provider list.
+    let terms: ProviderTerms[] | null = null;
+    if (items.some((r) => canRecheck(r.kind, r.stage, r.payload.issues))) {
+      terms = await listProviderTerms().catch((err) => {
+        console.error("review page: could not load provider terms", err);
+        return null;
+      });
+    }
     views = items.map(
       (r): ReviewCardView => ({
         id: r.id,
@@ -42,6 +54,9 @@ export default async function ReviewPage() {
         channelName: r.channelName,
         gateLines: r.kind === "gate-failure" ? describeGateIssues(r.gates.filter((g) => !g.passed)) : [],
         age: timeAgo(r.createdAt),
+        blocking: terms && canRecheck(r.kind, r.stage, r.payload.issues) ? blockingRows(providersFromPayload(r.stage, r.payload), terms) : null,
+        canSetTerms: isOwner,
+        recheckedAge: r.payload.recheckedAt ? timeAgo(new Date(r.payload.recheckedAt)) : "",
       }),
     );
   } catch (err) {

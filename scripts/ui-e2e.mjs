@@ -826,9 +826,28 @@ try {
   if (!gridText.includes("unlisted-cloudflare-9router")) throw new Error("the image grid does not name the unlisted backend of shot-03 (unlisted-cloudflare-9router)");
   if (gridText.includes("unlisted-9router")) throw new Error("an image is credited to the plugin (unlisted-9router) instead of its backend");
   await assertNoOverflow(m, "/review (assets)");
+  // The card names the exact asset_providers rows that block it, each with the owner's choices right there.
+  const assetsGateCard = () => m.locator('[data-testid="review-card"][data-stage="assets"][data-kind="gate-failure"]').first();
+  const blockingRow = (card, name) => card.locator(`[data-testid="blocking-provider"][data-provider="${name}"]`);
+  const blockingNames = (card) => card.locator('[data-testid="blocking-provider"]').evaluateAll((els) => els.map((e) => `${e.getAttribute("data-provider")}:${e.getAttribute("data-kind")}`));
+  // Images the run asked for (Hermes per shot, and 9router). The Settings test image is shot "test" and is not counted.
+  const productionImageCalls = () => Object.entries(fakeStats.imageAsks).filter(([k]) => k.startsWith("shot-")).reduce((n, [, v]) => n + v, 0) + fakeStats.routerImageCalls;
+  const ttsCalls = () => fakeStats.routerSpeechCalls + fakeStats.hermesKokoroCalls;
+  {
+    const names = await blockingNames(assetsGateCard());
+    for (const want of ["canva:image", "unlisted-cloudflare-9router:image", "fake-img:image"]) {
+      if (!names.includes(want)) throw new Error(`the assets card does not list the blocking provider ${want}; it lists: ${names.join(", ")}`);
+    }
+    if (names.some((n) => n.startsWith("unlisted-9router:"))) throw new Error("the assets card lists the plugin row unlisted-9router");
+    // Terms are the only issue and no shot failed, so the card offers the re-check and no Retry.
+    if ((await assetsGateCard().getByRole("button", { name: /Retry/ }).count()) !== 0) throw new Error("the terms-only assets card still offers Retry");
+  }
   await assertTapTargets(m, [
-    ["Confirm the terms in Settings", m.getByRole("link", { name: "Confirm the terms in Settings" })],
-    ["Retry", m.getByRole("button", { name: "Retry" })],
+    ["Check the terms again", assetsGateCard().getByRole("button", { name: "Check the terms again", exact: true })],
+    ["Commercial use OK (canva)", blockingRow(assetsGateCard(), "canva").getByRole("button", { name: "Commercial use OK", exact: true })],
+    ["Not for commercial use (canva)", blockingRow(assetsGateCard(), "canva").getByRole("button", { name: "Not for commercial use", exact: true })],
+    ["note (canva)", blockingRow(assetsGateCard(), "canva").getByLabel("Note for canva", { exact: true })],
+    ["Confirm the terms in Settings", assetsGateCard().getByRole("link", { name: "Confirm the terms in Settings", exact: true })],
   ]);
   await shot("20-review-assets-mobile", m);
   await page.goto(`${APP}/review`);
@@ -844,6 +863,32 @@ try {
   if (fakeStats.routerImageCalls <= routerImageCallsBeforeRun) throw new Error("the run never used the proven 9router image model");
   if (fakeStats.routerBadImageCalls !== 1) throw new Error(`the set-aside 9router model was used again by the run (${fakeStats.routerBadImageCalls} calls)`);
   const assetsRunHref = await m.getByRole("link", { name: "Open run" }).first().getAttribute("href");
+
+  step("review: the owner confirms canva on the assets card; the card is checked again without making images");
+  const imagesBeforeTerms = productionImageCalls();
+  {
+    const card = assetsGateCard();
+    const oldId = await card.getAttribute("data-review-id");
+    await blockingRow(card, "canva").getByRole("button", { name: "Commercial use OK", exact: true }).click();
+    // The server action saves, re-checks the card and returns the new page: the old card goes away in place.
+    await m.locator(`[data-testid="review-card"][data-review-id="${oldId}"]`).waitFor({ state: "detached", timeout: 30_000 });
+    await m.goto(`${APP}/review`);
+    const next = assetsGateCard();
+    try {
+      await next.waitFor({ timeout: 20_000 });
+    } catch (err) {
+      await dumpPipeline(m, assetsRunHref ?? runHref, "no assets card after confirming canva on the card");
+      throw err;
+    }
+    if ((await next.getAttribute("data-review-id")) === oldId) throw new Error("the assets card was not checked again after canva was confirmed on it");
+    const names = await blockingNames(next);
+    if (names.includes("canva:image")) throw new Error(`canva still blocks after it was confirmed on the card: ${names.join(", ")}`);
+    if (!names.includes("unlisted-cloudflare-9router:image") || !names.includes("fake-img:image")) throw new Error(`the checked card lost a row that still blocks: ${names.join(", ")}`);
+    await next.getByTestId("rechecked").waitFor();
+    if (productionImageCalls() !== imagesBeforeTerms) throw new Error(`confirming terms made new images (${imagesBeforeTerms} -> ${productionImageCalls()} image calls)`);
+    await assertNoOverflow(m, "/review (assets checked again)");
+    await shot("20b-review-assets-rechecked-mobile", m);
+  }
 
   // The owner confirms a provider in Settings. Nothing else can set this.
   async function confirmProvider(name) {
@@ -872,7 +917,8 @@ try {
   if ((await page.locator('[data-testid="provider-row"][data-provider="unlisted-9router"]').count()) !== 0) {
     throw new Error("Asset providers has a row for the plugin unlisted-9router; images must be credited to their backend");
   }
-  await confirmProvider("canva");
+  // canva was confirmed on the Review card: Settings shows the same row as confirmed.
+  if ((await page.getByLabel("Commercial use for canva", { exact: true }).first().inputValue()) !== "yes") throw new Error("canva, confirmed on the Review card, is not confirmed in Settings");
   await confirmProvider("unlisted-cloudflare-9router");
   await confirmProvider("fake-img");
   // No KOKORO_BASE_URL is set: the voice comes from the Kokoro model 9router lists, and Hermes is only the fallback.
@@ -897,10 +943,34 @@ try {
   await page.getByText("Image made by canva via 9router plugin (fake-flux)", { exact: true }).waitFor();
   await shot("21-settings-media-desktop");
 
-  step("production: retry the assets, then approve them");
-  await m.goto(`${APP}/review`);
-  await m.getByRole("button", { name: "Retry" }).first().click();
-  await waitShown(m, "/review", (p) => p.locator('[data-kind="approval"]', { hasText: "Approve the assets" }), "the assets approval", 90_000);
+  step("production: the assets pass once every provider is confirmed, without making images again");
+  {
+    // Saving terms in Settings re-checks the card in after(). If that has not landed yet, the owner's button does the same.
+    let pressed = false;
+    const start = Date.now();
+    for (;;) {
+      await m.goto(`${APP}/review`);
+      if (await m.locator('[data-testid="review-card"][data-stage="assets"][data-kind="approval"]').first().isVisible().catch(() => false)) break;
+      const stale = assetsGateCard();
+      if (!pressed && Date.now() - start > 15_000 && (await stale.isVisible().catch(() => false))) {
+        const left = await blockingNames(stale);
+        if (left.length !== 0) throw new Error(`the assets card still lists blocking providers after Settings confirmed them: ${left.join(", ")}`);
+        await stale.getByTestId("terms-now-confirmed").waitFor();
+        const id = await stale.getAttribute("data-review-id");
+        await stale.getByRole("button", { name: "Check the terms again", exact: true }).click();
+        await m.locator(`[data-testid="review-card"][data-review-id="${id}"]`).waitFor({ state: "detached", timeout: 30_000 });
+        pressed = true;
+        continue;
+      }
+      if (Date.now() - start > 60_000) {
+        await dumpPipeline(m, assetsRunHref ?? runHref, "the assets approval never appeared after every provider was confirmed");
+        throw new Error("timed out waiting for the assets approval after the terms were confirmed");
+      }
+      await m.waitForTimeout(1500);
+    }
+    console.log(`   assets passed after the Settings confirmations via ${pressed ? "Check the terms again" : "the automatic re-check"}`);
+    if (productionImageCalls() !== imagesBeforeTerms) throw new Error(`the assets were made again (${imagesBeforeTerms} -> ${productionImageCalls()} image calls)`);
+  }
   await m.waitForFunction(() => [...document.querySelectorAll('[data-testid="asset-grid"] img')].every((i) => i.complete && i.naturalWidth > 0));
   await assertNoOverflow(m, "/review (assets approved terms)");
   await m.getByRole("button", { name: "Approve", exact: true }).first().click();
@@ -920,14 +990,63 @@ try {
   await page.getByTestId("voice-audio").first().waitFor();
   await shot("22-review-voice-desktop");
 
-  // The voice provider is registered as unconfirmed by the voice stage (Kokoro through 9router). The owner confirms it in Settings.
-  step("settings: the owner confirms the voice provider terms");
-  await confirmProvider("kokoro");
-  if (await m.getByRole("button", { name: "Retry" }).first().isVisible().catch(() => false)) {
+  // The voice provider is registered as unconfirmed by the voice stage (Kokoro through 9router), as a voice (tts) row.
+  step("review: the voice card names kokoro; check again, then confirm it on the card, without recording again");
+  {
     await m.goto(`${APP}/review`);
-    await m.getByRole("button", { name: "Retry" }).first().click();
-  } else {
-    await m.getByRole("button", { name: "Approve", exact: true }).first().click();
+    const voiceGateCard = () => m.locator('[data-testid="review-card"][data-stage="voice"][data-kind="gate-failure"]').first();
+    if (!(await voiceGateCard().isVisible().catch(() => false))) {
+      await dumpPipeline(m, assetsRunHref ?? runHref, "the voice card is not held up by the kokoro terms");
+      throw new Error("expected the voice card to be held up by the unconfirmed kokoro terms");
+    }
+    const names = await blockingNames(voiceGateCard());
+    if (names.join(",") !== "kokoro:tts") throw new Error(`the voice card should list exactly kokoro (voice); it lists: ${names.join(", ")}`);
+    if ((await voiceGateCard().getByRole("button", { name: "Retry", exact: true }).count()) !== 0) throw new Error("the voice card has an unnamed Retry");
+    await voiceGateCard().getByRole("button", { name: "Make the voice again", exact: true }).waitFor();
+    await assertTapTargets(m, [
+      ["Check the terms again (voice)", voiceGateCard().getByRole("button", { name: "Check the terms again", exact: true })],
+      ["Commercial use OK (kokoro)", blockingRow(voiceGateCard(), "kokoro").getByRole("button", { name: "Commercial use OK", exact: true })],
+    ]);
+    const ttsBefore = ttsCalls();
+
+    // Nothing changed yet: checking again replaces the card with one that still names kokoro.
+    let id = await voiceGateCard().getAttribute("data-review-id");
+    await voiceGateCard().getByRole("button", { name: "Check the terms again", exact: true }).click();
+    await m.locator(`[data-testid="review-card"][data-review-id="${id}"]`).waitFor({ state: "detached", timeout: 30_000 });
+    await m.goto(`${APP}/review`);
+    await voiceGateCard().waitFor({ timeout: 20_000 });
+    if ((await voiceGateCard().getAttribute("data-review-id")) === id) throw new Error("Check the terms again did not replace the voice card");
+    await voiceGateCard().getByTestId("rechecked").waitFor();
+    if ((await blockingNames(voiceGateCard())).join(",") !== "kokoro:tts") throw new Error("the checked voice card does not name kokoro any more");
+    if (ttsCalls() !== ttsBefore) throw new Error(`checking the terms again recorded the voice again (${ttsBefore} -> ${ttsCalls()} speech calls)`);
+
+    // The owner confirms kokoro on the card: the card is checked again and asks for approval.
+    id = await voiceGateCard().getAttribute("data-review-id");
+    await blockingRow(voiceGateCard(), "kokoro").getByRole("button", { name: "Commercial use OK", exact: true }).click();
+    await m.locator(`[data-testid="review-card"][data-review-id="${id}"]`).waitFor({ state: "detached", timeout: 30_000 });
+    // Once the terms pass, the stage concludes under the run's autonomy: either a voice approval card, or (at a level
+    // where a passed voice stage needs no owner) the run moves on by itself and no voice card is left. Both are right.
+    const voiceApproval = () => m.locator('[data-testid="review-card"][data-stage="voice"][data-kind="approval"]');
+    const anyVoiceCard = () => m.locator('[data-testid="review-card"][data-stage="voice"]');
+    let voiceOutcome = "";
+    for (const end = Date.now() + 30_000; Date.now() < end && !voiceOutcome; ) {
+      await m.goto(`${APP}/review`);
+      if (await voiceApproval().first().isVisible().catch(() => false)) voiceOutcome = "approval";
+      else if ((await anyVoiceCard().count()) === 0) voiceOutcome = "continued";
+      else await m.waitForTimeout(1000);
+    }
+    if (!voiceOutcome) {
+      await dumpPipeline(m, assetsRunHref ?? runHref, "the voice stage did not conclude after kokoro was confirmed on the card");
+      throw new Error("the voice stage did not conclude after kokoro was confirmed on the card");
+    }
+    console.log(`   voice after confirming kokoro: ${voiceOutcome === "approval" ? "approval card" : "passed and the run continued on its own"}`);
+    if (ttsCalls() !== ttsBefore) throw new Error(`confirming kokoro recorded the voice again (${ttsBefore} -> ${ttsCalls()} speech calls)`);
+    if (voiceOutcome === "approval") {
+      await voiceApproval().first().getByTestId("voice-audio").waitFor();
+      await assertNoOverflow(m, "/review (voice approved terms)");
+      await voiceApproval().first().getByRole("button", { name: "Approve", exact: true }).click();
+      await m.waitForLoadState("networkidle");
+    }
   }
 
   step("production: render with the real worker, then the quality check");
