@@ -163,6 +163,26 @@ export function fitTransitionSec(seconds: readonly number[], requested: number):
   return d >= MIN_TRANSITION_SEC ? round(d) : 0;
 }
 
+/** Capability a worker reports when it can build a cross-fade between shots. */
+export const XFADE_CAPABILITY = "xfade";
+
+/**
+ * The cross-fade to plan, from what a worker says it can do.
+ *
+ * A fade is a two-sided change: the worker has to build the xfade *and* accept a timeline whose shots
+ * add up to more than the narration. Until one reports XFADE_CAPABILITY the answer is 0, which keeps
+ * the payload shape every worker already accepts. The moment a worker does report it, the portal
+ * starts asking, with no constant to edit and no side to forget.
+ */
+export function transitionForWorker(
+  reported: readonly string[] | null | undefined,
+  seconds: readonly number[],
+  requested: number = DEFAULT_TRANSITION_SEC,
+): number {
+  if (!reported || !reported.includes(XFADE_CAPABILITY)) return 0;
+  return fitTransitionSec(seconds, requested);
+}
+
 /**
  * Motion tokens a beat may declare, from `flat-vector-explainer-video`. Machine-readable here so the
  * coverage gate below has something to count.

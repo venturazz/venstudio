@@ -171,11 +171,34 @@ stills. Perubahan itu ada di `runRenderStage`, sekitar baris 589.
    `render-video payload: the shots add up to X s but the narration is Y s`. Dengan fade aktif, jumlah
    shot memang **lebih besar** dari narasi: `sum = narration + (n-1) × transitionSec`, dan yang wajib
    sama dengan narasi adalah `durationSec` (yaitu `planCrossFades().totalSec`), **bukan** jumlah shot.
-   Selama `transitionSec` 0, aturan lama tetap berlaku — itulah sebabnya portal masih mengirim 0.
-   CI sudah pernah menangkap pelanggaran ini sekali; jangan aktifkan fade di portal sebelum cek-nya
-   diubah.
+   **Urutannya wajib:** ubah cek itu dulu, **baru** tambahkan `"xfade"` di `detectCapabilities()`.
+   Portal menyalakan fade otomatis begitu ada worker yang melaporkan `xfade`
+   (`transitionForWorker` di `render-engine.ts`) — tidak ada konstanta yang perlu diedit. Kalau kamu
+   melaporkan `xfade` sebelum cek-nya diubah, produksi langsung gagal; CI sudah menangkap versi
+   kesalahan ini sekali.
 5. **Jangan pasang `xfade` kalau `transitionSec` 0** — perilaku lama harus tetap byte-identik.
 6. **Tipe payload di worker** perlu mendapat `engine`, `transitionSec`, dan `scenePlan`.
+
+**Satu hal yang sengaja belum tersambung:** portal belum mengirim `workerCapabilities` ke
+`buildRenderPayload`, jadi engine yang tak bisa dijalankan baru **diperingatkan** di planner, belum
+digagalkan saat render. Itu disengaja — menggagalkannya sekarang mematikan produksi yang sedang jalan
+sebelum worker punya jalur `remotion-2d`. Sambungkan setelah dispatch-mu jadi.
+
+## Fixture emas — ujilah terhadap byte ini, bukan terhadap prosa
+
+`fixtures/render/explainer-payload.json` adalah satu payload `render-video` utuh yang dihasilkan
+portal, dijaga oleh `apps/portal/lib/studio/golden-payload.test.ts`. Isinya: 5 shot, engine
+`remotion-2d`, fade 0,5 s, `durationSec` 24 s dari 26 s shot, scene plan 5 scene.
+
+Pakai di tes worker:
+
+- worker **menerima** payload ini — perhatikan 26 s shot vs `durationSec` 24 s; itu pasangan yang
+  benar saat fade aktif, dan justru yang dulu ditolak cek lama;
+- dispatch memilih `remotion-2d`;
+- `scenePlan.scenes[].shotRef` sejajar `shot-01`…`shot-05`;
+- elemen `bar` membawa `series`, `counter` membawa `value`.
+
+Fixture ini tidak diubah dari sisi worker. Kalau kamu butuh bentuk lain, minta dulu.
 
 ## Urutan yang kusarankan untuk paruh worker
 

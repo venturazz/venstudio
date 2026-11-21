@@ -17,6 +17,8 @@ import {
   planCrossFades,
   renderEngines,
   transitionFor,
+  transitionForWorker,
+  XFADE_CAPABILITY,
 } from "./render-engine.ts";
 
 test("every declared engine maps to a capability", () => {
@@ -169,4 +171,16 @@ test("whatever fitTransitionSec returns, planCrossFades accepts", () => {
     const d = fitTransitionSec(secs, 1.5);
     if (d > 0) assert.equal(planCrossFades(secs, d).ok, true, `[${secs}] d=${d}`);
   }
+});
+
+test("fades stay off until a worker reports that it can build them", () => {
+  assert.equal(transitionForWorker(undefined, [6, 6, 6]), 0);
+  assert.equal(transitionForWorker(null, [6, 6, 6]), 0);
+  assert.equal(transitionForWorker([], [6, 6, 6]), 0);
+  assert.equal(transitionForWorker(["ffmpeg", "remotion-2d"], [6, 6, 6]), 0);
+  // the switch is the capability, not a constant anyone has to remember to change
+  assert.equal(transitionForWorker(["ffmpeg", XFADE_CAPABILITY], [6, 6, 6]), 0.5);
+  // and a worker that can fade still cannot fade shots too short to spare the time
+  assert.equal(transitionForWorker([XFADE_CAPABILITY], [0.5, 0.5]), 0);
+  assert.equal(transitionForWorker([XFADE_CAPABILITY], [6], 0.5), 0);
 });

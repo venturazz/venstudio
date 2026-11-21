@@ -30,6 +30,7 @@ import type { AssetKind, AssetSource } from "../studio/catalog.ts";
 import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
 import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload } from "../studio/render.ts";
+import { transitionForWorker } from "../studio/render-engine.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import type { ReviewMedia } from "../studio/review.ts";
@@ -589,14 +590,20 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
-  //
-  // Cross-fades stay off for now. The worker's payload check requires the shots to add up to the
-  // narration, and a real dissolve overlaps them, so turning fades on before the worker can build
-  // xfade breaks a running production. Fit a non-zero value with `fitTransitionSec` when it can
-  // (docs/kiro-tasks.md).
-  const transitionSec = 0;
   const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
   const renderParams = renderParamsForStyle(template.styleId);
+
+  // A cross-fade is a two-sided change: the worker has to build the xfade and accept a timeline whose
+  // shots add up to more than the narration. So the portal only asks once a worker says it can, and a
+  // capability read that fails means no fades rather than a failed run.
+  let workerCapabilities: string[] = [];
+  try {
+    const rows = (await sql`SELECT DISTINCT unnest(capabilities) AS cap FROM workers WHERE status <> 'revoked'`) as unknown as Array<{ cap: unknown }>;
+    workerCapabilities = rows.map((r) => String(r.cap)).filter(Boolean);
+  } catch {
+    workerCapabilities = [];
+  }
+  const transitionSec = transitionForWorker(workerCapabilities, shotSpecs.map((s) => s.seconds));
   const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: board.value.shots, transitionSec }) : null;
   if (scenes && !scenes.ok) {
     await recordStageError(run.id, st.id, "render", scenes.issues.join(". "));
