@@ -25,7 +25,8 @@ import {
 import { giveUpMessage, orderFailureCause, pauseMessage, systemicPause, waitExpired, type FailureClass } from "../studio/pacing.ts";
 import { assetsGate, combineGates, PUBLISH_GATES, qcSummary, voiceGate, type GateId, type GateResult } from "../studio/qc.ts";
 import { aiDisclosureRequired, type ProvenanceRecord } from "../studio/provenance.ts";
-import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind } from "../studio/asset-plan.ts";
+import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind, type ProviderTerms } from "../studio/asset-plan.ts";
+import { providerRowsUsed } from "../studio/terms-review.ts";
 import type { AssetKind, AssetSource } from "../studio/catalog.ts";
 import { validateScript, validateStoryboard, wordsPerMinuteFor, workOrdersFromStoryboard } from "../studio/director.ts";
 import type { Template } from "../studio/templates.ts";
@@ -453,6 +454,12 @@ async function concludeAssets(runId: string, st: StageRow): Promise<void> {
     await recordStageError(runId, st.id, "assets", msg);
     return;
   }
+  const conclusion = await assetsConclusion(sql, runId, template, await listProviderTerms());
+  await concludeStage(run, st, template, conclusion);
+}
+
+/** The assets gate (G-assets plus provider terms) on the finished images, and what the card shows. Reads only. */
+async function assetsConclusion(sql: Q, runId: string, template: Template, providerTerms: ProviderTerms[]): Promise<StageConclusion> {
   const rows = await loadAssetRows(sql, runId);
   const total = (await sql`SELECT count(*)::int AS n FROM work_orders WHERE run_id = ${runId} AND stage = 'assets'`)[0]?.n as number | undefined;
   const shotCount = total ?? rows.length;
@@ -460,10 +467,8 @@ async function concludeAssets(runId: string, st: StageRow): Promise<void> {
     rows.map((r) => r.record),
     { use: "publish", shotCount, coveredShots: rows.length, visionFlags: [], template },
   );
-  const terms = providerTermsIssues(
-    rows.map((r) => ({ title: r.record.title, provider: r.provider, kind: r.providerKind })),
-    await listProviderTerms(),
-  );
+  const uses = rows.map((r) => ({ title: r.record.title, provider: r.provider, kind: r.providerKind }));
+  const terms = providerTermsIssues(uses, providerTerms);
   const gate = addGateIssues(base, terms);
   const providers = Array.from(new Set(rows.map((r) => r.provider)));
   // The storyboards forbid real people, but a disclosure is cheap: assume anything AI made may look realistic.
@@ -476,8 +481,52 @@ async function concludeAssets(runId: string, st: StageRow): Promise<void> {
     }),
   };
   const result = { done: rows.length, total: shotCount, providers, aiDisclosureRequired: disclosure, termsOnly: onlyTermsIssues(gate.issues) };
-  const conclusion: StageConclusion = { result, gate, media };
-  await concludeStage(run, st, template, conclusion);
+  return { result, gate, media, providers: providerRowsUsed(uses) };
+}
+
+/** The voice gate plus the provider terms for the narration. Used when the voice is made and when it is checked again. */
+function voiceCheck(v: { languageCode: string; provider: string; scriptEstimateSec: number; narrationSec: number; clipped: boolean }, providerTerms: ProviderTerms[]): GateResult {
+  const base = voiceGate(v);
+  return addGateIssues(base, providerTermsIssues([{ title: "Narration", provider: v.provider, kind: "tts" }], providerTerms));
+}
+
+/**
+ * For a re-check of an assets or voice card: the same conclusion the stage reached, worked out again from the work
+ * that is already saved and the given terms. It reads only: no work order changes, nothing is generated or
+ * synthesized, no provider is registered. Runs inside the caller's transaction (which holds the run and stage locks).
+ */
+export async function recheckConclusion(
+  q: Q,
+  run: RunInfo,
+  st: StageRow,
+  template: Template,
+  providerTerms: ProviderTerms[],
+): Promise<{ ok: true; conclusion: StageConclusion } | { ok: false; error: string }> {
+  if (st.stage === "assets") {
+    const counts = await orderCounts(q, run.id);
+    if (counts.failed > 0 || counts.pending > 0 || counts.running > 0) {
+      return { ok: false, error: "Some shots are not finished, so the terms alone cannot pass them. Use Retry failed shots." };
+    }
+    const conclusion = await assetsConclusion(q, run.id, template, providerTerms);
+    if ((conclusion.media?.images ?? []).length === 0) return { ok: false, error: "No finished images were found for this run." };
+    return { ok: true, conclusion };
+  }
+  if (st.stage === "voice") {
+    const result = toObject(st.output.result);
+    const assetId = asUuid(result.assetId);
+    const provider = text(result.provider);
+    if (!assetId || !provider) return { ok: false, error: "The narration of this run could not be read back. Use Make the voice again." };
+    const [asset] = await q`SELECT id FROM assets WHERE id = ${assetId}`;
+    if (!asset) return { ok: false, error: "The narration file is gone. Use Make the voice again." };
+    const narrationSec = typeof result.narrationSec === "number" ? result.narrationSec : 0;
+    const scriptEstimateSec = typeof result.scriptEstimateSec === "number" ? result.scriptEstimateSec : 0;
+    const gate = voiceCheck({ languageCode: run.config.language, provider, scriptEstimateSec, narrationSec, clipped: result.clipped === true }, providerTerms);
+    return {
+      ok: true,
+      conclusion: { result, gate, media: { audioAssetId: assetId, voiceProvider: provider }, providers: [{ name: provider, kind: "tts", count: 1 }] },
+    };
+  }
+  return { ok: false, error: "Only the assets and voice steps can be checked again." };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -521,15 +570,10 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
   const estimate = estimateNarrationSec(script, wordsPerMinuteFor(template));
   // WAV and MP3 lengths are measured here. CapCut audio that is Ogg is refused at the source, so only WAV and MP3 (measured) reach here.
   const narrationSec = n.durationSec ?? estimate;
-  const base = voiceGate({
-    languageCode: run.config.language,
-    provider: n.provider,
-    scriptEstimateSec: estimate,
-    narrationSec,
-    clipped: n.clipped === true,
-  });
-  const terms = providerTermsIssues([{ title: "Narration", provider: saved.provider, kind: "tts" }], await listProviderTerms());
-  const gate = addGateIssues(base, terms);
+  const gate = voiceCheck(
+    { languageCode: run.config.language, provider: saved.provider, scriptEstimateSec: estimate, narrationSec, clipped: n.clipped === true },
+    await listProviderTerms(),
+  );
   const result = {
     assetId: saved.assetId,
     provider: saved.provider,
@@ -547,7 +591,12 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
     mime: n.mime,
     note: n.note,
   };
-  await concludeStage(run, st, template, { result, gate, media: { audioAssetId: saved.assetId, voiceProvider: saved.provider } });
+  await concludeStage(run, st, template, {
+    result,
+    gate,
+    media: { audioAssetId: saved.assetId, voiceProvider: saved.provider },
+    providers: [{ name: saved.provider, kind: "tts", count: 1 }],
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import QRCode from "qrcode";
 import { z } from "zod";
 import { requireUser } from "@/lib/server/auth.ts";
@@ -18,6 +19,8 @@ import { generateImage, listHermesImageProviders } from "@/lib/server/executors/
 import { testRouterImages } from "@/lib/server/executors/router-image.ts";
 import { runSkillCheck, scanCapabilities } from "@/lib/server/capabilities.ts";
 import { makerLine, PROVIDER_NAME_MAX, refusedIssue } from "@/lib/studio/asset-plan.ts";
+import { saveProviderTerms } from "@/lib/server/provider-terms.ts";
+import { advanceRun, recheckTermsReviews } from "@/lib/server/director.ts";
 import { listProviderTerms } from "@/lib/server/executors/persist.ts";
 
 function raw(fd: FormData, key: string) {
@@ -200,36 +203,22 @@ export async function testRouterImage(_prev: TestState, _fd: FormData): Promise<
   return { ok: true, lines, preview };
 }
 
-const termsSchema = z.object({
-  name: z.string().min(1).max(PROVIDER_NAME_MAX),
-  kind: z.enum(["image", "tts", "library"]),
-  status: z.enum(["unknown", "yes", "no"]),
-  note: z.string().max(300),
-});
-
 /**
- * The only place asset_providers.commercial_ok is ever written. Owner only. Whether a provider's terms allow
- * commercial use is the owner's call; the studio never decides it from anything a model said.
+ * Saves one provider's commercial-use terms (owner only; the write lives in lib/server/provider-terms.ts, shared
+ * with the Review card). Afterwards, in after() so the save never waits on it, every open assets or voice card that
+ * is held up only by provider terms and uses this row is checked again (bounded, best effort), and runs whose check
+ * now passes on their own continue. after() rather than the reaper: the reaper only runs when a page renders.
  */
 export async function setProviderTerms(fd: FormData) {
   const owner = await requireUser("owner");
-  const p = termsSchema.safeParse({ name: str(fd, "name", PROVIDER_NAME_MAX), kind: str(fd, "kind", 10), status: str(fd, "status", 10), note: str(fd, "note", 300) });
-  if (!p.success) return;
-  const rows = await db()`
-    UPDATE asset_providers
-    SET commercial_ok = ${p.data.status}, note = ${p.data.note}, confirmed_by = ${owner.id}, confirmed_at = now()
-    WHERE name = ${p.data.name} AND kind = ${p.data.kind}
-    RETURNING name
-  `;
-  if (rows.length === 0) return;
-  await audit({
-    userId: owner.id,
-    action: "asset_provider.terms",
-    target: `${p.data.kind}:${p.data.name}`,
-    detail: { commercialOk: p.data.status },
-    ip: (await requestMeta()).ip,
-  });
+  const saved = await saveProviderTerms(owner, { name: str(fd, "name", PROVIDER_NAME_MAX), kind: str(fd, "kind", 10), status: str(fd, "status", 10), note: str(fd, "note", 300) });
+  if (!saved.ok) return;
   revalidatePath("/settings");
+  revalidatePath("/review");
+  after(async () => {
+    const r = await recheckTermsReviews({ name: saved.name, kind: saved.kind }, owner.id);
+    for (const runId of r.runIds) await advanceRun(runId);
+  });
 }
 
 /** Asks Hermes and 9router what they can do and stores the answer. Slow (up to three minutes: the Hermes chat turn and the skills listing fallback run side by side), so it runs on demand. */

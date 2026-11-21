@@ -50,7 +50,19 @@ import {
 } from "../studio/engine.ts";
 import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
 import { finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
-import { cancelRunWork, reapProduction, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
+import { cancelRunWork, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
+import { listProviderTermsIn } from "./provider-terms.ts";
+import {
+  autoRecheckMatches,
+  blockingRows,
+  isTermsStage,
+  parseProviderRows,
+  recheckMessage,
+  recheckRefusal,
+  type ConclusionAction,
+  type ProviderRowUse,
+} from "../studio/terms-review.ts";
+import type { ProviderKind } from "../studio/asset-plan.ts";
 
 /**
  * The run engine: idea, research, script and storyboard are Hermes stages; assets, voice, render and qc are the
@@ -490,14 +502,29 @@ export interface StageConclusion {
   /** One plain line per check, for the phone. */
   checks?: string[];
   media?: ReviewMedia;
+  /** Assets and voice: the provider rows the work is saved under, for the card. */
+  providers?: ProviderRowUse[];
   /** True for the approval of the finished video: decideNext uses its final point. */
   final?: boolean;
+  /** Set by a re-check, so the new card says when it was checked again. */
+  recheckedAt?: string;
 }
 
-export async function concludeStage(run: RunInfo, st: StageRow, template: Template, outcome: StageConclusion): Promise<void> {
+/** What concludeStage decided, worked out before any write. */
+interface ConclusionPlan {
+  decision: ReturnType<typeof decideNext>;
+  base: Record<string, unknown>;
+  summary: string;
+  issues: string[];
+  reason: string;
+  detail: Partial<ReviewPayload>;
+  autoRevisions: number;
+  result: unknown;
+}
+
+function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome: StageConclusion): ConclusionPlan {
   const gate = outcome.gate;
   const stage = st.stage;
-  if (gate) await saveQcReport({ result: gate, runId: run.id, details: { stage, attempt: st.attempt } });
   const qc = outcome.qc ?? (gate ? combineGates([gate], template, []) : NO_GATE);
   const autoRevisions = typeof st.output.autoRevisions === "number" ? st.output.autoRevisions : 0;
   const feedback = typeof st.output.feedback === "string" ? st.output.feedback : "";
@@ -519,8 +546,75 @@ export async function concludeStage(run: RunInfo, st: StageRow, template: Templa
   const detail: Partial<ReviewPayload> = {
     ...(outcome.checks ? { checks: outcome.checks } : {}),
     ...(outcome.media ? { media: outcome.media } : {}),
+    ...(outcome.providers && outcome.providers.length > 0 ? { providers: outcome.providers } : {}),
+    ...(outcome.recheckedAt ? { recheckedAt: outcome.recheckedAt } : {}),
+  };
+  return { decision, base, summary, issues, reason, detail, autoRevisions, result: outcome.result };
+}
+
+/**
+ * Writes a planned conclusion inside the caller's transaction. The caller has locked the stage row and checked that
+ * it may still be concluded. Returns what it did.
+ */
+async function applyConclusion(tx: Q, run: RunInfo, st: StageRow, plan: ConclusionPlan): Promise<ConclusionAction> {
+  const { decision, base, summary, issues, reason, detail, autoRevisions } = plan;
+  const stage = st.stage;
+  const store = async (state: string, extra: Record<string, unknown> = {}, error: string | null = null) => {
+    await tx`
+      UPDATE pipeline_stages SET state = ${state}, output = ${json({ ...base, ...extra })}::text::jsonb, error = ${error}, finished_at = now()
+      WHERE id = ${st.id}
+    `;
   };
 
+  if (decision.action === "block") {
+    await store("failed", {}, decision.reason);
+    // Park the run in the inbox so the owner sees it; retry or reject from there.
+    await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${run.id}`;
+    await insertReview(tx, run.id, st.stage, "stage-error", { summary: `${stageLabel(st.stage)} blocked`, error: decision.reason });
+    return "blocked";
+  }
+  if (decision.action === "revise") {
+    await store("failed", {}, issues.join(" ") || decision.reason);
+    await insertPending(tx, run.id, st.stage, issuesToFeedback(issues), autoRevisions + 1);
+    return "revise";
+  }
+  if (decision.action === "auto-approve" || decision.action === "auto-publish") {
+    if (stage === "idea") {
+      const ideas = validateIdeas(plan.result);
+      const best = ideas.ok ? pickIdea(ideas.value.ideas) : null;
+      if (best) {
+        await store("running", { chosenIdea: best, auto: true });
+        await approveStage(tx, run.id, st.id, st.stage, {});
+        return "approved";
+      }
+      // Nothing to pick automatically: ask the owner instead.
+    } else {
+      await store("running", { auto: true });
+      await approveStage(tx, run.id, st.id, st.stage, {});
+      return "approved";
+    }
+  }
+
+  // ask-owner (or an idea stage with nothing pickable)
+  await store("waiting-human");
+  await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${run.id}`;
+  if (issues.length > 0) {
+    await insertReview(tx, run.id, st.stage, "gate-failure", { summary, issues, reason, ...detail });
+    return "gate-failure";
+  }
+  if (stage === "idea") {
+    const ideas = validateIdeas(plan.result);
+    await insertReview(tx, run.id, st.stage, "idea", { summary, ideas: ideas.ok ? ideas.value.ideas : [], reason: decision.reason });
+  } else {
+    await insertReview(tx, run.id, st.stage, "approval", { summary, reason, ...detail });
+  }
+  return "asked-approval";
+}
+
+export async function concludeStage(run: RunInfo, st: StageRow, template: Template, outcome: StageConclusion): Promise<void> {
+  const gate = outcome.gate;
+  if (gate) await saveQcReport({ result: gate, runId: run.id, details: { stage: st.stage, attempt: st.attempt } });
+  const plan = planConclusion(run, st, template, outcome);
   await db().begin(async (tx) => {
     const [live] = await tx`
       SELECT s.id FROM pipeline_stages s JOIN pipeline_runs r ON r.id = s.run_id
@@ -528,53 +622,7 @@ export async function concludeStage(run: RunInfo, st: StageRow, template: Templa
     `;
     // The run was cancelled or the stage reaped while the model was working: drop the result.
     if (!live) return;
-    const store = async (state: string, extra: Record<string, unknown> = {}, error: string | null = null) => {
-      await tx`
-        UPDATE pipeline_stages SET state = ${state}, output = ${json({ ...base, ...extra })}::text::jsonb, error = ${error}, finished_at = now()
-        WHERE id = ${st.id}
-      `;
-    };
-
-    if (decision.action === "block") {
-      await store("failed", {}, decision.reason);
-      // Park the run in the inbox so the owner sees it; retry or reject from there.
-      await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${run.id}`;
-      await insertReview(tx, run.id, st.stage, "stage-error", { summary: `${stageLabel(st.stage)} blocked`, error: decision.reason });
-      return;
-    }
-    if (decision.action === "revise") {
-      await store("failed", {}, issues.join(" ") || decision.reason);
-      await insertPending(tx, run.id, st.stage, issuesToFeedback(issues), autoRevisions + 1);
-      return;
-    }
-    if (decision.action === "auto-approve" || decision.action === "auto-publish") {
-      if (stage === "idea") {
-        const ideas = validateIdeas(outcome.result);
-        const best = ideas.ok ? pickIdea(ideas.value.ideas) : null;
-        if (best) {
-          await store("running", { chosenIdea: best, auto: true });
-          await approveStage(tx, run.id, st.id, st.stage, {});
-          return;
-        }
-        // Nothing to pick automatically: ask the owner instead.
-      } else {
-        await store("running", { auto: true });
-        await approveStage(tx, run.id, st.id, st.stage, {});
-        return;
-      }
-    }
-
-    // ask-owner (or an idea stage with nothing pickable)
-    await store("waiting-human");
-    await tx`UPDATE pipeline_runs SET state = 'waiting-human' WHERE id = ${run.id}`;
-    if (issues.length > 0) {
-      await insertReview(tx, run.id, st.stage, "gate-failure", { summary, issues, reason, ...detail });
-    } else if (stage === "idea") {
-      const ideas = validateIdeas(outcome.result);
-      await insertReview(tx, run.id, st.stage, "idea", { summary, ideas: ideas.ok ? ideas.value.ideas : [], reason: decision.reason });
-    } else {
-      await insertReview(tx, run.id, st.stage, "approval", { summary, reason, ...detail });
-    }
+    await applyConclusion(tx, run, st, plan);
   });
 }
 
@@ -757,9 +805,11 @@ export async function decideReview(input: {
     if (!isRunStage(stageText)) return { ok: false, error: "This item is not about a stage the studio runs" };
     const stage: RunStage = stageText;
     const decision = input.decision;
-    if (!decisionOptions(kind).includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
-    const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
     const payload = toObject(rv.payload);
+    const storedIssues = Array.isArray(payload.issues) ? payload.issues.filter((i): i is string => typeof i === "string") : [];
+    if (decision === "recheck") return { ok: false, error: "Use Check the terms again for this" };
+    if (!decisionOptions(kind, { stage, issues: storedIssues }).includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
+    const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
 
     let target: RunStage = stage;
     if (decision === "revise") {
@@ -835,6 +885,130 @@ export async function decideReview(input: {
     console.error("decideReview failed", err);
     return { ok: false, error: `Could not save the decision: ${errorText(err)}` };
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Checking provider terms again
+
+export type RecheckResult =
+  | { ok: true; runId: string; action: ConclusionAction; message: string }
+  | { ok: false; error: string };
+
+/**
+ * Runs only the gate again on an assets or voice card held up by provider terms: the images or the narration that
+ * are already made are checked against the terms as they are now. No work order is touched and nothing is made or
+ * recorded again. If the gate passes, the stage concludes as concludeStage would (an approval card, or the run goes
+ * on when the autonomy level allows it); if not, the card is replaced by a new one naming what still blocks.
+ *
+ * Locking follows decideReview: the run row, then the review item, then the latest stage row, all FOR UPDATE in one
+ * transaction, and the terms are read inside it. A second click, or the automatic re-check racing the owner, finds
+ * the card no longer open and changes nothing. Safe to repeat. userId is null for the automatic re-check.
+ */
+export async function recheckReview(input: { reviewId: string; userId: string | null }): Promise<RecheckResult> {
+  try {
+    const sql = db();
+    const [rv] = await sql`SELECT run_id, stage FROM review_items WHERE id = ${input.reviewId}`;
+    if (!rv) return { ok: false, error: "Unknown review item" };
+    const runId = rv.run_id as string;
+    const stageText = rv.stage as string;
+    if (!isTermsStage(stageText)) return { ok: false, error: "Only an assets or voice card held up by provider terms can be checked again." };
+    const stage = stageText;
+    const pre = await loadRun(sql, runId);
+    const template = pre?.templateId ? await getTemplate(pre.templateId) : null;
+    if (!pre || !template) return { ok: false, error: "The run or its template no longer exists" };
+
+    const recheckedAt = new Date().toISOString();
+    const done = await sql.begin(async (tx): Promise<{ action: ConclusionAction; gate: GateResult | null; stillBlocking: string[]; attempt: number }> => {
+      const [runRow] = await tx`SELECT state FROM pipeline_runs WHERE id = ${runId} FOR UPDATE`;
+      const [item] = await tx`SELECT state, kind, payload FROM review_items WHERE id = ${input.reviewId} FOR UPDATE`;
+      const [latest] = await tx`SELECT id, state, attempt, output FROM pipeline_stages WHERE run_id = ${runId} AND stage = ${stage} ORDER BY attempt DESC LIMIT 1 FOR UPDATE`;
+      const payload = toObject(item?.payload);
+      const issues = Array.isArray(payload.issues) ? payload.issues.filter((i): i is string => typeof i === "string") : [];
+      const refusal = recheckRefusal({
+        reviewState: item ? (item.state as string) : "missing",
+        kind: (item?.kind as ReviewKind | undefined) ?? "stage-error",
+        stage,
+        issues,
+        runState: runRow ? (runRow.state as string) : "missing",
+        stageState: latest ? (latest.state as string) : null,
+      });
+      if (refusal) throw new DecisionError(refusal);
+      // Autonomy level and pause as they are now, read under the run lock.
+      const run = await loadRun(tx, runId);
+      if (!run) throw new DecisionError(CLOSED);
+      const st: StageRow = { id: latest.id as string, stage, attempt: latest.attempt as number, output: toObject(latest.output) };
+      const terms = await listProviderTermsIn(tx);
+      const checked = await recheckConclusion(tx, run, st, template, terms);
+      if (!checked.ok) throw new DecisionError(checked.error);
+      const stillBlocking = blockingRows(checked.conclusion.providers ?? [], terms).map((b) => b.name);
+      await tx`
+        UPDATE review_items SET state = 'superseded', note = 'Checked the terms again', decided_by = ${input.userId}, decided_at = now()
+        WHERE id = ${input.reviewId} AND state = 'open'
+      `;
+      // approveStage moves a waiting run back to running; the gate-failure path parks it again.
+      await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
+      const action = await applyConclusion(tx, run, st, planConclusion(run, st, template, { ...checked.conclusion, recheckedAt }));
+      return { action, gate: checked.conclusion.gate, stillBlocking, attempt: st.attempt };
+    });
+    if (done.gate) {
+      await saveQcReport({ result: done.gate, runId, details: { stage, attempt: done.attempt, recheck: true } }).catch((err) => console.error("recheck: qc report failed", err));
+    }
+    await safeAudit({ userId: input.userId, action: "review.recheck", target: input.reviewId, detail: { runId, stage, outcome: done.action } });
+    return { ok: true, runId, action: done.action, message: recheckMessage(stage, done.action, done.stillBlocking) };
+  } catch (err) {
+    if (err instanceof DecisionError) return { ok: false, error: err.message };
+    console.error("recheckReview failed", err);
+    return { ok: false, error: `Could not check the terms again: ${errorText(err)}` };
+  }
+}
+
+/** Most open items one terms change re-checks. Each is a few small queries; nothing calls Hermes or a worker. */
+const AUTO_RECHECK_LIMIT = 10;
+
+/**
+ * After the owner changes a provider's terms (on a card or in Settings): re-checks every open assets or voice card
+ * whose only issues are provider terms and whose work is saved under that row. Bounded, best effort, never throws.
+ * Returns the runs that moved on, so the caller can let advanceRun continue them.
+ */
+export async function recheckTermsReviews(changed: { name: string; kind: ProviderKind }, userId: string | null): Promise<{ checked: number; runIds: string[] }> {
+  const runIds: string[] = [];
+  let checked = 0;
+  try {
+    const rows = await db()`
+      SELECT id, stage, kind, payload FROM review_items
+      WHERE state = 'open' AND kind = 'gate-failure' AND stage IN ('assets', 'voice')
+      ORDER BY created_at LIMIT 50
+    `;
+    const items = rows
+      .map((r) => ({ id: r.id as string, stage: r.stage as string, kind: r.kind as ReviewKind, payload: reviewPayloadOf(r.payload) }))
+      .filter((r) => autoRecheckMatches(r, changed))
+      .slice(0, AUTO_RECHECK_LIMIT);
+    for (const item of items) {
+      const r = await recheckReview({ reviewId: item.id, userId });
+      checked++;
+      if (r.ok && r.action === "approved" && !runIds.includes(r.runId)) runIds.push(r.runId);
+    }
+  } catch (err) {
+    console.error("recheckTermsReviews failed", err);
+  }
+  return { checked, runIds };
+}
+
+/** The parts of a stored payload the automatic re-check reads. */
+function reviewPayloadOf(raw: unknown): { issues?: string[]; providers?: ProviderRowUse[]; media?: ReviewMedia } {
+  const p = toObject(raw);
+  const out: { issues?: string[]; providers?: ProviderRowUse[]; media?: ReviewMedia } = {};
+  if (Array.isArray(p.issues)) out.issues = p.issues.filter((i): i is string => typeof i === "string");
+  const used = parseProviderRows(p.providers);
+  if (used.length > 0) out.providers = used;
+  const m = toObject(p.media);
+  const media: ReviewMedia = {};
+  if (Array.isArray(m.images)) {
+    media.images = m.images.map(toObject).map((i) => ({ assetId: String(i.assetId ?? ""), shotRef: String(i.shotRef ?? ""), provider: String(i.provider ?? "") }));
+  }
+  if (typeof m.voiceProvider === "string") media.voiceProvider = m.voiceProvider;
+  out.media = media;
+  return out;
 }
 
 /** Cancels a run on the owner's request. Safe to repeat. */

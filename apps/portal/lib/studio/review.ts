@@ -3,10 +3,13 @@
  * kind offers and plain-language labels. Spec: docs/architecture-autonomous-studio.md (Phase 3).
  */
 import { qcSummary, type GateResult } from "./qc.ts";
+import { onlyTermsIssues } from "./production.ts";
+import { canRecheck, type ProviderRowUse } from "./terms-review.ts";
 
 export type ReviewKind = "idea" | "approval" | "gate-failure" | "stage-error";
 export type ReviewState = "open" | "approved" | "revision" | "rejected" | "superseded";
-export type ReviewDecision = "approve" | "revise" | "reject" | "retry";
+/** "recheck" runs only the gate again on work that is already made (assets and voice cards held up by provider terms). */
+export type ReviewDecision = "approve" | "revise" | "reject" | "retry" | "recheck";
 
 export const STAGE_LABELS: Record<string, string> = {
   idea: "Idea",
@@ -38,13 +41,28 @@ export function reviewTitle(kind: ReviewKind, stage: string): string {
   }
 }
 
-export function decisionOptions(kind: ReviewKind): ReviewDecision[] {
+/** What the card is about, for the choices that depend on the stage and its issues. */
+export interface DecisionContext {
+  stage?: string;
+  issues?: readonly string[];
+}
+
+/**
+ * The choices a card offers, the first one being the main button. An assets or voice gate failure held up by provider
+ * terms offers "recheck" (nothing is made again); when terms are the only issue it comes first. On such an assets card
+ * Retry is left out: no shot failed, so it would only re-check too.
+ */
+export function decisionOptions(kind: ReviewKind, ctx: DecisionContext = {}): ReviewDecision[] {
   switch (kind) {
     case "idea":
     case "approval":
       return ["approve", "revise", "reject"];
-    case "gate-failure":
-      return ["retry", "revise", "reject"];
+    case "gate-failure": {
+      const stage = ctx.stage ?? "";
+      if (!canRecheck(kind, stage, ctx.issues)) return ["retry", "revise", "reject"];
+      if (!onlyTermsIssues(ctx.issues ?? [])) return ["retry", "recheck", "revise", "reject"];
+      return stage === "assets" ? ["recheck", "revise", "reject"] : ["recheck", "retry", "revise", "reject"];
+    }
     case "stage-error":
       return ["retry", "revise", "reject"];
   }
@@ -55,7 +73,31 @@ export const DECISION_LABELS: Record<ReviewDecision, string> = {
   revise: "Send revision",
   reject: "Reject",
   retry: "Try again",
+  recheck: "Check the terms again",
 };
+
+/** The button text, named after what the choice really does on this card. */
+export function decisionLabel(decision: ReviewDecision, kind: ReviewKind, stage: string): string {
+  if (decision === "retry") {
+    if (kind === "gate-failure" && stage === "assets") return "Retry failed shots";
+    if (kind === "gate-failure" && stage === "voice") return "Make the voice again";
+    return "Retry";
+  }
+  return DECISION_LABELS[decision];
+}
+
+/** One plain line under a button when its effect is not obvious from the label. */
+export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: string): string | null {
+  if (decision === "recheck") {
+    return stage === "voice"
+      ? "Checks the narration you have against the provider terms. Nothing is recorded again."
+      : "Checks the images you have against the provider terms. Nothing is made again.";
+  }
+  if (decision === "retry" && kind === "gate-failure" && stage === "assets") return "Makes only the shots that failed again. Finished images are kept.";
+  if (decision === "retry" && kind === "gate-failure" && stage === "voice") return "Records the whole narration again.";
+  if (decision === "revise" && stage === "assets" && (kind === "gate-failure" || kind === "approval")) return "Makes every image again with your note.";
+  return null;
+}
 
 export interface SortableReview {
   kind: ReviewKind;
@@ -109,6 +151,10 @@ export interface ReviewPayload {
   checks?: string[];
   /** Media the owner should look at (Phase 4): asset ids the review card can show. */
   media?: ReviewMedia;
+  /** Assets and voice: the asset_providers rows the work is saved under, so the card can name the ones that block. */
+  providers?: ProviderRowUse[];
+  /** Set when the card replaced another after the gate was checked again (ISO time). */
+  recheckedAt?: string;
 }
 
 export interface ReviewMedia {
