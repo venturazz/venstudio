@@ -481,7 +481,9 @@ try {
   if (!code) throw new Error(`no code in command: ${command}`);
   runWorker([
     "-c",
-    `cd ${OUT} && curl -fsSL ${APP}/install/install.sh -o install.sh && bash install.sh --portal ${APP} --code ${code} --name "CI Worker" --mode tick --home ${OUT}/worker`,
+    // --with-remotion: the production below uses explainer-flat-vector, a remotion-2d style, and an engine no worker
+    // can run fails at planning. This also installs Remotion the way a Muse VM does, from the portal.
+    `cd ${OUT} && curl -fsSL ${APP}/install/install.sh -o install.sh && bash install.sh --portal ${APP} --code ${code} --name "CI Worker" --mode tick --home ${OUT}/worker --with-remotion`,
   ]);
   await page.goto(`${APP}/workers`);
   await page.getByText("CI Worker").first().waitFor();

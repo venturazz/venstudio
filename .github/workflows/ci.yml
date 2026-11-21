@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:17-alpine
@@ -82,6 +82,23 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      # After Playwright: its --with-deps installed the system libraries Remotion's headless Chromium needs too.
+      - name: Remotion renderer (install, typecheck, probe, render the golden fixture)
+        timeout-minutes: 15
+        env:
+          VENSTUDIO_REMOTION_DIR: ${{ github.workspace }}/apps/render-remotion
+          VENSTUDIO_REMOTION_OUT: ${{ github.workspace }}/.e2e-remotion
+          VENSTUDIO_REMOTION_REQUIRED: "1"
+        run: |
+          cd apps/render-remotion
+          npm install --no-audit --no-fund
+          npx tsc -p tsconfig.json
+          npx remotion browser ensure
+          node scripts/probe.mjs --full
+          node scripts/probe.mjs
+          cd ../..
+          node --test apps/worker/remotion-render.test.ts
+
       - name: Browser end-to-end (UI flows + screenshots)
         env:
           UI_DB: postgres://venstudio:venstudio@localhost:5432/venstudio_ui
@@ -109,8 +126,16 @@ jobs:
           path: .e2e-ui/screenshots
           if-no-files-found: ignore
 
+      - name: Upload the Remotion fixture render
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remotion-fixture-render
+          path: .e2e-remotion
+          if-no-files-found: ignore
+
       - name: Shell syntax
-        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh
+        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs
 
   docker:
     runs-on: ubuntu-latest
@@ -148,6 +173,8 @@ jobs:
           curl -fsS http://localhost:3000/api/health || { docker compose -f docker-compose.coolify.yml logs --tail 60; exit 1; }
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/setup)" = 200
           curl -fsS http://localhost:3000/install/SETUP.md | grep -q "https://studio.example.com/install/install.sh"
+          # The image carries the Remotion templates, so Muse workers can install remotion-2d from the portal.
+          curl -fsS http://localhost:3000/install/render-remotion.json | grep -q '"src/FlatVectorExplainer.tsx"'
           # Another app on the shared coolify network (stands in for Hermes) must be reachable by container name.
           docker run -d --rm --name fake-hermes-abc --network coolify nginx:alpine >/dev/null
           sleep 2

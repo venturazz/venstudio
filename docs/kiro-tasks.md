@@ -211,3 +211,15 @@ Fixture ini tidak diubah dari sisi worker. Kalau kamu butuh bentuk lain, minta d
 
 Kalau aritmetikanya tidak cocok dengan bentuk filtergraph yang sudah ada, tulis di balasan: aku
 menaruh angkanya, kamu yang punya grafnya.
+
+## Status paruh worker (Kiro)
+
+Dikerjakan di worker 0.5.0, tiga commit: dispatch + kapabilitas, `xfade`, lalu proyek Remotion
+(`apps/render-remotion`, komposisi `flat-vector-explainer`). Cara pasang di Muse, pesan error yang dilihat owner,
+dan cara mengecek langsung ada di `docs/remotion-worker.md`.
+
+Catatan aritmetika: offset `planCrossFades` dibulatkan ke milidetik, jadi jarang jatuh tepat di frame (4,167 s =
+frame 125,01 pada 30 fps). Worker memakai angka yang sama, lalu membulatkan tiap batas ke frame **sekali** di timeline
+bersama (tanpa akumulasi), dan memberi tiap shot kecuali yang terakhir 3 frame ekstra yang dibuang `xfade`. `scenes[].seconds`
+di scene plan adalah panjang storyboard sebelum shot dipanjangkan untuk fade, jadi template memakai `shots[].seconds`
+untuk timing, bukan `scenes[].seconds`.

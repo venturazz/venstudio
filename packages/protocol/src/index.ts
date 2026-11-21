@@ -21,6 +21,8 @@ export const PROTOCOL_VERSION = 1;
 export type Capability =
   | "echo"
   | "ffmpeg"
+  /** The worker builds cross-fades between shots (ffmpeg xfade) and accepts the longer shot timeline they need. */
+  | "xfade"
   | "tts-kokoro"
   | "remotion-2d"
   | "remotion-3d"
@@ -30,6 +32,7 @@ export type Capability =
 export const CAPABILITIES: readonly Capability[] = [
   "echo",
   "ffmpeg",
+  "xfade",
   "tts-kokoro",
   "remotion-2d",
   "remotion-3d",
@@ -69,7 +72,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.4.0";
+export const WORKER_VERSION = "0.5.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];

@@ -35,8 +35,9 @@ import type {
   HeartbeatResponse,
   WorkerMode,
 } from "../../packages/protocol/src/index.ts";
+import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -234,9 +235,18 @@ function hasCommand(cmd: string, args: string[] = ["-version"]): boolean {
   }
 }
 
-export async function detectCapabilities(): Promise<Capability[]> {
+/** What this machine can run. `home` locates the Remotion project (default: the worker home). */
+export async function detectCapabilities(home?: string): Promise<Capability[]> {
   const caps: Capability[] = ["echo"];
-  if (hasCommand(process.env.FFMPEG_PATH ?? "ffmpeg")) caps.push("ffmpeg");
+  if (hasCommand(process.env.FFMPEG_PATH ?? "ffmpeg")) {
+    caps.push("ffmpeg");
+    // The portal starts asking for cross-fades the moment any worker reports this, so it is reported only where
+    // render-video can build them: this ffmpeg has the filter, and parseRenderSpec accepts the faded timeline.
+    if (ffmpegHasFilter("xfade")) caps.push("xfade");
+    // remotion-2d also needs ffmpeg, which adds the narration. Reported only when the project is installed here and
+    // its probe passes (a still of every template rendered once at install time, through this machine's browser).
+    if (!(await remotionUnavailableReason(remotionDir(home)))) caps.push("remotion-2d");
+  }
   const kokoro = process.env.KOKORO_URL;
   if (kokoro) {
     try {
@@ -255,6 +265,8 @@ export async function detectCapabilities(): Promise<Capability[]> {
 export interface JobContext {
   job: ClaimedJob;
   workDir: string;
+  /** The worker's home ($VENSTUDIO_HOME). Optional so a test can call a handler with only a work dir. */
+  home?: string;
   signal: AbortSignal;
   progress: (fraction: number, message?: string) => void;
   upload: (name: string, file: string, contentType: string) => Promise<{ bytes: number; sha256: string }>;
@@ -903,14 +915,61 @@ const CLIP_RATIO_LIMIT = 0.001;
 
 export type RenderMotion = "zoom-in" | "zoom-out" | "pan-left" | "pan-right";
 
+/** One thing drawn on screen in a scene. `value` and `series` are only there when the storyboard declared them. */
+export interface RenderSceneElement {
+  kind: string;
+  text?: string;
+  /** For a counter: the number it counts to. */
+  value?: number;
+  /** For a bar or gauge: the values it plots. */
+  series?: number[];
+}
+
+export interface RenderSceneLayer {
+  id: string;
+  frames: number;
+  fps: number;
+}
+
+/** Mirror of `Scene` in apps/portal/lib/studio/scene-plan.ts (the worker cannot import portal code). */
+export interface RenderScene {
+  shotRef: string;
+  seconds: number;
+  beatRole: string;
+  elements: RenderSceneElement[];
+  tokens: string[];
+  camera: boolean;
+  layers: RenderSceneLayer[];
+}
+
+/** Mirror of `ScenePlan` in apps/portal/lib/studio/scene-plan.ts. */
+export interface RenderScenePlan {
+  version: 1;
+  engine: string;
+  template: string;
+  family: string;
+  width: number;
+  height: number;
+  fps: number;
+  transitionSec: number;
+  scenes: RenderScene[];
+}
+
 export interface RenderSpec {
   format: string;
   width: number;
   height: number;
   fps: number;
+  /** Engine the portal asked for. A payload from a portal older than 0.5 has none and means ffmpeg-stills. */
+  engine: string;
+  /** Cross-fade between adjacent shots. 0 means hard cuts. */
+  transitionSec: number;
+  /** What an animating engine draws. Null for the stills engine. */
+  scenePlan: RenderScenePlan | null;
   shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: RenderMotion }>;
   narrationAssetId: string;
   narrationSec: number;
+  /** Length of the finished video. The sum of the shots with hard cuts; less the fade overlaps with cross-fades. */
   durationSec: number;
   captions: Array<{ start: number; end: number; text: string }>;
   targetLufs: number;
@@ -923,6 +982,214 @@ const MOTIONS: readonly string[] = ["zoom-in", "zoom-out", "pan-left", "pan-righ
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : NaN;
+}
+
+/**
+ * Render engines this worker dispatches to, and the capability each needs. Same ids and capabilities as ENGINES in
+ * apps/portal/lib/studio/catalog.ts. An engine missing here is refused; it never falls through to stills, because that
+ * fallthrough is what turned every animated style into a slideshow.
+ */
+export const RENDER_ENGINES: Readonly<Record<string, Capability>> = {
+  "ffmpeg-stills": "ffmpeg",
+  "remotion-2d": "remotion-2d",
+};
+export const DEFAULT_RENDER_ENGINE = "ffmpeg-stills";
+
+/** The engine a render-video payload asks for. Throws NonRetryableError for an engine this worker has no path for. */
+export function renderEngineOf(payload: Record<string, unknown>): string {
+  const raw = payload.engine;
+  // Portals before the engine field existed only ever meant stills.
+  if (raw === undefined || raw === null) return DEFAULT_RENDER_ENGINE;
+  if (typeof raw !== "string" || !raw.trim()) throw new NonRetryableError("render-video payload: engine must be an engine name");
+  const engine = raw.trim().slice(0, 40);
+  if (!Object.hasOwn(RENDER_ENGINES, engine)) {
+    throw new NonRetryableError(
+      `render-video: engine "${engine}" is not one this worker (${VERSION}) can run; it runs ${Object.keys(RENDER_ENGINES).join(", ")}. ` +
+        `Nothing was rendered, and the job is not rendered as stills instead.`,
+    );
+  }
+  return engine;
+}
+
+/**
+ * Plain reason the engine cannot run on this machine, or null when it can. `caps` are this worker's capabilities;
+ * `detail` says what is missing when the capability is absent.
+ */
+export function engineUnavailable(engine: string, caps: readonly string[], detail?: string): string | null {
+  const need = RENDER_ENGINES[engine];
+  if (!need || caps.includes(need)) return null;
+  return (
+    `Engine "${engine}" needs capability "${need}", which this worker (${VERSION}) does not have` +
+    (detail ? `: ${detail}` : "") +
+    `. Nothing was rendered. ` +
+    (engine === "remotion-2d"
+      ? "Install the Remotion renderer on the worker (install.sh --with-remotion, see docs/remotion-worker.md), then press Retry."
+      : "Install it on the worker, then press Retry.")
+  );
+}
+
+/** Motion tokens from `flat-vector-explainer-video`. Mirror of MOTION_TOKENS in apps/portal/lib/studio/render-engine.ts. */
+export const MOTION_TOKENS: readonly string[] = [
+  "draw", "pop", "gauge", "counter", "bar", "arrow", "tally", "particles", "pull", "push",
+  "whip", "shake", "drift", "parallax", "scribble", "blot", "flicker", "morph", "dim",
+];
+const SCENE_LIMITS = { elements: 6, text: 140, series: 6, tokens: 12, layers: 8 } as const;
+
+/**
+ * Strict check of payload.scenePlan against the shots it belongs to. Throws NonRetryableError with a plain message.
+ *
+ * The template draws exactly what this returns, so anything that is not plain data is dropped here: element text is
+ * cut to length, `value` and `series` survive only as finite numbers, and unknown motion tokens are ignored. A scene
+ * with neither a motion token nor a camera move is refused, which is the coverage rule of the explainer skill.
+ */
+export function parseScenePlan(raw: unknown, ctx: { engine: string; width: number; height: number; fps: number; shotRefs: readonly string[] }): RenderScenePlan {
+  const bad = (m: string): never => {
+    throw new NonRetryableError(`render-video scenePlan: ${m}`);
+  };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return bad(`engine "${ctx.engine}" draws from a scene plan, and the payload has none`);
+  const p = raw as Record<string, unknown>;
+  if (p.version !== 1) bad(`version ${String(p.version)} is not one this worker (${VERSION}) reads; it reads version 1`);
+  if (p.engine !== ctx.engine) bad(`the plan is for engine "${String(p.engine)}", but the job is for "${ctx.engine}"`);
+  const template = typeof p.template === "string" ? p.template.trim() : "";
+  if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(template)) bad("the plan names no template");
+  if (num(p.width) !== ctx.width || num(p.height) !== ctx.height || num(p.fps) !== ctx.fps) {
+    bad(`the plan is ${String(p.width)}x${String(p.height)} at ${String(p.fps)} fps, but the job is ${ctx.width}x${ctx.height} at ${ctx.fps} fps`);
+  }
+  const transitionSec = p.transitionSec === undefined ? 0 : num(p.transitionSec);
+  if (!(transitionSec >= 0)) bad("transitionSec is not a usable length");
+  if (!Array.isArray(p.scenes)) return bad("there are no scenes");
+  const rawScenes = p.scenes as unknown[];
+  if (rawScenes.length !== ctx.shotRefs.length) bad(`there are ${rawScenes.length} scenes for ${ctx.shotRefs.length} shots`);
+  const scenes = rawScenes.map((r, i): RenderScene => {
+    const s = (r ?? {}) as Record<string, unknown>;
+    const at = `scene ${i + 1}`;
+    if (s.shotRef !== ctx.shotRefs[i]) bad(`${at} is for "${String(s.shotRef)}", but shot ${i + 1} is "${ctx.shotRefs[i]}"; scenes and shots must line up`);
+    const seconds = num(s.seconds);
+    if (!(seconds > 0)) bad(`${at} has no usable length`);
+    const elementsRaw = Array.isArray(s.elements) ? (s.elements as unknown[]) : [];
+    if (elementsRaw.length === 0) bad(`${at} has nothing on screen`);
+    const elements = elementsRaw.slice(0, SCENE_LIMITS.elements).flatMap((er): RenderSceneElement[] => {
+      const e = (er ?? {}) as Record<string, unknown>;
+      if (typeof e.kind !== "string" || !/^[a-z][a-z-]{0,23}$/.test(e.kind)) return [];
+      const out: RenderSceneElement = { kind: e.kind };
+      if (typeof e.text === "string" && e.text.trim()) out.text = e.text.trim().slice(0, SCENE_LIMITS.text);
+      if (Number.isFinite(num(e.value))) out.value = e.value as number;
+      if (Array.isArray(e.series)) {
+        const series = (e.series as unknown[]).map(num).filter((v) => Number.isFinite(v)).slice(0, SCENE_LIMITS.series);
+        if (series.length > 0) out.series = series;
+      }
+      return [out];
+    });
+    if (elements.length === 0) bad(`${at} has no element this worker can read`);
+    const tokens = (Array.isArray(s.tokens) ? (s.tokens as unknown[]) : [])
+      .filter((t): t is string => typeof t === "string" && MOTION_TOKENS.includes(t))
+      .slice(0, SCENE_LIMITS.tokens);
+    const camera = s.camera === true;
+    if (tokens.length === 0 && !camera) bad(`${at} (${ctx.shotRefs[i]}) has neither a motion token nor a camera move, so it would render as a still`);
+    const layers = (Array.isArray(s.layers) ? (s.layers as unknown[]) : []).slice(0, SCENE_LIMITS.layers).flatMap((lr): RenderSceneLayer[] => {
+      const l = (lr ?? {}) as Record<string, unknown>;
+      const frames = num(l.frames);
+      const fps = num(l.fps);
+      if (typeof l.id !== "string" || !(frames >= 1) || !(fps > 0)) return [];
+      return [{ id: l.id.slice(0, 40), frames: Math.round(frames), fps }];
+    });
+    return {
+      shotRef: ctx.shotRefs[i],
+      seconds,
+      beatRole: typeof s.beatRole === "string" ? s.beatRole.slice(0, 20) : "body",
+      elements,
+      tokens,
+      camera,
+      layers,
+    };
+  });
+  return {
+    version: 1,
+    engine: ctx.engine,
+    template,
+    family: typeof p.family === "string" ? p.family.slice(0, 40) : "",
+    width: ctx.width,
+    height: ctx.height,
+    fps: ctx.fps,
+    transitionSec,
+    scenes,
+  };
+}
+
+// Cross-fades. Same numbers as planCrossFades and transitionFor in apps/portal/lib/studio/render-engine.ts, which
+// the worker cannot import (it is one file with no dependencies). render-engines.test.ts checks both agree on the
+// golden fixture.
+
+export const MIN_TRANSITION_SEC = 0.15;
+/** No shot may be left with less than this much screen time of its own by the fades around it. */
+export const MIN_EXCLUSIVE_SHOT_SEC = 0.4;
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+export type CrossFadePlan =
+  | { ok: true; starts: number[]; offsets: number[]; totalSec: number; transitionSec: number }
+  | { ok: false; issues: string[] };
+
+/** Places the shots on one timeline, each adjacent pair overlapping by `transitionSec`. Mirror of the portal's. */
+export function planCrossFades(seconds: readonly number[], transitionSec: number): CrossFadePlan {
+  const issues: string[] = [];
+  if (seconds.length === 0) return { ok: false, issues: ["There are no shots to place on the timeline"] };
+  seconds.forEach((s, i) => {
+    if (!Number.isFinite(s) || s <= 0) issues.push(`Shot ${i + 1} has no usable length (${s})`);
+  });
+  if (!Number.isFinite(transitionSec) || transitionSec < 0) issues.push(`Transition length is not usable (${transitionSec})`);
+  if (issues.length > 0) return { ok: false, issues };
+  const n = seconds.length;
+  const d = n < 2 ? 0 : transitionSec;
+  if (d > 0 && d < MIN_TRANSITION_SEC) return { ok: false, issues: [`Transition length ${d} s is below the ${MIN_TRANSITION_SEC} s minimum`] };
+  if (d > 0) {
+    seconds.forEach((s, i) => {
+      const count = (i > 0 ? 1 : 0) + (i < n - 1 ? 1 : 0);
+      const exclusive = s - count * d;
+      if (exclusive < MIN_EXCLUSIVE_SHOT_SEC) {
+        issues.push(
+          `A ${d} s transition leaves shot ${i + 1} only ${round3(Math.max(0, exclusive))} s of its own ` +
+            `(it is ${round3(s)} s). Shorten the transition or lengthen the shot.`,
+        );
+      }
+    });
+    if (issues.length > 0) return { ok: false, issues };
+  }
+  const starts: number[] = [0];
+  for (let i = 1; i < n; i++) starts.push(round3(starts[i - 1] + seconds[i - 1] - d));
+  return { ok: true, starts, offsets: starts.slice(1), totalSec: round3(starts[n - 1] + seconds[n - 1]), transitionSec: d };
+}
+
+export type TransitionName = "none" | "fade" | "slideup" | "wipeleft" | "circleopen";
+const TRANSITION_CYCLE: readonly TransitionName[] = ["fade", "slideup", "fade", "wipeleft", "fade", "circleopen"];
+
+/** Transition joining shot `index` to the one before it, fixed by position. Mirror of the portal's. */
+export function transitionFor(index: number): TransitionName {
+  if (index <= 0) return "none";
+  return TRANSITION_CYCLE[(index - 1) % TRANSITION_CYCLE.length];
+}
+
+/**
+ * The cross-fade timeline in whole frames, which is what ffmpeg actually renders.
+ *
+ * The portal's starts are rounded to the millisecond, so they rarely fall on a frame (4.167 s is frame 125.01 at
+ * 30 fps). Each boundary is snapped to its nearest frame once, on the shared timeline, so rounding never accumulates
+ * from shot to shot: shot i runs from startFrames[i] for frames[i] frames, the last fadeFrames of which it shares with
+ * shot i + 1. totalFrames / fps is the portal's totalSec to within half a frame.
+ */
+export interface XfadeTimeline {
+  fadeFrames: number;
+  startFrames: number[];
+  frames: number[];
+  totalFrames: number;
+}
+
+export function xfadeTimeline(starts: readonly number[], totalSec: number, transitionSec: number, fps: number): XfadeTimeline {
+  const n = starts.length;
+  const fadeFrames = Math.round(transitionSec * fps);
+  const startFrames = starts.map((s) => Math.round(s * fps));
+  const totalFrames = Math.round(totalSec * fps);
+  const frames = startFrames.map((f, i) => (i < n - 1 ? startFrames[i + 1] + fadeFrames : totalFrames) - f);
+  return { fadeFrames, startFrames, frames, totalFrames };
 }
 
 /** Strict check of a render-video payload. Throws NonRetryableError with a plain message. */
@@ -954,9 +1221,31 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   if (!inputs.includes(narrationAssetId as string)) bad("the narration asset is not listed in inputs");
   const narrationSec = num(payload.narrationSec);
   if (!(narrationSec > 0) || narrationSec > RENDER_LIMITS.maxSeconds) bad(`narrationSec must be above 0 and at most ${RENDER_LIMITS.maxSeconds}`);
+  const askedFade = payload.transitionSec === undefined || payload.transitionSec === null ? 0 : num(payload.transitionSec);
+  if (!(askedFade >= 0) || askedFade > 5) bad("transitionSec must be from 0 to 5 seconds");
+  // One shot has nothing to fade into.
+  const transitionSec = shots.length < 2 ? 0 : askedFade;
   const total = shots.reduce((n, s) => n + s.seconds, 0);
   if (total > RENDER_LIMITS.maxSeconds) bad(`the shots add up to ${Math.round(total)} s; the limit is ${RENDER_LIMITS.maxSeconds} s`);
-  if (Math.abs(total - narrationSec) > 1) bad(`the shots add up to ${round2(total)} s but the narration is ${round2(narrationSec)} s`);
+  let durationSec = round2(total);
+  if (transitionSec === 0) {
+    // Hard cuts: the shots end to end are the video, so they must match the narration. Unchanged from before fades.
+    if (Math.abs(total - narrationSec) > 1) bad(`the shots add up to ${round2(total)} s but the narration is ${round2(narrationSec)} s`);
+  } else {
+    // Cross-fades: each of the n - 1 fades overlaps two shots, so the shots add up to narration + (n - 1) x fade.
+    // What must match the narration is the timeline after the overlaps, which the portal sends as durationSec.
+    const fade = planCrossFades(shots.map((s) => s.seconds), transitionSec);
+    if (!fade.ok) return bad(fade.issues.join("; "));
+    const planned = payload.durationSec === undefined ? fade.totalSec : num(payload.durationSec);
+    if (!(Math.abs(planned - fade.totalSec) <= 0.05)) {
+      bad(`durationSec is ${String(payload.durationSec)} s, but ${shots.length} shots of ${round2(total)} s with ${transitionSec} s cross-fades last ${fade.totalSec} s`);
+    }
+    if (Math.abs(fade.totalSec - narrationSec) > 1) {
+      bad(`with ${transitionSec} s cross-fades the shots (${round2(total)} s together) fill ${fade.totalSec} s, but the narration is ${round2(narrationSec)} s`);
+    }
+    if (!(Math.round(transitionSec * fps) >= 1)) bad(`a ${transitionSec} s cross-fade is shorter than one frame at ${fps} fps`);
+    durationSec = fade.totalSec;
+  }
   const targetLufs = payload.targetLufs === undefined ? -16 : num(payload.targetLufs);
   if (!(targetLufs >= -30 && targetLufs <= -5)) bad("targetLufs must be between -30 and -5");
   const rawCaps = Array.isArray(payload.captions) ? (payload.captions as unknown[]) : [];
@@ -969,15 +1258,21 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     return [{ start, end, text: c.text.trim().slice(0, 300) }];
   });
   const fontAssetId = typeof payload.fontAssetId === "string" && UUID_RE.test(payload.fontAssetId) && inputs.includes(payload.fontAssetId) ? payload.fontAssetId : null;
+  const engine = renderEngineOf(payload);
+  // Only an animating engine reads the scene plan; the stills engine has everything it needs in the shots.
+  const scenePlan = engine === "ffmpeg-stills" ? null : parseScenePlan(payload.scenePlan, { engine, width, height, fps, shotRefs: shots.map((s) => s.shotRef) });
   return {
     format: typeof payload.format === "string" ? payload.format.slice(0, 20) : "custom",
     width,
     height,
     fps,
+    engine,
+    transitionSec,
+    scenePlan,
     shots,
     narrationAssetId: narrationAssetId as string,
     narrationSec,
-    durationSec: round2(total),
+    durationSec,
     captions,
     targetLufs,
     fontAssetId,
@@ -1018,6 +1313,43 @@ function zoompanFor(motion: RenderMotion, frames: number): string {
   }
 }
 
+/**
+ * Extra frames past its fade for every shot but the last. Some ffmpeg builds (4.x) only end an xfade when the first
+ * input has a frame *after* the fade window, and end the whole output when that input runs out first. xfade discards
+ * these frames, so they never show. Two are needed; one more is spare.
+ */
+export const XFADE_PAD_FRAMES = 3;
+
+/** Seconds for an ffmpeg option, to the microsecond (xfade reads offset and duration as microseconds). */
+const secs = (n: number) => String(Math.round(n * 1e6) / 1e6);
+
+/** The frame timeline for a spec with cross-fades. Throws NonRetryableError when the fades do not fit. */
+export function xfadeTimelineFor(spec: Pick<RenderSpec, "shots" | "transitionSec" | "fps">): XfadeTimeline {
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  if (!plan.ok) throw new NonRetryableError(`render-video: ${plan.issues.join("; ")}`);
+  const t = xfadeTimeline(plan.starts, plan.totalSec, plan.transitionSec, spec.fps);
+  if (t.fadeFrames < 1) throw new NonRetryableError(`render-video: a ${spec.transitionSec} s cross-fade is shorter than one frame`);
+  t.frames.forEach((f, i) => {
+    const shared = (i > 0 ? 1 : 0) + (i < t.frames.length - 1 ? 1 : 0);
+    if (f <= shared * t.fadeFrames) throw new NonRetryableError(`render-video: shot ${i + 1} is no longer than the cross-fades around it`);
+  });
+  return t;
+}
+
+/**
+ * The narration as every engine delivers it: loudness-normalised to the template's target, 48 kHz stereo, padded
+ * with silence to the video's length. `input` is the narration's ffmpeg input index.
+ */
+export function narrationFilter(spec: Pick<RenderSpec, "targetLufs" | "durationSec">, input: number): string {
+  return `[${input}:a]loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`;
+}
+
+/** Where each shot starts in the finished video, in seconds. */
+export function sceneStartsOf(spec: Pick<RenderSpec, "shots" | "transitionSec">): number[] {
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  return plan.ok ? plan.starts : [];
+}
+
 /** Builds the ffmpeg arguments for the final render. Pure. Plain H.264/AAC mp4 with faststart so qc-video can read it. */
 export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { drawtext: boolean }): RenderArgs {
   if (paths.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image file per shot");
@@ -1029,14 +1361,31 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
   // Zoompan works on a larger picture so the slow motion stays smooth, then scales down to the output size.
   const bigW = Math.round((w * 1.5) / 2) * 2;
   const bigH = Math.round((h * 1.5) / 2) * 2;
+  const fade = spec.transitionSec > 0 ? xfadeTimelineFor(spec) : null;
+  const last = spec.shots.length - 1;
   spec.shots.forEach((s, i) => {
-    const frames = Math.max(1, Math.round(s.seconds * fps));
+    const frames = fade ? fade.frames[i] : Math.max(1, Math.round(s.seconds * fps));
+    // With fades, every shot but the last runs XFADE_PAD_FRAMES past its fade. xfade drops those frames; without
+    // them an ffmpeg whose first input ends inside the fade ends the whole output there.
+    const length = fade && i < last ? frames + XFADE_PAD_FRAMES : frames;
     chains.push(
       `[${i}:v]scale=${bigW}:${bigH}:force_original_aspect_ratio=increase,crop=${bigW}:${bigH},setsar=1,` +
-        `zoompan=${zoompanFor(s.motion, frames)}:d=${frames}:s=${w}x${h}:fps=${fps},format=yuv420p[v${i}]`,
+        `zoompan=${zoompanFor(s.motion, frames)}:d=${length}:s=${w}x${h}:fps=${fps},format=yuv420p[v${i}]`,
     );
   });
   const joined = spec.shots.map((_, i) => `[v${i}]`).join("");
+  /** Joins the shot streams into one labelled `out`: hard cuts with concat, or a chain of xfades. */
+  const join = (out: string): string[] => {
+    if (!fade) return [`${joined}concat=n=${spec.shots.length}:v=1:a=0[${out}]`];
+    const steps: string[] = [];
+    for (let i = 1; i <= last; i++) {
+      const from = i === 1 ? "[v0]" : `[x${i - 1}]`;
+      const to = i === last ? `[${out}]` : `[x${i}]`;
+      // offset is where shot i starts on the whole timeline, which is also the length so far of the chain it joins.
+      steps.push(`${from}[v${i}]xfade=transition=${transitionFor(i)}:duration=${secs(fade.fadeFrames / fps)}:offset=${secs(fade.startFrames[i] / fps)}${to}`);
+    }
+    return steps;
+  };
   const captionFiles: Array<{ file: string; text: string }> = [];
   const canBurn = caps.drawtext && Boolean(paths.font) && spec.captions.length > 0;
   let captionNote: string | null = null;
@@ -1044,7 +1393,7 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
     captionNote = !caps.drawtext ? "this ffmpeg build has no drawtext filter" : "no font in Assets";
   }
   if (canBurn) {
-    chains.push(`${joined}concat=n=${spec.shots.length}:v=1:a=0[vc]`);
+    chains.push(...join("vc"));
     const size = Math.round(Math.min(w, h) / 18);
     const maxChars = Math.max(12, Math.floor(w / (size * 0.55)));
     const draws = spec.captions.map((c, i) => {
@@ -1057,12 +1406,9 @@ export function buildRenderArgs(spec: RenderSpec, paths: RenderPaths, caps: { dr
     });
     chains.push(`[vc]${draws.join(",")}[v]`);
   } else {
-    chains.push(`${joined}concat=n=${spec.shots.length}:v=1:a=0[v]`);
+    chains.push(...join("v"));
   }
-  const n = spec.shots.length;
-  chains.push(
-    `[${n}:a]loudnorm=I=${spec.targetLufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${spec.durationSec}[a]`,
-  );
+  chains.push(narrationFilter(spec, spec.shots.length));
   args.push(
     "-filter_complex", chains.join(";"),
     "-map", "[v]", "-map", "[a]",
@@ -1101,8 +1447,354 @@ export function narrationLengthIssue(realSec: number | null, plannedSec: number)
   return `The narration is ${round2(realSec)} s but the shots were planned for ${round2(plannedSec)} s. Make the narration again so the shots match it.`;
 }
 
+// ---------------------------------------------------------------------------
+// remotion-2d: the Remotion project from apps/render-remotion, installed next to the worker by
+// `install.sh --with-remotion` (see docs/remotion-worker.md).
+
+/**
+ * Scene-plan template (the style id) to Remotion composition id. One composition per template; a template without
+ * one is refused by name rather than drawn with another template's look.
+ */
+export const REMOTION_COMPOSITIONS: Readonly<Record<string, string>> = {
+  "explainer-flat-vector": "flat-vector-explainer",
+};
+
+/** Where the Remotion project lives: $VENSTUDIO_REMOTION_DIR, else <home>/remotion (on Muse, under /home/hatch). */
+export function remotionDir(home?: string): string {
+  const fromEnv = process.env.VENSTUDIO_REMOTION_DIR;
+  if (fromEnv) return path.resolve(fromEnv);
+  return path.join(home ?? defaultHome(), "remotion");
+}
+
+const remotionProbes = new Map<string, Promise<string | null>>();
+
+/** Forgets cached probe results. For tests, and after an install in the same process. */
+export function clearRemotionProbeCache() {
+  remotionProbes.clear();
+}
+
+/**
+ * Why the Remotion renderer cannot run from `dir`, or null when it can. Runs the project's quick probe (installed
+ * packages, versions, and a passed full probe for these exact templates) once per process and directory.
+ */
+export function remotionUnavailableReason(dir: string): Promise<string | null> {
+  let p = remotionProbes.get(dir);
+  if (!p) {
+    p = probeRemotion(dir);
+    remotionProbes.set(dir, p);
+  }
+  return p;
+}
+
+function probeRemotion(dir: string): Promise<string | null> {
+  const script = path.join(dir, "scripts", "probe.mjs");
+  if (!existsSync(script)) return Promise.resolve(`the Remotion renderer is not installed at ${dir}`);
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawn(process.execPath, [script], { cwd: dir, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c: string) => {
+      out = (out + c).slice(-4000);
+    });
+    child.stderr.resume();
+    child.on("error", (err) => resolve(`the Remotion probe could not start: ${err.message}`));
+    child.on("close", (code) => {
+      const last = out.trim().split("\n").pop() ?? "";
+      let parsed: { ok?: unknown; reason?: unknown } = {};
+      try {
+        parsed = JSON.parse(last) as { ok?: unknown; reason?: unknown };
+      } catch {}
+      if (code === 0 && parsed.ok === true) return resolve(null);
+      resolve(typeof parsed.reason === "string" ? parsed.reason : `the Remotion probe exited with ${String(code)}`);
+    });
+  });
+}
+
+export const BUNDLE_LIMITS = { files: 200, fileBytes: 1024 * 1024, totalBytes: 5 * 1024 * 1024 } as const;
+
+/**
+ * Writes a project bundle (the portal's /install/render-remotion.json) into `dir`. Used by install.sh, so a Muse VM
+ * installs the templates from the portal and never needs GitHub. Paths are checked before anything is written; the
+ * top-level folders the bundle carries (src/, scripts/) are replaced whole, so a file dropped upstream does not linger.
+ * node_modules and the probe marker are left alone. Returns the number of files written.
+ */
+export async function writeProjectBundle(raw: unknown, dir: string): Promise<number> {
+  const bad = (m: string): never => {
+    throw new Error(`project bundle: ${m}`);
+  };
+  const files = (raw as { files?: unknown } | null)?.files;
+  if (!Array.isArray(files) || files.length === 0) return bad("it lists no files");
+  if (files.length > BUNDLE_LIMITS.files) bad(`it lists ${files.length} files; the limit is ${BUNDLE_LIMITS.files}`);
+  let total = 0;
+  const checked = files.map((f, i): { rel: string; content: string } => {
+    const rel = (f as { path?: unknown })?.path;
+    const content = (f as { content?: unknown })?.content;
+    if (typeof rel !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/.test(rel) || rel.split("/").some((seg) => seg === "" || seg === "." || seg === "..")) {
+      return bad(`file ${i + 1} has an unsafe path`);
+    }
+    if (rel.startsWith("node_modules/") || rel === ".venstudio-probe.json") return bad(`file ${i + 1} would overwrite ${rel}`);
+    if (typeof content !== "string") return bad(`${rel} has no content`);
+    const bytes = Buffer.byteLength(content);
+    if (bytes > BUNDLE_LIMITS.fileBytes) bad(`${rel} is larger than ${BUNDLE_LIMITS.fileBytes} bytes`);
+    total += bytes;
+    return { rel, content };
+  });
+  if (total > BUNDLE_LIMITS.totalBytes) bad(`it is larger than ${BUNDLE_LIMITS.totalBytes} bytes`);
+  const root = path.resolve(dir);
+  await mkdir(root, { recursive: true });
+  for (const top of new Set(checked.map((f) => f.rel.split("/")).filter((parts) => parts.length > 1).map((parts) => parts[0]))) {
+    await rm(path.join(root, top), { recursive: true, force: true });
+  }
+  for (const f of checked) {
+    const dest = path.join(root, f.rel);
+    if (!dest.startsWith(root + path.sep)) bad(`${f.rel} leaves the project directory`);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(`${dest}.part`, f.content, "utf8");
+    await rename(`${dest}.part`, dest);
+  }
+  return checked.length;
+}
+
+/** Why this job's machine cannot run the Remotion engine, or null when it can. */
+async function remotionUnavailable(ctx: JobContext): Promise<string | null> {
+  return remotionUnavailableReason(remotionDir(ctx.home));
+}
+
+/** Composition for a spec's template. Throws NonRetryableError for a template this worker has none for. */
+export function remotionCompositionFor(spec: Pick<RenderSpec, "engine" | "scenePlan">): string {
+  const template = spec.scenePlan?.template ?? "";
+  const id = Object.hasOwn(REMOTION_COMPOSITIONS, template) ? REMOTION_COMPOSITIONS[template] : undefined;
+  if (!id) {
+    const known = Object.keys(REMOTION_COMPOSITIONS).join(", ");
+    throw new NonRetryableError(
+      `Template "${template}" has no ${spec.engine} composition in this worker (${VERSION}); it has ${known}. ` +
+        `Nothing was rendered, and it is not drawn with another template instead.`,
+    );
+  }
+  return id;
+}
+
+/** Files of a Remotion render, as names inside its public dir. */
+export interface RemotionFiles {
+  /** One per shot, same order. */
+  images: Array<string | null>;
+  font: string | null;
+}
+
+/**
+ * The props the template renders from. Pure. Scenes come straight from the parsed scene plan (value and series only
+ * where declared), timing from the shots and the fade, with the same frame timeline the xfade path uses. The
+ * narration is left out: the render is muted and the narration is added afterwards exactly as for stills.
+ */
+export function buildRemotionProps(spec: RenderSpec, files: RemotionFiles): TemplateProps {
+  if (!spec.scenePlan) throw new NonRetryableError(`render-video: engine "${spec.engine}" needs a scene plan`);
+  if (files.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image entry per shot");
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  if (!plan.ok) throw new NonRetryableError(`render-video: ${plan.issues.join("; ")}`);
+  const timeline = xfadeTimeline(plan.starts, plan.totalSec, plan.transitionSec, spec.fps);
+  return {
+    template: spec.scenePlan.template,
+    width: spec.width,
+    height: spec.height,
+    fps: spec.fps,
+    transitionSec: plan.transitionSec,
+    durationSec: spec.durationSec,
+    shots: spec.shots.map((s, i) => ({ shotRef: s.shotRef, seconds: s.seconds, image: files.images[i] })),
+    scenes: spec.scenePlan.scenes.map((s) => ({ ...s, elements: s.elements.map((e) => ({ ...e })), tokens: [...s.tokens], layers: s.layers.map((l) => ({ ...l })) })),
+    captions: spec.captions.map((c) => ({ ...c })),
+    narration: null,
+    font: files.font,
+    timeline,
+  };
+}
+
+/** Browser tabs Remotion renders with. One on a 2 vCPU Muse VM, two on bigger machines, or VENSTUDIO_REMOTION_CONCURRENCY. */
+export function remotionConcurrency(env: NodeJS.ProcessEnv = process.env, cpus: number = os.cpus().length): number {
+  const asked = Number(env.VENSTUDIO_REMOTION_CONCURRENCY);
+  if (Number.isInteger(asked) && asked >= 1 && asked <= 8) return asked;
+  return cpus <= 2 ? 1 : 2;
+}
+
+/** Wall-clock limit for one Remotion render: ten minutes, or 40 s per second of video, whichever is longer. */
+export function remotionTimeoutMs(durationSec: number): number {
+  return Math.max(10 * 60_000, Math.round(durationSec * 40_000));
+}
+
+export interface RemotionRenderOptions {
+  /** The CLI entry script (node_modules/@remotion/cli/<bin>). */
+  cli: string;
+  projectDir: string;
+  composition: string;
+  propsFile: string;
+  publicDir: string;
+  output: string;
+  concurrency: number;
+}
+
+/** Arguments for `node <cli> render`. Pure. Muted H.264: the narration is added afterwards, as for stills. */
+export function remotionRenderArgs(o: RemotionRenderOptions): string[] {
+  return [
+    o.cli, "render", path.join(o.projectDir, "src", "index.ts"), o.composition, o.output,
+    `--props=${o.propsFile}`,
+    `--public-dir=${o.publicDir}`,
+    `--concurrency=${o.concurrency}`,
+    // No GPU on Muse. The templates are SVG and CSS, so software GL is only there for Chromium itself.
+    "--gl=swangle",
+    "--muted",
+    "--codec=h264",
+    "--crf=20",
+    "--timeout=120000",
+    "--log=info",
+    "--overwrite",
+  ];
+}
+
+/** ffmpeg arguments that add the narration to Remotion's muted video, with the same audio chain as the stills path. */
+export function buildMuxArgs(spec: Pick<RenderSpec, "targetLufs" | "durationSec">, video: string, narration: string, output: string): string[] {
+  return [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-i", video, "-i", narration,
+    "-filter_complex", narrationFilter(spec, 1),
+    "-map", "0:v:0", "-map", "[a]",
+    "-t", String(spec.durationSec),
+    "-c:v", "copy",
+    "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+    "-movflags", "+faststart",
+    "-progress", "pipe:1", "-nostats",
+    output,
+  ];
+}
+
+/** Path of the Remotion CLI entry script in an installed project, from its package.json "bin". */
+export async function remotionCli(dir: string): Promise<string> {
+  const pkgFile = path.join(dir, "node_modules", "@remotion", "cli", "package.json");
+  let bin: unknown;
+  try {
+    bin = (JSON.parse(await readFile(pkgFile, "utf8")) as { bin?: unknown }).bin;
+  } catch {
+    throw new NonRetryableError(`The Remotion CLI is not installed at ${dir}`);
+  }
+  const rel = typeof bin === "string" ? bin : bin && typeof bin === "object" ? (bin as Record<string, unknown>).remotion : undefined;
+  if (typeof rel !== "string") throw new NonRetryableError(`The Remotion CLI at ${dir} names no entry script`);
+  return path.join(path.dirname(pkgFile), rel);
+}
+
+/** Progress from a line of Remotion CLI output ("Rendered 120/720"), as a fraction, or null. */
+export function parseRemotionProgress(line: string, totalFrames: number): number | null {
+  const m = /(?:Rendered|Rendering frames|Encoded|Stitched)[^\d]{0,20}(\d+)\s*\/\s*(\d+)/i.exec(line);
+  if (!m) return null;
+  const total = Number(m[2]) || totalFrames;
+  return total > 0 ? Math.min(1, Number(m[1]) / total) : null;
+}
+
+/** Runs the Remotion CLI. Kills its whole process group (Chromium included) on abort or timeout. */
+function runRemotion(args: string[], cwd: string, totalFrames: number, timeoutMs: number, onProgress: (f: number) => void, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true, env: { ...process.env, CI: process.env.CI ?? "1" } });
+    let tail = "";
+    let lastReport = 0;
+    let timedOut = false;
+    const killAll = () => {
+      try {
+        if (child.pid) process.kill(-child.pid, "SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch {}
+      }, 10_000).unref();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killAll();
+    }, timeoutMs);
+    const onAbort = () => killAll();
+    signal.addEventListener("abort", onAbort, { once: true });
+    const onData = (c: string) => {
+      tail = (tail + c).slice(-6000);
+      for (const line of c.split(/\r|\n/)) {
+        const f = parseRemotionProgress(line, totalFrames);
+        if (f !== null && Date.now() - lastReport > 2000) {
+          lastReport = Date.now();
+          onProgress(f);
+        }
+      }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", onData);
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", onData);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) return reject(new Error("Aborted"));
+      if (timedOut) return reject(new Error(`Remotion did not finish within ${Math.round(timeoutMs / 60_000)} min`));
+      if (code === 0) resolve();
+      else reject(new Error(`Remotion exited with ${String(code)}: ${tail.trim().slice(-1500)}`));
+    });
+  });
+}
+
+/**
+ * Renders a remotion-2d job into `video.part.mp4` in the work dir: props and inputs into the work dir, the CLI renders
+ * a muted video from the installed project, then ffmpeg adds the narration with the stills path's audio chain.
+ */
+async function renderRemotionVideo(
+  ctx: JobContext,
+  spec: RenderSpec,
+  composition: string,
+  named: Map<string, string>,
+): Promise<{ captionsBurned: boolean; captionNote: string | null }> {
+  const dir = remotionDir(ctx.home);
+  const cli = await remotionCli(dir);
+  const props = buildRemotionProps(spec, {
+    images: spec.shots.map((s) => path.basename(named.get(s.assetId) as string)),
+    font: spec.fontAssetId ? path.basename(named.get(spec.fontAssetId) as string) : null,
+  });
+  const propsFile = path.join(ctx.workDir, "remotion-props.json");
+  await writeFile(propsFile, JSON.stringify(props));
+  const muted = path.join(ctx.workDir, "remotion.part.mp4");
+  const totalFrames = props.timeline?.totalFrames ?? Math.round(spec.durationSec * spec.fps);
+  ctx.progress(0.15, `Rendering ${composition} with Remotion`);
+  await runRemotion(
+    remotionRenderArgs({ cli, projectDir: dir, composition, propsFile, publicDir: path.join(ctx.workDir, "in"), output: muted, concurrency: remotionConcurrency() }),
+    dir,
+    totalFrames,
+    remotionTimeoutMs(spec.durationSec),
+    (f) => ctx.progress(0.15 + f * 0.65, `Rendering ${Math.round(f * 100)}%`),
+    ctx.signal,
+  );
+  if (!((await stat(muted).catch(() => null))?.size ?? 0)) throw new Error("Remotion finished but wrote no video");
+  ctx.progress(0.8, "Adding the narration");
+  await runFfmpeg(
+    buildMuxArgs(spec, muted, named.get(spec.narrationAssetId) as string, "video.part.mp4"),
+    spec.durationSec,
+    (f) => ctx.progress(0.8 + f * 0.07, "Adding the narration"),
+    ctx.signal,
+    ctx.workDir,
+  );
+  await rm(muted, { force: true });
+  return {
+    captionsBurned: spec.captions.length > 0,
+    captionNote: spec.captions.length > 0 && !spec.fontAssetId ? "no font in Assets; captions use the renderer's system font" : null,
+  };
+}
+
 async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unknown>> {
+  // Dispatch before anything else: a job for an engine this machine cannot run fails here, before a single download,
+  // and names the engine. It is never rendered as stills instead.
+  const engine = renderEngineOf(ctx.job.payload);
+  if (engine !== "ffmpeg-stills") {
+    const why = await remotionUnavailable(ctx);
+    if (why) throw new NonRetryableError(engineUnavailable(engine, [], why) as string);
+  }
   const spec = parseRenderSpec(ctx.job.payload);
+  // A template without a composition is refused here too, before the downloads.
+  const composition = spec.engine === "remotion-2d" ? remotionCompositionFor(spec) : null;
   const inDir = path.join(ctx.workDir, "in");
   await mkdir(inDir, { recursive: true });
   const canDrawText = ffmpegHasFilter("drawtext");
@@ -1153,22 +1845,26 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     (await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", path.join(ctx.workDir, narrationRel), "-af", "astats=metadata=0", "-f", "null", "-"], ctx.signal)).stderr,
   );
   const narrationClipped = peakDb !== null ? peakDb >= -0.1 : null;
-
-  const plan = buildRenderArgs(
-    spec,
-    {
-      images: spec.shots.map((s) => named.get(s.assetId) as string),
-      narration: narrationRel,
-      output: "video.part.mp4",
-      font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined,
-    },
-    { drawtext: canDrawText },
-  );
-  for (const f of plan.captionFiles) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
-
-  ctx.progress(0.15, "Rendering");
   const started = Date.now();
-  await runFfmpeg(plan.args, spec.durationSec, (f) => ctx.progress(0.15 + f * 0.7, `Rendering ${Math.round(f * 100)}%`), ctx.signal, ctx.workDir);
+  let captions: { captionsBurned: boolean; captionNote: string | null };
+  if (composition) {
+    captions = await renderRemotionVideo(ctx, spec, composition, named);
+  } else {
+    const plan = buildRenderArgs(
+      spec,
+      {
+        images: spec.shots.map((s) => named.get(s.assetId) as string),
+        narration: narrationRel,
+        output: "video.part.mp4",
+        font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined,
+      },
+      { drawtext: canDrawText },
+    );
+    for (const f of plan.captionFiles) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
+    ctx.progress(0.15, "Rendering");
+    await runFfmpeg(plan.args, spec.durationSec, (f) => ctx.progress(0.15 + f * 0.7, `Rendering ${Math.round(f * 100)}%`), ctx.signal, ctx.workDir);
+    captions = { captionsBurned: plan.captionsBurned, captionNote: plan.captionNote };
+  }
   const out = path.join(ctx.workDir, "video.mp4");
   await rename(path.join(ctx.workDir, "video.part.mp4"), out);
   const renderSeconds = (Date.now() - started) / 1000;
@@ -1182,12 +1878,18 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     width: probe.width,
     height: probe.height,
     fps: probe.fps,
+    engine: spec.engine,
+    transitionSec: spec.transitionSec,
     narrationSec: spec.narrationSec,
     narrationClipped,
     narrationPeakDb: peakDb,
     shots: spec.shots.length,
-    captionsBurned: plan.captionsBurned,
-    captionNote: plan.captionNote,
+    ...(composition ? { composition, template: spec.scenePlan?.template ?? null } : {}),
+    // Where each shot starts on the timeline. A cross-fade is not a cut qc-video's detector can see, so this is
+    // the record of where the shots change.
+    sceneStarts: sceneStartsOf(spec),
+    captionsBurned: captions.captionsBurned,
+    captionNote: captions.captionNote,
     renderSeconds: round2(renderSeconds),
     bytes: up.bytes,
     sha256: up.sha256,
@@ -1505,6 +2207,7 @@ export async function runJob(client: PortalClient, job: ClaimedJob, home: string
     const result = await handler({
       job,
       workDir,
+      home,
       signal: controller.signal,
       progress: (f, msg) => {
         lastProgress = f;
@@ -1606,7 +2309,7 @@ export async function loop(opts: {
   process.once("SIGINT", stop);
 
   try {
-    const capabilities = await detectCapabilities();
+    const capabilities = await detectCapabilities(opts.home);
     const budget = opts.mode === "daemon" ? "" : `, budget ${opts.maxMinutes} min`;
     log(`${cfg.name} v${VERSION} ${opts.mode} mode${budget}, capabilities: ${capabilities.join(", ")}`);
     let ran = 0;
@@ -1663,7 +2366,7 @@ export async function loop(opts: {
 
 export async function enroll(opts: { home: string; portal: string; code: string; name: string }) {
   const client = new PortalClient(opts.portal);
-  const capabilities = await detectCapabilities();
+  const capabilities = await detectCapabilities(opts.home);
   const res = await client.json<EnrollResponse>("POST", "/api/worker/enroll", {
     code: opts.code,
     name: opts.name,
@@ -1680,7 +2383,9 @@ async function status(home: string) {
   console.log(JSON.stringify({ name: cfg.name, workerId: cfg.workerId, portalUrl: cfg.portalUrl, version: VERSION, home }, null, 2));
   const res = await fetch(`${cfg.portalUrl}/api/health`, { signal: AbortSignal.timeout(10_000) });
   console.log(`portal health: HTTP ${res.status}`);
-  console.log(`capabilities: ${(await detectCapabilities()).join(", ")}`);
+  console.log(`capabilities: ${(await detectCapabilities(home)).join(", ")}`);
+  const why = await remotionUnavailableReason(remotionDir(home));
+  console.log(`remotion-2d: ${why ? `no (${why})` : `yes (${remotionDir(home)})`}`);
 }
 
 export function parseArgs(argv: string[]) {
@@ -1707,7 +2412,8 @@ Usage:
   node venstudio-worker.ts hold   [--max-minutes 55]   stay online for the budget (Muse hourly task)
   node venstudio-worker.ts daemon [--poll 30]
   node venstudio-worker.ts status
-Env: VENSTUDIO_HOME, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
+  node venstudio-worker.ts unpack-bundle --file <bundle.json> --dir <dir>   (used by install.sh --with-remotion)
+Env: VENSTUDIO_HOME, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
 
 /**
  * Node's fetch only uses HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1 is set at startup.
@@ -1739,6 +2445,13 @@ export async function main(argv: string[]) {
       return loop({ home, mode: "daemon", maxMinutes: Infinity, pollSeconds: Number(flags.poll ?? 30) });
     case "status":
       return status(home);
+    case "unpack-bundle": {
+      // Used by install.sh --with-remotion.
+      if (!flags.file || !flags.dir) throw new Error("unpack-bundle needs --file and --dir");
+      const count = await writeProjectBundle(JSON.parse(await readFile(flags.file, "utf8")), flags.dir);
+      log(`unpacked ${count} files into ${path.resolve(flags.dir)}`);
+      return;
+    }
     default:
       console.log(HELP);
   }

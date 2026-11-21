@@ -68,13 +68,16 @@ export async function createJob(input: {
   priority?: number;
   /** Null for jobs the engine creates on its own. */
   createdBy: string | null;
+  /** Overrides the type's capability, e.g. a render-video job for an engine that needs more than ffmpeg. */
+  capability?: Capability;
 }) {
   const def = JOB_TYPES[input.type];
+  const capability: Capability = input.capability ?? def.capability;
   const sql = db();
   const [job] = await sql`
     INSERT INTO jobs (type, capability, payload, channel_id, preferred_worker_id, priority, created_by)
     VALUES (
-      ${input.type}, ${def.capability}, ${JSON.stringify(input.payload ?? {})}::text::jsonb,
+      ${input.type}, ${capability}, ${JSON.stringify(input.payload ?? {})}::text::jsonb,
       ${input.channelId ?? null},
       (SELECT home_worker_id FROM channels WHERE id = ${input.channelId ?? null}),
       ${input.priority ?? 0}, ${input.createdBy}
