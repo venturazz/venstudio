@@ -790,6 +790,9 @@ try {
   if (!ideaAsk.includes("language code en")) throw new Error("the idea prompt does not name the narration language");
   if (!/one episode of a recurring series/.test(ideaAsk)) throw new Error("the idea prompt does not steer the series purpose");
   await page.goto(`${APP}${startedHref}`);
+  // The section is collapsed; open it like the owner would, so innerText includes the list.
+  await page.getByTestId("run-settings").locator("summary").click();
+  await page.getByTestId("run-settings").locator("dl").waitFor();
   const settingsText = await page.getByTestId("run-settings").innerText();
   for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF]) {
     if (!settingsText.includes(want)) throw new Error(`the run settings miss "${want}": ${settingsText.replace(/\s+/g, " ")}`);

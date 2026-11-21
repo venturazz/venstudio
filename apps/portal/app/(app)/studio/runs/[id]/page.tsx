@@ -99,7 +99,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         </div>
       )}
       <details className="mb-4 rounded-lg border border-border px-3 py-2 text-sm" data-testid="run-settings">
-        <summary className="min-h-8 cursor-pointer py-1 font-medium">Video settings</summary>
+        <summary className="flex min-h-11 cursor-pointer items-center font-medium">Video settings</summary>
         <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-[auto_minmax(0,1fr)]">
           {runSettings(parseRunConfig(run.config)).map((r) => (
             <div key={r.label} className="contents">
