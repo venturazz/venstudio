@@ -100,6 +100,42 @@ test("validateScript accepts a good script and rejects each class of bad input",
   bad(validateScript("nope"), "Expected an object");
 });
 
+test("validateStoryboard takes an on-screen spec, and refuses one it cannot draw", () => {
+  const base = { beatRole: "body", seconds: 4, description: "A bar rises.", imagePrompt: "plate" };
+  const good = validateStoryboard({
+    shots: [
+      { ...base, onScreen: { elements: [{ kind: "bar", text: "yield", series: [0.2, 0.5, 0.9] }, { kind: "counter", value: 1400 }], tokens: ["bar", "counter"] } },
+      { ...base },
+    ],
+  });
+  assert.equal(good.ok, true);
+  if (good.ok) {
+    assert.deepEqual(good.value.shots[0].onScreen?.elements[0], { kind: "bar", text: "yield", series: [0.2, 0.5, 0.9] });
+    assert.equal(good.value.shots[0].onScreen?.tokens?.length, 2);
+    assert.equal(good.value.shots[1].onScreen, undefined);
+  }
+
+  const badKind = validateStoryboard({ shots: [{ ...base, onScreen: { elements: [{ kind: "explosion" }] } }] });
+  assert.equal(badKind.ok, false);
+  assert.match(badKind.ok ? "" : badKind.issues.join(" | "), /kind must be one of/);
+
+  const badToken = validateStoryboard({ shots: [{ ...base, onScreen: { elements: [{ kind: "bar" }], tokens: ["spin"] } }] });
+  assert.equal(badToken.ok, false);
+  assert.match(badToken.ok ? "" : badToken.issues.join(" | "), /not motion tokens/);
+
+  const badSeries = validateStoryboard({ shots: [{ ...base, onScreen: { elements: [{ kind: "bar", series: ["a"] }] } }] });
+  assert.equal(badSeries.ok, false);
+  assert.match(badSeries.ok ? "" : badSeries.issues.join(" | "), /series must be/);
+
+  const empty = validateStoryboard({ shots: [{ ...base, onScreen: { elements: [] } }] });
+  assert.equal(empty.ok, false);
+  assert.match(empty.ok ? "" : empty.issues.join(" | "), /must hold 1 to 6 items/);
+
+  const tooMany = validateStoryboard({ shots: [{ ...base, onScreen: { elements: Array.from({ length: 8 }, () => ({ kind: "bar" })) } }] });
+  assert.equal(tooMany.ok, false);
+  assert.match(tooMany.ok ? "" : tooMany.issues.join(" | "), /more than 6/);
+});
+
 test("validateStoryboard accepts a good sample and rejects each class of bad input", () => {
   assert.equal(validateStoryboard({ shots: [shot] }).ok, true);
   bad(validateStoryboard({ shots: [] }), "1 to");

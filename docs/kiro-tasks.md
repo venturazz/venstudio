@@ -132,11 +132,17 @@ Bentuk `Scene` yang akan kamu render:
 
 ```
 { shotRef, seconds, beatRole,
-  elements: [{ kind, text? }],        // apa yang ada di layar
+  elements: [{ kind, text?, value?, series? }],  // apa yang ada di layar
   tokens: ["draw","counter",…],       // apa yang bergerak, ditafsirkan template
   camera: boolean,                    // kamera ikut bergerak
   layers: [{ id, frames, fps }] }     // clock per-layer; frames 1 = tidak berubah
 ```
+
+**Penting soal `value`/`series`:** keduanya datang dari storyboard (`Shot.onScreen`) kalau model
+mendeklarasikannya — counter punya `value` (angka yang ia capai), bar/gauge punya `series` (daftar
+nilai yang diplot). Kalau model tidak mendeklarasikan, `elements` diturunkan dari prosa dan **tidak
+punya** `value`/`series`. Jadi template wajib menangani elemen tanpa data: gambar batang netral, jangan
+mengasumsikan `series`/`value` selalu ada.
 
 `shotRef` sama persis dengan `payload.shots[].shotRef` (`shot-01`, `shot-02`, …), jadi urutan scene
 dan urutan gambar selalu sejajar.

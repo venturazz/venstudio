@@ -8,6 +8,7 @@
 import { THEME_BY_ID, type Format } from "./catalog.ts";
 import type { BeatRole, Template } from "./templates.ts";
 import { bareProviderName, HERMES_IMAGE_PLUGINS, isShotNeed, SHOT_NEEDS, type ShotNeed } from "./providers.ts";
+import { MOTION_TOKENS, isMotionToken } from "./render-engine.ts";
 
 export type Validated<T> = { ok: true; value: T } | { ok: false; issues: string[] };
 
@@ -40,6 +41,36 @@ export interface ScriptOutput {
   script: string;
 }
 
+/**
+ * Vocabulary for what a shot puts on screen. It lives at the storyboard boundary because this is
+ * where a shot first says what it shows; the meaning of each kind lives with the template.
+ */
+export const ELEMENT_KINDS = ["plate", "heading", "callout", "counter", "bar", "gauge", "arrow", "tally", "particles", "diagram"] as const;
+export type ElementKind = (typeof ELEMENT_KINDS)[number];
+
+export const MAX_ELEMENTS = 6;
+export const MAX_ELEMENT_TEXT = 120;
+export const MAX_ELEMENT_SERIES = 6;
+export const MAX_ELEMENT_TOKENS = 4;
+
+/** One thing drawn on screen during a shot. */
+export interface ShotElement {
+  kind: ElementKind;
+  /** A label, or the number shown. */
+  text?: string;
+  /** For `counter`: the number it counts to. */
+  value?: number;
+  /** For `bar` and `gauge`: the values it plots. */
+  series?: number[];
+}
+
+/** What a shot draws and how it moves, when the storyboard is explicit instead of leaving it to the renderer. */
+export interface OnScreenSpec {
+  elements: ShotElement[];
+  /** Motion tokens the template should play. */
+  tokens?: string[];
+}
+
 export interface Shot {
   beatRole: BeatRole;
   seconds: number;
@@ -49,6 +80,11 @@ export interface Shot {
   provider?: string;
   /** Optional capability this shot needs from the backend (SHOT_NEEDS). */
   needs?: ShotNeed;
+  /**
+   * What the shot draws. Without it a renderer derives elements from the description, which is a
+   * guess; with it the template gets the real content.
+   */
+  onScreen?: OnScreenSpec;
 }
 export interface StoryboardOutput {
   shots: Shot[];
@@ -87,6 +123,66 @@ const DIRECTOR_STAGES: readonly DirectorStage[] = ["idea", "research", "script",
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Validates a shot's on-screen declaration. Absent is fine; present must be usable. */
+function onScreenSpec(v: unknown, n: number, issues: string[]): OnScreenSpec | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (!isRecord(v)) {
+    issues.push(`Shot ${n} onScreen must be an object`);
+    return undefined;
+  }
+  const rawElements = v.elements;
+  if (!Array.isArray(rawElements) || rawElements.length === 0) {
+    issues.push(`Shot ${n} onScreen.elements must hold 1 to ${MAX_ELEMENTS} items`);
+    return undefined;
+  }
+  if (rawElements.length > MAX_ELEMENTS) issues.push(`Shot ${n} onScreen.elements holds ${rawElements.length} items, more than ${MAX_ELEMENTS}`);
+  const elements: ShotElement[] = [];
+  rawElements.slice(0, MAX_ELEMENTS).forEach((e, i) => {
+    const at = `Shot ${n} onScreen.elements[${i + 1}]`;
+    if (!isRecord(e)) {
+      issues.push(`${at} must be an object`);
+      return;
+    }
+    const kind = ELEMENT_KINDS.find((k) => k === e.kind);
+    if (kind === undefined) {
+      issues.push(`${at} kind must be one of ${ELEMENT_KINDS.join(", ")}`);
+      return;
+    }
+    const out: ShotElement = { kind };
+    if (e.text !== undefined) {
+      const t = text(e.text, `${at} text`, MAX_ELEMENT_TEXT, issues);
+      if (t) out.text = t;
+    }
+    if (e.value !== undefined) {
+      if (typeof e.value !== "number" || !Number.isFinite(e.value)) issues.push(`${at} value must be a number`);
+      else out.value = e.value;
+    }
+    if (e.series !== undefined) {
+      const raw = Array.isArray(e.series) ? e.series : [];
+      const nums = raw.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+      if (nums.length !== raw.length || nums.length === 0) issues.push(`${at} series must be 1 to ${MAX_ELEMENT_SERIES} numbers`);
+      else if (nums.length > MAX_ELEMENT_SERIES) issues.push(`${at} series holds ${nums.length} values, more than ${MAX_ELEMENT_SERIES}`);
+      else out.series = nums;
+    }
+    elements.push(out);
+  });
+  if (elements.length === 0) return undefined;
+
+  let tokens: string[] | undefined;
+  if (v.tokens !== undefined) {
+    const raw = Array.isArray(v.tokens) ? v.tokens : [];
+    if (!Array.isArray(v.tokens)) issues.push(`Shot ${n} onScreen.tokens must be a list of names`);
+    else if (raw.length > MAX_ELEMENT_TOKENS) issues.push(`Shot ${n} onScreen.tokens holds ${raw.length} names, more than ${MAX_ELEMENT_TOKENS}`);
+    const unknownTokens = raw.filter((t) => typeof t !== "string" || !isMotionToken(t));
+    if (unknownTokens.length > 0) {
+      issues.push(`Shot ${n} onScreen.tokens has names that are not motion tokens: ${unknownTokens.join(", ")}. Use ${MOTION_TOKENS.join(", ")}.`);
+    } else if (raw.length <= MAX_ELEMENT_TOKENS) {
+      tokens = raw as string[];
+    }
+  }
+  return tokens ? { elements, tokens } : { elements };
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {
@@ -243,7 +339,8 @@ export function validateStoryboard(value: unknown, check: StoryboardCheck = {}):
     } else seconds = r.seconds;
     const description = text(r.description, `Shot ${n} description`, 500, issues);
     const imagePrompt = text(r.imagePrompt, `Shot ${n} imagePrompt`, 600, issues);
-    shots.push({ beatRole, seconds, description, imagePrompt, ...shotPreference(r, n, check, notes) });
+    const onScreen = onScreenSpec(r.onScreen, n, issues);
+    shots.push({ beatRole, seconds, description, imagePrompt, ...shotPreference(r, n, check, notes), ...(onScreen ? { onScreen } : {}) });
   });
   return finish(issues, notes.length > 0 ? { shots, notes: notes.slice(0, 20) } : { shots });
 }
@@ -507,7 +604,8 @@ export function storyboardPrompt(ctx: DirectorContext, script: string, retryHint
         "imagePrompt describes one still image in plain words. It names no real person, no brand and no copyrighted character.",
         ...channelLines(ctx),
         ...templateLines(ctx),
-        'Schema: {"shots":[{"beatRole":string,"seconds":number,"description":string,"imagePrompt":string,"provider"?:string,"needs"?:string}]}',
+        `onScreen says what the shot actually draws, and it is worth filling in for any shot that is not just a picture. kind is one of ${ELEMENT_KINDS.join(", ")}: a counter for a number that climbs, bar or gauge with series for the values it plots, arrow or callout to point at something. tokens name the motion, one of ${MOTION_TOKENS.join(", ")}. Leave onScreen out rather than guess.`,
+        `Schema: {"shots":[{"beatRole":string,"seconds":number,"description":string,"imagePrompt":string,"provider"?:string,"needs"?:string,"onScreen"?:{"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[]}],"tokens"?:string[]}}]}`,
         "provider and needs are optional. Leave both out unless a shot really needs a particular image backend: you know which of your skills and backends suit which picture.",
         `provider names the image backend that should make this shot first${backends.length ? ", taken from the DATA block of backends" : ""}. A name Hermes has not reported is dropped.`,
         `needs is one of ${SHOT_NEEDS.join(", ")}: reference-edit keeps a subject from a reference image, text-layout is a designed card with legible words, photoreal is a photographic look, portrait-native is a true vertical frame.`,

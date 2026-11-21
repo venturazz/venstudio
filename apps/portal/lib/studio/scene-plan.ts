@@ -10,7 +10,8 @@
  * the template components — lives with the renderer.
  */
 import { ENGINES, STYLE_BY_ID, VIDEO_FORMATS, type Family, type Format, type Style } from "./catalog.ts";
-import type { Shot } from "./director.ts";
+import { MAX_ELEMENTS, type ElementKind, type Shot, type ShotElement } from "./director.ts";
+export type { ElementKind, ShotElement };
 import type { BeatRole } from "./templates.ts";
 import {
   DEFAULT_TRANSITION_SEC,
@@ -18,12 +19,13 @@ import {
   engineIssues,
   engineMotionIssues,
   fitTransitionSec,
+  isMotionToken,
   parseMotionTokens,
   type MotionToken,
 } from "./render-engine.ts";
 
 export const MAX_SCENES = 80;
-export const MAX_ELEMENTS_PER_SCENE = 6;
+export const MAX_ELEMENTS_PER_SCENE = MAX_ELEMENTS;
 export const MAX_ELEMENT_CHARS = 140;
 export const MAX_ISSUES_REPORTED = 8;
 
@@ -39,13 +41,8 @@ export const PROP_CLOCKS: readonly { id: string; frames: number; fps: number }[]
  * Elements a template can draw. `plate` is the still the scene sits on; the rest are drawn or
  * animated over it.
  */
-export type ElementKind = "plate" | "heading" | "callout" | "counter" | "bar" | "gauge" | "arrow" | "tally" | "particles" | "diagram";
-
-export interface SceneElement {
-  kind: ElementKind;
-  /** Text the element shows, when it shows text. */
-  text?: string;
-}
+/** An element in a scene. The same shape the storyboard declares, so nothing is lost on the way. */
+export type SceneElement = ShotElement;
 
 /** One layer of a scene, with its own clock. A layer of 1 frame never changes. */
 export interface SceneLayer {
@@ -152,20 +149,30 @@ function sceneFor(shot: Shot, index: number, style: Style, size: { width: number
   const shotRef = `shot-${String(index + 1).padStart(2, "0")}`;
   const text = `${shot.description} ${shot.imagePrompt}`;
   const declared = parseMotionTokens(text);
-  // A stills engine cannot interpret element tokens, so it gets the one token that means a camera
-  // move, and the old four linear Ken Burns moves keep doing the rest.
-  const tokens: MotionToken[] = animates ? unique<MotionToken>([...(ROLE_TOKENS[shot.beatRole] ?? []), ...declared]) : unique<MotionToken>(["drift", ...declared.filter((t) => CAMERA_ONLY_TOKENS.includes(t))]);
+  const told = (shot.onScreen?.tokens ?? []).filter(isMotionToken);
+  // A declared spec is what the model actually meant; tokens read out of the prose are the fallback.
+  // A stills engine only ever moves the camera, so it gets `drift` and nothing else.
+  const tokens: MotionToken[] = animates
+    ? told.length > 0
+      ? unique<MotionToken>(told)
+      : unique<MotionToken>([...(ROLE_TOKENS[shot.beatRole] ?? []), ...declared])
+    : unique<MotionToken>(["drift", ...declared.filter((t) => CAMERA_ONLY_TOKENS.includes(t))]);
   const camera = !animates || shot.beatRole === "hook" || index % Math.max(1, cameraEvery) === 0;
 
+  const toldElements = shot.onScreen?.elements ?? [];
   const elements: SceneElement[] = [];
-  const heading = firstLine(shot.description);
-  if (heading) elements.push({ kind: "heading", text: heading });
-  if (style.assetKinds.includes("image")) elements.push({ kind: "plate" });
-  const nums = numbersIn(text);
-  if (nums.length > 0) elements.push({ kind: "counter", text: nums.slice(0, 4).join(", ") });
-  for (const t of tokens) {
-    const kind = TOKEN_ELEMENT[t];
-    if (kind && !elements.some((e) => e.kind === kind)) elements.push({ kind });
+  if (toldElements.length > 0) {
+    for (const e of toldElements.slice(0, MAX_ELEMENTS_PER_SCENE)) elements.push({ ...e });
+  } else {
+    const heading = firstLine(shot.description);
+    if (heading) elements.push({ kind: "heading", text: heading });
+    if (style.assetKinds.includes("image")) elements.push({ kind: "plate" });
+    const nums = numbersIn(text);
+    if (nums.length > 0) elements.push({ kind: "counter", text: nums.slice(0, 4).join(", ") });
+    for (const t of tokens) {
+      const kind = TOKEN_ELEMENT[t];
+      if (kind && !elements.some((e) => e.kind === kind)) elements.push({ kind });
+    }
   }
 
   return {

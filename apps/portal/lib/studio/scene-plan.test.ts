@@ -180,3 +180,28 @@ test("renderParamsForStyle answers for a style and null for an unknown one", () 
   assert.equal(stills?.elementAnimation, false);
   assert.equal(renderParamsForStyle("nope"), null);
 });
+
+test("a declared on-screen spec outranks what the prose suggests", () => {
+  const s = shot("body", 5, "This line mentions no numbers at all.", "a plate");
+  s.onScreen = { elements: [{ kind: "bar", text: "yield", series: [0.3, 0.8] }, { kind: "callout", text: "the point" }], tokens: ["bar"] };
+  const r = buildScenePlan({ styleId: "explainer-flat-vector", format: "short", shots: [s] });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const scene = r.plan.scenes[0];
+  assert.deepEqual(scene.tokens, ["bar"]);
+  assert.deepEqual(scene.elements, [
+    { kind: "bar", text: "yield", series: [0.3, 0.8] },
+    { kind: "callout", text: "the point" },
+  ]);
+});
+
+test("a stills engine keeps the declared content but drops its motion", () => {
+  const s = shot("body", 5, "A bar rises.");
+  s.onScreen = { elements: [{ kind: "bar", series: [1, 2] }], tokens: ["bar"] };
+  const r = buildScenePlan({ styleId: "documentary-stills", format: "short", shots: [s] });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.deepEqual(r.plan.scenes[0].elements, [{ kind: "bar", series: [1, 2] }]);
+  assert.deepEqual(r.plan.scenes[0].tokens, ["drift"]);
+  assert.equal(r.plan.scenes[0].camera, true);
+});
