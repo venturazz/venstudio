@@ -67,7 +67,7 @@ Gate pass tests are in section 4 of the research doc and are encoded as pure fun
 | publish | portal |
 | learn | portal (metrics into template stats) |
 
-## 3. Data model (migrations 0007 to 0011)
+## 3. Data model (migrations 0007 to 0013)
 
 All tables use `uuid` primary keys and `timestamptz` times, matching existing migrations. Append-only numbered SQL;
 `scripts/e2e.sh` asserts a second migrate run says "up to date".
@@ -137,6 +137,12 @@ As built in `0011_hermes_pacing.sql`: `hermes_gate` is a one-row table (`id` tex
 gains `not_before`, and `work_orders` gains `not_before` and `wait_reason`. `scripts/e2e.sh` checks the tables, the
 idle gate row, the columns and the failure-class check. See section 5, Pacing and endpoint health.
 
+As built in `0013_speech_rates.sql`: `voice_speech_rates` (`id`, `voice_key` = provider|model|voice lower case,
+`provider`, `model`, `voice`, `language`, `words`, `seconds`, `wpm`, `source` of `narration` or `test`, `run_id` null on
+delete, `created_at`; indexes on (`voice_key`, `created_at`) and (`language`, `created_at`)). Additive only. One row per
+measured narration and per Settings **Test voice**, written by the portal, never from a model's claim. See section 5,
+Voice length. `scripts/e2e.sh` checks the table, its columns, the `source` and length checks, and that it starts empty.
+
 Template Lab server path (no UI yet, UI is Phase 7): `lib/server/template-lab.ts` `blendDraft(jobIds, baseStyleId)` reads
 the `analysis.json` of succeeded `analyze-video` jobs, blends the numeric fingerprints, runs the originality guard and
 saves a `draft` template. A draft stays a draft; `readyForTrials` is true only with three or more samples.
@@ -146,7 +152,7 @@ saves a `draft` template. A draft stays a draft; `readyForTrials` is true only w
 | Job type | Phase | Runs on | Purpose | Verified |
 |---|---|---|---|---|
 | `qc-video` | 2 | worker | ffprobe, ebur128, blackdetect, silencedetect, freezedetect, keyframe extraction; returns a measurement report for `G-technical`. Takes `productionId` or `runId` | In CI (`scripts/e2e.sh`) |
-| `render-video` | 4 | worker (ffmpeg) | Renders ordered stills with a gentle zoom, the narration WAV and captions to `video.mp4` (x264 veryfast, 2 threads, loudnorm). Shots must add up to the narration length within 1 s | Code and offline tests. Real render runs in CI (`scripts/e2e.sh`, then `scripts/ui-e2e.mjs`). Not yet run on a Muse VM |
+| `render-video` | 4 | worker (ffmpeg) | Renders ordered stills with a gentle zoom, the narration WAV and captions to `video.mp4` (x264 veryfast, 2 threads, loudnorm). Shots must add up to the narration length within 1 s. Worker 0.6.0: an optional `narrationTempo` (portal 0.9 to 1.15, worker accepts 0.8 to 1.25) plays the narration at that tempo with `atempo` before `loudnorm`, on every engine; `narrationSec` is then the played length and the 1 s check compares file length / tempo. Absent field: byte-identical arguments (golden test) | Code and offline tests. Real render runs in CI (`scripts/e2e.sh`, then `scripts/ui-e2e.mjs`). Not yet run on a Muse VM |
 | `fetch-asset` | 4 | any worker (capability `echo`) | Downloads one CC0 or public-domain image or audio file from an allowlisted host, checks magic bytes, hashes it, uploads it | Offline tests with a local server. Never run against a real host |
 | `tts` | 4 | worker that sets `VENSTUDIO_KOKORO_URL` | Narration chunks through Kokoro to `narration.wav` | Offline tests. The portal does not create it: it speaks in-process, so no key reaches a worker |
 | `agent-task` | 4 | Muse worker, hold mode, `VENSTUDIO_AGENT_TASKS=1` | Hands a work order to the Muse agent through the inbox (section 6) | **UNVERIFIED** |
@@ -294,6 +300,58 @@ Per-stage trade-off:
 response carries an `x-9router-connection-id` header. Poll for the result with that value sent as `x-connection-id`.
 HTTP 403 means the account has no video access. Do not retry the creation POST on a timeout, because it may have
 billed.
+
+### Voice length (migration 0013, worker 0.6.0)
+
+The problem this solves: the owner's Kokoro voice speaks about 130 words a minute, the studio estimated every
+narration at a fixed 150, and `G-voice` failed any narration more than 10 percent off that guess. A deterministic voice
+then failed the same way on every revision, and Reject threw the finished images away.
+
+**What the voice gate judges** (`voiceAssessment` in `lib/studio/qc.ts`, length rules in `lib/studio/voice-fit.ts`):
+- Fails: an unknown or uncovered language, clipped samples, a narration (as played) outside the format's
+  `VIDEO_FORMATS` duration, a narration the approved storyboard's shots cannot cover even stretched to the template's
+  `maxShotSeconds` or shrunk to `MIN_SHOT_SECONDS` (the same `maxCoverSec` and `COVER_TOLERANCE_SEC` the render planner
+  and the storyboard gate use), and a narration more than 40 percent off its estimate (`VOICE_GROSS_MISMATCH`: calm and
+  quick narrators differ by about 25 percent, so 40 points at cut-off, padded or wrong-language audio).
+- A note, not a failure: more than 10 percent off the estimate. The note is on the card (`payload.notes`) and in the
+  stored `G-voice` report (`details.notes`).
+- Provider terms are added as before (`providerTermsIssues`).
+
+**Learned speech rate** (`lib/studio/speech-rate.ts`, `lib/server/speech-rate.ts`). Every measured narration and every
+**Test voice** (now about 40 words, so silence at the ends hardly matters) records words per minute for its voice.
+Samples under 25 words or outside 60 to 260 words a minute are not recorded. The pace is the median of the newest 5
+samples of a voice once it has 3, clamped to 100 to 200; otherwise 150. The script and storyboard stages use the pace
+of the voice that spoke last for the run's language (the voice chain is the same for every run, so that is the voice
+the run will most likely get) in their prompts and gates; the voice gate uses the pace of the voice that really spoke,
+read before its own sample is recorded. Trade-off: the run's voice is predicted, not known, before the voice stage; a
+different voice only changes the estimate, and a wrong estimate is now a note.
+
+**Fixes on a voice card that does not fit** (`decisionOptions` in `lib/studio/review.ts`):
+
+| Button | When | What it does | What is kept |
+|---|---|---|---|
+| **Fit the narration to the video** | a format or shots problem, the tempo needed is within 0.9 to 1.15, and every render worker reports `narration-tempo` (0.6.0+) | sets `tempo` on the voice result under the review locks (`recheckReview` with `fit`), runs the gate on the played length and concludes like a re-check | the narration, the storyboard, every image |
+| **Tighten the script, keep the pictures** (or **Lengthen ...**) | a format or shots problem with a length that fits | a new voice attempt with `output.tighten`; the voice stage asks Hermes (`VENSTUDIO_STAGE: script-fit`, through the gate) to rewrite the approved script to the target words (planned storyboard length kept inside the format and the shots, at this voice's measured pace) keeping every beat in order, stores it as the newest passed `script` attempt, then speaks it | the storyboard, every work order and image |
+| **Approve anyway** (owner only) | every problem is soft (the gross mismatch) and no terms issue is open | approves the stage with `override` (who, when, issues) in its output; audit `review.override` | everything |
+| **Check again** | every voice gate failure | the gate runs again on the saved narration with the current rules and terms; nothing is recorded again | everything |
+| **Make the voice again** | not for a card whose only problems are its length (the same voice would come back the same) | as before | the script |
+
+The render reads `tempo` from the passed voice result: it plans shots and captions for `narrationSec / tempo` and adds
+`narrationTempo` to the payload. A render with a tempo fails at planning with "every render worker must be 0.6.0 or
+later" if an enrolled worker cannot apply it (a job is queued under one capability, so an older worker could otherwise
+claim it and ignore the field). Without a fit the payload is unchanged. Clipping, language, terms and copyright problems
+are never approvable, and a length problem is not either (the render could not fit it).
+
+**Send revision on a voice card** (`voiceRevisionRoute`): a note about length or speed ("shorter", "too long",
+"faster", "fit", "seconds" ...) takes the Tighten path with the note as a DATA block; a note about the voice ("voice",
+"accent", "robotic" ...) records the voice again; anything else is sorted as before (`revisionTarget`). Before this, a
+"shorter" note went back to the script and the storyboard, which replaced every work order and image.
+
+**Cards made before this change** carry no fix details; **Check again** leads on them and judges the saved narration by
+these rules, so a run stuck on "limit 10 percent" continues without making anything again.
+
+**Reject** says what it does: it cancels the run; the images and narration already made stay in Assets. Reusing a
+cancelled run's assets in a new run is a later feature (not built).
 
 ### Calling Hermes
 The portal posts to `/v1/chat/completions` (model `hermes-agent`, `stream: false`, 180 s timeout) from
@@ -481,6 +539,8 @@ Phase 4 cards (`ReviewPayload.media` and `.checks`):
   provider is not confirmed, a notice links to Settings (a 44 px link). The card is a gate-failure item with **Retry**
   until the owner confirms the provider, then an approval item.
 - **Voice**: an `<audio controls>` player and the voice provider, plus the same terms notice (Kokoro is a provider too).
+  Length notes (`data-testid="review-notes"`), and on a gate failure the voice fixes of section 5, Voice length. Reject
+  carries the hint that the work stays in Assets.
 - **Video** and **Quality check**: a `<video controls playsInline>` player, the one-line results of each check, and a
   note that the presentation check is manual in Phase 4.
 
@@ -553,6 +613,17 @@ Not verified, because it needs the owner's live systems:
 - Muse agent tasks (research tests 12 to 16). Behind a flag, off by default.
 - `G-presentation` (vision). Not built; the owner watches the video and decides.
 - Non-English Kokoro voices, and a full-length render on a Muse VM (2 vCPU, 8 GB, no GPU).
+
+### After deploying the voice-length fix (migration 0013, worker 0.6.0)
+1. Check the container log says migration `0013_speech_rates.sql` applied.
+2. Review: on the voice card that says "limit 10 percent", press **Check again**. The narration that is already made is
+   judged by the new rules; nothing is recorded or drawn again. If it fits the shots the length becomes a note and the
+   run continues (or asks you to approve the voice). If the shots cannot cover it, the new card offers **Tighten the
+   script, keep the pictures** at once, and **Fit the narration to the video** once the Muse worker is 0.6.0.
+3. Update the Muse worker to 0.6.0 (same install command, without `--code`) so Fit can be offered; the Workers page
+   shows the `narration-tempo` capability. Not needed for Check again or Tighten.
+4. Press **Test voice** in Settings three times over the next runs (or just make videos): after three measured
+   recordings the studio sizes scripts with your voice's real pace.
 
 ### After deploying the pacing fix (migration 0011)
 1. Check the container log says migration `0011_hermes_pacing.sql` applied.
