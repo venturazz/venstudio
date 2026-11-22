@@ -1781,7 +1781,7 @@ try {
       if (ambient !== "brown") throw new Error(`the render job's mix has no ambience (${ambient})`);
       if (listed !== "true") throw new Error("the music track is not among the render job's inputs, so the worker could not download it");
       if (styled !== "true") throw new Error("the render job carries no captionStyle, though the worker reports caption-style");
-      const result = dbValue(`SELECT coalesce(result->'audioMix'->'bed'->>'assetId', 'none') FROM jobs WHERE type = 'render-video' AND payload ? 'runId' ORDER BY created_at DESC LIMIT 1`);
+      const result = dbValue(`SELECT coalesce(result->'audioMix'->'bed'->>'assetId', 'none') FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${productionRunIdForBed}' ORDER BY created_at DESC LIMIT 1`);
       if (result !== musicId) throw new Error(`the worker did not report mixing the bed (result.audioMix.bed = ${result})`);
       const licence = dbValue(`SELECT license FROM assets WHERE kind = 'video' AND metadata->>'executor' = 'render-video' ORDER BY created_at DESC LIMIT 1`) ?? "";
       if (!licence.includes("Music bed: Test music bed (uploaded from https://example.com/venstudio-test-music): Own composition for tests, all rights")) {
