@@ -22,6 +22,8 @@ export WORKER_DIR="$WORK/src/worker"
 
 fail() { echo "E2E FAIL: $*" >&2; [ -f "$WORK/portal.log" ] && tail -n 80 "$WORK/portal.log" >&2; exit 1; }
 q() { psql "$DATABASE_URL" -qtAX -v ON_ERROR_STOP=1 -c "$1"; }
+# A pack's version as vendored in styles/lock.json, so these checks follow pack bumps instead of hard-coding them.
+pack_version() { node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const p=(l.packs||[]).find((x)=>x.id===process.argv[2]) || (l.packs&&l.packs[process.argv[2]]); if(!p||!p.version){process.exit(1)} console.log(p.version)' "$ROOT/styles/lock.json" "$1"; }
 
 echo "== migrate"
 node "$ROOT/apps/portal/scripts/migrate.mjs"
@@ -110,11 +112,12 @@ q "SELECT result FROM jobs WHERE id = '$SMOKE_JOB'"
 echo "== the worker reports each installed stills pack once its probe (ffmpeg with xfade) passes, and no Remotion pack without Remotion"
 CAPS=$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")
 for P in documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud; do
-  grep -qF "pack:$P@1.0.0" <<<"$CAPS" || fail "the worker does not report pack:$P@1.0.0 (capabilities: $CAPS)"
+  PV=$(pack_version "$P") || fail "styles/lock.json has no version for $P"
+  grep -qF "pack:$P@$PV" <<<"$CAPS" || fail "the worker does not report pack:$P@$PV (capabilities: $CAPS)"
 done
 if grep -qF "pack:explainer-flat-vector@" <<<"$CAPS"; then fail "a worker without Remotion reports the Remotion pack"; fi
 # A render queued under a pack capability is claimed only by a worker reporting it.
-PACK_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','pack:explainer-flat-vector@1.0.0') RETURNING id")
+PACK_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','pack:explainer-flat-vector@$(pack_version explainer-flat-vector)') RETURNING id")
 "$WORK/worker/run.sh" tick || fail "tick with a pack job exited non-zero"
 [ "$(q "SELECT status FROM jobs WHERE id = '$PACK_JOB'")" = "queued" ] || fail "a worker without the pack claimed its job"
 q "UPDATE jobs SET status = 'cancelled' WHERE id = '$PACK_JOB'" >/dev/null
@@ -526,7 +529,7 @@ grep -q "style packs [0-9a-f]\{12\}: signature and checksum verified" "$LOGF" ||
 [ "$(wq version)" = "$CURRENT" ] || fail "installing packs changed the worker version"
 expect_live "$(fsha "$PRISTINE")" "installing packs changed the worker file"
 run_tick "after the packs update"
-grep -qF "pack:documentary-stills@1.0.0" <<<"$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")" || fail "the worker does not report its packs after the update"
+grep -qF "pack:documentary-stills@$(pack_version documentary-stills)" <<<"$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")" || fail "the worker does not report its packs after the update"
 
 echo "== drained worker gets no new jobs; revoked worker is rejected"
 q "UPDATE workers SET status = 'draining' WHERE id = '$WORKER'" >/dev/null
