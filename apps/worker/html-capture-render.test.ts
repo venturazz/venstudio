@@ -333,7 +333,8 @@ test("an uploaded page fails by name when it tries fetch, an image from another 
     const size = { width: 64, height: 36, fps: 10, totalFrames: 5 };
     await assert.rejects(
       captureHtml({ chrome: chrome as string, root: pack, pageRoot: page, inDir: null, props: size, ...size, output: path.join(tmp, `${name}.mp4`), cwd: tmp, burn: null, timeoutMs: 120_000, signal: AbortSignal.timeout(150_000) }),
-      re,
+      // assert.rejects tests a RegExp against String(err) ("Error: ..."), so match the message itself.
+      { message: re },
       name,
     );
     assert.equal(existsSync(path.join(tmp, `${name}.mp4`)) && readFileSync(path.join(tmp, `${name}.mp4`)).length > 0, false, `${name}: no video was written`);
