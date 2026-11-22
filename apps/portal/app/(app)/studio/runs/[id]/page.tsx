@@ -11,7 +11,7 @@ import { stageLabel } from "@/lib/studio/review.ts";
 import { isModelStage, isProductionStage, isRunStage, stageSummary } from "@/lib/studio/engine.ts";
 import { RECIPES, runRecipeOf, runStagesOf } from "@/lib/studio/recipes.ts";
 import { productionSummary } from "@/lib/studio/production.ts";
-import { waitingText } from "@/lib/studio/pacing.ts";
+import { stageWaitText, waitingText } from "@/lib/studio/pacing.ts";
 import { isTrialRun, parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, isResearchEngine } from "@/lib/studio/style-registry.ts";
 import { cancelRunAction } from "../actions.ts";
@@ -54,10 +54,10 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const open = reviews.find((r) => r.state === "open");
   const finished = run.state === "cancelled" || run.state === "failed" || run.state === "done";
   const board = stages.find((s) => s.stage === "storyboard" && s.state === "passed");
-  // A stage that waits for a rate-limited Hermes is pending with a not-before time. It is busy, not idle or failed.
+  // A stage that waits for a rate-limited or slow Hermes is pending with a not-before time. It is busy, not idle or failed.
   const waiting = run.state === "running" ? stages.find((s) => s.state === "pending" && s.notBefore) : undefined;
   const now = Date.now();
-  const waitLine = waiting?.notBefore ? waitingText(waiting.notBefore.getTime(), now) : "";
+  const waitLine = waiting?.notBefore ? stageWaitText(waiting.output.hermesWait, waiting.notBefore.getTime(), now) : "";
   const assetsPending = stages.some((s) => s.stage === "assets" && s.state === "pending" && !s.notBefore);
   const storyboardReady = Boolean(board) && assetsPending && run.state === "running";
   // A storyboard that is ready but not yet approved has nothing running, so there is nothing to poll for.
@@ -182,7 +182,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                   </div>
                   {summary && <p className="break-words text-xs text-muted">{summary}</p>}
                   {s.state === "pending" && s.notBefore && run.state === "running" && (
-                    <p className="break-words text-xs text-muted">{waitingText(s.notBefore.getTime(), now)}</p>
+                    <p className="break-words text-xs text-muted">{stageWaitText(s.output.hermesWait, s.notBefore.getTime(), now)}</p>
                   )}
                   {s.stage === "render" && jobId && (
                     <p className="text-xs">

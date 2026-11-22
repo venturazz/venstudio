@@ -132,6 +132,9 @@ jobs:
           export NINEROUTER_API_KEY=test-router-key
           # Fake Hermes started by scripts/ui-e2e.mjs.
           export HERMES_BASE_URL=http://127.0.0.1:3299 HERMES_API_KEY=test-hermes-key HERMES_IMAGE_PROVIDER_ORDER=cloudflare,agnes,canva
+          # Test only (read only when CI or NODE_ENV=test is set): the per-stage Hermes call timeouts and the slow-answer
+          # backoff at a tenth, so the slow-research step's held ask times out after 1 min instead of 10 and waits 12 s.
+          export VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE=0.1
           DATABASE_URL="$UI_DB" node apps/portal/scripts/migrate.mjs
           # The Template Lab must never fetch a study's links itself (Hermes looks at them): any request from the portal
           # process to YouTube or GitHub is written to the canary file and fails; ui-e2e.mjs asserts it stays empty.

@@ -208,9 +208,11 @@ function directorReply(messages) {
     if (first.includes("BREAK-JSON")) return "Sorry, I cannot put that into JSON right now.";
     const note = /<<<DATA owner revision note\n([\s\S]*?)\nDATA owner revision note>>>/.exec(first)?.[1] ?? "";
     const tag = note ? " (revised)" : "";
+    // A brief with SLOW-RESEARCH: the ideas carry the marker, so this run's research prompt (which names the idea) does too.
+    const slow = first.includes(SLOW_RESEARCH) ? `${SLOW_RESEARCH} ` : "";
     return JSON.stringify({
       ideas: ["Orpheus and the silent road", "Why the Norns weave", "The wolf that swallowed the sun", "A bridge made of rainbow", "Persephone's last bargain"].map((t, i) => ({
-        title: `${t}${tag}`,
+        title: `${slow}${t}${tag}`,
         hook: `What if ${t.toLowerCase()} was never a myth?`,
         angle: "Retell it as a short mystery",
         score: 90 - i * 5,
@@ -430,7 +432,13 @@ function fakeClipBytes() {
   return fakeClip;
 }
 
-const fakeStats = { hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [], htmlDesignAsks: {}, htmlDesignRetryNotes: {} };
+/**
+ * Slow Hermes: the first research ask of a run whose brief says SLOW-RESEARCH is taken and never answered, like a
+ * Hermes busy with the owner's chat or a long web search. The portal gives up after its research timeout (shortened in
+ * CI by VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE), waits, and asks again; the second ask is answered.
+ */
+const SLOW_RESEARCH = "SLOW-RESEARCH";
+const fakeStats = { slowResearchHeld: 0, slowResearchClosed: 0, slowResearchAsks: 0, hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [], htmlDesignAsks: {}, htmlDesignRetryNotes: {} };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -497,6 +505,15 @@ const fakeHermes = createServer((req, res) => {
       if (stage) {
         lastPrompt[stage] = first;
         (allPrompts[stage] ??= []).push(first);
+      }
+      if (stage === "research" && first.includes(SLOW_RESEARCH)) {
+        fakeStats.slowResearchAsks++;
+        if (fakeStats.slowResearchHeld === 0) {
+          fakeStats.slowResearchHeld++;
+          // Headers never come: the portal's call timeout ends it and closes the connection.
+          req.socket.once("close", () => fakeStats.slowResearchClosed++);
+          return;
+        }
       }
       if (stage === "image" && fakeStats.hermes429 < HERMES_429_BURST) {
         fakeStats.hermes429++;
@@ -797,7 +814,8 @@ try {
   // The fake 9router hangs. The page stops waiting after about 3 s (so "load" fires) and shows "Checking"; the card then
   // refreshes itself, and the check ends through its 60 s timeout, so "Unreachable" can take about a minute.
   await page.getByText("Unreachable").waitFor({ timeout: 90_000 });
-  await page.getByText("internal address").first().waitFor();
+  // 127.0.0.1 is already an internal address, so the hint says busy, slow or stopped, not "use the internal address".
+  await page.getByText("9router may be busy or slow, or stopped. The address is already internal, so the address is not the problem.").first().waitFor();
   await page.getByText("Server health").waitFor();
 
   step("9router comes back: check again, then scan the studio capabilities");
@@ -1940,6 +1958,89 @@ async function scoreAndDecide(runId, stars, shown) {
     return id;
   }
   const imageAskTotal = () => Object.values(fakeStats.imageAsks).reduce((n, v) => n + v, 0) + fakeStats.routerImageCalls;
+
+  step("slow Hermes: a research ask Hermes takes but does not finish in time waits as busy or slow (not can't reach), then succeeds on the next ask");
+  {
+    // CI shortens the per-stage call timeouts (pacing.ts hermesTimeoutScale; ignored outside NODE_ENV=test or CI), so
+    // the 10-minute research ask times out in a minute here. Without the override this step would take 10 minutes.
+    const scale = Number(process.env.VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE ?? "");
+    const ciOn = process.env.CI === "true" || process.env.CI === "1";
+    if (dbValue("SELECT 1") === null || !ciOn || !(scale > 0 && scale <= 1)) {
+      console.log("   needs the database, CI and VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE: the slow-research step is skipped");
+    } else {
+      const researchMs = Math.max(1000, Math.round(600_000 * scale));
+      const within = researchMs >= 60_000 ? `${Math.round(researchMs / 60_000)} min` : `${Math.round(researchMs / 1000)} s`;
+      const runId = await startFromNewVideo("tpl-animated-line-graph", `${SLOW_RESEARCH}: how solar capacity grew`, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
+      const runHref = `/studio/runs/${runId}`;
+      const researchRow = () => dbValue(`SELECT state || ' ' || attempt || ' ' || coalesce(output->'hermesWait'->>'reason', '-') || ' ' || (not_before IS NOT NULL)::text FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'research' ORDER BY attempt DESC LIMIT 1`) ?? "";
+      // The idea: approve one on this run's card.
+      let approved = false;
+      for (let i = 0; i < 45 && !approved; i++) {
+        await m.goto(`${APP}/review`);
+        const idea = cardOf(runId, "idea").and(m.locator('[data-kind="idea"]'));
+        if (await idea.first().isVisible().catch(() => false)) {
+          await idea.first().getByRole("button", { name: "Approve this idea", exact: true }).first().click();
+          await m.waitForLoadState("networkidle");
+          approved = true;
+        } else await m.waitForTimeout(1000);
+      }
+      if (!approved) {
+        await dumpPipeline(m, runHref, "slow research: no idea card");
+        throw new Error("slow research: the run's idea card never appeared");
+      }
+      // The research ask is held by the fake; after the call timeout the stage goes back to pending with a slow wait.
+      let row = "";
+      const deadline = Date.now() + researchMs + 90_000;
+      while (Date.now() < deadline) {
+        row = researchRow();
+        if (/^pending 1 slow true$/.test(row) || /^(passed|waiting-human|failed) /.test(row)) break;
+        await page.waitForTimeout(500);
+      }
+      if (!/^pending 1 slow true$/.test(row)) {
+        await dumpPipeline(page, runHref, `slow research: the stage did not wait as slow (research row "${row}")`);
+        throw new Error(`slow research: expected the research stage pending with a slow wait, got "${row}"`);
+      }
+      await page.goto(`${APP}${runHref}`);
+      const wait = page.getByTestId("hermes-wait");
+      await wait.waitFor({ timeout: 10_000 });
+      const waitText = ((await wait.innerText()) || "").replace(/\s+/g, " ").trim();
+      const wantWait = new RegExp(`^Research: Hermes is busy or slow \\(it answered nothing in ${within}\\); trying again at \\d\\d:\\d\\d UTC, (in under a minute|in about \\d+ min|any moment now)\\. Nothing failed; the step continues on its own\\.$`);
+      if (!wantWait.test(waitText)) throw new Error(`slow research: the run page says "${waitText}"`);
+      const body = (await page.locator("main").innerText()) || "";
+      if (/can't reach|No answer from/.test(body)) throw new Error(`slow research: the run page still says the address can't be reached: ${body.slice(0, 600)}`);
+      await shot("30z-run-hermes-slow-desktop");
+      // The stored reason is the honest one, with the retry time, and the shared rate-limit time of the gate is untouched.
+      const stored = dbValue(`SELECT output->'hermesWait'->>'text' FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'research' ORDER BY attempt DESC LIMIT 1`) ?? "";
+      if (!new RegExp(`^Hermes accepted the request but hadn't finished after ${within}\\. It may be busy \\(another chat or render\\) or the step is long\\. The studio will try again at \\d\\d:\\d\\d UTC\\.$`).test(stored)) {
+        throw new Error(`slow research: the stored wait reads "${stored}"`);
+      }
+      const gateBusy = dbValue("SELECT count(*) FROM hermes_gate WHERE busy_until > now()");
+      if (gateBusy !== "0") throw new Error("slow research: a slow answer set the shared Hermes busy time (that is for rate limits)");
+      // The next ask (after the 2-minute backoff, scaled) is answered: same attempt, research done, no stage error.
+      const done = Date.now() + 120_000;
+      while (Date.now() < done) {
+        row = researchRow();
+        if (/^(passed|waiting-human|failed) /.test(row)) break;
+        await page.waitForTimeout(1000);
+      }
+      if (!/^(passed|waiting-human) 1 /.test(row)) {
+        await dumpPipeline(page, runHref, `slow research: research did not succeed on the next ask (research row "${row}")`);
+        throw new Error(`slow research: research ended as "${row}"`);
+      }
+      if (fakeStats.slowResearchHeld !== 1 || fakeStats.slowResearchAsks !== 2) throw new Error(`slow research: Hermes was asked ${fakeStats.slowResearchAsks} time(s) (held ${fakeStats.slowResearchHeld}); expected the held ask and one more`);
+      const researchRows = dbValue(`SELECT count(*) || ' ' || count(*) FILTER (WHERE error IS NOT NULL) FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'research'`);
+      if (researchRows !== "1 0") throw new Error(`slow research: the run has research rows "${researchRows}" (count, with an error); expected one attempt and no error`);
+      const errors = dbValue(`SELECT count(*) FROM review_items WHERE run_id = '${runId}' AND kind = 'stage-error'`);
+      if (errors !== "0") throw new Error(`slow research: ${errors} stage error card(s) for the run`);
+      await page.goto(`${APP}${runHref}`);
+      if (await page.getByTestId("hermes-wait").count()) throw new Error("slow research: the run page still shows the wait after research finished");
+      console.log(`   research waited after a ${within} timeout and passed on the next ask`);
+      // Nothing more is needed from this run.
+      dbExec(`UPDATE review_items SET state = 'superseded', decided_at = now() WHERE run_id = '${runId}' AND state = 'open'`);
+      dbExec(`UPDATE pipeline_stages SET state = 'skipped', finished_at = now() WHERE run_id = '${runId}' AND state IN ('pending', 'running', 'waiting-human')`);
+      dbExec(`UPDATE pipeline_runs SET state = 'cancelled', finished_at = now() WHERE id = '${runId}'`);
+    }
+  }
 
   step("scene-spec trial: animated-line-graph from New Video goes idea → research → script → scene spec → preview stills → voice → html-capture render → qc, with no picture made");
   if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the scene-spec run is skipped");

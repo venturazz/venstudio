@@ -3,22 +3,51 @@ import { env } from "./env.ts";
 import { explainFetchError } from "./ai-gateway.ts";
 import { reportHermesBusy, reportHermesOk, withHermesSlot } from "./hermes-gate.ts";
 import { normalizeGatewayBase } from "../gateway-url.ts";
+import { classifyFetchError } from "../fetch-error.ts";
+import { postToHermes } from "../hermes-transport.ts";
 import { extractJson, retryNote, type ChatMessage, type Validated } from "../studio/director.ts";
-import { classifyReplyFailure, classifyStatus, type FailureClass } from "../studio/pacing.ts";
+import {
+  classifyReplyFailure,
+  classifyStatus,
+  HERMES_DEFAULT_ASK_TIMEOUT_SEC,
+  HERMES_RETRY_PAUSE_SEC,
+  hermesAskTimeoutMs,
+  hermesTimeoutScale,
+  slowBackoffMs,
+  type FailureClass,
+  type HermesAskKind,
+} from "../studio/pacing.ts";
 
 export type HermesJsonFailure = {
   ok: false;
   error: string;
-  /** Why it failed. "busy" means nothing is wrong with the work: Hermes is rate limited until `busyUntil`. */
+  /**
+   * Why it failed. "busy" means nothing is wrong with the work: Hermes is rate limited, or slow (see `slow`), until
+   * `busyUntil`.
+   */
   cause: FailureClass;
   busyUntil?: Date;
+  /**
+   * Set when Hermes took the request but had not finished within the call timeout (`afterMs`). Cause is "busy" and
+   * busyUntil is the slow-answer backoff (pacing.ts slowBackoffMs). The shared busy time of the gate is not set.
+   */
+  slow?: { afterMs: number };
 };
 
 export type HermesJsonResult<T> = { ok: true; value: T; attempts: number } | HermesJsonFailure;
 
 export interface HermesCallOptions {
   retries?: number;
+  /** The call timeout. Without it the ask's `kind` decides (pacing.ts HERMES_ASK_TIMEOUT_SEC), else 180 s. */
   timeoutMs?: number;
+  /** Which ask this is, for its call timeout. */
+  kind?: HermesAskKind;
+  /**
+   * For callers that wait and ask again after a slow answer (the director stages, the script fit): how many slow
+   * answers in a row this one would make (1 for the first). It picks the backoff, and the error text then says when
+   * the studio tries again. Without it a slow answer waits the first backoff step and the text names no time.
+   */
+  slowStreak?: number;
   /** How long to wait for a free gate slot before answering busy. Owner clicks use a short one. */
   queueTimeoutMs?: number;
   /**
@@ -30,14 +59,22 @@ export interface HermesCallOptions {
   images?: readonly string[];
 }
 
-const TIMEOUT_MS = 180_000;
 const INTERNAL = "http://<hermes container name>:8642";
+
+/** The call timeout of an ask: an explicit one, else its kind's (shortened only by the test-only scale), else 180 s. */
+export function callTimeoutMs(opts: Pick<HermesCallOptions, "timeoutMs" | "kind">): number {
+  if (opts.timeoutMs !== undefined) return opts.timeoutMs;
+  if (opts.kind) return hermesAskTimeoutMs(opts.kind, hermesTimeoutScale(process.env));
+  return HERMES_DEFAULT_ASK_TIMEOUT_SEC * 1000;
+}
 
 /**
  * Asks Hermes for structured output. The reply is parsed as data and checked by `validate`; it is never executed.
- * On a server error, a timeout, unparseable JSON or a failed validation it asks again, up to `retries` more times,
- * feeding the validation issues back. A rate limit (429, 503, or a reply that says so) is not retried here: the call
- * returns cause "busy" with the time Hermes is free again, so the caller can wait instead of failing. Returns an error
+ * On a server error, a connect failure, unparseable JSON or a failed validation it asks again, up to `retries` more
+ * times, feeding the validation issues back. A rate limit (429, 503, or a reply that says so) is not retried here: the
+ * call returns cause "busy" with the time Hermes is free again, so the caller can wait instead of failing. Nor is a
+ * slow answer (connected, but not finished within the call timeout): asking again at once would only queue a second
+ * long turn behind the first, so it returns cause "busy" with `slow` and a backoff (2, 5, then 10 min). Returns an error
  * text that is safe to show the owner (no key, no host path).
  */
 export async function hermesJson<T>(
@@ -64,6 +101,7 @@ type Answer =
   | { kind: "reply"; text: string }
   | { kind: "status"; status: number; retryAfter: string | null; body: string }
   | { kind: "busy"; status: number; until: Date; text: string }
+  | { kind: "slow"; until: Date; message: string }
   | { kind: "error"; message: string };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -86,7 +124,8 @@ export async function hermesText<T>(
   const base = normalizeGatewayBase(HERMES_BASE_URL);
   const url = `${base}/v1/chat/completions`;
   const retries = opts.retries ?? 2;
-  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
+  const timeoutMs = callTimeoutMs(opts);
+  const scale = hermesTimeoutScale(process.env);
   const convo: ChatMessage[] = [...messages];
   let lastError = "Hermes did not answer";
   let lastCause: FailureClass = "unreachable";
@@ -94,26 +133,37 @@ export async function hermesText<T>(
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     const slot = await withHermesSlot(async (): Promise<Answer> => {
       try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json", ...(HERMES_API_KEY ? { authorization: `Bearer ${HERMES_API_KEY}` } : {}) },
-          body: JSON.stringify({ model: "hermes-agent", stream: false, messages: withImages(convo, opts.images) }),
-          signal: AbortSignal.timeout(timeoutMs),
-          cache: "no-store",
-        });
-        if (!res.ok) {
-          const body = await res.text().catch(() => "");
+        const res = await postToHermes(
+          url,
+          { "content-type": "application/json", ...(HERMES_API_KEY ? { authorization: `Bearer ${HERMES_API_KEY}` } : {}) },
+          JSON.stringify({ model: "hermes-agent", stream: false, messages: withImages(convo, opts.images) }),
+          timeoutMs,
+        );
+        if (res.status < 200 || res.status >= 300) {
+          const body = res.text;
           if (classifyStatus(res.status) === "busy") {
             // Recorded while this call still holds its slot, so a queued turn sees the busy time before it calls.
-            const b = await reportHermesBusy({ status: res.status, retryAfter: res.headers.get("retry-after"), detail: `HTTP ${res.status}` });
+            const b = await reportHermesBusy({ status: res.status, retryAfter: res.header("retry-after"), detail: `HTTP ${res.status}` });
             return { kind: "busy", status: res.status, until: b.until, text: b.text };
           }
-          return { kind: "status", status: res.status, retryAfter: res.headers.get("retry-after"), body: body.slice(0, 2000) };
+          return { kind: "status", status: res.status, retryAfter: res.header("retry-after"), body: body.slice(0, 2000) };
         }
-        const body = (await res.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
-        const content = body.choices?.[0]?.message?.content;
+        let parsed: { choices?: Array<{ message?: { content?: unknown } }> };
+        try {
+          parsed = JSON.parse(res.text) as typeof parsed;
+        } catch {
+          const html = /<html/i.test(res.text);
+          return { kind: "error", message: html ? `Reached a web page, not the Hermes API. Use the API address on port 8642 (${INTERNAL})` : "Hermes answered with something that is not JSON" };
+        }
+        const content = parsed?.choices?.[0]?.message?.content;
         return { kind: "reply", text: typeof content === "string" ? content : "" };
       } catch (err) {
+        if (classifyFetchError(err) === "response-timeout") {
+          // Hermes took the request and is still working (another chat, a render, a long tool run). Not unreachable.
+          const until = new Date(Date.now() + slowBackoffMs(opts.slowStreak ?? 1, scale));
+          const e = explainFetchError(err, url, { name: "Hermes", internal: INTERNAL }, timeoutMs, opts.slowStreak !== undefined ? { retryAt: until.getTime() } : {});
+          return { kind: "slow", until, message: `${e.error}. ${e.hint}` };
+        }
         const e = explainFetchError(err, url, { name: "Hermes", internal: INTERNAL }, timeoutMs);
         return { kind: "error", message: e.hint ? `${e.error}. ${e.hint}` : e.error };
       }
@@ -121,6 +171,9 @@ export async function hermesText<T>(
     if (!slot.ok) return { ok: false, cause: "busy", busyUntil: slot.busy.until, error: slot.busy.text };
     const answer = slot.value;
 
+    if (answer.kind === "slow") {
+      return { ok: false, cause: "busy", busyUntil: answer.until, slow: { afterMs: timeoutMs }, error: answer.message };
+    }
     if (answer.kind === "error") {
       lastError = answer.message;
       lastCause = "unreachable";
@@ -137,7 +190,7 @@ export async function hermesText<T>(
       lastError = `Hermes answered HTTP ${answer.status}`;
       lastCause = cls;
       // A short pause before asking again, so a failing Hermes is not hammered.
-      if (attempt <= retries) await sleep(Math.min(10_000, 2_000 * attempt));
+      if (attempt <= retries) await sleep(Math.min(HERMES_RETRY_PAUSE_SEC * 1000, 2_000 * attempt));
       continue;
     }
 

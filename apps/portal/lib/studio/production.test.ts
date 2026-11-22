@@ -18,10 +18,13 @@ import {
   productionStageAction,
   productionSummary,
   PRODUCTION_STUCK_MINUTES,
+  VOICE_STUCK_MINUTES,
   HERMES_RENDER_STUCK_MINUTES,
   renderLicenseText,
   retryStageFor,
 } from "./production.ts";
+import { HERMES_ASK_WORST_SEC, hermesAskTimeoutMs, hermesStageWorstSec } from "./pacing.ts";
+import { decisionOptions } from "./review.ts";
 import { providerTermsIssues } from "./asset-plan.ts";
 
 test("the stuck limit for an order exceeds its worst case", () => {
@@ -64,7 +67,11 @@ test("productionStageAction for the assets stage", () => {
 
 test("productionStageAction for voice, render and qc", () => {
   assert.deepEqual(productionStageAction({ stage: "voice", idleMinutes: 3, jobStatus: null }), { action: "none" });
-  assert.equal(productionStageAction({ stage: "voice", idleMinutes: PRODUCTION_STUCK_MINUTES + 1, jobStatus: null }).action, "fail");
+  // The voice stage may first fit the script (its own 6-minute asks), so its limit is its own and never shorter.
+  assert.ok(VOICE_STUCK_MINUTES >= PRODUCTION_STUCK_MINUTES);
+  assert.ok(VOICE_STUCK_MINUTES * 60 > hermesStageWorstSec("script-fit") + 6 * HERMES_ASK_WORST_SEC);
+  assert.equal(productionStageAction({ stage: "voice", idleMinutes: VOICE_STUCK_MINUTES, jobStatus: null }).action, "none");
+  assert.equal(productionStageAction({ stage: "voice", idleMinutes: VOICE_STUCK_MINUTES + 1, jobStatus: null }).action, "fail");
   assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: 500, jobStatus: "running" }), { action: "none" });
   assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: 500, jobStatus: "queued" }), { action: "none" });
   assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: 1, jobStatus: "succeeded" }), { action: "complete" });
@@ -89,6 +96,14 @@ test("retryStageFor re-renders after a failed quality gate only", () => {
   assert.equal(retryStageFor("qc", "stage-error"), "qc");
   assert.equal(retryStageFor("assets", "gate-failure"), "assets");
   assert.equal(retryStageFor("voice", "stage-error"), "voice");
+});
+
+test("a research stage that failed with the old 180 s timeout is retried as research, with the new 10-minute limit", () => {
+  // The owner's stuck run: Retry on the research stage-error card asks research again (a new attempt, the chosen idea
+  // kept), and the new attempt starts with no slow streak and no wait clock.
+  assert.ok(decisionOptions("stage-error", { stage: "research" }).includes("retry"));
+  assert.equal(retryStageFor("research", "stage-error"), "research");
+  assert.equal(hermesAskTimeoutMs("research"), 10 * 60_000);
 });
 
 test("finalReason says presentation is the owner's call", () => {

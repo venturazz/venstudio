@@ -2,7 +2,7 @@
  * Run engine helpers, pure. Stage order, which stage a revision restarts, stuck-stage detection and the
  * one-line summary of a stage result. The database side lives in lib/server/director.ts.
  */
-import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
+import { hermesStageWorstSec } from "./pacing.ts";
 import { guessRevisionStage, type DirectorStage, type Idea, type ResearchNote, type RevisableStage, type Shot } from "./director.ts";
 
 export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "script", "storyboard"];
@@ -32,10 +32,28 @@ export const STAGE_KINDS: readonly RunStage[] = ["idea", "research", "script", "
  * The still-frame preview sits right after the plan it shows.
  */
 const SLOT: Record<RunStage, number> = { idea: 0, research: 1, script: 2, storyboard: 3, "scene-spec": 3, "skill-brief": 3, "html-design": 3, preview: 3.5, assets: 4, voice: 5, render: 6, qc: 7 };
-/** Worst case for one stage: hermesJson makes up to 3 asks, each up to 180 s plus its wait for a gate slot. */
-export const HERMES_WORST_CASE_SEC = 3 * HERMES_ASK_WORST_SEC;
-/** A stage that has been running this long is treated as lost (restart, crash) and failed: worst case plus 6 minutes for the gate and DB work. */
-export const STUCK_MINUTES = Math.ceil(HERMES_WORST_CASE_SEC / 60) + 6;
+/**
+ * Worst case for one pass of a model stage: hermesJson makes up to 3 asks, each up to the stage's own call timeout
+ * (pacing.ts HERMES_ASK_TIMEOUT_SEC) plus its wait for a gate slot. A slow answer ends the pass early: the stage
+ * waits as pending (not running), so the wait never counts toward this limit.
+ */
+export function modelStageWorstCaseSec(stage: DirectorStage | PlanStage): number {
+  return hermesStageWorstSec(stage);
+}
+/**
+ * A model stage that has been running this long is treated as lost (restart, crash) and failed: its worst case plus
+ * 6 minutes for the gate and DB work. Per stage, so a 10-minute research ask is never reaped as stuck.
+ */
+export const MODEL_STAGE_STUCK_MINUTES: Readonly<Record<DirectorStage | PlanStage, number>> = Object.fromEntries(
+  (["idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "html-design"] as const).map((s) => [s, Math.ceil(modelStageWorstCaseSec(s) / 60) + 6]),
+) as Record<DirectorStage | PlanStage, number>;
+/** The longest model stage limit: the default of isStuck when no stage is named. */
+export const STUCK_MINUTES = Math.max(...Object.values(MODEL_STAGE_STUCK_MINUTES));
+
+/** The stuck limit of a model stage, in minutes. */
+export function stuckMinutesFor(stage: DirectorStage | PlanStage): number {
+  return MODEL_STAGE_STUCK_MINUTES[stage];
+}
 /** Default video length when the owner does not pick one: inside the catalog range for each format. */
 export const DEFAULT_DURATION_SEC = { short: 45, long: 600 } as const;
 

@@ -6,11 +6,12 @@
 
 /**
  * Why a call failed.
- * - busy: rate limited or overloaded (HTTP 429 or 503, or a reply that says so). Not a failure: the work waits.
+ * - busy: rate limited or overloaded (HTTP 429 or 503, or a reply that says so), or slow: Hermes took the request but
+ *   had not finished within the call timeout. Not a failure: the work waits.
  * - auth: the key was refused (401, 403).
  * - client: the request was refused as invalid (other 4xx). Retrying the same request on the same model cannot help.
  * - server: a 5xx or similar fault on the other side.
- * - unreachable: no connection, a DNS failure or a timeout.
+ * - unreachable: no connection: refused, a DNS failure or a connect timeout.
  * - content: the call worked but the answer was not usable for this item (bad JSON, no image, a file path).
  */
 export type FailureClass = "busy" | "auth" | "client" | "server" | "unreachable" | "content";
@@ -32,8 +33,88 @@ export const MIN_WAIT_MS = 1_000;
 export const HERMES_WAIT_GIVE_UP_MS = 3 * 60 * 60_000;
 /** A model turn waits at most this long for a free gate slot, then answers busy (and the stage waits a minute). */
 export const GATE_QUEUE_TIMEOUT_SEC = 120;
-/** One Hermes ask in the worst case: the gate queue plus the 180 s call timeout. */
-export const HERMES_ASK_WORST_SEC = 180 + GATE_QUEUE_TIMEOUT_SEC;
+/**
+ * Call timeout of a Hermes ask that names no kind: images, voice through Hermes, the CC0 search, the presentation
+ * advisory without its own limit. One image per turn takes about 150 s on the owner's Hermes, so 180 s stays.
+ */
+export const HERMES_DEFAULT_ASK_TIMEOUT_SEC = 180;
+/** One Hermes ask without a kind in the worst case: the gate queue plus the 180 s call timeout. Media limits use it. */
+export const HERMES_ASK_WORST_SEC = HERMES_DEFAULT_ASK_TIMEOUT_SEC + GATE_QUEUE_TIMEOUT_SEC;
+
+/** The Hermes asks that have a call timeout of their own: the director stages and the script fit of the voice stage. */
+export type HermesAskKind = "idea" | "research" | "script" | "storyboard" | "scene-spec" | "skill-brief" | "html-design" | "script-fit";
+
+/**
+ * Call timeout per ask, in seconds, sized to the work. Research searches the web with Hermes's tools; the HTML design
+ * writes a whole page. The revision classifier (45 s), Test Hermes JSON (60 s), the capability scan, Check skills,
+ * the lab analyses and the Hermes render keep the limits their callers set.
+ */
+export const HERMES_ASK_TIMEOUT_SEC: Readonly<Record<HermesAskKind, number>> = {
+  idea: 4 * 60,
+  research: 10 * 60,
+  script: 6 * 60,
+  storyboard: 8 * 60,
+  "scene-spec": 8 * 60,
+  "skill-brief": 8 * 60,
+  "html-design": 12 * 60,
+  "script-fit": 6 * 60,
+};
+/** A director stage asks at most this many times in one pass: the first ask and 2 retries (hermesJson's default). */
+export const HERMES_STAGE_ASKS = 3;
+/** Longest pause hermesText takes between two asks after a server error. */
+export const HERMES_RETRY_PAUSE_SEC = 10;
+
+/** One ask of this kind in the worst case: its gate queue wait, its call timeout and the pause before the next ask. */
+export function hermesAskWorstSec(kind: HermesAskKind): number {
+  return HERMES_ASK_TIMEOUT_SEC[kind] + GATE_QUEUE_TIMEOUT_SEC + HERMES_RETRY_PAUSE_SEC;
+}
+
+/** One pass of a stage in the worst case: every ask it may make. A slow answer ends the pass early (it waits instead). */
+export function hermesStageWorstSec(kind: HermesAskKind, asks: number = HERMES_STAGE_ASKS): number {
+  return Math.max(1, Math.floor(asks)) * hermesAskWorstSec(kind);
+}
+
+/**
+ * Test use only: a factor (0 < f <= 1) that shortens the per-kind call timeouts and the slow-answer backoff, so the
+ * browser end-to-end can make a research ask time out in seconds. Read only when NODE_ENV is "test" or CI is set
+ * ("true" or "1", as GitHub Actions sets it); anywhere else, and for any unreadable value, it is 1. The stuck-stage
+ * limits never use it, so a shortened run is only ever reaped later than it would be, never earlier.
+ */
+export function hermesTimeoutScale(e: Readonly<Record<string, string | undefined>>): number {
+  const testing = e.NODE_ENV === "test" || e.CI === "true" || e.CI === "1";
+  if (!testing) return 1;
+  const f = Number((e.VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE ?? "").trim());
+  return Number.isFinite(f) && f > 0 && f <= 1 ? f : 1;
+}
+
+/** A duration times the scale, never under one second. */
+export function scaledMs(ms: number, scale: number = 1): number {
+  const f = Number.isFinite(scale) && scale > 0 && scale <= 1 ? scale : 1;
+  return Math.max(1_000, Math.round(ms * f));
+}
+
+/** The call timeout of an ask of this kind, in milliseconds. */
+export function hermesAskTimeoutMs(kind: HermesAskKind, scale: number = 1): number {
+  return scaledMs(HERMES_ASK_TIMEOUT_SEC[kind] * 1000, scale);
+}
+
+/**
+ * Waits after a slow answer (Hermes took the request but had not finished within the call timeout): 2, 5, then 10
+ * minutes for every further one. A slow turn is not a rate limit, so it never sets the shared busy time of the gate.
+ */
+export const SLOW_BACKOFF_MS: readonly number[] = [2 * 60_000, 5 * 60_000, 10 * 60_000];
+
+/** The wait after the `streak`-th slow answer in a row of one stage (1 for the first). */
+export function slowBackoffMs(streak: number, scale: number = 1): number {
+  const n = Number.isFinite(streak) ? Math.max(1, Math.floor(streak)) : 1;
+  return scaledMs(SLOW_BACKOFF_MS[Math.min(n, SLOW_BACKOFF_MS.length) - 1], scale);
+}
+
+/** "10 min" from a minute up (rounded), "15 s" below. */
+export function durationText(ms: number): string {
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)} min`;
+  return `${Math.max(1, Math.round(ms / 1000))} s`;
+}
 /** How many first orders of a stage pass must fail the same systemic way before the stage pauses. */
 export const SYSTEMIC_PAUSE_AFTER = 2;
 
@@ -175,6 +256,34 @@ export function waitingText(untilMs: number, nowMs: number, reason: WaitReason =
   return `Waiting for Hermes (${why}), next try at ${clockUtc(untilMs)} UTC, ${when}`;
 }
 
+function untilText(untilMs: number, nowMs: number): string {
+  const mins = Math.ceil((untilMs - nowMs) / 60_000);
+  return untilMs <= nowMs ? "any moment now" : mins <= 1 ? "in under a minute" : `in about ${mins} min`;
+}
+
+/** The status while a stage waits after a slow answer. `afterMs` is the call timeout the answer did not finish in. */
+export function slowWaitText(untilMs: number, nowMs: number, afterMs: number): string {
+  return `Hermes is busy or slow (it answered nothing in ${durationText(afterMs)}); trying again at ${clockUtc(untilMs)} UTC, ${untilText(untilMs, nowMs)}`;
+}
+
+/** Why a stage waits, as deferStage stores it in `output.hermesWait`. Older rows have no reason: a rate limit. */
+export interface StoredWait {
+  reason: "rate-limit" | "slow";
+  afterMs: number;
+}
+
+export function readStoredWait(v: unknown): StoredWait {
+  const w = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const afterMs = typeof w.afterMs === "number" && Number.isFinite(w.afterMs) && w.afterMs > 0 ? w.afterMs : 0;
+  return w.reason === "slow" && afterMs > 0 ? { reason: "slow", afterMs } : { reason: "rate-limit", afterMs: 0 };
+}
+
+/** The run page and Review line for a stage that waits: the slow-answer text when that is why, else the rate limit text. */
+export function stageWaitText(hermesWait: unknown, untilMs: number, nowMs: number): string {
+  const w = readStoredWait(hermesWait);
+  return w.reason === "slow" ? slowWaitText(untilMs, nowMs, w.afterMs) : waitingText(untilMs, nowMs);
+}
+
 /** Reads a stored time (ISO text or epoch milliseconds). Null when it is missing or unreadable. */
 export function readTime(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -192,9 +301,10 @@ export function waitExpired(since: unknown, nowMs: number, capMs: number = HERME
   return t !== null && nowMs - t > capMs;
 }
 
-export function giveUpMessage(capMs: number = HERMES_WAIT_GIVE_UP_MS): string {
+export function giveUpMessage(capMs: number = HERMES_WAIT_GIVE_UP_MS, reason: "rate-limit" | "slow" = "rate-limit"): string {
   const hours = Math.round(capMs / 3_600_000);
-  return `Hermes stayed rate limited for more than ${hours} hour${hours === 1 ? "" : "s"}, so this step stopped. Press Retry when Hermes is free again.`;
+  const what = reason === "slow" ? "busy or slow" : "rate limited";
+  return `Hermes stayed ${what} for more than ${hours} hour${hours === 1 ? "" : "s"}, so this step stopped. Press Retry when Hermes is free again.`;
 }
 
 /** Bounded concurrency for the gate: an optional override, otherwise 1. */

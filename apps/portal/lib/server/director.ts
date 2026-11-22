@@ -10,7 +10,7 @@ import { getCapabilities } from "./capabilities.ts";
 import { skillHintsFor } from "../studio/capabilities.ts";
 import { listEndpointHealth } from "./endpoint-health.ts";
 import { knownImageBackends } from "../studio/asset-plan.ts";
-import { giveUpMessage, waitExpired, type FailureClass } from "../studio/pacing.ts";
+import { giveUpMessage, waitExpired, type FailureClass, type HermesAskKind } from "../studio/pacing.ts";
 import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
@@ -44,7 +44,7 @@ import {
   nextRunStage,
   revisionTarget,
   stageSummary,
-  STUCK_MINUTES,
+  MODEL_STAGE_STUCK_MINUTES,
   type RunStage,
 } from "../studio/engine.ts";
 import { alwaysReviewed, runRecipeOf, runStagesOf, workflowForPack } from "../studio/recipes.ts";
@@ -337,13 +337,26 @@ async function claimNext(runId: string): Promise<StageRow | null> {
   return { id: r.id as string, stage: r.stage as RunStage, attempt: r.attempt as number, output: toObject(r.output) };
 }
 
-type StageOutcome = { ok: true; result: unknown; gate: GateResult | null } | { ok: false; error: string; busyUntil?: Date };
+type StageFailure = { ok: false; error: string; busyUntil?: Date; slow?: { afterMs: number } };
+type StageOutcome = { ok: true; result: unknown; gate: GateResult | null } | StageFailure;
 
 function fromHermes<T>(
-  r: { ok: true; value: T } | { ok: false; error: string; cause: FailureClass; busyUntil?: Date },
-): { ok: true; value: T } | { ok: false; error: string; busyUntil?: Date } {
+  r: { ok: true; value: T } | { ok: false; error: string; cause: FailureClass; busyUntil?: Date; slow?: { afterMs: number } },
+): { ok: true; value: T } | StageFailure {
   if (r.ok) return { ok: true, value: r.value };
-  return r.cause === "busy" ? { ok: false, error: r.error, busyUntil: r.busyUntil } : { ok: false, error: r.error };
+  if (r.cause !== "busy") return { ok: false, error: r.error };
+  return r.slow ? { ok: false, error: r.error, busyUntil: r.busyUntil, slow: r.slow } : { ok: false, error: r.error, busyUntil: r.busyUntil };
+}
+
+/** How many slow answers in a row this stage attempt has had (deferStage counts them in output.slowStreak). */
+export function slowStreakOf(output: Record<string, unknown>): number {
+  const n = Number(output.slowStreak);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/** The options of a stage's Hermes ask: its own call timeout, and the backoff step a slow answer would take. */
+function stageAsk(kind: HermesAskKind, st: StageRow): { kind: HermesAskKind; slowStreak: number } {
+  return { kind, slowStreak: slowStreakOf(st.output) + 1 };
 }
 
 async function runModel(run: RunInfo, st: StageRow, template: Template, feedback: string): Promise<StageOutcome> {
@@ -378,7 +391,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   const snap = await getCapabilities().catch(() => null);
 
   if (st.stage === "idea") {
-    const r = fromHermes(await hermesJson(ideaPrompt(ctx, hint), validateIdeas));
+    const r = fromHermes(await hermesJson(ideaPrompt(ctx, hint), validateIdeas, stageAsk("idea", st)));
     return r.ok ? { ok: true, result: r.value, gate: null } : r;
   }
 
@@ -387,7 +400,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   if (!idea) return { ok: false, error: "No idea has been chosen for this run" };
 
   if (st.stage === "research") {
-    const r = fromHermes(await hermesJson(researchPrompt(ctx, idea, hint, skillHintsFor("research", snap)), validateResearch));
+    const r = fromHermes(await hermesJson(researchPrompt(ctx, idea, hint, skillHintsFor("research", snap)), validateResearch, stageAsk("research", st)));
     return r.ok ? { ok: true, result: r.value, gate: null } : r;
   }
 
@@ -396,7 +409,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   const notes: ResearchNote[] = checkedNotes.ok ? checkedNotes.value.notes : [];
 
   if (st.stage === "script") {
-    const r = fromHermes(await hermesJson(scriptPrompt(ctx, idea, notes, hint, skillHintsFor("script", snap)), validateScript));
+    const r = fromHermes(await hermesJson(scriptPrompt(ctx, idea, notes, hint, skillHintsFor("script", snap)), validateScript, stageAsk("script", st)));
     if (!r.ok) return r;
     const needs = requiresSources(run.config.themeId, run.config.purposes);
     // When sources are required only sourced notes count as sources; otherwise every note is checked for copying.
@@ -425,7 +438,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
     const contract = { name: pack?.name ?? template.label, elements: pack?.plan?.elements ?? [], motionTokens: pack?.plan?.motionTokens ?? [] };
     if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
-    const r = fromHermes(await hermesJson(sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length })));
+    const r = fromHermes(await hermesJson(sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }), stageAsk("scene-spec", st)));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: sceneSpecGate(template, r.value, notes, narrationSec) };
   }
@@ -450,7 +463,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       safeAreaPct: template.captions.safeAreaPct,
       drawsCaptions: pack.drawsCaptions === true,
     };
-    const r = fromHermes(await hermesJson(htmlDesignPrompt(ctx, checkedScript.value.script, brief, hint), (v) => validateHtmlDesign(v, { vendored: brief.vendored })));
+    const r = fromHermes(await hermesJson(htmlDesignPrompt(ctx, checkedScript.value.script, brief, hint), (v) => validateHtmlDesign(v, { vendored: brief.vendored }), stageAsk("html-design", st)));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: htmlDesignGate(template, r.value, narrationSec) };
   }
@@ -460,7 +473,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     if (!pack) return { ok: false, error: "This run's style pack could not be read, so the skill brief cannot follow its skill" };
     const h = pack.hermes ?? null;
     const skill: BriefSkill | null = h ? { name: h.skill, mode: h.mode, voice: h.voice, input: h.input } : null;
-    const r = fromHermes(await hermesJson(skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill)));
+    const r = fromHermes(await hermesJson(skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill), stageAsk("skill-brief", st)));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: skillBriefGate(template, r.value, narrationSec) };
   }
@@ -472,8 +485,10 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     health.filter((h) => h.endpoint === "hermes").map((h) => h.model),
   );
   const r = fromHermes(
-    await hermesJson(storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap), backends), (v) =>
-      validateStoryboard(v, { knownProviders: backends }),
+    await hermesJson(
+      storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap), backends),
+      (v) => validateStoryboard(v, { knownProviders: backends }),
+      stageAsk("storyboard", st),
     ),
   );
   if (!r.ok) return r;
@@ -545,18 +560,30 @@ function scheduleResume(runId: string, until: Date): void {
 }
 
 /**
- * Returns a running stage to pending with a not-before time because Hermes is rate limited, and schedules the resume.
- * The stage keeps its attempt. `waitSince` in the output marks when the wait began (kept across resumes, restarted
- * when the stage made progress), so a wait that lasts past HERMES_WAIT_GIVE_UP_MS becomes a stage error.
+ * Returns a running stage to pending with a not-before time because Hermes is rate limited or slow, and schedules the
+ * resume. The stage keeps its attempt. `waitSince` in the output marks when the wait began (kept across resumes,
+ * restarted when the stage made progress), so a wait that lasts past HERMES_WAIT_GIVE_UP_MS becomes a stage error.
+ * `slow` marks a slow answer: the run page says so (pacing.ts stageWaitText) and `slowStreak` counts them, so the
+ * next slow answer waits the next backoff step.
  */
-export async function deferStage(runId: string, stageId: string, until: Date, text: string, opts: { restartClock?: boolean } = {}): Promise<void> {
-  const wait = { until: until.toISOString(), text: text.slice(0, 300) };
+export async function deferStage(
+  runId: string,
+  stageId: string,
+  until: Date,
+  text: string,
+  opts: { restartClock?: boolean; slow?: { afterMs: number; streak: number } } = {},
+): Promise<void> {
+  const wait = opts.slow
+    ? { until: until.toISOString(), text: text.slice(0, 300), reason: "slow", afterMs: Math.round(opts.slow.afterMs) }
+    : { until: until.toISOString(), text: text.slice(0, 300) };
   const restart = opts.restartClock === true;
+  const streak = opts.slow ? Math.max(1, Math.floor(opts.slow.streak)) : 0;
   const rows = await db()`
     UPDATE pipeline_stages SET state = 'pending', started_at = NULL, not_before = ${until},
       output = (output - 'finalizingAt') || jsonb_build_object(
         'hermesWait', ${json(wait)}::text::jsonb,
-        'waitSince', CASE WHEN ${restart ? 1 : 0}::int = 1 OR output->>'waitSince' IS NULL THEN to_jsonb(now()) ELSE output->'waitSince' END
+        'waitSince', CASE WHEN ${restart ? 1 : 0}::int = 1 OR output->>'waitSince' IS NULL THEN to_jsonb(now()) ELSE output->'waitSince' END,
+        'slowStreak', CASE WHEN ${streak}::int > 0 THEN to_jsonb(${streak}::int) ELSE COALESCE(output->'slowStreak', to_jsonb(0)) END
       )
     WHERE id = ${stageId} AND state = 'running'
     RETURNING id
@@ -751,10 +778,15 @@ async function executeStage(runId: string, st: StageRow): Promise<void> {
   const feedback = typeof st.output.feedback === "string" ? st.output.feedback : "";
   const outcome = await runModel(run, st, template, feedback);
   if (!outcome.ok) {
-    // A rate-limited Hermes is not a failed stage: it waits and keeps its attempt, up to the give-up cap.
+    // A rate-limited or slow Hermes is not a failed stage: it waits and keeps its attempt, up to the give-up cap.
     if (outcome.busyUntil) {
-      if (waitExpired(st.output.waitSince, Date.now())) await recordStageError(runId, st.id, st.stage, `${giveUpMessage()} ${outcome.error}`);
-      else await deferStage(runId, st.id, outcome.busyUntil, outcome.error);
+      if (waitExpired(st.output.waitSince, Date.now())) {
+        await recordStageError(runId, st.id, st.stage, `${giveUpMessage(undefined, outcome.slow ? "slow" : "rate-limit")} ${outcome.error}`);
+      } else if (outcome.slow) {
+        await deferStage(runId, st.id, outcome.busyUntil, outcome.error, { slow: { afterMs: outcome.slow.afterMs, streak: slowStreakOf(st.output) + 1 } });
+      } else {
+        await deferStage(runId, st.id, outcome.busyUntil, outcome.error);
+      }
       return;
     }
     await recordStageError(runId, st.id, st.stage, outcome.error);
@@ -793,18 +825,21 @@ export async function advanceRun(runId: string): Promise<void> {
  */
 export async function reapStuckStages(): Promise<string[]> {
   const runIds: string[] = [];
+  // Each model stage's own limit (engine.ts MODEL_STAGE_STUCK_MINUTES), from its call timeout and its asks.
+  const stuckLimits = json(MODEL_STAGE_STUCK_MINUTES);
   try {
     const sql = db();
     const stuck = await sql`
       SELECT id FROM pipeline_stages
-      WHERE state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int) AND stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'html-design')
+      WHERE state = 'running' AND stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'html-design')
+        AND started_at < now() - make_interval(mins => (${stuckLimits}::text::jsonb ->> stage)::int)
     `;
     for (const row of stuck) {
       try {
         const runId = await sql.begin(async (tx): Promise<string | null> => {
           const failed = await tx`
             UPDATE pipeline_stages SET state = 'failed', error = 'The stage stopped answering and was cancelled', finished_at = now()
-            WHERE id = ${row.id as string} AND state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int)
+            WHERE id = ${row.id as string} AND state = 'running' AND started_at < now() - make_interval(mins => (${stuckLimits}::text::jsonb ->> stage)::int)
             RETURNING run_id, stage
           `;
           const f = failed[0];

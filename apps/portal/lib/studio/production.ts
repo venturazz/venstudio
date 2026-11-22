@@ -9,7 +9,7 @@ import type { GateId, GateResult } from "./qc.ts";
 import type { BeatRole } from "./templates.ts";
 import type { ProductionStage, RunStage } from "./engine.ts";
 import type { ReviewKind } from "./review.ts";
-import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
+import { HERMES_ASK_WORST_SEC, hermesStageWorstSec } from "./pacing.ts";
 import { bareProviderName, isShotNeed, type ShotNeed } from "./providers.ts";
 import { RENDER_LIMITS } from "./render-limits.ts";
 import { HERMES_RENDER_MAX_MINUTES } from "./hermes-render.ts";
@@ -27,6 +27,11 @@ export const ORDER_STUCK_MINUTES = Math.ceil(ORDER_WORST_CASE_SEC / 60) + 6;
  * script to the pictures (3 asks), then ask it twice more for the voice (Kokoro, then CapCut), 3 asks each, after 9router.
  */
 export const PRODUCTION_STUCK_MINUTES = Math.ceil((9 * HERMES_ASK_WORST_SEC) / 60) + 6;
+/**
+ * The voice stage's own limit: the script fit has its own call timeout (pacing.ts, 6 min an ask, 3 asks), then the
+ * two Hermes voice engines ask 3 times each at the default limit. Never shorter than the other production steps.
+ */
+export const VOICE_STUCK_MINUTES = Math.max(PRODUCTION_STUCK_MINUTES, Math.ceil((hermesStageWorstSec("script-fit") + 6 * HERMES_ASK_WORST_SEC) / 60) + 6);
 /** Most captions the worker accepts is 300; lines are cut at this many characters. */
 export const CAPTION_LINE_CHARS = 90;
 /** As many caption lines as one render takes (render-limits.ts): a 20-minute script needs more than 300. */
@@ -146,7 +151,7 @@ export function productionStageAction(p: StageProbe): StageAction {
     return p.idleMinutes > ORDER_STUCK_MINUTES ? { action: "resume" } : { action: "none" };
   }
   if (p.stage === "voice") {
-    return p.idleMinutes > PRODUCTION_STUCK_MINUTES ? { action: "fail", reason: "The voice step stopped answering and was cancelled" } : { action: "none" };
+    return p.idleMinutes > VOICE_STUCK_MINUTES ? { action: "fail", reason: "The voice step stopped answering and was cancelled" } : { action: "none" };
   }
   const what = p.stage === "render" ? "The video render" : p.stage === "preview" ? "The still-frame preview" : "The quality check";
   if (p.stage === "render" && p.portalRender && p.jobStatus === null) {
