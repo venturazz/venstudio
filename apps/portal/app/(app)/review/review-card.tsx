@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { useActionState } from "react";
 import { Alert, Badge, Card, CardBody, Input, Textarea } from "@/components/ui.tsx";
-import { TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { SubmitButton } from "@/components/client.tsx";
 import { decisionHint, decisionLabel, decisionOptions, reviewTitle, stageLabel, type ReviewKind, type ReviewPayload } from "@/lib/studio/review.ts";
 import type { BlockingRow } from "@/lib/studio/terms-review.ts";
 import { decideReviewAction, setTermsOnCardAction } from "./actions.ts";
+import { PresentationBlock, type AdvisoryView, type PresentationView } from "./presentation-form.tsx";
 
 export interface ReviewCardView {
   id: string;
@@ -19,6 +20,12 @@ export interface ReviewCardView {
   channelName: string;
   /** The run uses a Trial style pack: research only, not for publishing. */
   trial?: boolean;
+  /** Hermes renders the run's video (research only, never published). */
+  hermesRender?: boolean;
+  /** The final video's presentation score (qc cards). */
+  presentation?: PresentationView | null;
+  /** Hermes's advisory rating of the final video (qc cards); never decides. */
+  advisory?: AdvisoryView | null;
   /** Plain-language gate lines, computed on the server. */
   gateLines: string[];
   /** Relative time text, computed on the server. */
@@ -198,9 +205,7 @@ function MediaBlock({ stage, payload, termsShown }: { stage: string; payload: Re
           ))}
         </ul>
       )}
-      {(stage === "render" || stage === "qc") && (
-        <p className="text-xs text-muted">The presentation check is manual in Phase 4. Watch the video before you approve.</p>
-      )}
+      {stage === "render" && <p className="text-xs text-muted">Watch the video before you approve. The owner scores its presentation on the final check.</p>}
     </div>
   );
 }
@@ -228,6 +233,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             {item.trial && (
               <span data-testid="trial-badge" title="Research only, not for publishing">
                 <Badge tone="warn">{TRIAL_BADGE}</Badge>
+              </span>
+            )}
+            {item.hermesRender && (
+              <span data-testid="hermes-render-badge" title="Hermes renders this video with its own tools; it is never published">
+                <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
               </span>
             )}
             {item.channelName && <span className="text-xs text-muted">{item.channelName}</span>}
@@ -282,6 +292,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             )}
             <NotesBlock notes={p.notes} />
             <MediaBlock stage={item.stage} payload={p} termsShown={false} />
+            {item.stage === "qc" && <PresentationBlock reviewId={item.id} isOwner={item.isOwner} trial={item.trial === true} presentation={item.presentation ?? null} advisory={item.advisory ?? null} />}
             <form action={formAction}>
               <input type="hidden" name="reviewId" value={item.id} />
               <input type="hidden" name="decision" value="approve" />
@@ -306,6 +317,9 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             </ul>
             <NotesBlock notes={p.notes} />
             <MediaBlock stage={item.stage} payload={p} termsShown={item.blocking !== null} />
+            {item.stage === "qc" && p.media?.videoAssetId && (
+              <PresentationBlock reviewId={item.id} isOwner={item.isOwner} trial={item.trial === true} presentation={item.presentation ?? null} advisory={item.advisory ?? null} />
+            )}
             {item.blocking !== null && <TermsBlock rows={item.blocking} canSetTerms={item.canSetTerms} recheckedAge={item.recheckedAge} />}
             {item.blocking === null && item.recheckedAge && (
               <p className="text-xs text-muted" data-testid="rechecked">

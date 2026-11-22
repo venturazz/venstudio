@@ -18,6 +18,7 @@ import {
   productionStageAction,
   productionSummary,
   PRODUCTION_STUCK_MINUTES,
+  HERMES_RENDER_STUCK_MINUTES,
   renderLicenseText,
   retryStageFor,
 } from "./production.ts";
@@ -160,4 +161,13 @@ test("productionSummary describes each stage", () => {
   );
   assert.equal(productionSummary("render", { durationSec: 45, captionsBurned: true, captionNote: "" }), "Video rendered, 45 seconds");
   assert.equal(productionSummary("qc", null), "Quality check finished");
+});
+
+test("productionStageAction: a hermes render has no worker job and gets Hermes's time before it is given up", () => {
+  assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: PRODUCTION_STUCK_MINUTES + 1, jobStatus: null, portalRender: true }), { action: "none" });
+  assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: HERMES_RENDER_STUCK_MINUTES + 1, jobStatus: null, portalRender: true }), {
+    action: "fail",
+    reason: "Hermes did not finish the render (research only) and it was cancelled",
+  });
+  assert.equal(productionStageAction({ stage: "render", idleMinutes: PRODUCTION_STUCK_MINUTES + 1, jobStatus: null }).action, "fail", "a worker render that was never queued still fails");
 });

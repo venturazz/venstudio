@@ -26,6 +26,8 @@ export interface HermesCallOptions {
    * limited (replySaysRateLimited) is a wait, not a bad answer. Director stages leave it off.
    */
   busyFromReply?: boolean;
+  /** Pictures (data: URLs) attached to the first user turn, for a vision answer (the presentation advisory). */
+  images?: readonly string[];
 }
 
 const TIMEOUT_MS = 180_000;
@@ -44,6 +46,18 @@ export async function hermesJson<T>(
   opts: HermesCallOptions = {},
 ): Promise<HermesJsonResult<T>> {
   return hermesText(messages, (reply) => validate(extractJson(reply)), opts);
+}
+
+/**
+ * The conversation as sent: with `images` (data: URLs), the first user turn becomes OpenAI-style content parts, the
+ * text first and then each picture. Every other turn, and every call without images, is sent exactly as before.
+ */
+export function withImages(convo: readonly ChatMessage[], images: readonly string[] | undefined): unknown[] {
+  if (!images || images.length === 0) return [...convo];
+  const first = convo.findIndex((m) => m.role === "user");
+  return convo.map((m, i) =>
+    i === first ? { role: m.role, content: [{ type: "text", text: m.content }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] } : m,
+  );
 }
 
 type Answer =
@@ -83,7 +97,7 @@ export async function hermesText<T>(
         const res = await fetch(url, {
           method: "POST",
           headers: { "content-type": "application/json", ...(HERMES_API_KEY ? { authorization: `Bearer ${HERMES_API_KEY}` } : {}) },
-          body: JSON.stringify({ model: "hermes-agent", stream: false, messages: convo }),
+          body: JSON.stringify({ model: "hermes-agent", stream: false, messages: withImages(convo, opts.images) }),
           signal: AbortSignal.timeout(timeoutMs),
           cache: "no-store",
         });

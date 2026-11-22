@@ -160,6 +160,12 @@ falls back to, do); without them the worker simply does not report `audio-mix`.
 Remotion is free for individuals and for companies of up to three people; larger companies need a company licence
 from remotion.pro. Check this applies before relying on it. Nothing in the code checks it.
 
+## html-capture uses this project's browser (worker 0.10.0)
+
+The html-capture renderer (`docs/html-capture.md`) renders HTML style packs in the Chrome Headless Shell this project
+installs, and its packs travel in the same bundle under `html/`. Nothing else is installed for it: a worker with the
+Remotion renderer reports `html-capture` once its 1-second probe page renders.
+
 ## How the remotion-2d path works
 
 - `apps/render-remotion/` is its own npm project, deliberately not a root workspace, so the portal's `npm install` and

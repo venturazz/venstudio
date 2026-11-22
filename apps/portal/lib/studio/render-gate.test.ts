@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gateCapabilities, renderJobCapability, renderStageError, withFadeFallback } from "./render-gate.ts";
+import { gateCapabilities, renderJobCapability, renderRoute, renderStageError, withFadeFallback } from "./render-gate.ts";
 import { buildRenderPayload } from "./render.ts";
 import { engineIssues } from "./render-engine.ts";
 
@@ -14,7 +14,35 @@ test("gateCapabilities skips the gate when nothing is known, so a job still wait
 test("renderJobCapability queues each engine under the capability that runs it; stills stay on ffmpeg", () => {
   assert.equal(renderJobCapability("ffmpeg-stills"), "ffmpeg");
   assert.equal(renderJobCapability("remotion-2d"), "remotion-2d");
-  assert.equal(renderJobCapability("not-an-engine"), "ffmpeg");
+  assert.equal(renderJobCapability("html-capture"), "html-capture");
+  // An unknown engine is refused by name, never queued as stills.
+  assert.throws(() => renderJobCapability("not-an-engine"), /Unknown render engine "not-an-engine".*not rendered as stills/);
+});
+
+test("render gate per renderer: pack plus renderer for workers, the portal for hermes, refusal for anything else", () => {
+  const pack = { id: "probe-line-graph", version: "0.1.0" };
+  assert.deepEqual(renderRoute("ffmpeg-stills"), { by: "worker", renderer: "ffmpeg-stills", capability: "ffmpeg" });
+  assert.deepEqual(renderRoute("ffmpeg-stills", 0.5), { by: "worker", renderer: "ffmpeg-stills", capability: "xfade" });
+  assert.deepEqual(renderRoute("remotion-2d"), { by: "worker", renderer: "remotion-2d", capability: "remotion-2d" });
+  assert.deepEqual(renderRoute("html-capture"), { by: "worker", renderer: "html-capture", capability: "html-capture" });
+  // With a pack, the job waits for a worker that installed and probed exactly that version.
+  assert.deepEqual(renderRoute("html-capture", 0, pack), { by: "worker", renderer: "html-capture", capability: "pack:probe-line-graph@0.1.0" });
+  assert.deepEqual(renderRoute("remotion-2d", 0.5, { id: "explainer-flat-vector", version: "1.0.0" }), { by: "worker", renderer: "remotion-2d", capability: "pack:explainer-flat-vector@1.0.0" });
+  // hermes never becomes a worker job, with or without a pack.
+  assert.deepEqual(renderRoute("hermes", 0, { id: "hermes-research-explainer", version: "0.1.0" }), { by: "portal", renderer: "hermes" });
+  assert.throws(() => renderJobCapability("hermes"), /rendered by the portal/);
+  assert.throws(() => renderRoute("godot-9d"), /Unknown render engine "godot-9d"/);
+  // The capability names workers already report are unchanged, so routing of older runs does not move.
+  for (const [engine, cap] of [["ffmpeg-stills", "ffmpeg"], ["remotion-2d", "remotion-2d"], ["sprite-rig", "remotion-2d"], ["manim", "manim"]] as const) {
+    assert.equal(renderJobCapability(engine), cap, engine);
+  }
+});
+
+test("an html-capture render no worker can run names the renderer, worker 0.10.0 and the Remotion install", () => {
+  const msg = renderStageError(['Engine "html-capture" needs capability "html-capture", which the worker does not report (it reports: ffmpeg)'], "html-capture");
+  assert.match(msg, /not rendered as a slideshow/);
+  assert.match(msg, /0\.10\.0 or later/);
+  assert.match(msg, /--with-remotion, see docs\/html-capture\.md/);
 });
 
 const base = {

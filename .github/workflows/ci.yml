@@ -90,8 +90,8 @@ jobs:
       # After Playwright: its --with-deps installed the system libraries Remotion's headless Chromium needs too.
       # The project is assembled exactly as the portal serves it to workers: the runtime plus the vendored packs'
       # render projects (the flat-vector-explainer composition loads from styles/packs/explainer-flat-vector/render).
-      - name: Remotion renderer (assemble from the vendored packs, install, typecheck, probe, render the golden fixture)
-        timeout-minutes: 15
+      - name: Remotion renderer and html-capture (assemble from the vendored packs, install, typecheck, probe, render the golden fixture and probe-line-graph)
+        timeout-minutes: 20
         env:
           VENSTUDIO_REMOTION_DIR: ${{ github.workspace }}/.e2e-remotion-project
           VENSTUDIO_REMOTION_OUT: ${{ github.workspace }}/.e2e-remotion
@@ -106,6 +106,13 @@ jobs:
           node scripts/probe.mjs
           cd "$GITHUB_WORKSPACE"
           node --test apps/worker/remotion-render.test.ts
+          # html-capture (worker 0.10.0): the probe, probe-line-graph through the real render-video path (size,
+          # duration, frame count, the shared mix and caption burn, qc-video's sampled frames), and pages that try the
+          # network, which must fail. Then the pack's fixture as the styles repo's CI renders it, checked the same way.
+          node --test apps/worker/html-capture-render.test.ts
+          mkdir -p "$VENSTUDIO_REMOTION_OUT"
+          node apps/worker/venstudio-worker.ts capture-html --pack styles/packs/probe-line-graph --out "$VENSTUDIO_REMOTION_OUT/probe-line-graph-fixture.mp4" --remotion "$VENSTUDIO_REMOTION_DIR" --font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+          node styles/tools/check-video.mjs "$VENSTUDIO_REMOTION_OUT/probe-line-graph-fixture.mp4" styles/packs/probe-line-graph/fixtures/expect.json
 
       - name: Browser end-to-end (UI flows + screenshots)
         env:
@@ -143,7 +150,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Shell syntax
-        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs && node --check scripts/e2e-update-proxy.mjs && node --check scripts/sync-styles.mjs && node --check scripts/remotion-project.mjs
+        run: bash -n apps/worker/install.sh && bash -n scripts/e2e.sh && node --check apps/render-remotion/scripts/probe.mjs && node --check scripts/e2e-update-proxy.mjs && node --check scripts/sync-styles.mjs && node --check scripts/remotion-project.mjs && node --check styles/tools/check-video.mjs && node --check styles/packs/probe-line-graph/render/graph.js
 
   docker:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-# Style packs (Phase 1)
+# Style packs (Phases 1 and 2)
 
 A look is a **style pack**: a versioned, tested, curated directory with its contract, renderer requirement, render
 project (when the renderer has one), fixture, learning provenance and curation record. Plan:
@@ -67,8 +67,61 @@ Listed or Trial packs no worker reports yet are named under the Trial section as
 - Known limits: a stills pack needs ffmpeg with `xfade` on the worker (every supported ffmpeg has it), so a worker
   without it gets no stills pack instead of falling back to hard cuts; a pack-only change shows on the Workers page
   as an available update of the version the worker already runs, and approve mode asks for it like any release.
-- A Trial run's presentation score comes from the G-presentation gate; runs without one are listed as not scored,
-  never averaged in as 0, and block promotion until measured.
+- A Trial run's presentation score comes from the G-presentation gate, which the owner gives on the final video's
+  Review card (Phase 2, below); runs without one are listed as not scored, never averaged in as 0, and block
+  promotion until measured.
+
+## Phase 2: renderers, html-capture, the Hermes research renderer, the presentation score
+
+### Renderers
+
+A pack names its renderer in `renderer.engine`. The worker (0.10.0) has one plugin per renderer (`ffmpeg-stills`,
+`remotion-2d`, `html-capture`): id, probe, input check, render step, and whether the shared 0.7.0 audio mix and
+caption burn run after it. The portal routes a render by pack plus renderer (`renderRoute` in
+`lib/studio/render-gate.ts`): a pack's job is queued under `pack:<id>@<version>`, a job without a pack under the
+renderer's capability (`ffmpeg`, `xfade`, `remotion-2d`, `html-capture`; the names workers already reported), and a
+`hermes` render is done by the portal. An unknown engine is refused by name on both sides, never rendered as stills.
+
+### html-capture packs
+
+`render/index.html` plus its text files (`docs/html-capture.md`, `styles/FORMAT.md`). They travel in the same signed
+Remotion bundle as `html/<id>/` with `html/packs.json` (id, version, `drawsCaptions`, render digest), so a worker
+with the Remotion renderer gets them with its next signed update. First pack: `probe-line-graph` (Lab), rendered in
+CI here and in the styles repo.
+
+### The hermes renderer (research only, owner decision)
+
+A pack with engine `hermes` (`hermes-research-explainer`) is rendered by the portal: the render stage sends Hermes,
+through the Hermes gate, the storyboard, the scene plan, the pictures' and narration's URLs on Hermes's media host
+and the pack's contract (`lib/studio/hermes-render.ts`). Hermes renders with its own tools and answers with a
+`/clip/` URL, which is parsed, downloaded from a trusted media origin and sniffed like any Hermes clip
+(`lib/server/executors/hermes-render.ts`). The video is stored with executor `hermes-render` and the backend and
+plugin Hermes named in its provenance, then goes through qc-video, Review and the curation log like any render,
+with `renderer: hermes`. Rules, each in code with no bypass:
+
+| Rule | Where |
+| --- | --- |
+| A hermes pack is never above Trial | the styles validator; `parsePack` leaves such a pack out |
+| A hermes run is always a trial | `runStylePack` and `parseRunStylePack` (whatever a config says); the render stage refuses a run that is not a trial |
+| Never published, never auto-approved | `publishRefusal` and `guardFinalDecision` (the final video always goes to the owner) |
+| New Video: Trial section only, "Hermes render (research only)" | `newVideoStyles(..., { hermes })`, shown when Hermes is set up |
+
+### The presentation score (G-presentation)
+
+On the final video's Review card the owner rates hook, pacing, legibility, visual polish and audio from 1 to 5 stars
+(390 px friendly, owner only). The score is the mean mapped to 0-100 (1 star = 0, 5 stars = 100) and gated with
+`PRESENTATION_PASS` (`lib/studio/presentation.ts`). It is stored as the run's G-presentation qc report for that
+video (executor `owner`, the rubric in its details) and counts only for that video. A trial run's video cannot be
+approved, approved anyway or rejected before it is scored (a quality check that stopped with an error, and so has no
+video, can still be rejected or retried); other runs may skip it.
+
+Hermes's advisory (optional): when Hermes is set up, the quality check asks the worker (0.10.0) for 6 evenly spaced
+stills; the portal shows them to Hermes through the gate with the pack's contract and stores its JSON rating on the
+quality-check stage and in the curation log. It is shown on the card as advisory and never decides or counts.
+
+Migration 0016 (additive) adds `owner_rubric`, `presentation_by`, `hermes_advisory` and `renderer` to
+`style_trial_outcomes`. With five owner-scored trials at a mean of 80 or more (and the rest of the rule met), the
+Styles page reaches **Ready to promote**.
 
 ## Curation log and promotion
 
@@ -98,4 +151,7 @@ missing it shows **Ready to promote** with a JSON block of curation entries and 
 `lib/server/style-packs.ts`, `lib/server/style-trials.ts`, `lib/style-packs-index.ts`, `lib/install-bundle.ts`,
 `lib/update-manifest.ts`, `app/(app)/studio/new/page.tsx`, `app/(app)/studio/runs/run-form.tsx`,
 `app/(app)/studio/styles/page.tsx`, `db/migrations/0015_style_trials.sql`, worker `parsePacksIndex`,
-`packCapabilitiesFor`, `installPacksIndex` and `install-packs`.
+`packCapabilitiesFor`, `installPacksIndex` and `install-packs`. Phase 2: `lib/studio/presentation.ts`,
+`lib/server/presentation.ts`, `lib/studio/hermes-render.ts`, `lib/server/executors/hermes-render.ts`,
+`app/(app)/review/presentation-form.tsx`, `db/migrations/0016_presentation_scores.sql`, worker `RENDERERS`,
+`captureHtml`, `htmlCaptureUnavailableReason`, `capture-html`, `apps/worker/html-capture-render.test.ts`.

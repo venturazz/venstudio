@@ -22,11 +22,13 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, open, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createHash, createPublicKey, verify as verifySignature, type KeyObject } from "node:crypto";
-import { Readable, Transform } from "node:stream";
+import { Readable, Transform, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { fileURLToPath } from "node:url";
@@ -45,7 +47,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.9.0";
+export const VERSION = "0.10.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -290,6 +292,9 @@ export async function detectCapabilities(home?: string): Promise<Capability[]> {
     // remotion-2d also needs ffmpeg, which adds the narration. Reported only when the project is installed here and
     // its probe passes (a still of every template rendered once at install time, through this machine's browser).
     if (!(await remotionUnavailableReason(remotionDir(home)))) caps.push("remotion-2d");
+    // html-capture (0.10.0) uses the Chromium that project installed. Reported only after its 1-second probe page
+    // rendered here (and its one network request was blocked), once per process.
+    if (!(await htmlCaptureUnavailableReason(remotionDir(home)))) caps.push("html-capture");
   }
   const kokoro = process.env.KOKORO_URL;
   if (kokoro) {
@@ -304,7 +309,8 @@ export async function detectCapabilities(home?: string): Promise<Capability[]> {
   // After every other capability, because a pack's probe is built from them.
   const index = await readInstalledPacks(home ?? defaultHome());
   const probed = caps.includes("remotion-2d") ? (await remotionProbe(remotionDir(home))).packs : [];
-  for (const c of packCapabilitiesFor(index, caps, probed)) if (!caps.includes(c as Capability)) caps.push(c as Capability);
+  const html = caps.includes("html-capture") ? (await installedHtmlPacks(remotionDir(home))).packs : [];
+  for (const c of packCapabilitiesFor(index, caps, probed, VERSION, html)) if (!caps.includes(c as Capability)) caps.push(c as Capability);
   return caps;
 }
 
@@ -503,6 +509,22 @@ export function summarizeAnalysis(args: { assetId: string; probe: ProbeResult; c
 }
 
 /** Runs a command and returns its output. Rejects on a non-zero exit or when aborted. */
+/** Most stills qc-video samples for the presentation advisory. */
+export const MAX_SAMPLE_FRAMES = 12;
+
+/** When to sample `asked` stills from a video: the middle of each of `asked` equal parts. Pure; [] when not asked. */
+export function sampleFrameTimes(asked: unknown, durationSec: number): number[] {
+  const n = Number(asked);
+  if (!Number.isInteger(n) || n < 1 || !(durationSec > 0)) return [];
+  const count = Math.min(MAX_SAMPLE_FRAMES, n);
+  return Array.from({ length: count }, (_, k) => round2((durationSec * (k + 0.5)) / count));
+}
+
+/** ffmpeg arguments for one sampled still, 480 px high, as a JPEG. Pure. */
+export function sampleFrameArgs(input: string, atSec: number, output: string): string[] {
+  return ["-y", "-hide_banner", "-loglevel", "error", "-ss", String(atSec), "-i", input, "-frames:v", "1", "-vf", "scale=-2:480", "-q:v", "4", output];
+}
+
 export function runCapture(cmd: string, args: string[], signal: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -682,7 +704,20 @@ export const handlers: Record<string, Handler> = {
     const out = path.join(ctx.workDir, "qc.json");
     await writeFile(out, JSON.stringify(doc, null, 2));
     await ctx.upload("qc.json", out, "application/json");
-    return { ...doc };
+    // 0.10.0: a few evenly spaced stills for the presentation advisory (the portal asks Hermes to look at them).
+    // Only when the payload asks; small JPEGs, uploaded as frame-01.jpg ... beside qc.json.
+    const times = sampleFrameTimes(ctx.job.payload.sampleFrames, probe.durationSec);
+    const sampledFrames: Array<{ name: string; atSec: number }> = [];
+    for (const [k, at] of times.entries()) {
+      const name = `frame-${String(k + 1).padStart(2, "0")}.jpg`;
+      const file = path.join(ctx.workDir, name);
+      ctx.progress(0.9 + (k / Math.max(1, times.length)) * 0.08, `Sampling frame ${k + 1} of ${times.length}`);
+      await runCapture(ffmpegPath(), sampleFrameArgs(input, at, file), ctx.signal);
+      if (!((await stat(file).catch(() => null))?.size ?? 0)) continue;
+      await ctx.upload(name, file, "image/jpeg");
+      sampledFrames.push({ name, atSec: at });
+    }
+    return { ...doc, ...(times.length > 0 ? { sampledFrames } : {}) };
   },
 
   async "render-preview"(ctx) {
@@ -1248,7 +1283,9 @@ export function parseAudioPlan(raw: unknown, ctx: { durationSec: number; targetL
 export const RENDER_ENGINES: Readonly<Record<string, Capability>> = {
   "ffmpeg-stills": "ffmpeg",
   "remotion-2d": "remotion-2d",
+  "html-capture": "html-capture",
 };
+
 export const DEFAULT_RENDER_ENGINE = "ffmpeg-stills";
 
 /** The engine a render-video payload asks for. Throws NonRetryableError for an engine this worker has no path for. */
@@ -1258,6 +1295,12 @@ export function renderEngineOf(payload: Record<string, unknown>): string {
   if (raw === undefined || raw === null) return DEFAULT_RENDER_ENGINE;
   if (typeof raw !== "string" || !raw.trim()) throw new NonRetryableError("render-video payload: engine must be an engine name");
   const engine = raw.trim().slice(0, 40);
+  if (engine === "hermes") {
+    throw new NonRetryableError(
+      `render-video: engine "hermes" is rendered by the portal through Hermes (research only), never by a worker. ` +
+        `Nothing was rendered, and the job is not rendered as stills instead.`,
+    );
+  }
   if (!Object.hasOwn(RENDER_ENGINES, engine)) {
     throw new NonRetryableError(
       `render-video: engine "${engine}" is not one this worker (${VERSION}) can run; it runs ${Object.keys(RENDER_ENGINES).join(", ")}. ` +
@@ -1280,7 +1323,9 @@ export function engineUnavailable(engine: string, caps: readonly string[], detai
     `. Nothing was rendered. ` +
     (engine === "remotion-2d"
       ? "Install the Remotion renderer on the worker (install.sh --with-remotion, see docs/remotion-worker.md), then press Retry."
-      : "Install it on the worker, then press Retry.")
+      : engine === "html-capture"
+        ? "html-capture uses the headless Chromium of the Remotion renderer: install it on the worker (install.sh --with-remotion, see docs/html-capture.md), then press Retry."
+        : "Install it on the worker, then press Retry.")
   );
 }
 
@@ -2063,6 +2108,8 @@ const remotionProbes = new Map<string, Promise<RemotionProbe>>();
 /** Forgets cached probe results. For tests, and after an install in the same process. */
 export function clearRemotionProbeCache() {
   remotionProbes.clear();
+  // The HTML packs and the Chromium html-capture uses live in the same project.
+  clearHtmlCaptureCache();
 }
 
 /**
@@ -2382,14 +2429,15 @@ function runRemotion(args: string[], cwd: string, totalFrames: number, timeoutMs
 }
 
 /**
- * Renders a remotion-2d job into `video.part.mp4` in the work dir: props and inputs into the work dir, the CLI renders
- * a muted video from the installed project, then ffmpeg adds the narration with the stills path's audio chain.
+ * Renders a remotion-2d job into the muted file `output` (relative to the work dir): props and inputs into the work
+ * dir, then the CLI renders a muted video from the installed project. The shared mux adds the soundtrack afterwards.
  */
 async function renderRemotionVideo(
   ctx: JobContext,
   spec: RenderSpec,
   composition: string,
-  named: Map<string, string>,
+  named: ReadonlyMap<string, string>,
+  output: string,
 ): Promise<{ captionsBurned: boolean; captionNote: string | null }> {
   const dir = remotionDir(ctx.home);
   const cli = await remotionCli(dir);
@@ -2399,7 +2447,7 @@ async function renderRemotionVideo(
   });
   const propsFile = path.join(ctx.workDir, "remotion-props.json");
   await writeFile(propsFile, JSON.stringify(props));
-  const muted = path.join(ctx.workDir, "remotion.part.mp4");
+  const muted = path.join(ctx.workDir, output);
   const totalFrames = props.timeline?.totalFrames ?? Math.round(spec.durationSec * spec.fps);
   ctx.progress(0.15, `Rendering ${composition} with Remotion`);
   await runRemotion(
@@ -2411,15 +2459,6 @@ async function renderRemotionVideo(
     ctx.signal,
   );
   if (!((await stat(muted).catch(() => null))?.size ?? 0)) throw new Error("Remotion finished but wrote no video");
-  ctx.progress(0.8, spec.audio ? "Mixing the soundtrack" : "Adding the narration");
-  await runFfmpeg(
-    buildMuxArgs(spec, muted, named.get(spec.narrationAssetId) as string, "video.part.mp4", audioFilesOf(spec, named)),
-    spec.durationSec,
-    (f) => ctx.progress(0.8 + f * 0.07, "Adding the narration"),
-    ctx.signal,
-    ctx.workDir,
-  );
-  await rm(muted, { force: true });
   return {
     captionsBurned: spec.captions.length > 0,
     captionNote: spec.captions.length > 0 && !spec.fontAssetId ? "no font in Assets; captions use the renderer's system font" : null,
@@ -2485,17 +2524,1083 @@ async function renderStillsInChunks(
   return captions;
 }
 
+// ---------------------------------------------------------------------------
+// Renderer plugins (0.10.0)
+//
+// render-video dispatches on `engine` to one plugin. Each plugin has an id (the engine name packs declare as
+// renderer.engine), the capability that routes jobs to it, a probe (why it cannot run here, or null), a check of
+// what it needs from the spec before any download, and a render entry point. It declares what happens after it:
+// `audio` "own-graph" (it writes the finished video; its graph runs the shared mix) or "shared-mux" (it writes a muted
+// picture to `mutedFile`, and buildMuxArgs adds the soundtrack, exactly as for Remotion since 0.5.0), and per spec
+// whether captions are drawn by the renderer ("renderer") or burned with the shared 0.7.0 drawtext chain while it
+// encodes ("shared-burn"). An engine without a plugin is refused by name and never rendered as stills.
+
+export interface CaptionBurn {
+  /** The drawtext chain for the encoder (-vf), or null when nothing is burned. */
+  filter: string | null;
+  /** Text files the chain reads (cap<i>.txt), written into the work dir first. */
+  files: Array<{ file: string; text: string }>;
+  captionsBurned: boolean;
+  captionNote: string | null;
+}
+
+/** The shared caption burn: the stills path's drawtext filters (with captionStyle when sent) for the whole video. Pure. */
+export function sharedCaptionBurn(spec: RenderSpec, font: string | undefined, caps: { drawtext: boolean }): CaptionBurn {
+  const plan = captionPlan(spec, font, caps);
+  if (!plan.canBurn) return { filter: null, files: [], captionsBurned: false, captionNote: plan.note };
+  const { draws, files } = captionDraws(spec, font as string, 0, Infinity);
+  return { filter: draws.join(","), files, captionsBurned: true, captionNote: null };
+}
+
+export interface RendererRun {
+  ctx: JobContext;
+  spec: RenderSpec;
+  /** Asset id to its file, relative to the work dir (in/<id>.<ext>). */
+  named: ReadonlyMap<string, string>;
+  /** The narration, relative to the work dir. */
+  narration: string;
+  canDrawText: boolean;
+  /** What prepare() returned. */
+  prepared: unknown;
+  /** File to write, relative to the work dir: video.part.mp4 for "own-graph", mutedFile for "shared-mux". */
+  output: string;
+  /** The shared caption burn, when captions() said "shared-burn". */
+  burn: CaptionBurn | null;
+}
+
+export interface RendererOutcome {
+  captionsBurned: boolean;
+  captionNote: string | null;
+  /** Extra fields for the job result (composition, HTML pack, stills parts). */
+  extra?: Record<string, unknown>;
+}
+
+export interface RendererPlugin {
+  id: string;
+  /** The capability a job for this engine is queued under when it has no pack (ffmpeg, remotion-2d, html-capture). */
+  capability: Capability;
+  audio: "own-graph" | "shared-mux";
+  /** The muted picture of a "shared-mux" renderer, in the work dir. */
+  mutedFile: string;
+  captions(spec: RenderSpec, prepared: unknown): "renderer" | "shared-burn";
+  /** Why this machine cannot run the renderer, or null. Cached per process where it is expensive. */
+  unavailable(home?: string): Promise<string | null>;
+  /** Checks what the renderer needs from the spec; throws NonRetryableError naming what is missing. */
+  prepare(spec: RenderSpec, home?: string): Promise<unknown>;
+  render(run: RendererRun): Promise<RendererOutcome>;
+}
+
+const stillsRenderer: RendererPlugin = {
+  id: "ffmpeg-stills",
+  capability: "ffmpeg",
+  audio: "own-graph",
+  mutedFile: "",
+  captions: () => "renderer",
+  // ffmpeg itself is checked when it runs, as before plugins.
+  unavailable: async () => null,
+  prepare: async (spec) => planStillsChunks(spec),
+  async render(r) {
+    const chunks = r.prepared as StillsChunk[] | null;
+    if (chunks) {
+      const c = await renderStillsInChunks(r.ctx, r.spec, chunks, r.named, r.canDrawText);
+      return { ...c, extra: { stillsParts: chunks.length } };
+    }
+    const plan = buildRenderArgs(
+      r.spec,
+      {
+        images: r.spec.shots.map((s) => r.named.get(s.assetId) as string),
+        narration: r.narration,
+        output: r.output,
+        font: r.spec.fontAssetId ? (r.named.get(r.spec.fontAssetId) as string) : undefined,
+        ...audioFilesOf(r.spec, r.named),
+      },
+      { drawtext: r.canDrawText },
+    );
+    for (const f of plan.captionFiles) await writeFile(path.join(r.ctx.workDir, f.file), f.text, "utf8");
+    r.ctx.progress(0.15, "Rendering");
+    await runFfmpeg(plan.args, r.spec.durationSec, (f) => r.ctx.progress(0.15 + f * 0.7, `Rendering ${Math.round(f * 100)}%`), r.ctx.signal, r.ctx.workDir);
+    return { captionsBurned: plan.captionsBurned, captionNote: plan.captionNote };
+  },
+};
+
+const remotionRenderer: RendererPlugin = {
+  id: "remotion-2d",
+  capability: "remotion-2d",
+  audio: "shared-mux",
+  mutedFile: "remotion.part.mp4",
+  // The templates draw captions themselves.
+  captions: () => "renderer",
+  unavailable: (home) => remotionUnavailableReason(remotionDir(home)),
+  prepare: async (spec, home) => remotionCompositionFor(spec, (await remotionProbe(remotionDir(home))).packs),
+  async render(r) {
+    const composition = r.prepared as string;
+    const c = await renderRemotionVideo(r.ctx, r.spec, composition, r.named, r.output);
+    return { ...c, extra: { composition, template: r.spec.scenePlan?.template ?? null } };
+  },
+};
+
+const htmlCaptureRenderer: RendererPlugin = {
+  id: "html-capture",
+  capability: "html-capture",
+  audio: "shared-mux",
+  mutedFile: "html.part.mp4",
+  captions: (_spec, prepared) => ((prepared as InstalledHtmlPack).drawsCaptions ? "renderer" : "shared-burn"),
+  unavailable: (home) => htmlCaptureUnavailableReason(remotionDir(home)),
+  prepare: async (spec, home) => htmlPackFor(spec, (await installedHtmlPacks(remotionDir(home))).packs),
+  async render(r) {
+    const pack = r.prepared as InstalledHtmlPack;
+    const chrome = await findChromium(remotionDir(r.ctx.home));
+    if (!chrome) throw new NonRetryableError(`html-capture: no headless Chromium under ${remotionDir(r.ctx.home)}`);
+    const props = buildHtmlCaptureProps(r.spec, {
+      images: r.spec.shots.map((s) => `../in/${path.basename(r.named.get(s.assetId) as string)}`),
+      font: r.spec.fontAssetId ? `../in/${path.basename(r.named.get(r.spec.fontAssetId) as string)}` : null,
+      drawsCaptions: pack.drawsCaptions,
+    });
+    r.ctx.progress(0.15, `Rendering ${pack.id} in headless Chromium`);
+    const got = await captureHtml({
+      chrome,
+      root: pack.dir,
+      inDir: path.join(r.ctx.workDir, "in"),
+      props,
+      width: r.spec.width,
+      height: r.spec.height,
+      fps: r.spec.fps,
+      totalFrames: props.totalFrames,
+      output: path.join(r.ctx.workDir, r.output),
+      cwd: r.ctx.workDir,
+      burn: r.burn?.filter ?? null,
+      timeoutMs: remotionTimeoutMs(r.spec.durationSec),
+      signal: r.ctx.signal,
+      onProgress: (f) => r.ctx.progress(0.15 + f * 0.65, `Rendering ${Math.round(f * 100)}%`),
+    });
+    const drawn = pack.drawsCaptions && r.spec.captions.length > 0;
+    return {
+      captionsBurned: drawn,
+      captionNote: drawn && !r.spec.fontAssetId ? "no font in Assets; the template draws captions with its own font" : null,
+      extra: { htmlPack: { id: pack.id, version: pack.version }, template: pack.id, frames: got.frames },
+    };
+  },
+};
+
+/** Every renderer plugin of this worker, by engine id. Same keys as RENDER_ENGINES (a test checks). */
+export const RENDERERS: Readonly<Record<string, RendererPlugin>> = {
+  [stillsRenderer.id]: stillsRenderer,
+  [remotionRenderer.id]: remotionRenderer,
+  [htmlCaptureRenderer.id]: htmlCaptureRenderer,
+};
+
+/** The plugin for an engine; throws NonRetryableError naming an engine this worker has none for. */
+export function rendererFor(engine: string): RendererPlugin {
+  const r = Object.hasOwn(RENDERERS, engine) ? RENDERERS[engine] : undefined;
+  if (!r) renderEngineOf({ engine });
+  return r as RendererPlugin;
+}
+
+// ---------------------------------------------------------------------------
+// html-capture (0.10.0): an HTML template (GSAP, CSS or three.js, vendored inside its pack) captured frame by frame in
+// headless Chromium and encoded by ffmpeg. See docs/html-capture.md.
+//
+// The browser is the Chrome Headless Shell the Remotion renderer installs (`remotion browser ensure`), driven over the
+// Chrome DevTools Protocol through --remote-debugging-pipe (file descriptors 3 and 4, NUL-separated JSON): Node
+// built-ins only, and no debugging port another local process could connect to. The pack's files and the job's
+// inputs are served from a loopback HTTP server (127.0.0.1, random port, random path prefix); every other request is
+// failed and fails the job. Time is virtual: a script injected before the page's own scripts replaces Date,
+// performance.now, requestAnimationFrame, setTimeout/setInterval and Math.random, and the renderer advances the
+// clock by exactly one frame before each capture.
+
+/** Where the HTML packs live inside the Remotion project the bundle installs: html/<id>/ and html/packs.json. */
+export const HTML_PACKS_DIR = "html";
+export const HTML_PACKS_FILE = "packs.json";
+/** Size of one captured frame we accept from the browser, and the per-frame and init limits. */
+export const HTML_CAPTURE_LIMITS = { frameBytes: 16 * 1024 * 1024, frameTimeoutMs: 30_000, initTimeoutMs: 60_000, loadTimeoutMs: 30_000 } as const;
+
+/** An entry of html/packs.json, written by the portal's bundle builder (apps/portal/lib/install-bundle.ts). */
+export interface HtmlPackRef {
+  id: string;
+  version: string;
+  drawsCaptions: boolean;
+  /** renderDigest of the pack's render/ files. */
+  sha256: string;
+}
+
+export interface InstalledHtmlPack extends HtmlPackRef {
+  dir: string;
+}
+
+/** The well-formed entries of html/packs.json. Pure. */
+export function parseHtmlPacks(raw: unknown): HtmlPackRef[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((p) =>
+    isRecord(p) &&
+    typeof p.id === "string" &&
+    /^[a-z0-9][a-z0-9-]{1,62}$/.test(p.id) &&
+    typeof p.version === "string" &&
+    /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(p.version) &&
+    typeof p.sha256 === "string" &&
+    /^[0-9a-f]{64}$/.test(p.sha256)
+      ? [{ id: p.id, version: p.version, drawsCaptions: p.drawsCaptions === true, sha256: p.sha256 }]
+      : [],
+  );
+}
+
+/** Digest of a render tree: sha256 of the sorted "path NUL sha256(file) LF" lines (packDigest's scheme). Pure. */
+export function renderDigestOf(files: Readonly<Record<string, string>>): string {
+  const lines = Object.keys(files)
+    .sort()
+    .map((p) => `${p}\0${files[p]}\n`)
+    .join("");
+  return createHash("sha256").update(lines).digest("hex");
+}
+
+/** Relative path to sha256 of every regular file under `dir` (symlinks and dot files are not part of a pack). */
+async function treeHashes(dir: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const walk = async (d: string, prefix: string, depth: number) => {
+    if (depth > 8) return;
+    for (const name of (await readdir(d)).sort()) {
+      if (name.startsWith(".")) continue;
+      const p = path.join(d, name);
+      const st = await lstat(p);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (st.isDirectory()) await walk(p, rel, depth + 1);
+      else if (st.isFile()) out[rel] = await sha256File(p);
+    }
+  };
+  await walk(dir, "", 0);
+  return out;
+}
+
+const htmlPackLists = new Map<string, Promise<{ packs: InstalledHtmlPack[]; problems: string[] }>>();
+
+/** The HTML packs installed in the Remotion project at `dir` whose files match html/packs.json. Once per process. */
+export function installedHtmlPacks(dir: string): Promise<{ packs: InstalledHtmlPack[]; problems: string[] }> {
+  let p = htmlPackLists.get(dir);
+  if (!p) {
+    p = readHtmlPacks(dir);
+    htmlPackLists.set(dir, p);
+  }
+  return p;
+}
+
+async function readHtmlPacks(dir: string): Promise<{ packs: InstalledHtmlPack[]; problems: string[] }> {
+  const root = path.join(dir, HTML_PACKS_DIR);
+  let refs: HtmlPackRef[] = [];
+  try {
+    refs = parseHtmlPacks(JSON.parse(await readFile(path.join(root, HTML_PACKS_FILE), "utf8")) as unknown);
+  } catch {
+    return { packs: [], problems: [] };
+  }
+  const packs: InstalledHtmlPack[] = [];
+  const problems: string[] = [];
+  for (const ref of refs) {
+    const packDir = path.join(root, ref.id);
+    try {
+      if (!existsSync(path.join(packDir, "index.html"))) throw new Error("index.html is missing");
+      const digest = renderDigestOf(await treeHashes(packDir));
+      if (digest !== ref.sha256) throw new Error("its files differ from the installed bundle");
+      packs.push({ ...ref, dir: packDir });
+    } catch (err) {
+      problems.push(`${ref.id}@${ref.version}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { packs, problems };
+}
+
+/** The installed HTML pack a spec's template names. Throws NonRetryableError by name when there is none. */
+export function htmlPackFor(spec: Pick<RenderSpec, "engine" | "scenePlan">, installed: readonly InstalledHtmlPack[]): InstalledHtmlPack {
+  const template = spec.scenePlan?.template ?? "";
+  const hit = installed.find((p) => p.id === template);
+  if (!hit) {
+    throw new NonRetryableError(
+      `Template "${template}" has no html-capture pack installed on this worker (${VERSION}); it has ${installed.map((p) => `${p.id}@${p.version}`).join(", ") || "none"}. ` +
+        `Nothing was rendered, and it is not drawn with another template instead.`,
+    );
+  }
+  return hit;
+}
+
+/** Executable names of a headless Chromium inside Remotion's browser folder. */
+const CHROMIUM_NAMES = ["chrome-headless-shell", "headless_shell", "chrome"];
+
+/**
+ * The headless Chromium the Remotion project at `dir` installed (`remotion browser ensure` puts Chrome Headless Shell
+ * under node_modules/.remotion/), or null. VENSTUDIO_CHROMIUM_PATH (optional) names another one.
+ */
+export async function findChromium(dir: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  if (env.VENSTUDIO_CHROMIUM_PATH) return existsSync(env.VENSTUDIO_CHROMIUM_PATH) ? path.resolve(env.VENSTUDIO_CHROMIUM_PATH) : null;
+  const base = path.join(dir, "node_modules", ".remotion");
+  const walk = async (d: string, depth: number): Promise<string | null> => {
+    let names: string[];
+    try {
+      names = (await readdir(d)).sort();
+    } catch {
+      return null;
+    }
+    for (const name of names) {
+      const p = path.join(d, name);
+      const st = await stat(p).catch(() => null);
+      if (st?.isFile() && CHROMIUM_NAMES.includes(name) && (st.mode & 0o111) !== 0) return p;
+    }
+    if (depth >= 4) return null;
+    for (const name of names) {
+      const p = path.join(d, name);
+      if ((await stat(p).catch(() => null))?.isDirectory()) {
+        const hit = await walk(p, depth + 1);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  };
+  return walk(base, 0);
+}
+
+/** What an html-capture template is given by `init(props)`. Mirror of the contract in docs/html-capture.md. */
+export interface HtmlCaptureProps {
+  venstudio: 1;
+  template: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  totalFrames: number;
+  transitionSec: number;
+  /** One per shot, same order; `image` is a URL relative to the page (../in/<file>) or null. */
+  shots: Array<{ shotRef: string; seconds: number; image: string | null }>;
+  timeline: XfadeTimeline;
+  scenes: RenderScene[];
+  /** Captions to draw. Empty unless the pack declares drawsCaptions: otherwise ffmpeg burns them. */
+  captions: Array<{ start: number; end: number; text: string }>;
+  drawsCaptions: boolean;
+  captionStyle?: RenderCaptionStyle;
+  /** The caption font, as a URL relative to the page, or null. */
+  font: string | null;
+}
+
+/** The props an html-capture template renders from. Pure. Same timeline as Remotion and the xfade path. */
+export function buildHtmlCaptureProps(spec: RenderSpec, files: { images: Array<string | null>; font: string | null; drawsCaptions: boolean }): HtmlCaptureProps {
+  if (!spec.scenePlan) throw new NonRetryableError(`render-video: engine "${spec.engine}" needs a scene plan`);
+  if (files.images.length !== spec.shots.length) throw new NonRetryableError("There must be one image entry per shot");
+  const plan = planCrossFades(spec.shots.map((s) => s.seconds), spec.transitionSec);
+  if (!plan.ok) throw new NonRetryableError(`render-video: ${plan.issues.join("; ")}`);
+  const timeline = xfadeTimeline(plan.starts, plan.totalSec, plan.transitionSec, spec.fps);
+  return {
+    venstudio: 1,
+    template: spec.scenePlan.template,
+    width: spec.width,
+    height: spec.height,
+    fps: spec.fps,
+    durationSec: spec.durationSec,
+    totalFrames: timeline.totalFrames,
+    transitionSec: plan.transitionSec,
+    shots: spec.shots.map((s, i) => ({ shotRef: s.shotRef, seconds: s.seconds, image: files.images[i] })),
+    timeline,
+    scenes: spec.scenePlan.scenes.map((s) => ({ ...s, elements: s.elements.map((e) => ({ ...e })), tokens: [...s.tokens], layers: s.layers.map((l) => ({ ...l })) })),
+    captions: files.drawsCaptions ? spec.captions.map((c) => ({ ...c })) : [],
+    drawsCaptions: files.drawsCaptions,
+    ...(spec.captionStyle ? { captionStyle: { ...spec.captionStyle } } : {}),
+    font: files.font,
+  };
+}
+
+/**
+ * Injected before every page script (Page.addScriptToEvaluateOnNewDocument). Time only moves when the renderer calls
+ * __venstudio.frame(f, fps): Date and performance.now read the virtual clock (a fixed epoch, 2026-01-01T00:00:00Z,
+ * plus f / fps seconds), setTimeout/setInterval callbacks run when the clock passes them, requestAnimationFrame
+ * callbacks run once per frame, Math.random is a seeded PRNG, and CSS/Web Animations are paused and set to the clock
+ * from the frame on which they first appear. While init(props) runs the clock stays at 0, but zero-delay timers and
+ * frame callbacks are pumped, so a page that waits for the next tick or frame while it lays out does not hang. WebSocket, EventSource, RTCPeerConnection, sendBeacon and service
+ * workers throw and report the attempt through the __venstudioBlocked binding. Plain ES2020, no dependencies.
+ */
+export const VIRTUAL_CLOCK_SOURCE = String.raw`(() => {
+  const g = globalThis;
+  if (g.__venstudio) return;
+  const EPOCH = 1767225600000;
+  let now = 0;
+  let seq = 0;
+  const RealDate = g.Date;
+  function VDate(...a) {
+    if (!new.target) return new RealDate(EPOCH + now).toString();
+    return a.length ? new RealDate(...a) : new RealDate(EPOCH + now);
+  }
+  VDate.prototype = RealDate.prototype;
+  VDate.now = () => EPOCH + now;
+  VDate.parse = RealDate.parse;
+  VDate.UTC = RealDate.UTC;
+  g.Date = VDate;
+  if (g.performance) {
+    try { Object.defineProperty(g.performance, "now", { value: () => now, configurable: true }); } catch (e) {}
+    try { Object.defineProperty(g.performance, "timeOrigin", { value: EPOCH, configurable: true }); } catch (e) {}
+  }
+  const timers = new Map();
+  const realSetTimeout = typeof g.setTimeout === "function" ? g.setTimeout.bind(g) : null;
+  g.setTimeout = (fn, ms, ...args) => { const id = ++seq; timers.set(id, { at: now + Math.max(0, Number(ms) || 0), fn, args, every: 0, order: id }); return id; };
+  g.setInterval = (fn, ms, ...args) => { const every = Math.max(1, Number(ms) || 0); const id = ++seq; timers.set(id, { at: now + every, fn, args, every, order: id }); return id; };
+  g.clearTimeout = (id) => { timers.delete(id); };
+  g.clearInterval = (id) => { timers.delete(id); };
+  let rafs = new Map();
+  g.requestAnimationFrame = (fn) => { const id = ++seq; rafs.set(id, fn); return id; };
+  g.cancelAnimationFrame = (id) => { rafs.delete(id); };
+  let seed = 0x2545f491;
+  Math.random = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const blocked = (what) => {
+    try { if (typeof g.__venstudioBlocked === "function") g.__venstudioBlocked(String(what)); } catch (e) {}
+    throw new Error("Network access is not available while rendering: " + String(what));
+  };
+  g.WebSocket = function (u) { blocked(u); };
+  g.EventSource = function (u) { blocked(u); };
+  g.RTCPeerConnection = function () { blocked("RTCPeerConnection"); };
+  g.webkitRTCPeerConnection = g.RTCPeerConnection;
+  if (g.navigator) {
+    try { g.navigator.sendBeacon = (u) => blocked(u); } catch (e) {}
+    try { if (g.navigator.serviceWorker) g.navigator.serviceWorker.register = (u) => Promise.reject(new Error(blocked(u))); } catch (e) {}
+  }
+  const runTimers = (to) => {
+    for (let guard = 0; guard < 100000; guard++) {
+      let pick = null;
+      for (const [id, t] of timers) if (t.at <= to && (!pick || t.at < pick.t.at || (t.at === pick.t.at && t.order < pick.t.order))) pick = { id, t };
+      if (!pick) break;
+      const { id, t } = pick;
+      if (t.at > now) now = t.at;
+      if (t.every) { t.at += t.every; t.order = ++seq; } else timers.delete(id);
+      if (typeof t.fn === "function") t.fn(...t.args);
+    }
+    now = to;
+  };
+  const runFrameCallbacks = () => {
+    const list = rafs;
+    rafs = new Map();
+    for (const fn of list.values()) fn(now);
+  };
+  const firstSeen = new WeakMap();
+  const syncAnimations = () => {
+    const d = g.document;
+    if (!d || typeof d.getAnimations !== "function") return;
+    for (const a of d.getAnimations()) {
+      if (!firstSeen.has(a)) firstSeen.set(a, now);
+      try { a.pause(); a.currentTime = now - firstSeen.get(a); } catch (e) {}
+    }
+  };
+  g.__venstudio = {
+    now: () => now,
+    async init(props) {
+      const api = g.VENSTUDIO;
+      if (!api || typeof api.init !== "function" || typeof api.renderFrame !== "function") {
+        throw new Error("The page does not define window.VENSTUDIO = { init(props), renderFrame(frame) }");
+      }
+      // While init runs, time stays at 0 but zero-delay timers and frame callbacks still run (a page may wait for
+      // "the next tick" or "the next frame" while it lays out), pumped by the real event loop.
+      let pumping = true;
+      const pump = () => {
+        if (!pumping) return;
+        runTimers(now);
+        runFrameCallbacks();
+        if (realSetTimeout) realSetTimeout(pump, 4);
+      };
+      if (realSetTimeout) realSetTimeout(pump, 0);
+      let meta;
+      try {
+        meta = await api.init(props);
+      } finally {
+        pumping = false;
+      }
+      syncAnimations();
+      return meta && typeof meta === "object" ? { totalFrames: meta.totalFrames, fps: meta.fps, width: meta.width, height: meta.height } : null;
+    },
+    async frame(f, fps) {
+      runTimers((f * 1000) / fps);
+      runFrameCallbacks();
+      await g.VENSTUDIO.renderFrame(f);
+      syncAnimations();
+      if (g.document && g.document.fonts && g.document.fonts.status !== "loaded") await g.document.fonts.ready;
+      return f;
+    },
+  };
+})();`;
+
+/** Whether the page may load `url`: only the capture server's own origin, and data:, blob: and about: URLs. Pure. */
+export function captureUrlAllowed(url: string, origin: string): boolean {
+  if (/^(data|blob|about):/i.test(url)) return true;
+  try {
+    return new URL(url).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+/** Chromium flags for a capture. Pure. Network is denied twice more beside request interception: a dead proxy and a resolver that resolves nothing. */
+export function chromiumArgs(o: { width: number; height: number; userDataDir: string }): string[] {
+  return [
+    "--headless",
+    "--remote-debugging-pipe",
+    `--user-data-dir=${o.userDataDir}`,
+    `--window-size=${o.width},${o.height}`,
+    "--force-device-scale-factor=1",
+    "--hide-scrollbars",
+    "--mute-audio",
+    // As Remotion launches the same browser; the pages are signed packs and cannot reach the network.
+    "--no-sandbox",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-component-update",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-sync",
+    "--disable-default-apps",
+    "--disable-breakpad",
+    "--disable-domain-reliability",
+    "--disable-client-side-phishing-detection",
+    "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,DialMediaRouteProvider",
+    "--metrics-recording-only",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--font-render-hinting=none",
+    "--force-color-profile=srgb",
+    // No GPU on Muse: WebGL (three.js) runs on SwiftShader.
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
+    "--proxy-server=http://127.0.0.1:9",
+    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--force-webrtc-ip-handling-policy",
+    "about:blank",
+  ];
+}
+
+/** ffmpeg arguments that encode the JPEG frames piped on stdin into a muted H.264 mp4. Pure. */
+export function htmlCaptureFfmpegArgs(o: { fps: number; frames: number; output: string; burn: string | null }): string[] {
+  return [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "image2pipe", "-framerate", String(o.fps), "-c:v", "mjpeg", "-i", "pipe:0",
+    "-frames:v", String(o.frames),
+    // Chromium's JPEG frames are full range (yuvj420p). Convert to limited range so the file is plain yuv420p,
+    // which is what players and YouTube expect; otherwise colours look washed out.
+    "-vf", [...(o.burn ? [o.burn] : []), "scale=in_range=full:out_range=tv", "format=yuv420p"].join(","),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", "-pix_fmt", "yuv420p", "-color_range", "tv", "-r", String(o.fps),
+    "-movflags", "+faststart",
+    "-an",
+    o.output,
+  ];
+}
+
+/** The content type the capture server sends for a file name. Pure. */
+export function captureContentType(name: string): string {
+  const ext = path.extname(name).toLowerCase();
+  const types: Record<string, string> = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+  };
+  return types[ext] ?? "application/octet-stream";
+}
+
+/**
+ * The file a capture server request maps to, or null. Pure. `/<token>/pack/<path>` is the pack's render folder and
+ * `/<token>/in/<path>` the job's inputs; anything else, any dot segment, and anything outside the root is null.
+ */
+export function captureFileFor(urlPath: string, token: string, roots: { pack: string; in: string | null }): string | null {
+  let p: string;
+  try {
+    p = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
+  } catch {
+    return null;
+  }
+  const parts = p.split("/");
+  if (parts[0] !== "" || parts[1] !== token) return null;
+  const which = parts[2];
+  const rest = parts.slice(3);
+  if (rest.length === 0 || rest.some((s) => s === "" || s === "." || s === ".." || s.startsWith(".") || s.includes("\\") || s.includes("\0"))) return null;
+  const root = which === "pack" ? roots.pack : which === "in" ? roots.in : null;
+  if (!root) return null;
+  const abs = path.resolve(root, ...rest);
+  return abs.startsWith(path.resolve(root) + path.sep) ? abs : null;
+}
+
+/** A Chrome DevTools Protocol connection over --remote-debugging-pipe: NUL-terminated JSON in both directions. */
+class CdpPipe {
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private buf = "";
+  private closed: Error | null = null;
+  readonly listeners = new Set<(method: string, params: Record<string, unknown>, sessionId: string | undefined) => void>();
+
+  private readonly out: Writable;
+
+  constructor(out: Writable, input: Readable) {
+    this.out = out;
+    input.setEncoding("utf8");
+    input.on("data", (chunk: string) => {
+      this.buf += chunk;
+      let at: number;
+      while ((at = this.buf.indexOf("\0")) >= 0) {
+        const text = this.buf.slice(0, at);
+        this.buf = this.buf.slice(at + 1);
+        this.onMessage(text);
+      }
+    });
+    input.on("close", () => this.fail(new Error("the browser closed the DevTools pipe")));
+    out.on("error", (err: Error) => this.fail(err));
+  }
+
+  private onMessage(text: string) {
+    let msg: { id?: number; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: { message?: string }; sessionId?: string };
+    try {
+      msg = JSON.parse(text) as typeof msg;
+    } catch {
+      return;
+    }
+    if (typeof msg.id === "number") {
+      const p = this.pending.get(msg.id);
+      if (!p) return;
+      this.pending.delete(msg.id);
+      clearTimeout(p.timer);
+      if (msg.error) p.reject(new Error(`DevTools: ${msg.error.message ?? "error"}`));
+      else p.resolve(msg.result ?? {});
+      return;
+    }
+    if (typeof msg.method === "string") for (const l of this.listeners) l(msg.method, msg.params ?? {}, msg.sessionId);
+  }
+
+  fail(err: Error) {
+    if (this.closed) return;
+    this.closed = err;
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(err);
+    }
+    this.pending.clear();
+  }
+
+  send(method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs = 30_000): Promise<Record<string, unknown>> {
+    if (this.closed) return Promise.reject(this.closed);
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`DevTools ${method} did not answer within ${Math.round(timeoutMs / 1000)} s`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.out.write(`${JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })}\0`);
+    });
+  }
+}
+
+export interface HtmlCaptureOptions {
+  chrome: string;
+  /** The pack's render folder (index.html and its files). */
+  root: string;
+  /** The job's input folder, served as ../in/ next to the page, or null. */
+  inDir: string | null;
+  props: unknown;
+  width: number;
+  height: number;
+  fps: number;
+  totalFrames: number;
+  /** The muted mp4 to write. */
+  output: string;
+  /** ffmpeg's working directory (caption text files are read from it). */
+  cwd: string;
+  burn: string | null;
+  timeoutMs: number;
+  signal: AbortSignal;
+  onProgress?: (fraction: number) => void;
+  /** "fail" (jobs): a blocked request fails the capture. "record" (the probe): it is only reported. */
+  onViolation?: "fail" | "record";
+}
+
+/** Runs one capture: server, browser, page, frames into ffmpeg. Cleans everything up whatever happens. */
+export async function captureHtml(o: HtmlCaptureOptions): Promise<{ frames: number; violations: string[] }> {
+  const token = createHash("sha256").update(`${process.pid}:${Date.now()}:${Math.random()}`).digest("hex").slice(0, 24);
+  const violations: string[] = [];
+  const errors: string[] = [];
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405).end();
+      return;
+    }
+    const file = captureFileFor(req.url ?? "/", token, { pack: o.root, in: o.inDir });
+    if (!file) {
+      res.writeHead(404).end();
+      return;
+    }
+    lstat(file)
+      .then((st) => {
+        if (!st.isFile()) throw new Error("not a file");
+        res.writeHead(200, { "content-type": captureContentType(file), "content-length": String(st.size), "cache-control": "no-store" });
+        if (req.method === "HEAD") return void res.end();
+        createReadStream(file).on("error", () => res.destroy()).pipe(res);
+      })
+      .catch(() => {
+        if (!res.headersSent) res.writeHead(404);
+        res.end();
+      });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const port = (server.address() as AddressInfo).port;
+  const origin = `http://127.0.0.1:${port}`;
+  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "vs-html-capture-"));
+  const browser = spawn(o.chrome, chromiumArgs({ width: o.width, height: o.height, userDataDir }), { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"], detached: true });
+  let browserTail = "";
+  browser.stderr?.setEncoding("utf8");
+  browser.stderr?.on("data", (c: string) => {
+    browserTail = (browserTail + c).slice(-3000);
+  });
+  const cdp = new CdpPipe(browser.stdio[3] as Writable, browser.stdio[4] as Readable);
+  browser.on("exit", (code) => cdp.fail(new Error(`the browser exited (${String(code)}): ${browserTail.trim().slice(-600)}`)));
+  browser.on("error", (err) => cdp.fail(err));
+  let ffmpeg: ReturnType<typeof spawn> | null = null;
+  let timedOut = false;
+  const killBrowser = () => {
+    try {
+      if (browser.pid) process.kill(-browser.pid, "SIGKILL");
+    } catch {}
+  };
+  const overall = setTimeout(() => {
+    timedOut = true;
+    cdp.fail(new Error(`html-capture did not finish within ${Math.round(o.timeoutMs / 60_000)} min`));
+    ffmpeg?.kill("SIGKILL");
+  }, o.timeoutMs);
+  const onAbort = () => {
+    cdp.fail(new Error("Aborted"));
+    ffmpeg?.kill("SIGTERM");
+  };
+  o.signal.addEventListener("abort", onAbort, { once: true });
+  const violation = (url: string) => {
+    if (violations.length < 20) violations.push(url.slice(0, 300));
+  };
+  const checkViolations = () => {
+    if (violations.length > 0 && (o.onViolation ?? "fail") === "fail") {
+      throw new NonRetryableError(
+        `The template tried to use the network while rendering (${violations.slice(0, 3).join(", ")}). html-capture pages may only load ` +
+          `files from their own pack and the job's inputs; vendor the file into the pack. Nothing was rendered.`,
+      );
+    }
+    if (errors.length > 0) throw new NonRetryableError(`The template failed while rendering: ${errors[0]}`);
+  };
+  try {
+    // One page: the about:blank tab the browser opened, or a new one when it has none yet.
+    const { targetInfos } = (await cdp.send("Target.getTargets")) as { targetInfos?: Array<{ targetId?: string; type?: string }> };
+    const existing = (targetInfos ?? []).find((t) => t.type === "page" && typeof t.targetId === "string")?.targetId;
+    const targetId = existing ?? ((await cdp.send("Target.createTarget", { url: "about:blank" })) as { targetId: string }).targetId;
+    const { sessionId } = (await cdp.send("Target.attachToTarget", { targetId, flatten: true })) as { sessionId: string };
+    let loaded: (() => void) | null = null;
+    cdp.listeners.add((method, params, sid) => {
+      if (sid !== sessionId) return;
+      if (method === "Fetch.requestPaused") {
+        const url = String((params.request as { url?: unknown } | undefined)?.url ?? "");
+        const requestId = params.requestId as string;
+        if (captureUrlAllowed(url, origin)) void cdp.send("Fetch.continueRequest", { requestId }, sessionId).catch(() => {});
+        else {
+          violation(url);
+          void cdp.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId).catch(() => {});
+        }
+      } else if (method === "Network.webSocketCreated") {
+        const url = String(params.url ?? "");
+        if (!captureUrlAllowed(url, origin)) violation(url);
+      } else if (method === "Runtime.bindingCalled" && params.name === "__venstudioBlocked") {
+        violation(String(params.payload ?? "blocked API"));
+      } else if (method === "Runtime.exceptionThrown") {
+        const d = params.exceptionDetails as { text?: string; exception?: { description?: string } } | undefined;
+        if (errors.length < 5) errors.push(String(d?.exception?.description ?? d?.text ?? "an exception").slice(0, 500));
+      } else if (method === "Page.loadEventFired") loaded?.();
+    });
+    const page = (method: string, params: Record<string, unknown> = {}, timeoutMs?: number) => cdp.send(method, params, sessionId, timeoutMs);
+    await page("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+    await page("Network.enable");
+    await page("Runtime.enable");
+    await page("Page.enable");
+    await page("Runtime.addBinding", { name: "__venstudioBlocked" });
+    await page("Emulation.setDeviceMetricsOverride", { width: o.width, height: o.height, deviceScaleFactor: 1, mobile: false });
+    await page("Page.addScriptToEvaluateOnNewDocument", { source: VIRTUAL_CLOCK_SOURCE });
+    const loadedP = new Promise<void>((resolve, reject) => {
+      loaded = resolve;
+      setTimeout(() => reject(new NonRetryableError(`The template page did not load within ${HTML_CAPTURE_LIMITS.loadTimeoutMs / 1000} s`)), HTML_CAPTURE_LIMITS.loadTimeoutMs).unref();
+    });
+    loadedP.catch(() => {});
+    const nav = (await page("Page.navigate", { url: `${origin}/${token}/pack/index.html` })) as { errorText?: string };
+    if (nav.errorText) throw new NonRetryableError(`The template page could not be opened: ${nav.errorText}`);
+    await loadedP;
+    checkViolations();
+    const evaluate = async (expression: string, timeoutMs: number): Promise<unknown> => {
+      const r = (await page("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, timeoutMs)) as {
+        result?: { value?: unknown };
+        exceptionDetails?: { text?: string; exception?: { description?: string } };
+      };
+      if (r.exceptionDetails) throw new NonRetryableError(`The template failed: ${String(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text ?? "an exception").slice(0, 500)}`);
+      return r.result?.value;
+    };
+    const meta = (await evaluate(`window.__venstudio.init(${JSON.stringify(o.props)})`, HTML_CAPTURE_LIMITS.initTimeoutMs)) as Record<string, unknown> | null;
+    checkViolations();
+    const issue = htmlInitIssue(meta, { width: o.width, height: o.height, fps: o.fps, totalFrames: o.totalFrames });
+    if (issue) throw new NonRetryableError(issue);
+
+    const ff = spawn(ffmpegPath(), htmlCaptureFfmpegArgs({ fps: o.fps, frames: o.totalFrames, output: o.output, burn: o.burn }), { cwd: o.cwd, stdio: ["pipe", "ignore", "pipe"] });
+    ffmpeg = ff;
+    let ffTail = "";
+    ff.stderr?.setEncoding("utf8");
+    ff.stderr?.on("data", (c: string) => {
+      ffTail = (ffTail + c).slice(-3000);
+    });
+    let ffClosed = false;
+    const ffDone = new Promise<void>((resolve, reject) => {
+      ff.on("error", reject);
+      ff.on("close", (code) => {
+        ffClosed = true;
+        if (code === 0) resolve();
+        else reject(new Error(`ffmpeg exited with ${String(code)}: ${ffTail.trim().slice(-800)}`));
+      });
+    });
+    ffDone.catch(() => {});
+    // Settles only as a failure: ffmpeg ended (or failed) while frames were still being written.
+    const ffStopped = ffDone.then(
+      () => Promise.reject(new Error("ffmpeg stopped before every frame was written")),
+      (err: unknown) => Promise.reject(err),
+    );
+    ffStopped.catch(() => {});
+    const stdin = ff.stdin as Writable;
+    stdin.on("error", () => {});
+    let lastReport = 0;
+    for (let f = 0; f < o.totalFrames; f++) {
+      await evaluate(`window.__venstudio.frame(${f}, ${o.fps})`, HTML_CAPTURE_LIMITS.frameTimeoutMs);
+      const shot = (await page("Page.captureScreenshot", { format: "jpeg", quality: 92, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true }, HTML_CAPTURE_LIMITS.frameTimeoutMs)) as { data?: string };
+      checkViolations();
+      if (typeof shot.data !== "string" || shot.data.length === 0 || shot.data.length > (HTML_CAPTURE_LIMITS.frameBytes * 4) / 3) throw new Error(`frame ${f} came back empty or too large`);
+      if (ffClosed) await ffStopped;
+      // One frame in flight: wait for ffmpeg to take it before capturing the next, so memory stays flat.
+      if (!stdin.write(Buffer.from(shot.data, "base64"))) await Promise.race([new Promise<void>((resolve) => stdin.once("drain", resolve)), ffStopped]);
+      if (o.onProgress && Date.now() - lastReport > 2000) {
+        lastReport = Date.now();
+        o.onProgress((f + 1) / o.totalFrames);
+      }
+    }
+    stdin.end();
+    await ffDone;
+    o.onProgress?.(1);
+    return { frames: o.totalFrames, violations };
+  } catch (err) {
+    ffmpeg?.kill("SIGKILL");
+    if (o.signal.aborted) throw new Error("Aborted");
+    if (timedOut) throw new Error(`html-capture did not finish within ${Math.round(o.timeoutMs / 60_000)} min`);
+    throw err;
+  } finally {
+    clearTimeout(overall);
+    o.signal.removeEventListener("abort", onAbort);
+    await cdp.send("Browser.close", {}, undefined, 3000).catch(() => {});
+    killBrowser();
+    cdp.fail(new Error("closed"));
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    await closed;
+    await rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Why the template's init() reply does not match the job, or null. Pure. One frame of rounding is allowed. */
+export function htmlInitIssue(meta: Record<string, unknown> | null, want: { width: number; height: number; fps: number; totalFrames: number }): string | null {
+  if (!meta) return "The template's init(props) returned nothing; it must resolve to { totalFrames, fps, width, height }";
+  const bad: string[] = [];
+  if (meta.width !== want.width || meta.height !== want.height) bad.push(`it is ${String(meta.width)}x${String(meta.height)}, the job is ${want.width}x${want.height}`);
+  if (meta.fps !== want.fps) bad.push(`it runs at ${String(meta.fps)} fps, the job at ${want.fps}`);
+  const frames = Number(meta.totalFrames);
+  if (!Number.isInteger(frames) || Math.abs(frames - want.totalFrames) > 1) bad.push(`it has ${String(meta.totalFrames)} frames, the job ${want.totalFrames}`);
+  return bad.length > 0 ? `The template does not match the job: ${bad.join("; ")}. Nothing was rendered.` : null;
+}
+
+/** The probe page: draws one moving bar per frame and tries the network once, which must be blocked. */
+export const HTML_PROBE_BLOCKED_URL = "http://192.0.2.1/venstudio-probe";
+const HTML_PROBE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#123;overflow:hidden}</style></head>
+<body><canvas id="c"></canvas><script>
+window.VENSTUDIO = {
+  async init(p) {
+    this.p = p;
+    const c = document.getElementById("c"); c.width = p.width; c.height = p.height; this.g = c.getContext("2d");
+    await fetch("${HTML_PROBE_BLOCKED_URL}").catch(() => null);
+    return { totalFrames: p.totalFrames, fps: p.fps, width: p.width, height: p.height };
+  },
+  renderFrame(f) {
+    const g = this.g, p = this.p;
+    g.fillStyle = "#123"; g.fillRect(0, 0, p.width, p.height);
+    g.fillStyle = "#fc3"; g.fillRect(Math.round((f / p.totalFrames) * p.width), 0, 8, p.height);
+  }
+};
+</script></body></html>`;
+
+const htmlProbes = new Map<string, Promise<string | null>>();
+
+/**
+ * Why html-capture cannot run with the Remotion project at `dir`, or null. Renders the 1-second probe page (10 frames,
+ * 160x90) with that project's Chromium and checks the frame count, the size, and that the page's one network request
+ * was blocked. Once per process and directory, like the Remotion probe.
+ */
+export function htmlCaptureUnavailableReason(dir: string): Promise<string | null> {
+  let p = htmlProbes.get(dir);
+  if (!p) {
+    p = probeHtmlCapture(dir).catch((err: unknown) => `the html-capture probe failed: ${err instanceof Error ? err.message : String(err)}`);
+    htmlProbes.set(dir, p);
+  }
+  return p;
+}
+
+async function probeHtmlCapture(dir: string): Promise<string | null> {
+  const chrome = await findChromium(dir);
+  if (!chrome) return `no headless Chromium under ${path.join(dir, "node_modules", ".remotion")} (install the Remotion renderer: install.sh --with-remotion)`;
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vs-html-probe-"));
+  try {
+    await mkdir(path.join(tmp, "pack"));
+    await writeFile(path.join(tmp, "pack", "index.html"), HTML_PROBE_PAGE);
+    const out = path.join(tmp, "probe.mp4");
+    const size = { width: 160, height: 90, fps: 10, totalFrames: 10 };
+    const r = await captureHtml({
+      chrome,
+      root: path.join(tmp, "pack"),
+      inDir: null,
+      props: size,
+      ...size,
+      output: out,
+      cwd: tmp,
+      burn: null,
+      timeoutMs: 90_000,
+      signal: AbortSignal.timeout(100_000),
+      onViolation: "record",
+    });
+    if (!r.violations.includes(HTML_PROBE_BLOCKED_URL)) return `the probe page's network request was not seen and blocked (saw: ${r.violations.join(", ") || "nothing"})`;
+    const probe = JSON.parse(
+      (await runCapture(ffprobePath(), ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames,width,height", "-of", "json", out], AbortSignal.timeout(30_000))).stdout,
+    ) as { streams?: Array<{ nb_read_frames?: string; width?: number; height?: number }> };
+    const s = probe.streams?.[0];
+    if (!s || Number(s.nb_read_frames) !== size.totalFrames || s.width !== size.width || s.height !== size.height) {
+      return `the probe video is wrong: ${JSON.stringify(s ?? null)}, expected ${size.totalFrames} frames of ${size.width}x${size.height}`;
+    }
+    return null;
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Forgets the html-capture probe and the installed HTML packs. For tests, and after an install in the same process. */
+export function clearHtmlCaptureCache() {
+  htmlProbes.clear();
+  htmlPackLists.clear();
+}
+
+/** A stable UUID for a fixture's readable placeholder asset id (asset-shot-01). Pure. */
+export function placeholderUuid(id: string): string {
+  const h = createHash("sha256").update(`venstudio-fixture:${id}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** A fixture payload with every non-UUID input id replaced by placeholderUuid. Pure. */
+export function withPlaceholderUuids(payload: Record<string, unknown>): Record<string, unknown> {
+  const inputs = Array.isArray(payload.inputs) ? payload.inputs.filter((v): v is string => typeof v === "string" && !UUID_RE.test(v)) : [];
+  let text = JSON.stringify(payload);
+  for (const id of [...inputs].sort((a, b) => b.length - a.length)) text = text.split(JSON.stringify(id)).join(JSON.stringify(placeholderUuid(id)));
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+/**
+ * Renders a pack's fixture with html-capture into a muted mp4 (`capture-html`): plain-colour placeholder pictures for
+ * the shots, the captions burned by ffmpeg unless the pack draws them, the Chromium of the Remotion project at
+ * `remotion`. What CI runs for every html-capture pack, here and in venstudio-styles.
+ */
+export async function captureHtmlFixture(o: { pack: string; out: string; payload?: string; remotion: string; font?: string }): Promise<Record<string, unknown>> {
+  const packDir = path.resolve(o.pack);
+  const style = JSON.parse(await readFile(path.join(packDir, "style.json"), "utf8")) as { renderer?: { engine?: unknown; drawsCaptions?: unknown } };
+  if (style.renderer?.engine !== "html-capture") throw new Error(`${packDir} is not an html-capture pack`);
+  const drawsCaptions = style.renderer.drawsCaptions === true;
+  const raw = JSON.parse(await readFile(o.payload ? path.resolve(o.payload) : path.join(packDir, "fixtures", "payload.json"), "utf8")) as Record<string, unknown>;
+  const spec = parseRenderSpec(withPlaceholderUuids(raw));
+  const chrome = await findChromium(path.resolve(o.remotion));
+  if (!chrome) throw new Error(`no headless Chromium under ${path.resolve(o.remotion)}/node_modules/.remotion (run npx remotion browser ensure there)`);
+  const work = await mkdtemp(path.join(os.tmpdir(), "vs-capture-html-"));
+  try {
+    await mkdir(path.join(work, "in"));
+    const colours = ["0x1d3557", "0x2a9d8f", "0x264653", "0x457b9d", "0x6d597a"];
+    const images: string[] = [];
+    for (const [i, s] of spec.shots.entries()) {
+      const name = `${s.assetId}.png`;
+      if (!existsSync(path.join(work, "in", name))) {
+        await runCapture(ffmpegPath(), ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=${colours[i % colours.length]}:s=${spec.width}x${spec.height}`, "-frames:v", "1", path.join(work, "in", name)], AbortSignal.timeout(60_000));
+      }
+      images.push(`../in/${name}`);
+    }
+    let fontRel: string | undefined;
+    if (o.font && spec.fontAssetId) {
+      await copyFile(path.resolve(o.font), path.join(work, "in", `${spec.fontAssetId}.ttf`));
+      fontRel = path.join("in", `${spec.fontAssetId}.ttf`);
+    }
+    const burn = drawsCaptions ? null : sharedCaptionBurn(spec, fontRel, { drawtext: ffmpegHasFilter("drawtext") });
+    for (const f of burn?.files ?? []) await writeFile(path.join(work, f.file), f.text, "utf8");
+    const props = buildHtmlCaptureProps(spec, { images, font: fontRel ? `../${fontRel}` : null, drawsCaptions });
+    const started = Date.now();
+    const got = await captureHtml({
+      chrome,
+      root: path.join(packDir, "render"),
+      inDir: path.join(work, "in"),
+      props,
+      width: spec.width,
+      height: spec.height,
+      fps: spec.fps,
+      totalFrames: props.totalFrames,
+      output: path.resolve(o.out),
+      cwd: work,
+      burn: burn?.filter ?? null,
+      timeoutMs: remotionTimeoutMs(spec.durationSec),
+      signal: AbortSignal.timeout(remotionTimeoutMs(spec.durationSec) + 60_000),
+    });
+    return {
+      frames: got.frames,
+      width: spec.width,
+      height: spec.height,
+      fps: spec.fps,
+      durationSec: spec.durationSec,
+      captionsBurned: burn?.captionsBurned ?? (drawsCaptions && spec.captions.length > 0),
+      captionNote: burn?.captionNote ?? null,
+      seconds: round2((Date.now() - started) / 1000),
+    };
+  } finally {
+    await rm(work, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unknown>> {
   // Dispatch before anything else: a job for an engine this machine cannot run fails here, before a single download,
   // and names the engine. It is never rendered as stills instead.
   const engine = renderEngineOf(ctx.job.payload);
-  if (engine !== "ffmpeg-stills") {
-    const why = await remotionUnavailable(ctx);
-    if (why) throw new NonRetryableError(engineUnavailable(engine, [], why) as string);
-  }
+  const renderer = rendererFor(engine);
+  const why = await renderer.unavailable(ctx.home);
+  if (why) throw new NonRetryableError(engineUnavailable(engine, [], why) as string);
   const spec = parseRenderSpec(ctx.job.payload);
-  // A template without a composition is refused here too, before the downloads.
-  const composition = spec.engine === "remotion-2d" ? remotionCompositionFor(spec, (await remotionProbe(remotionDir(ctx.home))).packs) : null;
+  // What the renderer itself needs from the spec (a Remotion composition, an installed HTML pack) is checked here
+  // too, before the downloads: a template it has nothing for is refused by name.
+  const prepared = await renderer.prepare(spec, ctx.home);
   // The portal sends `audio` only to a fleet that reports audio-mix; a machine whose ffmpeg changed since says so
   // here, before the downloads, instead of failing halfway through the mix.
   const missing = spec.audio ? missingAudioMixFilters() : [];
@@ -2558,29 +3663,27 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
   );
   const narrationClipped = peakDb !== null ? peakDb >= -0.1 : null;
   const started = Date.now();
-  let captions: { captionsBurned: boolean; captionNote: string | null };
-  const chunks = composition ? null : planStillsChunks(spec);
-  if (composition) {
-    captions = await renderRemotionVideo(ctx, spec, composition, named);
-  } else if (chunks) {
-    captions = await renderStillsInChunks(ctx, spec, chunks, named, canDrawText);
-  } else {
-    const plan = buildRenderArgs(
-      spec,
-      {
-        images: spec.shots.map((s) => named.get(s.assetId) as string),
-        narration: narrationRel,
-        output: "video.part.mp4",
-        font: spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined,
-        ...audioFilesOf(spec, named),
-      },
-      { drawtext: canDrawText },
+  // The renderer writes either the finished video (its own graph runs the shared mix) or a muted picture, to which the
+  // shared mux adds the soundtrack exactly as for every other renderer. Captions are drawn by the renderer itself
+  // (the template, or the stills graph), or burned with the shared 0.7.0 drawtext chain while the renderer encodes.
+  const font = spec.fontAssetId ? (named.get(spec.fontAssetId) as string) : undefined;
+  const burn = renderer.captions(spec, prepared) === "shared-burn" ? sharedCaptionBurn(spec, font, { drawtext: canDrawText }) : null;
+  for (const f of burn?.files ?? []) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
+  const target = renderer.audio === "shared-mux" ? renderer.mutedFile : "video.part.mp4";
+  const rendered = await renderer.render({ ctx, spec, named, narration: narrationRel, canDrawText, prepared, output: target, burn });
+  if (renderer.audio === "shared-mux") {
+    const muted = path.join(ctx.workDir, renderer.mutedFile);
+    ctx.progress(0.8, spec.audio ? "Mixing the soundtrack" : "Adding the narration");
+    await runFfmpeg(
+      buildMuxArgs(spec, muted, narrationRel, "video.part.mp4", audioFilesOf(spec, named)),
+      spec.durationSec,
+      (f) => ctx.progress(0.8 + f * 0.07, "Adding the narration"),
+      ctx.signal,
+      ctx.workDir,
     );
-    for (const f of plan.captionFiles) await writeFile(path.join(ctx.workDir, f.file), f.text, "utf8");
-    ctx.progress(0.15, "Rendering");
-    await runFfmpeg(plan.args, spec.durationSec, (f) => ctx.progress(0.15 + f * 0.7, `Rendering ${Math.round(f * 100)}%`), ctx.signal, ctx.workDir);
-    captions = { captionsBurned: plan.captionsBurned, captionNote: plan.captionNote };
+    await rm(muted, { force: true });
   }
+  const captions = burn ? { captionsBurned: burn.captionsBurned, captionNote: burn.captionNote } : { captionsBurned: rendered.captionsBurned, captionNote: rendered.captionNote };
   const out = path.join(ctx.workDir, "video.mp4");
   await rename(path.join(ctx.workDir, "video.part.mp4"), out);
   const renderSeconds = (Date.now() - started) / 1000;
@@ -2601,7 +3704,9 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
     narrationClipped,
     narrationPeakDb: peakDb,
     shots: spec.shots.length,
-    ...(composition ? { composition, template: spec.scenePlan?.template ?? null } : {}),
+    // 0.10.0: the renderer plugin that drew the picture, and what it adds (composition, HTML pack, stills parts).
+    renderer: renderer.id,
+    ...(rendered.extra ?? {}),
     // Where each shot starts on the timeline. A cross-fade is not a cut qc-video's detector can see, so this is
     // the record of where the shots change.
     sceneStarts: sceneStartsOf(spec),
@@ -2612,7 +3717,6 @@ async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unkno
       ? { audioMix: { bed: spec.audio.bed ? { assetId: spec.audio.bed.assetId, cover: spec.audio.bed.cover } : null, ambient: spec.audio.ambient !== null, sfx: spec.audio.sfx.length, targetLufs: spec.audio.master.targetLufs } }
       : {}),
     ...(spec.captionStyle ? { captionStyle: true } : {}),
-    ...(chunks ? { stillsParts: chunks.length } : {}),
     renderSeconds: round2(renderSeconds),
     bytes: up.bytes,
     sha256: up.sha256,
@@ -3165,17 +4269,27 @@ export async function installedPacksSha(home: string): Promise<string | null> {
  * its minWorkerVersion; a stills pack needs ffmpeg with xfade (its fades); a Remotion pack needs remotion-2d and the
  * project's full probe to have rendered this pack version's composition. Other engines are not run by this worker.
  */
-export function packCapabilitiesFor(index: PacksIndex | null, caps: readonly string[], probed: readonly ProbedPack[], version: string = VERSION): string[] {
+export function packCapabilitiesFor(
+  index: PacksIndex | null,
+  caps: readonly string[],
+  probed: readonly ProbedPack[],
+  version: string = VERSION,
+  html: readonly HtmlPackRef[] = [],
+): string[] {
   if (!index) return [];
   const out: string[] = [];
   for (const p of index.packs) {
     if (!(compareVersions(p.minWorkerVersion, version) <= 0)) continue;
+    // An html-capture pack (0.10.0+) needs the html-capture probe to have passed and that exact pack version installed
+    // in the Remotion project's html/ folder with files matching its digest (installedHtmlPacks).
     const ok =
       p.engine === "ffmpeg-stills"
         ? caps.includes("ffmpeg") && caps.includes("xfade")
         : p.engine === "remotion-2d"
           ? caps.includes("remotion-2d") && probed.some((r) => r.id === p.id && r.version === p.version && r.composition === p.composition)
-          : false;
+          : p.engine === "html-capture"
+            ? caps.includes("html-capture") && html.some((h) => h.id === p.id && h.version === p.version)
+            : false;
     if (ok) out.push(`pack:${p.id}@${p.version}`);
   }
   return out;
@@ -4003,6 +5117,12 @@ async function status(home: string) {
   console.log(`capabilities: ${(await detectCapabilities(home)).join(", ")}`);
   const why = await remotionUnavailableReason(remotionDir(home));
   console.log(`remotion-2d: ${why ? `no (${why})` : `yes (${remotionDir(home)})`}`);
+  const htmlWhy = await htmlCaptureUnavailableReason(remotionDir(home));
+  const html = await installedHtmlPacks(remotionDir(home));
+  console.log(`html-capture: ${htmlWhy ? `no (${htmlWhy})` : `yes (${await findChromium(remotionDir(home))})`}`);
+  if (html.packs.length || html.problems.length) {
+    console.log(`html packs: ${html.packs.map((p) => `${p.id}@${p.version}`).join(", ") || "none"}${html.problems.length ? `; not usable: ${html.problems.join("; ")}` : ""}`);
+  }
 }
 
 export function parseArgs(argv: string[]) {
@@ -4033,7 +5153,8 @@ Usage:
   node venstudio-worker.ts pin-key --key <base64>      pin the portal's update key (used by install.sh)
   node venstudio-worker.ts unpack-bundle --file <bundle.json> --dir <dir>   (used by install.sh --with-remotion)
   node venstudio-worker.ts install-packs --file <style-packs.json>          (used by install.sh)
-Env: VENSTUDIO_HOME, VENSTUDIO_AUTO_UPDATE=0 (no self-update), VENSTUDIO_UPDATE_CHECK_SECONDS, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
+  node venstudio-worker.ts capture-html --pack <packs/<id>> --out <file.mp4> [--payload <json>] [--remotion <dir>] [--font <ttf>]   (CI, pack authors)
+Env: VENSTUDIO_HOME, VENSTUDIO_CHROMIUM_PATH (html-capture; default: the Remotion project's Chrome Headless Shell), VENSTUDIO_AUTO_UPDATE=0 (no self-update), VENSTUDIO_UPDATE_CHECK_SECONDS, VENSTUDIO_REMOTION_DIR, VENSTUDIO_REMOTION_CONCURRENCY, FFMPEG_PATH, KOKORO_URL, VENSTUDIO_KOKORO_URL (enables tts), VENSTUDIO_AGENT_TASKS=1 (hold mode only, unverified), VENSTUDIO_EXTRA_CAPS, HTTPS_PROXY`;
 
 /**
  * Node's fetch only uses HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1 is set at startup.
@@ -4094,6 +5215,13 @@ export async function main(argv: string[]) {
       if (!flags.file) throw new Error("install-packs needs --file");
       const index = await installPacksIndex(home, await readFile(flags.file));
       log(`installed style packs: ${index.packs.map((p) => `${p.id}@${p.version}`).join(", ") || "none"} into ${stylePacksPath(home)}`);
+      return;
+    }
+    case "capture-html": {
+      // CI and pack authors: renders a pack's fixture with html-capture (muted), as a worker would draw it.
+      if (!flags.pack || !flags.out) throw new Error("capture-html needs --pack <packs/<id> dir> --out <file.mp4> [--payload <json>] [--remotion <dir>] [--font <ttf>]");
+      const r = await captureHtmlFixture({ pack: flags.pack, out: flags.out, payload: flags.payload, remotion: flags.remotion ?? remotionDir(home), font: flags.font });
+      console.log(JSON.stringify(r));
       return;
     }
     case "unpack-bundle": {

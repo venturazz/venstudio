@@ -20,6 +20,8 @@ export interface ReviewCard {
   gates: GateResult[];
   /** The run was started with a Trial style pack (pipeline_runs.config.stylePack.trial): research only. */
   trial: boolean;
+  /** The run's pack renders with Hermes (research only, never published). */
+  hermesRender: boolean;
 }
 
 function toPayload(raw: unknown): ReviewPayload {
@@ -102,7 +104,8 @@ export async function latestGatesByRun(runIds: string[]): Promise<Map<string, Ga
 export async function listOpenReviews(): Promise<ReviewCard[]> {
   const rows = await db()`
     SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name,
-      coalesce((r.config->'stylePack'->>'trial')::boolean, false) AS trial
+      coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS trial,
+      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render
     FROM review_items ri
     JOIN pipeline_runs r ON r.id = ri.run_id
     LEFT JOIN channels c ON c.id = r.channel_id
@@ -124,6 +127,7 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     channelName: (r.channel_name as string | null) ?? "",
     gates: gates.get(r.run_id as string) ?? [],
     trial: r.trial === true,
+    hermesRender: r.hermes_render === true,
   }));
 }
 

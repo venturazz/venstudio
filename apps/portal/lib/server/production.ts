@@ -47,10 +47,14 @@ import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
 import { VIDEO_FORMATS } from "../studio/catalog.ts";
-import { DEFAULT_RENDER_ENGINE, transitionForWorker } from "../studio/render-engine.ts";
+import { DEFAULT_RENDER_ENGINE, isPortalEngine, transitionForWorker } from "../studio/render-engine.ts";
 import { gateCapabilities, mixFeaturesFor, packWaitNote, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
 import { runStylePack, type RunStylePack } from "../studio/style-registry.ts";
-import { registryEntry } from "./style-packs.ts";
+import { packContract, registryEntry } from "./style-packs.ts";
+import { renderWithHermes } from "./executors/hermes-render.ts";
+import { hermesTrustedOrigins } from "./executors/hermes-image.ts";
+import { mediaHostUrl } from "../studio/hermes-render.ts";
+import { advisoryFrameCount, runPresentationAdvisory } from "./presentation.ts";
 import { recordTrialOutcome } from "./style-trials.ts";
 import { bedNote, MUSIC_TAG, pickMusicBed, type BedCandidate, type BedPick } from "../studio/music-bed.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
@@ -856,6 +860,18 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
   const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
   const renderParams = renderParamsForStyle(template.styleId);
+  // The hermes renderer (research only) is run by the portal: Hermes renders the video, no worker job is queued.
+  if (renderParams && isPortalEngine(renderParams.engine)) {
+    await runHermesRenderStage(run, st, template, {
+      shots: board.value.shots,
+      shotRefs: shotSpecs.map((x) => x.shotRef),
+      captions: captionLines(script.value.script),
+      voiceResult,
+      shotAssets,
+      transitionSec: renderParams.transitionSec,
+    });
+    return;
+  }
 
   // A cross-fade is a two-sided change: the worker has to build the xfade and accept a timeline whose
   // shots add up to more than the narration. So the portal only asks once a worker says it can, and a
@@ -976,6 +992,119 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     ...(stylePack ? { stylePack } : {}),
     ...(packNote ? { packNote } : {}),
   });
+}
+
+/**
+ * Renderer hermes (research only, owner decision): the portal sends Hermes the storyboard, the scene plan, the media
+ * host URLs of the pictures and the narration, and the pack's contract, through the Hermes gate; Hermes renders with
+ * its own tools and answers with a /clip/ URL. The clip is checked like any Hermes clip, stored as a video asset with
+ * renderer hermes and its backend and plugin in the provenance, and the stage concludes like a worker render, so the
+ * quality check, the Review card and the curation log are the same. A run that is not a trial is refused, by name.
+ */
+async function runHermesRenderStage(
+  run: RunInfo,
+  st: StageRow,
+  template: Template,
+  i: {
+    shots: readonly Shot[];
+    shotRefs: readonly string[];
+    captions: string[];
+    voiceResult: Record<string, unknown>;
+    shotAssets: Record<string, string>;
+    transitionSec: number;
+  },
+): Promise<void> {
+  const sql = db();
+  const pack = run.config.stylePack ?? null;
+  if (!pack || !pack.trial) {
+    await recordStageError(run.id, st.id, "render", "A Hermes render is research only, so it runs only as a trial of its style pack. This run is not a trial; nothing was rendered.");
+    return;
+  }
+  const frame = VIDEO_FORMATS[run.config.format];
+  const scenes = buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: [...i.shots], transitionSec: i.transitionSec });
+  const narrationId = asUuid(i.voiceResult.assetId);
+  // A fitted narration plays at its tempo, as on the worker path: the video is planned for the played length.
+  const tempo = tempoOf(i.voiceResult.tempo);
+  const rawNarrationSec = typeof i.voiceResult.narrationSec === "number" ? i.voiceResult.narrationSec : 0;
+  const narrationSec = tempo !== 1 ? rawNarrationSec / tempo : rawNarrationSec;
+  const ids = [...new Set([...Object.values(i.shotAssets), ...(narrationId ? [narrationId] : [])].filter((x) => asUuid(x) !== null))];
+  const rows = ids.length > 0 ? await sql`SELECT id, origin_url FROM assets WHERE id = ANY(${ids}::uuid[])` : [];
+  const trusted = hermesTrustedOrigins();
+  const urlOf = new Map(rows.map((r) => [String(r.id), mediaHostUrl(text(r.origin_url), trusted)] as const));
+  const shots = i.shots.map((s, k) => {
+    const ref = i.shotRefs[k] ?? `shot-${String(k + 1).padStart(2, "0")}`;
+    const assetId = i.shotAssets[ref];
+    return {
+      shotRef: ref,
+      seconds: s.seconds,
+      beatRole: s.beatRole,
+      description: s.description,
+      imageUrl: assetId ? (urlOf.get(assetId) ?? null) : null,
+    };
+  });
+  const durationSec = narrationSec > 0 ? narrationSec : shots.reduce((a, s) => a + s.seconds, 0);
+  // Marks the stage as a portal render, so the reaper waits for Hermes instead of looking for a worker job.
+  await mergeStageOutput(st.id, { renderer: "hermes" });
+  const rendered = await renderWithHermes({
+    topic: run.topic,
+    format: run.config.format,
+    width: frame.width,
+    height: frame.height,
+    fps: frame.fps,
+    durationSec,
+    shots,
+    scenePlan: scenes.ok ? scenes.plan : null,
+    narration: { url: narrationId ? (urlOf.get(narrationId) ?? null) : null, seconds: narrationSec, tempo },
+    captions: i.captions,
+    packId: pack.id,
+    packVersion: pack.version,
+    contract: await packContract(pack.id),
+  });
+  if (!rendered.ok) {
+    if (rendered.cause === "busy" && rendered.busyUntil) await deferStage(run.id, st.id, rendered.busyUntil, rendered.error);
+    else await recordStageError(run.id, st.id, "render", `Hermes could not render the video: ${rendered.error}`);
+    return;
+  }
+  const v = rendered.video;
+  const saved = await saveGeneratedAsset({
+    bytes: v.bytes,
+    name: v.info.mime === "video/webm" ? "hermes-render.webm" : v.info.mime === "video/quicktime" ? "hermes-render.mov" : "hermes-render.mp4",
+    contentType: v.info.mime,
+    kind: "video",
+    executor: "hermes-render",
+    title: `${run.topic || "Video"} (Hermes render, research only)`,
+    provider: v.provider,
+    backend: v.backend,
+    plugin: v.plugin,
+    model: v.model,
+    originUrl: v.originUrl,
+    runId: run.id,
+    channelId: run.channelId,
+  });
+  await sql`
+    INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
+    SELECT ${run.id}::uuid, 'draft', 'skipped', 1, ${json({ reason: "No animatic in Phase 4" })}::text::jsonb, now()
+    WHERE NOT EXISTS (SELECT 1 FROM pipeline_stages WHERE run_id = ${run.id} AND stage = 'draft')
+  `;
+  const result = {
+    assetId: saved.assetId,
+    renderer: "hermes",
+    // The planned length; the quality check measures the real one.
+    durationSec: Math.round(durationSec * 100) / 100,
+    width: frame.width,
+    height: frame.height,
+    provider: saved.provider,
+    backend: v.backend,
+    plugin: v.plugin,
+    originUrl: v.originUrl,
+    captionsBurned: true,
+    captionNote: "Hermes drew the captions with its own tools",
+    music: "",
+    stylePack: pack,
+    researchOnly: true,
+    sceneStarts: [] as number[],
+  };
+  await concludeStage(run, st, template, { result, gate: null, extra: { renderer: "hermes" }, media: { videoAssetId: saved.assetId } });
 }
 
 /** The pack version a run renders with: the vendored one with the run's pack id, else what the run started with. */
@@ -1190,6 +1319,8 @@ async function completeRender(jobId: string): Promise<boolean> {
     narrationClipped: r.narrationClipped === true,
     captionsBurned: r.captionsBurned === true,
     captionNote: text(r.captionNote),
+    // The renderer plugin that drew it (worker 0.10.0+ says; older workers ran the payload's engine).
+    renderer: text(r.renderer) || text(job.payload.engine) || DEFAULT_RENDER_ENGINE,
     // What plays under the narration, from the payload the worker rendered (0.7.0+): the bed's title and licence.
     music: bedInput ? `Music bed: ${bedInput.title} (${bedInput.license})` : toObject(job.payload.audio).bed === null ? "No music bed" : "",
     ...(text(st.output.mixNote) ? { mixNote: text(st.output.mixNote) } : {}),
@@ -1226,9 +1357,12 @@ async function runQcStage(run: RunInfo, st: StageRow): Promise<void> {
   const plannedCuts = Array.isArray(renderResult.sceneStarts)
     ? (renderResult.sceneStarts as unknown[]).filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0).slice(0, 500)
     : [];
+  const sampleFrames = advisoryFrameCount();
   const jobId = await createJob({
     type: "qc-video",
-    payload: { inputs: [assetId], runId: run.id, ...(plannedCuts.length > 0 ? { plannedCuts } : {}) },
+    // sampleFrames: a few stills for Hermes's presentation advisory (worker 0.10.0+; older workers ignore it). Only
+    // when Hermes is set up, since nothing else looks at them.
+    payload: { inputs: [assetId], runId: run.id, ...(plannedCuts.length > 0 ? { plannedCuts } : {}), ...(sampleFrames > 0 ? { sampleFrames } : {}) },
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,
@@ -1297,6 +1431,8 @@ async function completeQc(jobId: string): Promise<boolean> {
   // A Trial pack's run: its QC result (and an automatic approval, if the autonomy policy gave one) goes into the
   // curation log the Styles page counts.
   await recordTrialOutcome(runId);
+  // Hermes's look at the sampled stills, in the background: advisory only, nothing waits for it.
+  void runPresentationAdvisory(runId, jobId);
   return true;
 }
 
@@ -1533,7 +1669,8 @@ async function reapStages(touched: Set<string>): Promise<void> {
       const jobId = asUuid(toObject(s.output).jobId);
       const job = jobId ? await loadJob(jobId) : null;
       const orders = stage === "assets" ? await orderCounts(sql, runId) : undefined;
-      const act = productionStageAction({ stage, idleMinutes: Number(s.idle), jobStatus: job ? job.status : null, jobError: job?.error ?? null, orders });
+      const portalRender = stage === "render" && toObject(s.output).renderer === "hermes";
+      const act = productionStageAction({ stage, idleMinutes: Number(s.idle), jobStatus: job ? job.status : null, jobError: job?.error ?? null, orders, portalRender });
       if (act.action === "none") continue;
       touched.add(runId);
       if (act.action === "finalize") await finalizeAssets(runId);

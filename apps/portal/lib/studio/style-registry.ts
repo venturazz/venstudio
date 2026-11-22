@@ -8,6 +8,7 @@
  */
 import { ENGINES, type Family, type Format, type Frame, type Style } from "./catalog.ts";
 import type { GateId } from "./qc.ts";
+import { rubricText, type PresentationAdvisory, type Rubric } from "./presentation.ts";
 import { PROMOTION_MIN_PRESENTATION, PROMOTION_MIN_TRIALS, promotionIssues, type Template, type TemplateEvidence } from "./templates.ts";
 
 export const PACK_STATUSES = ["draft", "lab", "trial", "proven", "listed", "retired"] as const;
@@ -27,6 +28,19 @@ export const STATUS_LABEL: Record<RegistryStatus, string> = {
 /** What the Trial section of New Video and the Trial badge say. */
 export const TRIAL_LABEL = "Trial styles (research only, not for publishing)";
 export const TRIAL_BADGE = "Trial style";
+
+/**
+ * Renderers that are research only (owner decision): hermes renders with Hermes's own tools. A pack with such an
+ * engine is never above Trial (the styles validator refuses it, and parsePack leaves it out), every run of it is a
+ * trial, and New Video shows it only in the Trial section under this label.
+ */
+export const RESEARCH_ENGINES: readonly string[] = ["hermes"];
+export const RESEARCH_MAX_STATUSES: readonly PackStatus[] = ["draft", "lab", "trial", "retired"];
+export const HERMES_RENDER_LABEL = "Hermes render (research only)";
+
+export function isResearchEngine(engine: string | null | undefined): boolean {
+  return typeof engine === "string" && RESEARCH_ENGINES.includes(engine);
+}
 
 export interface PackProvenance {
   type: string;
@@ -56,6 +70,8 @@ export interface StylePack {
   engine: string;
   minWorkerVersion: string;
   composition: string | null;
+  /** html-capture: the page draws the captions it is given (true) or the worker burns them (false); null otherwise. */
+  drawsCaptions: boolean | null;
   provenance: PackProvenance[];
   curation: PackCuration[];
   /** Pack digest from styles/lock.json (checked against the files when loaded). */
@@ -80,6 +96,8 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
   const f = isRecord(raw.formats) ? raw.formats : {};
   const engine = str(r.engine);
   if (!ID_RE.test(id) || !SEMVER_RE.test(version) || !status || !ENGINES[engine]) return null;
+  // Research-only engines never go above Trial: a pack that says otherwise is left out, not shown as Listed.
+  if (isResearchEngine(engine) && !RESEARCH_MAX_STATUSES.includes(status)) return null;
   const formats = (Array.isArray(f.supported) ? f.supported : []).filter((x): x is Format => x === "short" || x === "long");
   const frame: Frame = f.naturalFrame === "landscape" || f.naturalFrame === "portrait" ? f.naturalFrame : "both";
   const list = <T,>(v: unknown, pick: (x: Record<string, unknown>) => T): T[] => (Array.isArray(v) ? v.filter(isRecord).map(pick) : []);
@@ -95,6 +113,7 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
     engine,
     minWorkerVersion: str(r.minWorkerVersion),
     composition: typeof r.composition === "string" ? r.composition : null,
+    drawsCaptions: engine === "html-capture" ? r.drawsCaptions === true : null,
     provenance: list(raw.provenance, (p) => ({ type: str(p.type), ref: str(p.ref), licence: str(p.licence), notes: str(p.notes) })),
     curation: list(raw.curation, (e) => ({ date: str(e.date), kind: str(e.kind), ref: str(e.ref), result: str(e.result), notes: str(e.notes) })),
     sha256,
@@ -168,7 +187,12 @@ export interface Availability {
   capability: string | null;
 }
 
-export function availabilityOf(entry: RegistryEntry, reported: readonly string[]): Availability {
+export function availabilityOf(entry: RegistryEntry, reported: readonly string[], opts: { hermes?: boolean } = {}): Availability {
+  // A research engine is run by the portal through Hermes, never by a worker: it is available when Hermes is set up.
+  if (isResearchEngine(entry.engine)) {
+    const ok = opts.hermes === true;
+    return { renderer: ok, pack: ok && entry.pack !== null, capability: null };
+  }
   const engineCap = ENGINES[entry.engine]?.capability ?? null;
   const capability = entry.pack ? packCapability(entry.pack.id, entry.pack.version) : null;
   return {
@@ -187,13 +211,16 @@ export interface NewVideoStyles {
   waiting: RegistryEntry[];
 }
 
-/** What New Video offers. Draft, Lab, Proven, Retired and planned styles never appear. */
-export function newVideoStyles(entries: readonly RegistryEntry[], reported: readonly string[]): NewVideoStyles {
+/**
+ * What New Video offers. Draft, Lab, Proven, Retired and planned styles never appear. A research-only pack (engine
+ * hermes) is offered only in the Trial section, once Hermes is set up (`hermes`), and never in the main list.
+ */
+export function newVideoStyles(entries: readonly RegistryEntry[], reported: readonly string[], opts: { hermes?: boolean } = {}): NewVideoStyles {
   const out: NewVideoStyles = { listed: [], trial: [], waiting: [] };
   for (const e of entries) {
     if (!e.pack || !STARTABLE.includes(e.pack.status)) continue;
-    if (!availabilityOf(e, reported).pack) out.waiting.push(e);
-    else if (e.pack.status === "listed") out.listed.push(e);
+    if (!availabilityOf(e, reported, opts).pack) out.waiting.push(e);
+    else if (e.pack.status === "listed" && !isResearchEngine(e.pack.engine)) out.listed.push(e);
     else out.trial.push(e);
   }
   return out;
@@ -206,17 +233,42 @@ export interface RunStylePack {
   status: PackStatus;
   /** True for a Trial pack: research only; later publishing must refuse the run. */
   trial: boolean;
+  /** The pack's renderer (since Phase 2). A research engine (hermes) makes the run a trial whatever else it says. */
+  engine?: string;
 }
 
 export function runStylePack(pack: StylePack): RunStylePack {
-  return { id: pack.id, version: pack.version, status: pack.status, trial: pack.status === "trial" };
+  return { id: pack.id, version: pack.version, status: pack.status, trial: pack.status === "trial" || isResearchEngine(pack.engine), engine: pack.engine };
 }
 
 export function parseRunStylePack(raw: unknown): RunStylePack | null {
   if (!isRecord(raw)) return null;
   const status = PACK_STATUSES.find((s) => s === raw.status);
   if (!ID_RE.test(str(raw.id)) || !SEMVER_RE.test(str(raw.version)) || !status) return null;
-  return { id: str(raw.id), version: str(raw.version), status, trial: raw.trial === true };
+  const engine = str(raw.engine);
+  // A hermes render is always a trial, even if a stored config claims otherwise.
+  return { id: str(raw.id), version: str(raw.version), status, trial: raw.trial === true || isResearchEngine(engine), ...(engine ? { engine } : {}) };
+}
+
+/**
+ * Why a run may not be published, or null. Trial runs are research only, and a run rendered by a research engine
+ * (hermes) never is published, whatever its pack says. Publishing, auto-publishing and any later upload stage call
+ * this; there is no bypass.
+ */
+export function publishRefusal(pack: RunStylePack | null, renderer?: string | null): string | null {
+  if (isResearchEngine(renderer) || isResearchEngine(pack?.engine)) return `${HERMES_RENDER_LABEL}: a video Hermes rendered is never published.`;
+  if (pack?.trial) return `Trial style ${pack.id} ${pack.version}: research only, not for publishing.`;
+  return null;
+}
+
+/**
+ * The publishing guard on a run's final video: the autonomy policy may never approve or publish a trial or a Hermes
+ * render by itself. The owner scores it (Review card) and decides. Other decisions pass through unchanged.
+ */
+export function guardFinalDecision<D extends { action: string; reason: string }>(decision: D, pack: RunStylePack | null | undefined, renderer?: string | null): D {
+  const refusal = publishRefusal(pack ?? null, renderer);
+  if (!refusal || (decision.action !== "auto-approve" && decision.action !== "auto-publish")) return decision;
+  return { ...decision, action: "ask-owner", reason: `${refusal} The owner scores the video and decides.` };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -242,6 +294,12 @@ export interface TrialOutcome {
   videoAssetId: string | null;
   decidedAt: string | null;
   createdAt: string;
+  /** The owner's rating behind presentationScore (migration 0016), when the owner scored it. */
+  ownerRubric?: Rubric | null;
+  /** Hermes's vision advisory (migration 0016). Never part of the rule. */
+  hermesAdvisory?: PresentationAdvisory | null;
+  /** The renderer that drew the video (migration 0016): ffmpeg-stills, remotion-2d, html-capture, hermes. */
+  renderer?: string | null;
 }
 
 /** The QC part of an outcome, from the run's latest gate results. */
@@ -324,7 +382,9 @@ export function curationRecord(pack: StylePack, outcomes: readonly TrialOutcome[
     notes: [
       `pack ${pack.id}@${o.packVersion}`,
       `G-technical ${o.qcPassed ? "passed" : "failed"}`,
-      o.presentationScore !== null ? `presentation ${o.presentationScore}` : "no presentation score",
+      o.presentationScore !== null ? `presentation ${o.presentationScore}${o.ownerRubric ? ` (owner: ${rubricText(o.ownerRubric)})` : ""}` : "no presentation score",
+      ...(o.hermesAdvisory ? [`Hermes advisory ${o.hermesAdvisory.score} (not counted)`] : []),
+      ...(o.renderer ? [`renderer ${o.renderer}`] : []),
       `owner decision: ${o.ownerDecision ?? "none yet"}`,
     ].join("; "),
   }));

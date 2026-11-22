@@ -69,7 +69,8 @@ test("renderEngineOf: a missing engine means stills, a known one is kept, anythi
   }
   assert.throws(() => renderEngineOf({ engine: 42 }), NonRetryableError);
   assert.throws(() => renderEngineOf({ engine: "  " }), NonRetryableError);
-  assert.deepEqual(Object.keys(RENDER_ENGINES).sort(), ["ffmpeg-stills", "remotion-2d"]);
+  assert.equal(renderEngineOf({ engine: "html-capture" }), "html-capture");
+  assert.deepEqual(Object.keys(RENDER_ENGINES).sort(), ["ffmpeg-stills", "html-capture", "remotion-2d"]);
 });
 
 test("engineUnavailable names the engine, the capability and the way forward", () => {

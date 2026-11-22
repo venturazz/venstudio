@@ -56,8 +56,13 @@ node "$ROOT/scripts/remotion-project.mjs" "$WORK/remotion-expected" >/dev/null |
 diff -r "$WORK/remotion-expected/src" "$WORK/remotion-unpacked/src" >/dev/null || fail "unpacked Remotion project differs from the runtime plus the vendored packs"
 [ -f "$WORK/remotion-unpacked/src/packs/explainer-flat-vector/FlatVectorExplainer.tsx" ] || fail "the explainer composition is not served from its pack"
 grep -q '"flat-vector-explainer"' "$WORK/remotion-unpacked/src/packs/packs.json" || fail "packs.json does not list the explainer composition"
+# html-capture packs (worker 0.10.0+) travel in the same signed bundle, under html/.
+diff -r "$WORK/remotion-expected/html" "$WORK/remotion-unpacked/html" >/dev/null || fail "unpacked html/ differs from the vendored html-capture packs"
+[ -f "$WORK/remotion-unpacked/html/probe-line-graph/index.html" ] || fail "the probe-line-graph page is not in the served bundle"
+HTML_LIST=$(cat "$WORK/remotion-unpacked/html/packs.json")
+grep -q '"id": "probe-line-graph"' <<<"$HTML_LIST" || fail "html/packs.json does not list probe-line-graph"
 curl -fsS "$APP_URL/install/style-packs.json" -o "$WORK/style-packs.json" || fail "style-packs.json not served"
-for P in explainer-flat-vector documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud; do
+for P in explainer-flat-vector documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud probe-line-graph hermes-research-explainer; do
   grep -q "\"id\": \"$P\"" "$WORK/style-packs.json" || fail "style-packs.json does not list $P"
 done
 grep -q "\"commit\": \"$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).source.commit)' "$ROOT/styles/lock.json")\"" "$WORK/style-packs.json" || fail "style-packs.json does not name the vendored styles commit"
@@ -128,6 +133,19 @@ q "UPDATE style_trial_outcomes SET pack_version = 'latest' WHERE run_id = '$TRUN
 q "UPDATE style_trial_outcomes SET presentation_score = 101 WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a presentation score above 100"
 q "DELETE FROM pipeline_runs WHERE id = '$TRUN'" >/dev/null
 [ "$(q "SELECT count(*) FROM style_trial_outcomes")" = "0" ] || fail "a run's trial outcome must go with the run"
+
+echo "== migration 0016: the presentation score on the curation log, additive only"
+for col in owner_rubric presentation_by hermes_advisory renderer; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'style_trial_outcomes' AND column_name = '$col' AND is_nullable = 'YES'")" = "1" ] || fail "column style_trial_outcomes.$col missing (or not nullable) after migration 0016"
+done
+TRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e trial 0016', '{\"styleId\":\"documentary-stills\",\"stylePack\":{\"id\":\"documentary-stills\",\"version\":\"1.0.0\",\"status\":\"trial\",\"trial\":true}}') RETURNING id")
+q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed) VALUES ('$TRUN', 'documentary-stills', '1.0.0', true)" >/dev/null || fail "a 0015-shaped outcome is refused after migration 0016"
+q "UPDATE style_trial_outcomes SET presentation_score = 80, owner_rubric = '{\"hook\":5,\"pacing\":4,\"legibility\":4,\"polish\":4,\"audio\":4}', presentation_by = 'owner',
+     hermes_advisory = '{\"score\":70,\"notes\":\"advisory\"}', renderer = 'html-capture' WHERE run_id = '$TRUN'" >/dev/null || fail "style_trial_outcomes refused an owner score with its rubric and advisory"
+q "UPDATE style_trial_outcomes SET presentation_by = 'hermes' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a presentation score that is not the owner's"
+q "UPDATE style_trial_outcomes SET owner_rubric = '[5,4]' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a rubric that is not an object"
+q "UPDATE style_trial_outcomes SET renderer = 'Not A Renderer' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a malformed renderer"
+q "DELETE FROM pipeline_runs WHERE id = '$TRUN'" >/dev/null
 
 echo "== migration 0007 created the template and pipeline tables"
 for T in templates template_versions template_trials pipeline_runs pipeline_stages work_orders qc_reports; do

@@ -94,7 +94,15 @@ test("what the worker reports is what the portal's New Video counts as available
   const caps = ["echo", "ffmpeg", "xfade", "remotion-2d", ...packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], [{ id: "explainer-flat-vector", version: "1.0.0", composition: "flat-vector-explainer" }])];
   const offer = newVideoStyles(mergeRegistry(STYLES, packs), caps);
   assert.equal(offer.trial.length, 7);
-  assert.equal(offer.waiting.length, 0);
+  // The Hermes research pack is never reported by a worker: it waits for Hermes, and is offered once Hermes is set up.
+  assert.deepEqual(offer.waiting.map((e) => e.id), ["hermes-research-explainer"]);
+  assert.equal(newVideoStyles(mergeRegistry(STYLES, packs), caps, { hermes: true }).trial.length, 8);
+  // The html-capture probe is reported once installed and probed, but it is Lab: never offered.
+  const html = packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], "0.10.0", [{ id: "probe-line-graph", version: "0.1.0", drawsCaptions: false, sha256: "0".repeat(64) }]);
+  assert.ok(html.includes("pack:probe-line-graph@0.1.0"));
+  assert.ok(!html.some((c) => c.startsWith("pack:hermes-research-explainer")), "no worker reports the hermes pack");
+  const withProbe = newVideoStyles(mergeRegistry(STYLES, packs), [...caps, ...html]);
+  assert.ok(![...withProbe.listed, ...withProbe.trial, ...withProbe.waiting].some((e) => e.id === "probe-line-graph"));
 });
 
 test("probedPacksOf keeps only well-formed entries of the probe's output", () => {
@@ -110,10 +118,10 @@ test("installPacksIndex writes the index atomically, and nothing when it does no
   await assert.rejects(installPacksIndex(home, Buffer.from('{"format":2,"packs":[]}')), /unknown format/);
   assert.equal(await installedPacksSha(home), null, "a refused index is not written");
   const idx = await installPacksIndex(home, Buffer.from(served));
-  assert.equal(idx.packs.length, 7);
+  assert.equal(idx.packs.length, 9);
   assert.equal(await readFile(stylePacksPath(home), "utf8"), served);
   assert.equal(await installedPacksSha(home), sha(served));
-  assert.equal((await readInstalledPacks(home))?.packs.length, 7);
+  assert.equal((await readInstalledPacks(home))?.packs.length, 9);
   await writeFile(stylePacksPath(home), "not json");
   assert.equal(await readInstalledPacks(home), null, "a damaged file reports no packs");
 });

@@ -8,7 +8,8 @@ import { db } from "./db.ts";
 import { STYLES } from "../studio/catalog.ts";
 import { mergeRegistry, parsePack, type OwnerDecision, type RegistryEntry, type StylePack, type TrialGate, type TrialOutcome } from "../studio/style-registry.ts";
 import { packsIndex, type PacksIndex } from "../style-packs-index.ts";
-import type { RemotionPackSource } from "../install-bundle.ts";
+import { readAdvisory, readRubric } from "../studio/presentation.ts";
+import type { HtmlPackSource, RemotionPackSource } from "../install-bundle.ts";
 
 /**
  * The vendored style packs (styles/ and styles/lock.json, written by scripts/sync-styles.mjs), read from disk once
@@ -122,6 +123,19 @@ export async function registryEntry(styleId: string): Promise<RegistryEntry | un
   return (await styleRegistry()).find((e) => e.id === styleId);
 }
 
+/** A vendored pack's contract (style.json contract: pacing, on-screen elements, captions, audio, assets), or null. */
+export async function packContract(id: string): Promise<Record<string, unknown> | null> {
+  const v = await vendoredStyles();
+  const text = v.files.get(id)?.get("style.json");
+  if (!text) return null;
+  try {
+    const raw = JSON.parse(text) as { contract?: unknown };
+    return typeof raw.contract === "object" && raw.contract !== null ? (raw.contract as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** /install/style-packs.json: what workers install and report pack capabilities from. */
 export async function servedPacksIndex(): Promise<PacksIndex> {
   const v = await vendoredStyles();
@@ -137,6 +151,21 @@ export async function remotionPackSources(): Promise<RemotionPackSource[]> {
       id: p.id,
       version: p.version,
       composition: p.composition as string,
+      files: [...(v.files.get(p.id) ?? new Map<string, string>()).entries()]
+        .filter(([rel]) => rel.startsWith("render/"))
+        .map(([rel, content]) => ({ path: rel.slice("render/".length), content })),
+    }));
+}
+
+/** The pages of the html-capture packs, for the same bundle (installed as html/<id>/, worker 0.10.0+). */
+export async function htmlPackSources(): Promise<HtmlPackSource[]> {
+  const v = await vendoredStyles();
+  return v.packs
+    .filter((p) => p.engine === "html-capture")
+    .map((p) => ({
+      id: p.id,
+      version: p.version,
+      drawsCaptions: p.drawsCaptions === true,
       files: [...(v.files.get(p.id) ?? new Map<string, string>()).entries()]
         .filter(([rel]) => rel.startsWith("render/"))
         .map(([rel, content]) => ({ path: rel.slice("render/".length), content })),
@@ -165,13 +194,17 @@ function rowToOutcome(r: Record<string, unknown>): TrialOutcome {
     videoAssetId: r.video_asset_id == null ? null : String(r.video_asset_id),
     decidedAt: iso(r.decided_at),
     createdAt: iso(r.created_at) ?? "",
+    ownerRubric: readRubric(r.owner_rubric),
+    hermesAdvisory: readAdvisory(r.hermes_advisory),
+    renderer: typeof r.renderer === "string" ? r.renderer : null,
   };
 }
 
 /** Every recorded trial outcome, newest first. */
 export async function listTrialOutcomes(sql: Q = db()): Promise<TrialOutcome[]> {
   const rows = await sql`
-    SELECT run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision, video_asset_id, decided_at, created_at
+    SELECT run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision, video_asset_id, decided_at, created_at,
+           owner_rubric, hermes_advisory, renderer
     FROM style_trial_outcomes ORDER BY created_at DESC LIMIT 2000
   `;
   return rows.map((r) => rowToOutcome(r as Record<string, unknown>));

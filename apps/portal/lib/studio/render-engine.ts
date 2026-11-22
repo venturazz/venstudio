@@ -31,6 +31,16 @@ export function capabilityForEngine(id: string): string | null {
 /** Capability strings that mean "no worker runs this yet", not a worker capability. */
 export const NON_WORKER_CAPABILITIES: readonly string[] = ["provider", "blender"];
 
+/**
+ * Engines the portal renders itself, never a worker: hermes (Hermes renders with its own tools, research only). The
+ * render stage asks Hermes instead of queueing a render-video job, so no worker capability gates them.
+ */
+export const PORTAL_RENDER_ENGINES: readonly string[] = ["hermes"];
+
+export function isPortalEngine(id: string): boolean {
+  return PORTAL_RENDER_ENGINES.includes(id);
+}
+
 export interface EngineGateInput {
   engine: string;
   /** Capabilities the target worker actually reported. */
@@ -49,6 +59,8 @@ export function engineIssues(i: EngineGateInput): string[] {
     issues.push(`Unknown render engine "${i.engine}". Known engines: ${renderEngines().join(", ")}.`);
     return issues;
   }
+  // Rendered by the portal through Hermes: no worker capability applies (trial-only rules live in style-registry.ts).
+  if (isPortalEngine(i.engine)) return issues;
   const need = capabilityForEngine(i.engine) as string;
   if (NON_WORKER_CAPABILITIES.includes(need)) {
     issues.push(`Engine "${i.engine}" is not run by a worker yet (capability "${need}"), so it cannot be planned.`);

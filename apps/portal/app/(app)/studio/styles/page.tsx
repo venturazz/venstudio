@@ -4,12 +4,15 @@ import { CopyButton } from "@/components/client.tsx";
 import { ENGINES, FAMILY_LABELS, THEMES, VIDEO_FORMATS } from "@/lib/studio/catalog.ts";
 import { listTemplates } from "@/lib/server/templates.ts";
 import { reportedCapabilities } from "@/lib/server/workers.ts";
+import { env } from "@/lib/server/env.ts";
 import { listTrialOutcomes, styleRegistry, vendoredStyles } from "@/lib/server/style-packs.ts";
 import {
+  HERMES_RENDER_LABEL,
   PROMOTION_RULE_TEXT,
   STATUS_LABEL,
   TRIAL_LABEL,
   availabilityOf,
+  isResearchEngine,
   curationRecord,
   packPromotionIssues,
   trialCounts,
@@ -106,7 +109,7 @@ export default async function StyleLibraryPage() {
         {packs.length === 0 && <p className="text-sm text-muted">No style pack is vendored.</p>}
         <div className="grid gap-3 lg:grid-cols-2">
           {packs.map((e) => (
-            <PackCard key={e.id} entry={e} caps={caps} outcomes={outcomes.filter((o) => o.packId === e.id)} template={templates.find((t) => t.styleId === e.id) ?? null} />
+            <PackCard key={e.id} entry={e} caps={caps} hermes={Boolean(env().HERMES_BASE_URL)} outcomes={outcomes.filter((o) => o.packId === e.id)} template={templates.find((t) => t.styleId === e.id) ?? null} />
           ))}
         </div>
       </section>
@@ -160,10 +163,23 @@ export default async function StyleLibraryPage() {
   );
 }
 
-function PackCard({ entry: e, caps, outcomes, template }: { entry: RegistryEntry; caps: string[]; outcomes: TrialOutcome[]; template: Template | null }) {
+function PackCard({
+  entry: e,
+  caps,
+  hermes,
+  outcomes,
+  template,
+}: {
+  entry: RegistryEntry;
+  caps: string[];
+  hermes: boolean;
+  outcomes: TrialOutcome[];
+  template: Template | null;
+}) {
   const pack = e.pack!;
   const engine = ENGINES[pack.engine];
-  const avail = availabilityOf(e, caps);
+  const avail = availabilityOf(e, caps, { hermes });
+  const research = isResearchEngine(pack.engine);
   const counts = trialCounts(outcomes, pack.version);
   const issues = pack.status === "trial" ? packPromotionIssues(pack, template, counts) : [];
   const ready = pack.status === "trial" && issues.length === 0;
@@ -178,15 +194,18 @@ function PackCard({ entry: e, caps, outcomes, template }: { entry: RegistryEntry
         </span>
       </div>
       <p className="mt-1 text-sm text-muted">{pack.description}</p>
-      {pack.status === "trial" && <p className="mt-1 text-xs font-medium text-warn">{TRIAL_LABEL}</p>}
+      {pack.status === "trial" && <p className="mt-1 text-xs font-medium text-warn">{research ? HERMES_RENDER_LABEL : TRIAL_LABEL}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted">
           Renderer: {engine?.label ?? pack.engine}
-          {pack.composition ? ` (${pack.composition})` : ""}, worker {pack.minWorkerVersion}+
+          {pack.composition ? ` (${pack.composition})` : ""}
+          {research ? "" : `, worker ${pack.minWorkerVersion}+`}
         </span>
         {engine && <Badge tone={MUSE_TONE[engine.muse]}>{MUSE_LABEL[engine.muse]}</Badge>}
         <span data-testid="pack-availability">
-          {avail.pack ? (
+          {research ? (
+            <Badge tone={avail.pack ? "ok" : "warn"}>{avail.pack ? "Rendered by the portal through Hermes" : "Hermes is not set up (HERMES_BASE_URL)"}</Badge>
+          ) : avail.pack ? (
             <Badge tone="ok">A worker reports {avail.capability}</Badge>
           ) : avail.renderer ? (
             <Badge tone="warn">A worker has {engine?.capability}, none has the pack yet</Badge>
