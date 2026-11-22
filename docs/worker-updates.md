@@ -153,6 +153,12 @@ Set `VENSTUDIO_AUTO_UPDATE=0` in that worker's environment (for example in `run.
 worker run from anywhere other than `<home>/app/venstudio-worker.ts` (a repository checkout, tests) never updates
 itself.
 
+## Worker 0.10.0
+
+0.10.0 (renderer plugins and html-capture, `docs/html-capture.md`) is delivered by this mechanism like any release:
+workers on 0.8.0 or later update themselves (versions compare numerically, so 0.10.0 is newer than 0.9.0). The
+html-capture packs ride in the signed `render-remotion.json`; no new file is added to the manifest.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,

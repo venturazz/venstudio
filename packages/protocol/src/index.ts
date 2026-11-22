@@ -38,6 +38,12 @@ export type Capability =
   | "caption-style"
   | "tts-kokoro"
   | "remotion-2d"
+  /**
+   * render-video renders engine html-capture: an HTML template captured frame by frame in the headless Chromium of the
+   * Remotion project. Reported only after a 1-second probe page rendered on this machine with its one network request
+   * blocked. Worker 0.10.0+.
+   */
+  | "html-capture"
   | "remotion-3d"
   | "godot"
   | "manim"
@@ -56,6 +62,7 @@ export const CAPABILITIES: readonly Capability[] = [
   "caption-style",
   "tts-kokoro",
   "remotion-2d",
+  "html-capture",
   "remotion-3d",
   "godot",
   "manim",
@@ -93,7 +100,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.9.0";
+export const WORKER_VERSION = "0.10.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
