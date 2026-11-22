@@ -325,6 +325,7 @@ test("an uploaded page fails by name when it tries fetch, an image from another 
     // eval is refused by the Content-Security-Policy the server sends (no 'unsafe-eval'): proof the header is there.
     ["eval-csp", `try { eval("1 + 1"); } catch (e) {}`, {}, blocked],
     ["xhr", `try { new XMLHttpRequest(); } catch (e) {}`, {}, blocked],
+    ["function-ctor", `try { (function () {}).constructor("return 1")(); } catch (e) {}`, {}, blocked],
     ["throws-init", `throw new Error("boom in init");`, {}, /^The Hermes-designed page threw in init\(props\): Error: boom in init/],
     ["throws-frame", ``, { frame: `if (f === 2) throw new Error("boom at frame 2");` }, /^The Hermes-designed page threw in renderFrame\(2\): Error: boom at frame 2/],
   ];
