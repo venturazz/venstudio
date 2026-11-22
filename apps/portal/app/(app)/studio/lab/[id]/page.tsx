@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/lib/server/auth.ts";
-import { getStudy, refreshPendingUploads, studySources, studyTrials, studyTrialState, videoAssetsForLab, type LabSource } from "@/lib/server/lab-studies.ts";
+import { getStudy, LOOKING, refreshPendingUploads, studySources, studyTrials, studyTrialState, videoAssetsForLab, type LabSource } from "@/lib/server/lab-studies.ts";
 import { Alert, Badge, Card, CardBody, CardHeader, Field, Input, LinkButton, PageHeader, Select, Textarea, timeAgo } from "@/components/ui.tsx";
 import { AutoRefresh, SubmitButton } from "@/components/client.tsx";
 import { EXPORT_STEPS, isYouTubeUrl, LAB_SOURCE_LABEL, MAX_LAB_REVISIONS, MAX_NOTE_CHARS, MAX_URL_CHARS, NOTE_FIELDS, NOTE_LABEL } from "@/lib/studio/lab-study.ts";
@@ -57,7 +57,8 @@ export default async function StudyPage({ params, searchParams }: { params: Prom
   const study = await getStudy(id);
   if (!study) notFound();
   const [sources, trials, trial, videos] = await Promise.all([studySources(id), studyTrials(id), studyTrialState(study), videoAssetsForLab()]);
-  const waiting = sources.some((s) => s.status === "pending") || study.draftState === "working";
+  // Refresh by itself only while something is moving: an upload's analysis, a source Hermes is reading, a draft.
+  const waiting = sources.some((s) => s.status === "pending" && (s.type === "upload" || s.reason === LOOKING)) || study.draftState === "working";
   const analyzed = sources.filter((s) => s.status === "analyzed").length;
   const draft = study.draft;
   const add = addSourceAction.bind(null, study.id);

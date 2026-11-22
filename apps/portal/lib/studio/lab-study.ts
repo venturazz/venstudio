@@ -149,8 +149,9 @@ export function parseSourceInput(input: SourceInput, ctx: { assetLicence?: strin
     case "article": {
       const why = publicUrlIssue(ref);
       if (why) return { ok: false, issues: [why] };
-      const linkKind = type === "link" ? (isYouTubeUrl(ref) ? "youtube" : "web") : null;
-      return { ok: true, value: { ...base, ref, linkKind, licence: owned || UNKNOWN_LICENCE } };
+      const href = new URL(ref).href;
+      const linkKind = type === "link" ? (isYouTubeUrl(href) ? "youtube" : "web") : null;
+      return { ok: true, value: { ...base, ref: href, linkKind, licence: owned || UNKNOWN_LICENCE } };
     }
     case "repo": {
       const why = publicUrlIssue(ref);
@@ -159,7 +160,7 @@ export function parseSourceInput(input: SourceInput, ctx: { assetLicence?: strin
       const p = (input.path ?? "").trim().replace(/^\/+/, "");
       if (p && (!REPO_PATH_RE.test(p) || p.split("/").includes(".."))) return { ok: false, issues: ["The path inside the repository may use letters, digits, . _ - and /"] };
       // The licence is read from the repository by Hermes; until then nobody has recorded it.
-      return { ok: true, value: { ...base, ref, refPath: p || null, licence: owned || UNKNOWN_LICENCE } };
+      return { ok: true, value: { ...base, ref: new URL(ref).href, refPath: p || null, licence: owned || UNKNOWN_LICENCE } };
     }
     case "skill": {
       if (!SKILL_RE.test(ref)) return { ok: false, issues: ["A skill name is letters, digits and . _ : - (up to 80)"] };
@@ -306,11 +307,12 @@ export function sourceMessages(s: { type: LabSourceType; ref: string; refPath: s
     `VENSTUDIO_STAGE: ${LAB_SOURCE_STAGE}`,
     JSON_RULE,
     DATA_RULE,
-    `You are studying one learning source for a VenStudio style pack (Template Lab study: ${clean(study.title, MAX_TITLE_CHARS) || "untitled"}, goal: ${study.goal === "improve" ? "improve an existing style" : "a new style"}).`,
+    `You are studying one learning source for a VenStudio style pack (a Template Lab study toward ${study.goal === "improve" ? "an improved style" : "a new style"}; its name is in the DATA block study).`,
     how[kind],
     PATTERNS_ONLY,
     'Answer with: {"pacing":"","transitions":"","textLayout":"","motion":"","hookStructure":"","audioFeel":"","summary":"","numbers":{"shotSeconds":[min,max],"cutsPerMinute":[min,max],"hookWithinMs":0},"licence":"","techniques":[""]}.',
     `Each text at most ${MAX_NOTE_TEXT} characters. Fill at least three of pacing, transitions, textLayout, motion, hookStructure, audioFeel, and always summary. "numbers" are your estimates and may be left out. "licence" is required for a repository (the licence you found, or "not found"). "techniques" is for repositories and skills.`,
+    dataBlock("study", clean(study.title, MAX_TITLE_CHARS) || "untitled", MAX_TITLE_CHARS),
     dataBlock("source", [`type: ${s.type}${s.linkKind === "youtube" ? " (YouTube)" : ""}`, `reference: ${s.ref}`, ...(s.refPath ? [`path: ${s.refPath}`] : [])].join("\n"), MAX_URL_CHARS + 260),
   ];
   return [{ role: "user", content: lines.join("\n") }];
@@ -390,7 +392,7 @@ export function parseDraftSpec(raw: unknown, ctx: SynthesisContext): Validated<D
   const naturalFrame = PACK_FRAMES.find((x) => x === f.naturalFrame);
   if (!naturalFrame) issues.push(`formats.naturalFrame must be one of ${PACK_FRAMES.join(", ")}`);
   const renderer = clean(raw.renderer, 40);
-  if (!ENGINES[renderer]) issues.push(`renderer must be one of the engines VenStudio knows: ${Object.keys(ENGINES).join(", ")} (name the closest; the owner is told when it is not installed)`);
+  if (!Object.hasOwn(ENGINES, renderer)) issues.push(`renderer must be one of the engines VenStudio knows: ${Object.keys(ENGINES).join(", ")} (name the closest; the owner is told when it is not installed)`);
 
   const c = isRecord(raw.contract) ? raw.contract : {};
   const p = isRecord(c.pacing) ? c.pacing : {};
@@ -484,7 +486,8 @@ export function applyMeasured(draft: DraftSpec, fingerprints: readonly Structure
   const measured: string[] = [];
   const half = (n: number) => Math.round(n * 2) / 2;
   if (fp.shotSeconds.p90 > 0) {
-    const lo = Math.max(0.5, half(fp.shotSeconds.p10 || fp.shotSeconds.p50));
+    // Inside the validator's ranges (0.5..120 s), so the stored draft always reads back.
+    const lo = Math.min(120, Math.max(0.5, half(fp.shotSeconds.p10 || fp.shotSeconds.p50)));
     const hi = Math.max(lo, Math.min(120, half(fp.shotSeconds.p90 * 1.1)));
     next.contract.pacing.shotSeconds = [lo, hi];
     measured.push("contract.pacing.shotSeconds");
@@ -495,7 +498,7 @@ export function applyMeasured(draft: DraftSpec, fingerprints: readonly Structure
   }
   if (fp.cutsPerMinute > 0) {
     const mid = Math.max(1, Math.round(fp.cutsPerMinute));
-    next.contract.pacing.cutsPerMinute = [Math.max(1, Math.floor(mid * 0.8)), Math.max(1, Math.ceil(mid * 1.2))];
+    next.contract.pacing.cutsPerMinute = [Math.min(600, Math.max(1, Math.floor(mid * 0.8))), Math.min(600, Math.max(1, Math.ceil(mid * 1.2)))];
     measured.push("contract.pacing.cutsPerMinute");
   }
   if (fp.loudnessLufs !== null && Number.isFinite(fp.loudnessLufs)) {
@@ -589,7 +592,7 @@ export interface RendererVerdict {
  * renderer VenStudio has no plugin for, or that no worker reports, says so: "needs a renderer that isn't installed".
  */
 export function rendererVerdict(engine: string, reported: readonly string[], opts: { hermes?: boolean } = {}): RendererVerdict {
-  const e = ENGINES[engine];
+  const e = Object.hasOwn(ENGINES, engine) ? ENGINES[engine] : undefined;
   if (!e) return { engine, label: engine, available: false, researchOnly: false, text: `needs a renderer that isn't installed: ${engine} (VenStudio has no such renderer)` };
   if (RESEARCH_ENGINES.includes(engine)) {
     return opts.hermes
@@ -798,7 +801,9 @@ export function draftExport(study: { id: string; title: string }, draft: DraftSp
 /** Reads a stored draft back (jsonb), or null when it is not one. Re-validated, so a hand-edited row cannot slip by. */
 export function readDraft(raw: unknown, packIds: readonly string[]): DraftSpec | null {
   if (!isRecord(raw)) return null;
-  const parsed = parseDraftSpec(raw, { packIds, allowId: typeof raw.packId === "string" ? raw.packId : null });
+  // A closest pack that has since left the registry is dropped, not the whole draft.
+  const closest = typeof raw.closestPack === "string" && packIds.includes(raw.closestPack) ? raw.closestPack : null;
+  const parsed = parseDraftSpec({ ...raw, closestPack: closest }, { packIds, allowId: typeof raw.packId === "string" ? raw.packId : null });
   if (!parsed.ok) return null;
   const measured = Array.isArray(raw.measured) ? raw.measured.filter((m): m is string => typeof m === "string").slice(0, 8) : [];
   return { ...parsed.value, measured };

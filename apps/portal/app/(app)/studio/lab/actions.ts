@@ -54,7 +54,7 @@ export async function addSourceAction(studyId: string, fd: FormData): Promise<vo
 export async function retrySourceAction(studyId: string, sourceId: string): Promise<void> {
   await requireUser("editor");
   if (!uuid.safeParse(studyId).success || !uuid.safeParse(sourceId).success) redirect("/studio/lab");
-  after(() => processSource(sourceId));
+  after(() => processSource(sourceId, studyId));
   back(studyId, { ok: "Asked again." });
 }
 
@@ -63,7 +63,7 @@ export async function retryPendingAction(studyId: string): Promise<void> {
   if (!uuid.safeParse(studyId).success) redirect("/studio/lab");
   const ids = await sourcesForHermes(studyId);
   after(async () => {
-    for (const id of ids) await processSource(id);
+    for (const id of ids) await processSource(id, studyId);
   });
   back(studyId, { ok: ids.length ? `Asked Hermes about ${ids.length} waiting source${ids.length === 1 ? "" : "s"}.` : "Nothing is waiting for Hermes." });
 }

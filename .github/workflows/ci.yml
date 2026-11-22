@@ -111,7 +111,9 @@ jobs:
           # that try the network, which must fail. Then each pack's fixture as the styles repo's CI renders it.
           node --test apps/worker/html-capture-render.test.ts
           mkdir -p "$VENSTUDIO_REMOTION_OUT"
-          for id in $(node -e 'for (const p of JSON.parse(require("fs").readFileSync("styles/lock.json","utf8")).packs) if (p.engine === "html-capture") console.log(p.id)'); do
+          ids=$(node -e 'for (const p of JSON.parse(require("fs").readFileSync("styles/lock.json","utf8")).packs) if (p.engine === "html-capture") console.log(p.id)')
+          [ -n "$ids" ] || { echo "styles/lock.json lists no html-capture pack"; exit 1; }
+          for id in $ids; do
             node apps/worker/venstudio-worker.ts capture-html --pack "styles/packs/$id" --out "$VENSTUDIO_REMOTION_OUT/$id-fixture.mp4" --remotion "$VENSTUDIO_REMOTION_DIR" --font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
             node styles/tools/check-video.mjs "$VENSTUDIO_REMOTION_OUT/$id-fixture.mp4" "styles/packs/$id/fixtures/expect.json"
           done

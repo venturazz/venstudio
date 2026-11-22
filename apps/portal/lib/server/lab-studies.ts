@@ -48,6 +48,11 @@ import {
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const asDate = (v: unknown): Date | null => (v instanceof Date ? v : null);
 const HERMES_OPTS = { retries: 2, timeoutMs: 300_000, queueTimeoutMs: 60_000 } as const;
+/**
+ * Longer than the longest Hermes turn (3 attempts of 300 s plus the queue). A draft still "working" or a source still
+ * being looked at after this was interrupted (a portal restart): it may be asked again.
+ */
+const STALE_MINUTES = 20;
 
 export interface StudyRevision {
   revision: number;
@@ -106,16 +111,25 @@ function toStudy(r: Record<string, unknown>, ids: readonly string[]): Study {
   const revisions = Array.isArray(r.revisions)
     ? r.revisions.filter(isRecord).map((x) => ({ revision: Number(x.revision) || 0, note: typeof x.note === "string" ? x.note : "", at: typeof x.at === "string" ? x.at : "" }))
     : [];
-  const state = r.draft_state === "working" || r.draft_state === "ready" || r.draft_state === "failed" ? r.draft_state : "none";
+  let state: Study["draftState"] = r.draft_state === "working" || r.draft_state === "ready" || r.draft_state === "failed" ? r.draft_state : "none";
+  let draftError = typeof r.draft_error === "string" ? r.draft_error : null;
+  const draft = readDraft(r.draft, ids);
+  if (state === "working" && r.stale === true) {
+    state = "failed";
+    draftError = "The last drafting did not finish (the portal may have restarted). Ask again.";
+  } else if (r.draft && !draft && state !== "working") {
+    state = "failed";
+    draftError = "The stored draft no longer passes the pack format's checks. Synthesize it again.";
+  }
   return {
     id: String(r.id),
     title: String(r.title ?? ""),
     goal: r.goal === "improve" ? "improve" : "new",
     basePack: typeof r.base_pack === "string" ? r.base_pack : null,
     notes: String(r.notes ?? ""),
-    draft: readDraft(r.draft, ids),
+    draft,
     draftState: state,
-    draftError: typeof r.draft_error === "string" ? r.draft_error : null,
+    draftError,
     draftAt: asDate(r.draft_at),
     revision: Number(r.revision) || 0,
     revisions,
@@ -161,7 +175,7 @@ export async function listStudies(): Promise<Array<{ id: string; title: string; 
     SELECT s.id, s.title, s.goal, s.draft->>'name' AS draft_name, s.revision, s.created_at,
            (SELECT count(*) FROM lab_sources x WHERE x.study_id = s.id) AS sources,
            (SELECT count(*) FROM lab_sources x WHERE x.study_id = s.id AND x.status = 'analyzed') AS analyzed,
-           (SELECT count(*) FROM pipeline_runs r WHERE r.config->>'labStudyId' = s.id::text) AS trials
+           (SELECT count(*) FROM pipeline_runs r WHERE r.config ? 'labStudyId' AND r.config->>'labStudyId' = s.id::text) AS trials
     FROM lab_studies s ORDER BY s.created_at DESC LIMIT 100
   `;
   return rows.map((r) => ({
@@ -178,7 +192,9 @@ export async function listStudies(): Promise<Array<{ id: string; title: string; 
 }
 
 export async function getStudy(id: string): Promise<Study | null> {
-  const [r] = await db()`SELECT * FROM lab_studies WHERE id = ${id}`;
+  const [r] = await db()`
+    SELECT *, (draft_state = 'working' AND updated_at < now() - make_interval(mins => ${STALE_MINUTES})) AS stale FROM lab_studies WHERE id = ${id}
+  `;
   return r ? toStudy(r as Record<string, unknown>, await packIds()) : null;
 }
 
@@ -201,7 +217,7 @@ export async function studyTrials(studyId: string): Promise<StudyTrial[]> {
     SELECT r.id, r.state, r.created_at, r.config->'stylePack'->>'id' AS pack_id, r.config->'stylePack'->>'version' AS pack_version,
            o.qc_passed, o.presentation_score, o.owner_decision, o.renderer
     FROM pipeline_runs r LEFT JOIN style_trial_outcomes o ON o.run_id = r.id
-    WHERE r.config->>'labStudyId' = ${studyId}
+    WHERE r.config ? 'labStudyId' AND r.config->>'labStudyId' = ${studyId}
     ORDER BY r.created_at DESC LIMIT 50
   `;
   return rows.map((r) => ({
@@ -269,7 +285,7 @@ export async function addSource(studyId: string, input: SourceInput, userId: str
   const s = parsed.value;
   if (assetId) jobId = (await latestAnalysis(assetId))?.id ?? (await queueAnalysis(assetId, userId));
   const findings: SourceFindings | null = s.type === "owner-note" ? { kind: "owner-note", at: new Date().toISOString() } : null;
-  const reason = analystFor(s.type) === "hermes" ? "Waiting for Hermes to look at it" : analystFor(s.type) === "worker" ? "Waiting for the worker's analysis" : null;
+  const reason = analystFor(s.type) === "hermes" ? "Waiting for Hermes" : analystFor(s.type) === "worker" ? "Waiting for the worker's analysis" : null;
   const [row] = await sql`
     INSERT INTO lab_sources (study_id, type, ref, ref_path, licence, asset_id, analysis_job_id, status, reason, findings, created_by)
     VALUES (${studyId}, ${s.type}, ${s.ref}, ${s.refPath}, ${s.licence}, ${assetId}, ${jobId}, ${s.status}, ${reason},
@@ -304,7 +320,8 @@ async function refreshUpload(src: LabSource): Promise<void> {
   } else if (status === "failed" || status === "cancelled" || status === "missing") {
     await setSource(src.id, "failed", `The worker's analysis ${status === "missing" ? "is gone" : status}${typeof job?.error === "string" && job.error ? `: ${job.error.slice(0, 300)}` : ""}`, null);
   } else {
-    await setSource(src.id, "pending", `Waiting for the worker's analysis (job ${status})`, null);
+    const reason = `Waiting for the worker's analysis (job ${status})`;
+    if (src.reason !== reason) await setSource(src.id, "pending", reason, null);
   }
 }
 
@@ -318,16 +335,23 @@ export async function refreshPendingUploads(studyId: string): Promise<void> {
  * article, a repository or a skill. Hermes rate limits leave it pending with the wait; other failures are recorded
  * with their reason. Never throws.
  */
-export async function processSource(sourceId: string): Promise<void> {
+export async function processSource(sourceId: string, studyId?: string): Promise<void> {
   try {
     const src = await getSource(sourceId);
-    if (!src) return;
+    if (!src || (studyId && src.studyId !== studyId) || src.status === "analyzed") return;
     const analyst = analystFor(src.type);
     if (analyst === "worker") return await refreshUpload(src);
     if (analyst !== "hermes") return;
     if (!env().HERMES_BASE_URL) return await setSource(src.id, "failed", "Hermes is not set up (HERMES_BASE_URL), so nobody can look at this source", null);
+    // Claim it, so two clicks never send Hermes the same source twice (an interrupted claim goes stale).
+    const [claimed] = await db()`
+      UPDATE lab_sources SET status = 'pending', reason = ${LOOKING}, updated_at = now()
+      WHERE id = ${src.id} AND status <> 'analyzed'
+        AND NOT (status = 'pending' AND reason = ${LOOKING} AND updated_at > now() - make_interval(mins => ${STALE_MINUTES}))
+      RETURNING id
+    `;
+    if (!claimed) return;
     const [st] = await db()`SELECT title, goal FROM lab_studies WHERE id = ${src.studyId}`;
-    await setSource(src.id, "pending", "Hermes is looking at it", null);
     const linkKind = src.type === "link" ? (isYouTubeUrl(src.ref) ? "youtube" : "web") : null;
     const answer = await hermesJson(
       sourceMessages({ type: src.type, ref: src.ref, refPath: src.refPath, linkKind }, { title: String(st?.title ?? ""), goal: String(st?.goal ?? "new") }),
@@ -345,6 +369,9 @@ export async function processSource(sourceId: string): Promise<void> {
     await setSource(sourceId, "failed", `Could not study the source: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`, null).catch(() => {});
   }
 }
+
+/** The reason a source shows while Hermes is looking at it (also its claim). */
+export const LOOKING = "Hermes is looking at it";
 
 /** The sources Hermes still has to look at (new ones, and ones that waited for a rate limit). */
 export async function sourcesForHermes(studyId: string): Promise<string[]> {
@@ -364,7 +391,11 @@ export async function beginSynthesis(studyId: string, note: string): Promise<{ o
   }
   const sources = await studySources(studyId);
   if (!sources.some((s) => s.status === "analyzed")) return { ok: false, error: "No source is analyzed yet" };
-  const [r] = await db()`UPDATE lab_studies SET draft_state = 'working', draft_error = NULL, updated_at = now() WHERE id = ${studyId} AND draft_state <> 'working' RETURNING id`;
+  const [r] = await db()`
+    UPDATE lab_studies SET draft_state = 'working', draft_error = NULL, updated_at = now()
+    WHERE id = ${studyId} AND (draft_state <> 'working' OR updated_at < now() - make_interval(mins => ${STALE_MINUTES}))
+    RETURNING id
+  `;
   return r ? { ok: true } : { ok: false, error: "Hermes is already drafting" };
 }
 
@@ -404,6 +435,11 @@ export async function synthesize(studyId: string, note: string): Promise<void> {
     let draft = applyMeasured(answer.value, fps);
     // A revision keeps the pack id, so the export stays one pack across revisions.
     if (revising) draft = { ...draft, packId: study.draft!.packId };
+    // What is stored must read back (the page and the export re-validate it).
+    if (!readDraft(JSON.parse(JSON.stringify(draft)), ids)) {
+      await db()`UPDATE lab_studies SET draft_state = 'failed', draft_error = ${"Hermes's draft did not pass the pack format's checks after the measured numbers were applied"}, updated_at = now() WHERE id = ${studyId}`;
+      return;
+    }
     const revision = revising ? study.revision + 1 : study.revision;
     const revisions = revising ? [...study.revisions, { revision, note: note.slice(0, MAX_NOTE_CHARS), at: new Date().toISOString() }] : study.revisions;
     await db()`

@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS lab_sources (
   created_by       uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at       timestamptz NOT NULL DEFAULT now(),
   updated_at       timestamptz NOT NULL DEFAULT now(),
-  CHECK (type NOT IN ('link', 'repo', 'article') OR ref ~ '^https?://'),
+  CHECK (type NOT IN ('link', 'repo', 'article') OR ref ~* '^https?://'),
   CHECK (status <> 'failed' OR reason IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS lab_sources_study_idx ON lab_sources(study_id, created_at);
