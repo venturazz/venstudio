@@ -44,6 +44,12 @@ export type Capability =
    * blocked. Worker 0.10.0+.
    */
   | "html-capture"
+  /**
+   * The worker takes still frames of an html-capture page (job type preview-frames): an installed pack's page or a page
+   * uploaded with the job (html-design), with the run's props, through the same isolation as html-capture. Reported
+   * only after the html-capture probe and a still of the probe page passed on this machine. Worker 0.11.0+.
+   */
+  | "preview-frames"
   | "remotion-3d"
   | "godot"
   | "manim"
@@ -63,6 +69,7 @@ export const CAPABILITIES: readonly Capability[] = [
   "tts-kokoro",
   "remotion-2d",
   "html-capture",
+  "preview-frames",
   "remotion-3d",
   "godot",
   "manim",
@@ -83,6 +90,8 @@ export type JobType =
   | "qc-video"
   | "tts"
   | "render-video"
+  /** Still frames of an html-capture page with a run's props, before the voice and the render (worker 0.11.0+). */
+  | "preview-frames"
   | "fetch-asset"
   | "agent-task";
 
@@ -100,7 +109,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.10.0";
+export const WORKER_VERSION = "0.11.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];

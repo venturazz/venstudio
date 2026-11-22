@@ -50,6 +50,8 @@ export function vendoredHtmlPacks(stylesDir = STYLES) {
         id: p.id,
         version: p.version,
         drawsCaptions: style.renderer?.drawsCaptions === true,
+        // An html-design pack: workers render only a page uploaded with the job for it (worker 0.11.0+).
+        ...(style.workflow?.recipe === "html-design" ? { designed: true } : {}),
         files: Object.entries(p.files)
           .filter(([rel]) => rel.startsWith("render/"))
           .map(([rel, want]) => {
