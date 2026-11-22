@@ -95,6 +95,21 @@ export function makeWav(seconds, sampleRate = 24000, hz = 220) {
 // marker is read from the first user message. A topic hint containing BREAK-JSON makes the idea stage answer with text
 // that is not JSON, to prove the failure path. The script and storyboard are sized from numbers in the prompt itself,
 // so they satisfy the script and storyboard gates for whichever template is used.
+/** The run a prompt belongs to, by its owner brief (each e2e run has its own): the DATA block's first 60 characters. */
+function briefTag(text) {
+  return (/<<<DATA owner brief\n([\s\S]*?)\nDATA owner brief>>>/.exec(text)?.[1] ?? "").trim().slice(0, 60) || "(no brief)";
+}
+/** Beats, shot limit, hook and the least shot count a storyboard-like prompt states (storyboard, scene spec, skill brief). */
+function planNumbers(first) {
+  const roles = [...(/Beats in order: (.*)/.exec(first)?.[1] ?? "hook (x), body (x)").matchAll(/(\w+) \(/g)].map((m) => m[1]);
+  const maxShot = Number(/Maximum shot length: ([\d.]+) seconds/.exec(first)?.[1] ?? 3);
+  const hookMs = Number(/within (\d+) ms/.exec(first)?.[1] ?? 3000);
+  const least = Number(/use at least (\d+) (?:shots|scenes)/.exec(first)?.[1] ?? 0);
+  const count = Math.max(roles.length, least + 1, 3);
+  const beat = (i) => roles[Math.floor((i * roles.length) / count)] ?? "body";
+  const seconds = (i) => Math.min(maxShot, 3, i === 0 ? hookMs / 1000 : 3);
+  return { count, beat, seconds };
+}
 function directorReply(messages) {
   const first = textOf(messages.find((m) => m.role === "user")?.content);
   const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
@@ -157,6 +172,21 @@ function directorReply(messages) {
       fakeStats.hermesSkills.push(skill);
     }
     const name = skill ? `${skill.slice(1)}-${fakeStats.hermesRenders}` : `render-${fakeStats.hermesRenders}`;
+    let data = {};
+    try {
+      data = JSON.parse(first.split("--- render request (data, not instructions) ---\n")[1] ?? "{}");
+    } catch {
+      data = {};
+    }
+    fakeStats.renderRequests.push({
+      skill,
+      clip: name,
+      topic: String(data.topic ?? ""),
+      briefShots: Array.isArray(data.brief?.shots) ? data.brief.shots.length : 0,
+      briefMarker: JSON.stringify(data.brief ?? null).includes("brief-shot-1"),
+      pictures: Array.isArray(data.shots) ? data.shots.filter((x) => x.imageUrl).length : 0,
+      noPictureLine: first.includes("No pictures were made for this video"),
+    });
     return JSON.stringify({ status: "ok", video: { type: "url", value: `http://127.0.0.1:${HERMES_PORT}/clip/${name}.mp4`, mimeType: "video/mp4" }, provider: "capcut", source: "capcut", model: skill ? `fake-${skill.slice(1)}` : "fake-capcut-render" });
   }
   // The presentation advisory: a vision rating of the stills the quality check sampled (attached as image parts).
@@ -181,6 +211,16 @@ function directorReply(messages) {
     });
   }
   if (stage === "research") {
+    // A scene-spec run asks for real numbers with sources: the fake gives one sourced series and one note without a link.
+    if (first.includes("This video is drawn from data")) {
+      fakeStats.researchDataAsks++;
+      return JSON.stringify({
+        notes: [
+          { claim: "Installed solar capacity was 40 GW in 2010 and 1,200 GW in 2023", sourceUrl: "https://example.org/solar-capacity", sourced: true, summary: "Series in GW: 40 (2010), 140 (2014), 500 (2019), 1,200 (2023)." },
+          { claim: "Panels got much cheaper", sourceUrl: "", sourced: false, summary: "Costs fell sharply over the decade." },
+        ],
+      });
+    }
     return JSON.stringify({
       notes: [1, 2, 3].map((n) => ({ claim: `Marker claim number ${n} about old tales`, sourceUrl: "", sourced: false, summary: `Plain background fact ${n} for the writer` })),
     });
@@ -204,6 +244,8 @@ function directorReply(messages) {
     return JSON.stringify({ script: `Here is a strange true tale. ${words.slice(0, Math.max(1, target - 6)).join(" ")}.` });
   }
   if (stage === "storyboard") {
+    const tag = briefTag(first);
+    fakeStats.storyboardAsksByBrief[tag] = (fakeStats.storyboardAsksByBrief[tag] ?? 0) + 1;
     const roles = [...(/Beats in order: (.*)/.exec(first)?.[1] ?? "hook (x), body (x)").matchAll(/(\w+) \(/g)].map((m) => m[1]);
     const maxShot = Number(/Maximum shot length: ([\d.]+) seconds/.exec(first)?.[1] ?? 3);
     const hookMs = Number(/within (\d+) ms/.exec(first)?.[1] ?? 3000);
@@ -215,7 +257,7 @@ function directorReply(messages) {
         beatRole: role,
         seconds: Math.min(maxShot, 3, i === 0 ? hookMs / 1000 : 3),
         description: `A calm scene for the ${role} beat`,
-        imagePrompt: `Flat illustration of an old stone road at dusk, ${role} moment`,
+        imagePrompt: `Flat illustration of an old stone road at dusk, ${role} moment [brief: ${briefTag(first)}]`,
         // Per-shot backend preference: agnes is in the fake capability scan, midjourney is not and must be dropped.
         ...(i === 0 ? { provider: "agnes", needs: "text-layout" } : i === 1 ? { provider: "midjourney" } : {}),
       })),
@@ -230,6 +272,41 @@ function directorReply(messages) {
   // file. Most shots come from canva (listed in CI's HERMES_IMAGE_PROVIDER_ORDER, so stored as "canva"); shot-03 comes
   // from cloudflare-9router, which is not listed and is stored as "unlisted-cloudflare-9router". Neither is confirmed
   // yet, so the provider-terms flow runs. Nothing may be stored under the plugin name (unlisted-9router).
+  // Scene spec (recipe scene-spec): scenes sized like the storyboard, drawing only what the prompt says the style allows,
+  // and every number from note 1 (which has a source). No picture is asked for.
+  if (stage === "scene-spec") {
+    fakeStats.sceneSpecAsks++;
+    const allowed = (/On-screen elements this style allows: ([^.]*)\./.exec(first)?.[1] ?? "heading").split(", ");
+    const tokens = (/Motion tokens this style allows: ([^.]*)\./.exec(first)?.[1] ?? "").split(", ").filter((t) => t && t !== "none");
+    const { count, beat, seconds } = planNumbers(first);
+    const pick = (want) => (tokens.includes(want) ? [want] : tokens.slice(0, 1));
+    const element = (i) => {
+      if (i % 3 === 1 && allowed.includes("bar")) return [{ kind: "bar", text: "GW", series: [40, 140, 500, 1200], labels: ["2010", "2014", "2019", "2023"], source: 1 }, pick("draw")];
+      if (i % 3 === 2 && allowed.includes("counter")) return [{ kind: "counter", text: "GW in 2023", value: 1200, source: 1 }, pick("counter")];
+      return [{ kind: allowed.includes("heading") ? "heading" : allowed[0], text: "Solar capacity" }, pick("dim")];
+    };
+    return JSON.stringify({
+      scenes: Array.from({ length: count }, (_, i) => {
+        const [el, tk] = element(i);
+        return { seconds: seconds(i), beat: beat(i), elements: [el], tokens: tk, caption: `Part ${i + 1} of the narration about solar power.` };
+      }),
+    });
+  }
+  // Skill brief (recipe hermes-skill): a spec per shot for a spec skill, a text brief for a project skill.
+  if (stage === "skill-brief") {
+    fakeStats.skillBriefAsks++;
+    const { count, beat, seconds } = planNumbers(first);
+    const spec = first.includes("spec is the skill's JSON spec");
+    return JSON.stringify({
+      shots: Array.from({ length: count }, (_, i) => ({
+        beat: beat(i),
+        seconds: seconds(i),
+        description: `Shot ${i + 1}: the line climbs a little more`,
+        ...(spec ? { spec: { label: "Savings", values: [100, 110 + i, 121 + i], final: 121 + i, prefix: "$", e2eBrief: `brief-shot-${i + 1}` } } : {}),
+      })),
+      ...(spec ? {} : { text: "E2E project brief: voiceover from the script, one setup per shot." }),
+    });
+  }
   if (stage === "providers") {
     return JSON.stringify({ providers: ["cloudflare", "agnes", "canva", "qwen", "minimax", "sensenova"].map((name) => ({ name, note: "fake" })) });
   }
@@ -237,6 +314,9 @@ function directorReply(messages) {
     const shot = /for shot ([\w-]+)/.exec(first)?.[1] ?? "test";
     const seed = Number(/(\d+)$/.exec(shot)?.[1] ?? 0);
     const asks = (fakeStats.imageAsks[shot] = (fakeStats.imageAsks[shot] ?? 0) + 1);
+    // Which run asked: the storyboard put its brief in every image description. A run without a storyboard never asks.
+    const askedFor = /\[brief: ([^\]]*)\]/.exec(first)?.[1] ?? "(untagged)";
+    fakeStats.imageAsksByBrief[askedFor] = (fakeStats.imageAsksByBrief[askedFor] ?? 0) + 1;
     if (/For this shot use agnes first/.test(first)) fakeStats.shotPreferenceAsks++;
     if (/For this shot use midjourney/.test(first)) fakeStats.droppedPreferenceAsks++;
     const ok = (image, source = "canva") => JSON.stringify({ status: "ok", provider: "9router", source, model: "fake-flux", image });
@@ -321,7 +401,7 @@ function fakeClipBytes() {
   return fakeClip;
 }
 
-const fakeStats = { hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
+const fakeStats = { hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [] };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -979,14 +1059,19 @@ try {
   await page.getByTestId("run-settings").locator("summary").click();
   await page.getByTestId("run-settings").locator("dl").waitFor();
   const settingsText = await page.getByTestId("run-settings").innerText();
-  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF, "explainer-flat-vector 1.0.0, Trial: research only, not for publishing"]) {
+  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF, "explainer-flat-vector 1.0.1, Trial: research only, not for publishing"]) {
     if (!settingsText.includes(want)) throw new Error(`the run settings miss "${want}": ${settingsText.replace(/\s+/g, " ")}`);
   }
   // A run started with a Trial pack carries the badge, and its config records the pack (additive).
   await page.getByTestId("trial-badge").getByText("Trial style: research only, not for publishing", { exact: true }).waitFor();
   const startedId = startedHref.split("/").pop();
   const storedPack = dbValue(`SELECT config->'stylePack'->>'id' || '@' || (config->'stylePack'->>'version') || ':' || (config->'stylePack'->>'trial') FROM pipeline_runs WHERE id = '${startedId}'`);
-  if (storedPack !== null && storedPack !== "explainer-flat-vector@1.0.0:true") throw new Error(`the run config does not mark the trial pack: ${storedPack}`);
+  if (storedPack !== null && storedPack !== "explainer-flat-vector@1.0.1:true") throw new Error(`the run config does not mark the trial pack: ${storedPack}`);
+  // The run's stage list is fixed at start (config.workflow, additive): an image-sequence run keeps the original eight.
+  const storedFlow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text FROM pipeline_runs WHERE id = '${startedId}'`);
+  if (storedFlow !== null && storedFlow !== 'image-sequence ["idea", "research", "script", "storyboard", "assets", "voice", "render", "qc"]') throw new Error(`the image-sequence run stored the workflow "${storedFlow}"`);
+  if (!settingsText.includes("Image sequence: Idea → Research → Script → Storyboard → Assets → Voice → Video → Quality check")) throw new Error(`the run settings do not name the workflow: ${settingsText.replace(/\s+/g, " ")}`);
+  await page.locator('[data-testid="run-workflow"][data-recipe="image-sequence"]').getByTestId("workflow-step-assets").waitFor();
   await page.goto(`${APP}/studio`);
   await page.getByTestId("studio-runs").getByRole("link").filter({ hasText: "Myth Stories" }).first().waitFor();
 
@@ -1406,7 +1491,7 @@ try {
   {
     const prodRunId = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
     const cap = dbValue(`SELECT capability FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${prodRunId}' ORDER BY created_at DESC LIMIT 1`);
-    if (cap !== null && cap !== "pack:explainer-flat-vector@1.0.0") throw new Error(`the render job is queued under ${cap}, not the pack capability`);
+    if (cap !== null && cap !== "pack:explainer-flat-vector@1.0.1") throw new Error(`the render job is queued under ${cap}, not the pack capability`);
     // The decision is saved by a server action; the log row follows it.
     let outcome = null;
     for (let i = 0; i < 20; i++) {
@@ -1417,17 +1502,17 @@ try {
       await m.waitForTimeout(1000);
     }
     if (outcome === null) console.log("   no database access (UI_DB unset): the curation log check is skipped");
-    else if (!/^explainer-flat-vector@1\.0\.0 (true|false) (approved|rejected) true$/.test(outcome)) {
+    else if (!/^explainer-flat-vector@1\.0\.1 (true|false) (approved|rejected) true$/.test(outcome)) {
       await dumpPipeline(m, productionRunHref, "the trial outcome was not recorded");
       throw new Error(`the trial outcome is "${outcome}", expected the pack version, the QC result, the owner's decision and the video`);
     }
     await page.goto(`${APP}/studio/styles`);
     const explainerCard = page.getByTestId("style-pack-explainer-flat-vector");
     await explainerCard.getByText("Trial", { exact: true }).first().waitFor();
-    await explainerCard.getByTestId("pack-availability").getByText("A worker reports pack:explainer-flat-vector@1.0.0", { exact: true }).waitFor();
+    await explainerCard.getByTestId("pack-availability").getByText("A worker reports pack:explainer-flat-vector@1.0.1", { exact: true }).waitFor();
     if (outcome !== null) {
       // Counted with the owner's score: 80 from 5, 4, 4, 4, 4 stars.
-      await explainerCard.getByTestId("trial-record").getByText(/^Trial runs of v1\.0\.0: 1 .*mean presentation 80 \(1 scored\)/).waitFor();
+      await explainerCard.getByTestId("trial-record").getByText(/^Trial runs of v1\.0\.1: 1 .*mean presentation 80 \(1 scored\)/).waitFor();
       const scored = dbValue(`SELECT presentation_score::text || ' ' || coalesce(presentation_by, 'none') || ' ' || coalesce(owner_rubric->>'hook', '?') || ' ' || coalesce(renderer, '?') FROM style_trial_outcomes WHERE run_id = '${prodRunId}'`);
       if (scored !== "80 owner 5 remotion-2d") throw new Error(`the curation log has "${scored}", expected the owner's 80 with its rubric and the remotion-2d renderer`);
       await explainerCard.getByTestId("promotion-issues").getByText("Needs at least 5 trial runs (has 1)", { exact: true }).waitFor();
@@ -1449,7 +1534,7 @@ try {
           SELECT channel_id, 'tpl-hermes-research-explainer', (SELECT current_version FROM templates WHERE id = 'tpl-hermes-research-explainer'),
                  topic || ' (Hermes render)', autonomy_level,
                  jsonb_set(jsonb_set(config, '{styleId}', '"hermes-research-explainer"'), '{stylePack}',
-                   '{"id":"hermes-research-explainer","version":"0.1.1","status":"trial","trial":true,"engine":"hermes"}'), 'running'
+                   '{"id":"hermes-research-explainer","version":"0.2.0","status":"trial","trial":true,"engine":"hermes"}'), 'running'
           FROM pipeline_runs WHERE id = '${prodRunId}' RETURNING id`)
       : null;
     if (!hermesRunId) console.log("   no database access (UI_DB unset): the Hermes render run is skipped");
@@ -1525,7 +1610,7 @@ try {
         if (logged && / (approved|rejected) /.test(logged)) break;
         await m.waitForTimeout(1000);
       }
-      if (!/^hermes-research-explainer@0\.1\.1 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
+      if (!/^hermes-research-explainer@0\.2\.0 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
         await dumpPipeline(m, hermesHref, "the Hermes render's trial outcome was not recorded");
         throw new Error(`the Hermes render's curation entry is "${logged}"`);
       }
@@ -1534,7 +1619,7 @@ try {
       await page.goto(`${APP}/studio/styles`);
       const hermesPack = page.getByTestId("style-pack-hermes-research-explainer");
       await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
-      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.1: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
+      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
       await shot("15c-styles-hermes-desktop");
     }
   }
@@ -1570,7 +1655,9 @@ try {
     } catch (err) {
       console.log(`   the pictures were not copied for ${why} (${String(err).slice(0, 200)})`);
     }
-    dbExec(`UPDATE pipeline_runs SET state = 'running', topic = (SELECT topic FROM pipeline_runs WHERE id = '${prodRunIdForTrials}') || ' (${why})' WHERE id = '${runId}'`);
+    // The copied stages are the production's image-sequence list, so the reused run reads as a run from before
+    // workflows (no config.workflow: RUN_STAGES). Runs that follow their own workflow are driven for real below.
+    dbExec(`UPDATE pipeline_runs SET state = 'running', config = config - 'workflow', topic = (SELECT topic FROM pipeline_runs WHERE id = '${prodRunIdForTrials}') || ' (${why})' WHERE id = '${runId}'`);
     dbExec(`INSERT INTO pipeline_stages (run_id, stage, state, attempt) VALUES ('${runId}', 'render', 'pending', 1)`);
   }
   const cardOf = (runId, stage) => m.locator(`[data-testid="review-card"][data-stage="${stage}"]`).filter({ has: m.locator(`a[href="/studio/runs/${runId}"]`) });
@@ -1690,8 +1777,8 @@ try {
       await page.goto(`${APP}/studio/styles`);
       await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
       const research = page.getByTestId("style-group-research");
-      await research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.0: 1 .*mean presentation 75 \(1 scored\) · owner (approved 1, rejected 0|approved 0, rejected 1)$/).waitFor();
-      await research.getByTestId("style-pack-hermes-dan-koe").getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
+      await research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 75 \(1 scored\) · owner (approved 1, rejected 0|approved 0, rejected 1)$/).waitFor();
+      await research.getByTestId("style-pack-hermes-dan-koe").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
       await research.getByTestId("style-pack-hermes-graph").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
       await shot("29c-styles-research-scored-desktop");
       // Nothing from these runs is publishable: research only, never an upload or publish step.
@@ -1719,7 +1806,7 @@ try {
     await shot("30-styles-lab-trial-desktop");
     await tryIt.click();
     await page.waitForURL(/\/studio\/new\?lab=probe-line-graph$/);
-    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Probe: line graph \(html-capture\) 0\.1\.0 is lab\./).waitFor();
+    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Probe: line graph \(html-capture\) 0\.1\.1 is lab\./).waitFor();
     if ((await page.locator("#templateId").inputValue()) !== "tpl-probe-line-graph") throw new Error("New Video is not pre-filled with the lab pack");
     await page.getByTestId("lab-trial-note").waitFor();
     await page.selectOption("#channelId", { label: "Myth Stories" });
@@ -1737,12 +1824,12 @@ try {
       await reuseProduction(labRunId, "lab trial");
       await driveToQc([labRunId], "lab trial");
       const cap = dbValue(`SELECT capability FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${labRunId}' ORDER BY created_at DESC LIMIT 1`);
-      if (cap !== "pack:probe-line-graph@0.1.0") throw new Error(`the lab trial's render is queued under ${cap}, not the pack capability`);
+      if (cap !== "pack:probe-line-graph@0.1.1") throw new Error(`the lab trial's render is queued under ${cap}, not the pack capability`);
       const card = cardOf(labRunId, "qc").first();
       await card.getByTestId("lab-trial-badge").getByText("Lab trial (draft pack)", { exact: true }).waitFor();
       await scoreAndDecide(labRunId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
       const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || lab_trial::text || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${labRunId}'`);
-      if (!/^probe-line-graph@0\.1\.0 true html-capture \d+$/.test(logged ?? "")) throw new Error(`the lab trial's curation row is "${logged}"`);
+      if (!/^probe-line-graph@0\.1\.1 true html-capture \d+$/.test(logged ?? "")) throw new Error(`the lab trial's curation row is "${logged}"`);
       await page.goto(`${APP}/studio/styles`);
       const probe = page.getByTestId("style-pack-probe-line-graph");
       await probe.getByTestId("lab-trial-record").getByText(/^Lab trial \(draft pack\) runs: 1 · mean presentation \d+ \(1 scored\)/).waitFor();
@@ -1755,6 +1842,162 @@ try {
     await m.getByTestId("style-group-research").waitFor();
     await assertNoOverflow(m, "/studio/styles (research and lab)");
     await shot("30c-styles-mobile", m);
+  }
+
+  // Workflows (docs/style-packs.md, "Workflows"): runs that follow their pack's own stage list, driven for real from New
+  // Video (nothing copied from the production). Every database read below is scoped to the run under test.
+  /** Moves one run through Review until its quality-check card shows: picks the first idea, approves each stage card. */
+  async function driveWorkflow(runId, label, onApproval) {
+    const runCards = () => m.locator('[data-testid="review-card"]').filter({ has: m.locator(`a[href="/studio/runs/${runId}"]`) });
+    const seen = new Set();
+    for (let i = 0; i < 60; i++) {
+      await m.goto(`${APP}/review`);
+      if (await cardOf(runId, "qc").first().isVisible().catch(() => false)) return seen;
+      const broken = runCards().and(m.locator('[data-kind="stage-error"], [data-kind="gate-failure"]'));
+      if (await broken.first().isVisible().catch(() => false)) {
+        await dumpPipeline(m, `/studio/runs/${runId}`, `${label}: a stage did not pass`);
+        throw new Error(`${label}: ${((await broken.first().innerText()) || "").replace(/\s+/g, " ").slice(0, 600)}`);
+      }
+      const idea = runCards().and(m.locator('[data-kind="idea"]'));
+      if (await idea.first().isVisible().catch(() => false)) {
+        await idea.first().getByRole("button", { name: "Approve this idea", exact: true }).first().click();
+        await m.waitForLoadState("networkidle");
+        continue;
+      }
+      const approval = runCards().and(m.locator('[data-kind="approval"]'));
+      if (await approval.first().isVisible().catch(() => false)) {
+        const card = approval.first();
+        const stage = (await card.getAttribute("data-stage")) ?? "";
+        seen.add(stage);
+        if (onApproval) await onApproval(stage, card);
+        await card.getByRole("button", { name: "Approve", exact: true }).click();
+        await m.waitForLoadState("networkidle");
+        continue;
+      }
+      runWorker([`${OUT}/worker/run.sh`, "tick"]);
+      await m.waitForTimeout(2000);
+    }
+    await dumpPipeline(m, `/studio/runs/${runId}`, `${label}: the quality check never reached Review`);
+    throw new Error(`${label}: the quality check never reached Review`);
+  }
+  /** Starts a run of a style from New Video with its own brief; returns the run id. */
+  async function startFromNewVideo(templateId, brief, workflowLine) {
+    await page.goto(`${APP}/studio/new`);
+    await page.selectOption("#channelId", { label: "Myth Stories" });
+    await page.fill("#brief", brief);
+    await page.selectOption("#templateId", templateId);
+    await page.getByTestId("workflow-info").getByText(workflowLine, { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Ask Hermes for ideas", exact: true }).click();
+    const href = await page.getByTestId("run-started-link").getAttribute("href");
+    const id = /([0-9a-f-]{36})$/.exec(href ?? "")?.[1];
+    if (!id) throw new Error(`no link to the ${templateId} run: ${href}`);
+    return id;
+  }
+  const imageAskTotal = () => Object.values(fakeStats.imageAsks).reduce((n, v) => n + v, 0) + fakeStats.routerImageCalls;
+
+  step("scene-spec trial: animated-line-graph from New Video goes idea → research → script → scene spec → voice → html-capture render → qc, with no picture made");
+  if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the scene-spec run is skipped");
+  else {
+    const brief = "Scene spec trial: how solar capacity grew";
+    const imagesBefore = imageAskTotal();
+    const specAsksBefore = fakeStats.sceneSpecAsks;
+    const dataAsksBefore = fakeStats.researchDataAsks;
+    const runId = await startFromNewVideo("tpl-animated-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Voice → Video → Quality check");
+    const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text FROM pipeline_runs WHERE id = '${runId}'`);
+    if (flow !== 'scene-spec ["idea", "research", "script", "scene-spec", "voice", "render", "qc"] ["scene-spec"]') throw new Error(`the scene-spec run stored the workflow "${flow}"`);
+    let specCard = false;
+    const seen = await driveWorkflow(runId, "scene-spec trial", async (stage, card) => {
+      if (stage !== "scene-spec") return;
+      specCard = true;
+      // The spec as text: one line per scene, the numbers with the note they come from; no image grid on this card.
+      await card.getByTestId("scene-spec-card").waitFor();
+      const lines = await card.getByTestId("scene-spec-list").getByTestId("plan-line").allInnerTexts();
+      if (lines.length < 3) throw new Error(`the scene-spec card lists ${lines.length} scene(s)`);
+      if (!lines.some((l) => /bar "GW" 2010: 40, 2014: 140, 2019: 500, 2023: 1200 \(note 1\)/.test(l))) throw new Error(`the scene-spec card does not show the sourced series: ${lines.join(" | ")}`);
+      await card.getByTestId("plan-note").getByText(/^No still preview before the render: the worker has no stills mode for html-capture pages yet/).waitFor();
+      if (await card.getByTestId("asset-grid").count()) throw new Error("the scene-spec card shows an image grid");
+      await card.getByText("This style's workflow has the owner check the scene spec every time", { exact: true }).or(card.getByText(/^Manual mode/)).first().waitFor();
+      await shot("31-review-scene-spec-mobile", m);
+    });
+    if (!specCard) throw new Error(`the scene spec never asked the owner (cards seen: ${[...seen].join(", ")}), though the pack's workflow reviews it every time`);
+    if (fakeStats.researchDataAsks <= dataAsksBefore) throw new Error("the scene-spec run's research did not ask for the numbers the spec needs");
+    if (fakeStats.sceneSpecAsks <= specAsksBefore) throw new Error("Hermes was never asked for the scene spec");
+    if (!/On-screen elements this style allows: heading, counter, bar\./.test(lastPrompt["scene-spec"] ?? "")) throw new Error("the scene-spec prompt does not carry the pack's elements");
+    // Zero image work: no work order, no storyboard, no image ask to the fake Hermes (or to 9router) for this run.
+    const orders = dbValue(`SELECT count(*) FROM work_orders WHERE run_id = '${runId}'`);
+    if (orders !== "0") throw new Error(`the scene-spec run has ${orders} work order(s)`);
+    const stagesMade = dbValue(`SELECT coalesce(string_agg(DISTINCT stage, ',' ORDER BY stage), '') FROM pipeline_stages WHERE run_id = '${runId}'`);
+    if (/storyboard|assets/.test(stagesMade ?? "")) throw new Error(`the scene-spec run made stages ${stagesMade}`);
+    const tag = brief.slice(0, 60);
+    if (fakeStats.imageAsksByBrief[tag] || fakeStats.storyboardAsksByBrief[tag]) throw new Error(`the scene-spec run asked Hermes for ${fakeStats.imageAsksByBrief[tag] ?? 0} image(s) and ${fakeStats.storyboardAsksByBrief[tag] ?? 0} storyboard(s)`);
+    if (imageAskTotal() !== imagesBefore) throw new Error(`images were asked for while the scene-spec run ran (${imagesBefore} -> ${imageAskTotal()})`);
+    // The real html-capture render through the CI worker, from the spec: the pack's page, the sourced series, one plate.
+    const job = dbValue(`SELECT capability || ' ' || (payload->>'engine') || ' ' || (payload->'scenePlan'->>'template') || ' ' || (payload->'scenePlan'->'scenes'->1->'elements'->0->'series')::text FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}' ORDER BY created_at DESC LIMIT 1`);
+    if (job !== "pack:animated-line-graph@0.1.2 html-capture animated-line-graph [40, 140, 500, 1200]") throw new Error(`the scene-spec render job is "${job}"`);
+    const plates = dbValue(`SELECT count(DISTINCT s->>'assetId') || ' ' || (SELECT count(*) FROM assets WHERE metadata->>'runId' = '${runId}' AND metadata->>'executor' = 'portal-plate' AND source = 'generated')
+      FROM jobs j, jsonb_array_elements(j.payload->'shots') s WHERE j.type = 'render-video' AND j.payload->>'runId' = '${runId}'`);
+    if (plates !== "1 1") throw new Error(`the scene-spec render should use one portal plate for every shot: "${plates}"`);
+    const rendered = dbValue(`SELECT output->'result'->>'renderer' FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'render' AND state = 'passed' ORDER BY attempt DESC LIMIT 1`);
+    if (rendered !== "html-capture") throw new Error(`the scene-spec video was rendered by "${rendered}"`);
+    const card = cardOf(runId, "qc").first();
+    await card.getByTestId("render-video").waitFor();
+    await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
+    await scoreAndDecide(runId, { hook: 4, pacing: 4, legibility: 4, polish: 4, audio: 4 }, "75/100 by the owner");
+    const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
+    if (logged !== "animated-line-graph@0.1.2 html-capture 75") throw new Error(`the scene-spec trial's curation row is "${logged}"`);
+    // The run page shows the run's own list, and no work orders.
+    await page.goto(`${APP}/studio/runs/${runId}`);
+    const wf = page.locator('[data-testid="run-workflow"][data-recipe="scene-spec"]');
+    await wf.locator('[data-testid="workflow-step-scene-spec"][data-state="passed"]').waitFor();
+    if (await wf.getByTestId("workflow-step-assets").count()) throw new Error("the scene-spec run page lists an assets step");
+    await page.getByTestId("no-work-orders").getByText("This workflow makes no pictures, so it has no work orders.", { exact: true }).waitFor();
+    if (await page.getByTestId("stage-storyboard").count()) throw new Error("the scene-spec run page shows a storyboard stage");
+    await shot("31b-run-scene-spec-desktop");
+    console.log(`   scene-spec: ${[...seen].join(", ")} approved; 0 work orders, 0 image asks; rendered by html-capture from the spec`);
+  }
+
+  step("hermes-skill research run: /graph from New Video goes idea → research → script → skill brief → voice → Hermes render → qc; no assets stage, no image asks, the brief reaches Hermes");
+  if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the hermes-skill run is skipped");
+  else {
+    const brief = "Skill brief trial: money that compounds";
+    const imagesBefore = imageAskTotal();
+    const rendersBefore = fakeStats.renderRequests.length;
+    const runId = await startFromNewVideo("tpl-hermes-graph", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
+    const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text FROM pipeline_runs WHERE id = '${runId}'`);
+    if (flow !== 'hermes-skill ["idea", "research", "script", "skill-brief", "voice", "render", "qc"]') throw new Error(`the hermes-skill run stored the workflow "${flow}"`);
+    const seen = await driveWorkflow(runId, "hermes-skill run", async (stage, card) => {
+      if (stage !== "skill-brief") return;
+      await card.getByTestId("skill-brief-card").waitFor();
+      const lines = await card.getByTestId("skill-brief-list").getByTestId("plan-line").allInnerTexts();
+      if (lines.length < 3 || !lines.every((l) => / Spec: \{"label":"Savings"/.test(l))) throw new Error(`the skill brief card does not list a spec per shot: ${lines.join(" | ")}`);
+      await card.getByTestId("plan-note").getByText(/^For \/graph, one spec per shot; the run's narration is the audio\./).waitFor();
+      if (await card.getByTestId("asset-grid").count()) throw new Error("the skill brief card shows an image grid");
+    });
+    const asked = fakeStats.renderRequests.slice(rendersBefore);
+    if (asked.length !== 1 || asked[0].skill !== "/graph" || asked[0].briefShots < 3 || !asked[0].briefMarker || asked[0].pictures !== 0 || !asked[0].noPictureLine) {
+      throw new Error(`the Hermes render of the hermes-skill run did not carry its brief: ${JSON.stringify(asked)}`);
+    }
+    const stagesMade = dbValue(`SELECT coalesce(string_agg(DISTINCT stage, ',' ORDER BY stage), '') FROM pipeline_stages WHERE run_id = '${runId}'`);
+    if (/storyboard|assets/.test(stagesMade ?? "") || !/skill-brief/.test(stagesMade ?? "")) throw new Error(`the hermes-skill run made stages ${stagesMade}`);
+    const orders = dbValue(`SELECT count(*) FROM work_orders WHERE run_id = '${runId}'`);
+    if (orders !== "0") throw new Error(`the hermes-skill run has ${orders} work order(s)`);
+    const tag = brief.slice(0, 60);
+    if (fakeStats.imageAsksByBrief[tag] || fakeStats.storyboardAsksByBrief[tag]) throw new Error(`the hermes-skill run asked for ${fakeStats.imageAsksByBrief[tag] ?? 0} image(s) and ${fakeStats.storyboardAsksByBrief[tag] ?? 0} storyboard(s)`);
+    if (imageAskTotal() !== imagesBefore) throw new Error(`images were asked for while the hermes-skill run ran (${imagesBefore} -> ${imageAskTotal()})`);
+    const jobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}'`);
+    if (jobs !== "0") throw new Error(`a research render queued ${jobs} worker render job(s)`);
+    const prov = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'hermesSkill', 'no-skill') || ' ' || a.license FROM assets a
+      WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'render' AND state = 'passed' ORDER BY attempt DESC LIMIT 1)`);
+    if (!/^hermes-render \/graph .*from this run's skill brief and narration\. Research only/.test(prov ?? "")) throw new Error(`the hermes-skill render's provenance is "${prov}"`);
+    const card = cardOf(runId, "qc").first();
+    await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
+    await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
+    const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
+    if (logged !== "hermes-graph@0.2.0 hermes") throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
+    await page.goto(`${APP}/studio/runs/${runId}`);
+    await page.locator('[data-testid="run-workflow"][data-recipe="hermes-skill"]').locator('[data-testid="workflow-step-skill-brief"][data-state="passed"]').waitFor();
+    if (await page.getByTestId("stage-assets").count()) throw new Error("the hermes-skill run page shows an assets stage");
+    console.log(`   hermes-skill: ${[...seen].join(", ")} approved; the brief (${asked[0].briefShots} shots) reached Hermes; 0 image asks`);
   }
 
   step("production: the render mixed the tagged music track as its bed, never the narration");
@@ -1967,7 +2210,7 @@ try {
     if (linked !== null && linked !== "true explainer-flat-vector") throw new Error(`the study's trial run is "${linked}"`);
     await page.goto(`${APP}${studyHref}`);
     const trialRow = page.getByTestId("lab-trial");
-    await trialRow.getByRole("link", { name: "Trial run with explainer-flat-vector 1.0.0", exact: true }).waitFor();
+    await trialRow.getByRole("link", { name: "Trial run with explainer-flat-vector 1.0.1", exact: true }).waitFor();
     await trialRow.getByTestId("trial-outcome").getByText(/^QC: not run yet · presentation not scored · decision none yet/).waitFor();
 
     // 390 px.
