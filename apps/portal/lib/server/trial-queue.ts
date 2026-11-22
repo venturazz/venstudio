@@ -5,7 +5,7 @@ import { env } from "./env.ts";
 import { ensureSeedTemplates, listTemplates } from "./templates.ts";
 import { reportedCapabilities } from "./workers.ts";
 import { styleRegistry } from "./style-packs.ts";
-import { isResearchEngine, newVideoStyles, researchGroupOf, researchSourceOf, type RegistryEntry } from "../studio/style-registry.ts";
+import { isDesignedPack, isResearchEngine, newVideoStyles, researchGroupOf, researchSourceOf, type RegistryEntry } from "../studio/style-registry.ts";
 import { parseTrialBatch, queueLines, type OfferedTemplate, type QueueLine, type QueueRun } from "../studio/trial-batch.ts";
 import type { Template } from "../studio/templates.ts";
 
@@ -28,6 +28,7 @@ export function offeredTemplate(e: RegistryEntry, templates: readonly Template[]
   const t = templates.find((x) => x.styleId === e.id && x.status !== "retired");
   if (!t || !e.pack) return null;
   const research = isResearchEngine(e.pack.engine);
+  const designed = isDesignedPack(e.pack);
   const source = researchSourceOf(e.pack);
   const group = researchGroupOf(e.pack);
   const flow = workflowForPack(e.pack);
@@ -41,9 +42,10 @@ export function offeredTemplate(e: RegistryEntry, templates: readonly Template[]
     engine: e.pack.engine,
     description: e.pack.description,
     ...(research ? { research: true } : {}),
+    ...(designed ? { designed: true } : {}),
     ...(group ? { group } : {}),
     ...(research && e.pack.hermes ? { skill: e.pack.hermes.skill } : {}),
-    ...(source && e.pack.provenance.some((p) => p.type === "skill" || p.type === "repo") ? { credit: creditOf(e) } : {}),
+    ...(source && !designed && e.pack.provenance.some((p) => p.type === "skill" || p.type === "repo") ? { credit: creditOf(e) } : {}),
     ...(flow.ok ? { workflow: workflowText(flow.workflow) } : {}),
   };
 }

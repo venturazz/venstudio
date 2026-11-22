@@ -467,7 +467,7 @@ export interface DirectorContext {
    * The run's workflow when it is not the original image sequence (recipes.ts). A scene-spec run's research asks for
    * the numbers its spec will draw, with sources. Absent for image-sequence runs, whose prompts stay as they were.
    */
-  recipe?: "scene-spec" | "hermes-skill";
+  recipe?: "scene-spec" | "hermes-skill" | "html-design";
 }
 
 /** Research lines for a scene-spec run: the page draws real numbers, so research must find them, with sources. */

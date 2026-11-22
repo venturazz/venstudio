@@ -49,6 +49,11 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
     label: "Render the video",
     description: "Builds the finished video from the shot images, the narration and captions, and sets the loudness.",
   },
+  "preview-frames": {
+    capability: "preview-frames",
+    label: "Still frames of a page",
+    description: "Takes a few still frames of an html-capture page with a run's props, before the voice and the render, so the owner can check the look. Worker 0.11.0 or later.",
+  },
   "fetch-asset": {
     capability: "echo",
     label: "Fetch a public-domain file",

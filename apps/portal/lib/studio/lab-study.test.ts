@@ -356,17 +356,26 @@ test("the draft recommends a workflow: a known recipe that fits the renderer, ex
   assert.deepEqual(style.workflow, { recipe: "scene-spec" });
   assert.deepEqual(V.validateStyle(style, { dirName: "calm-growth-graph" }), []);
   assert.deepEqual([ex.workflow.recipe, ex.workflow.implemented], ["scene-spec", true]);
-  assert.match(ex.files["packs/calm-growth-graph/README.md"], /\| Workflow \| `scene-spec`: Scene spec \(data-driven, no pictures\): Idea → Research → Script → Scene spec → Voice → Video → Quality check \|/);
+  assert.match(ex.files["packs/calm-growth-graph/README.md"], /\| Workflow \| `scene-spec`: Scene spec \(data-driven, no pictures\): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check \|/);
+  // html-design is built (research only): the draft exports it with the owner's review points and a design brief, valid.
+  const designed = draft({ workflow: "html-design" });
+  assert.equal(designed.workflow, "html-design");
+  const dx = draftExport({ id: "s", title: "t" }, designed, one, rendererVerdict("html-capture", ["html-capture"]));
+  const ds = JSON.parse(dx.files["packs/calm-growth-graph/style.json"]);
+  assert.deepEqual(ds.workflow, { recipe: "html-design", review: ["html-design", "preview"] });
+  assert.equal(ds.renderer.minWorkerVersion, "0.11.0");
+  assert.ok(ds.design && ds.design.palette.length === 2 && ds.design.brief.length > 0);
+  assert.deepEqual(V.validateStyle(ds, { dirName: "calm-growth-graph" }), []);
+  assert.equal(dx.workflow.implemented, true);
   // A recipe that is not built yet is kept and said plainly; style.json leaves it out so the validator accepts the draft.
-  const reserved = draft({ workflow: "html-design" });
-  assert.equal(reserved.workflow, "html-design");
-  const rx = draftExport({ id: "s", title: "t" }, reserved, one, rendererVerdict("html-capture", ["html-capture"]));
+  const reserved = draft({ renderer: "godot-2d", workflow: "engine-project" });
+  assert.equal(reserved.workflow, "engine-project");
+  const rx = draftExport({ id: "s", title: "t" }, reserved, one, rendererVerdict("godot-2d", []));
   const rs = JSON.parse(rx.files["packs/calm-growth-graph/style.json"]);
   assert.equal(rs.workflow, undefined);
-  assert.deepEqual(V.validateStyle(rs, { dirName: "calm-growth-graph" }), []);
   assert.equal(rx.workflow.implemented, false);
-  assert.match(rx.workflow.text, /^needs a workflow that isn't built yet: html-design/);
-  assert.match(rx.files["packs/calm-growth-graph/README.md"], /needs a workflow that isn't built yet: html-design .*style\.json leaves `workflow` out until it is built, so runs would follow scene-spec/);
+  assert.match(rx.workflow.text, /^needs a workflow that isn't built yet: engine-project/);
+  assert.match(rx.files["packs/calm-growth-graph/README.md"], /needs a workflow that isn't built yet: engine-project .*style\.json leaves `workflow` out until it is built/);
   // Unknown or misfitting recipes are fed back to Hermes.
   const unknown = parseDraftSpec(hermesDraft({ workflow: "slideshow" }), { packIds: PACK_IDS });
   assert.ok(!unknown.ok && unknown.issues.some((i) => /^workflow must be one of the recipes VenStudio knows: image-sequence, scene-spec, hermes-skill, html-design, engine-project, clip-sequence/.test(i)));
@@ -375,10 +384,12 @@ test("the draft recommends a workflow: a known recipe that fits the renderer, ex
   const hermesFit = parseDraftSpec(hermesDraft({ renderer: "remotion-2d", workflow: "hermes-skill" }), { packIds: PACK_IDS });
   assert.ok(!hermesFit.ok && hermesFit.issues.some((i) => /hermes-skill needs the hermes renderer/.test(i)));
   // A stored draft keeps its workflow through readDraft.
-  assert.equal(readDraft(JSON.parse(JSON.stringify(reserved)), PACK_IDS)?.workflow, "html-design");
+  assert.equal(readDraft(JSON.parse(JSON.stringify(designed)), PACK_IDS)?.workflow, "html-design");
   // The synthesis prompt lists every recipe and says which are not built.
   const [m] = synthesisMessages({ study: { title: "t", goal: "new", basePack: null, notes: "" }, sources: [], engines: [], packs: [], measured: null });
-  assert.match(m.content, /- html-design: Reserved, not built: .* \(not built yet\)/);
+  assert.match(m.content, /- html-design: Research only \(owner decision\): Hermes writes the HTML page/);
+  assert.ok(!/- html-design:[^\n]*\(not built yet\)/.test(m.content));
+  assert.match(m.content, /- engine-project: Reserved, not built: .* \(not built yet\)/);
   assert.match(m.content, /- scene-spec: Data-driven/);
   assert.match(m.content, /"workflow":""/);
 });

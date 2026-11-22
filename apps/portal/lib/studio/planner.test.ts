@@ -14,7 +14,7 @@ test("catalog is internally consistent", () => {
     assert.ok(s.shotSeconds[0] > 0 && s.shotSeconds[0] <= s.shotSeconds[1], `${s.id} has a sane shot length`);
     assert.ok(FAMILY_LABELS[s.family], `${s.id} has a family label`);
     for (const t of s.themes) assert.ok(THEMES.some((th) => th.id === t), `${s.id} references known theme ${t}`);
-    for (const k of s.assetKinds) assert.ok(ASSET_KINDS.includes(k), `${s.id} uses a known asset kind`);
+    for (const k of s.assetKinds) assert.ok((ASSET_KINDS as readonly string[]).includes(k), `${s.id} uses a known asset kind`);
   }
   for (const e of Object.values(ENGINES)) assert.ok(["light", "medium", "heavy"].includes(e.tier));
   assert.ok(ASSET_SOURCES.length >= 5);

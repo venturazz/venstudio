@@ -52,6 +52,8 @@ export interface HtmlPackSource {
   id: string;
   version: string;
   drawsCaptions: boolean;
+  /** An html-design pack (worker 0.11.0+): a run's page comes with the job, never this pack's reference page. */
+  designed?: boolean;
   files: ReadonlyArray<{ path: string; content: string }>;
 }
 
@@ -73,8 +75,9 @@ export function renderDigest(files: ReadonlyArray<{ path: string; content: strin
 }
 
 /** html/packs.json: the html-capture packs a worker may serve pages from. Same text as the styles repo's assembler. */
-export function htmlPackListJson(packs: ReadonlyArray<Pick<HtmlPackSource, "id" | "version" | "drawsCaptions"> & { sha256: string }>): string {
-  return `${JSON.stringify(byId(packs).map((p) => ({ id: p.id, version: p.version, drawsCaptions: p.drawsCaptions === true, sha256: p.sha256 })), null, 2)}\n`;
+export function htmlPackListJson(packs: ReadonlyArray<Pick<HtmlPackSource, "id" | "version" | "drawsCaptions" | "designed"> & { sha256: string }>): string {
+  // Same text as the styles repo's tools/assemble-remotion.mjs: `designed` only for an html-design pack.
+  return `${JSON.stringify(byId(packs).map((p) => ({ id: p.id, version: p.version, drawsCaptions: p.drawsCaptions === true, ...(p.designed ? { designed: true } : {}), sha256: p.sha256 })), null, 2)}\n`;
 }
 
 export interface ProjectBundle {

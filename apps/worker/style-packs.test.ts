@@ -99,7 +99,7 @@ test("what the worker reports is what the portal's New Video counts as available
   // for a worker with html-capture.
   const hermesIds = packs.filter((p) => p.engine === "hermes").map((p) => p.id);
   assert.equal(hermesIds.length, 11);
-  assert.deepEqual(offer.waiting.map((e) => e.id).sort(), [...hermesIds, "animated-line-graph", "minimal-line-art"].sort());
+  assert.deepEqual(offer.waiting.map((e) => e.id).sort(), [...hermesIds, "animated-line-graph", "minimal-line-art", "hermes-designed-explainer"].sort());
   assert.equal(newVideoStyles(mergeRegistry(STYLES, packs), caps, { hermes: true }).trial.length, 7 + 11);
   // The html-capture probe is reported once installed and probed, but it is Lab: never offered.
   const html = packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], "0.10.0", [{ id: "probe-line-graph", version: "0.1.1", drawsCaptions: false, sha256: "0".repeat(64) }]);
@@ -107,6 +107,17 @@ test("what the worker reports is what the portal's New Video counts as available
   assert.ok(!html.some((c) => c.startsWith("pack:hermes-research-explainer")), "no worker reports the hermes pack");
   const withProbe = newVideoStyles(mergeRegistry(STYLES, packs), [...caps, ...html]);
   assert.ok(![...withProbe.listed, ...withProbe.trial, ...withProbe.waiting].some((e) => e.id === "probe-line-graph"));
+  // The html-design pack needs worker 0.11.0 (an uploaded page under its CSP, preview-frames): a 0.10.0 worker with the
+  // pack installed never reports it, a 0.11.0 one does; it is then offered in the Trial section only.
+  const designed = idx.packs.find((p) => p.id === "hermes-designed-explainer");
+  assert.ok(designed);
+  const ref = [{ id: designed.id, version: designed.version, drawsCaptions: false, designed: true, sha256: "0".repeat(64) }];
+  const designedCaps = (version: string) => packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], version, ref).filter((c) => c.startsWith("pack:hermes-designed-explainer@"));
+  assert.deepEqual(designedCaps("0.10.0"), []);
+  const v11 = designedCaps("0.11.0");
+  assert.deepEqual(v11, [`pack:hermes-designed-explainer@${designed.version}`]);
+  const offered = newVideoStyles(mergeRegistry(STYLES, packs), [...caps, ...v11]);
+  assert.ok(offered.trial.some((e) => e.id === "hermes-designed-explainer") && !offered.listed.some((e) => e.id === "hermes-designed-explainer"));
 });
 
 test("probedPacksOf keeps only well-formed entries of the probe's output", () => {
@@ -122,10 +133,10 @@ test("installPacksIndex writes the index atomically, and nothing when it does no
   await assert.rejects(installPacksIndex(home, Buffer.from('{"format":2,"packs":[]}')), /unknown format/);
   assert.equal(await installedPacksSha(home), null, "a refused index is not written");
   const idx = await installPacksIndex(home, Buffer.from(served));
-  assert.equal(idx.packs.length, 21);
+  assert.equal(idx.packs.length, 22);
   assert.equal(await readFile(stylePacksPath(home), "utf8"), served);
   assert.equal(await installedPacksSha(home), sha(served));
-  assert.equal((await readInstalledPacks(home))?.packs.length, 21);
+  assert.equal((await readInstalledPacks(home))?.packs.length, 22);
   await writeFile(stylePacksPath(home), "not json");
   assert.equal(await readInstalledPacks(home), null, "a damaged file reports no packs");
 });

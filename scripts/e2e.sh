@@ -63,8 +63,12 @@ diff -r "$WORK/remotion-expected/html" "$WORK/remotion-unpacked/html" >/dev/null
 [ -f "$WORK/remotion-unpacked/html/probe-line-graph/index.html" ] || fail "the probe-line-graph page is not in the served bundle"
 HTML_LIST=$(cat "$WORK/remotion-unpacked/html/packs.json")
 grep -q '"id": "probe-line-graph"' <<<"$HTML_LIST" || fail "html/packs.json does not list probe-line-graph"
+# html-design (worker 0.11.0): the Hermes-designed pack travels with its reference page and vendored fonts, marked designed,
+# so a worker renders only a page uploaded with the job for it.
+node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const d=l.filter((p)=>p.designed===true).map((p)=>p.id).join(","); if(d!=="hermes-designed-explainer"){console.error("designed: "+d); process.exit(1)}' "$WORK/remotion-unpacked/html/packs.json" || fail "html/packs.json does not mark exactly hermes-designed-explainer as designed"
+[ -f "$WORK/remotion-unpacked/html/hermes-designed-explainer/fonts/fonts.css" ] || fail "the html-design pack's vendored fonts are not in the served bundle"
 curl -fsS "$APP_URL/install/style-packs.json" -o "$WORK/style-packs.json" || fail "style-packs.json not served"
-for P in explainer-flat-vector documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud probe-line-graph hermes-research-explainer; do
+for P in explainer-flat-vector documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud probe-line-graph hermes-research-explainer hermes-designed-explainer; do
   grep -q "\"id\": \"$P\"" "$WORK/style-packs.json" || fail "style-packs.json does not list $P"
 done
 grep -q "\"commit\": \"$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).source.commit)' "$ROOT/styles/lock.json")\"" "$WORK/style-packs.json" || fail "style-packs.json does not name the vendored styles commit"
@@ -116,6 +120,11 @@ for P in documentary-stills mystery-narration horror-story ambient-loop travel-d
   grep -qF "pack:$P@$PV" <<<"$CAPS" || fail "the worker does not report pack:$P@$PV (capabilities: $CAPS)"
 done
 if grep -qF "pack:explainer-flat-vector@" <<<"$CAPS"; then fail "a worker without Remotion reports the Remotion pack"; fi
+# preview-frames (0.11.0) needs html-capture's browser: a worker without the Remotion project never reports it, nor the html-design pack.
+if grep -qF "preview-frames" <<<"$CAPS"; then fail "a worker without html-capture reports preview-frames (capabilities: $CAPS)"; fi
+if grep -qF "pack:hermes-designed-explainer@" <<<"$CAPS"; then fail "a worker without html-capture reports the html-design pack"; fi
+# ...and does not even name the preview-frames job type in its claims, so it never takes a preview queued under a pack.
+[ "$(q "SELECT 'preview-frames' = ANY(job_types) FROM workers WHERE id = '$WORKER'")" = "f" ] || fail "a worker without the still probe names the preview-frames job type in its claims"
 # A render queued under a pack capability is claimed only by a worker reporting it.
 PACK_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','pack:explainer-flat-vector@$(pack_version explainer-flat-vector)') RETURNING id")
 "$WORK/worker/run.sh" tick || fail "tick with a pack job exited non-zero"
@@ -181,6 +190,27 @@ q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed) V
 [ "$(q "SELECT lab_trial::text FROM style_trial_outcomes WHERE run_id = '$LRUN'")" = "false" ] || fail "an outcome written without lab_trial is not a normal trial"
 q "UPDATE style_trial_outcomes SET lab_trial = true WHERE run_id = '$LRUN'" >/dev/null || fail "style_trial_outcomes refused lab_trial"
 q "DELETE FROM pipeline_runs WHERE id = '$LRUN'" >/dev/null
+
+echo "== migrations 0019 and 0020: workflow stage kinds (scene-spec, skill-brief, html-design, preview) and the html-page asset kind, additive only"
+SDEFS=$(q "SELECT conname || ': ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'pipeline_stages'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) ~* '\\mstage\\M' ORDER BY conname")
+[ "$(echo "$SDEFS" | grep -c .)" = "1" ] || fail "pipeline_stages must have exactly one CHECK on stage after 0020, found: $SDEFS"
+for k in idea research script storyboard scene-spec skill-brief html-design preview assets voice draft render qc approval upload claim-watch publish learn; do
+  echo "$SDEFS" | grep -q "'$k'" || fail "the stage CHECK after 0020 does not allow '$k': $SDEFS"
+done
+ADEFS=$(q "SELECT conname || ': ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'assets'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) ~* '\\mkind\\M' ORDER BY conname")
+[ "$(echo "$ADEFS" | grep -c .)" = "1" ] || fail "assets must have exactly one CHECK on kind after 0020, found: $ADEFS"
+for k in video reference-video image audio font sprite-sheet model-3d script other html-page; do
+  echo "$ADEFS" | grep -q "'$k'" || fail "the asset kind CHECK after 0020 does not allow '$k': $ADEFS"
+done
+SRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e 0020', '{}') RETURNING id")
+for k in html-design preview scene-spec skill-brief storyboard; do
+  q "INSERT INTO pipeline_stages (run_id, stage, attempt) VALUES ('$SRUN', '$k', 1)" >/dev/null || fail "pipeline_stages refused stage $k after 0020"
+done
+q "INSERT INTO pipeline_stages (run_id, stage, attempt) VALUES ('$SRUN', 'page-design', 1)" >/dev/null 2>&1 && fail "pipeline_stages accepted an unknown stage after 0020"
+PAGE=$(q "INSERT INTO assets (title, kind, source, license) VALUES ('e2e page 0020', 'html-page', 'hermes', 'research only') RETURNING id") || fail "assets refused kind html-page after 0020"
+q "INSERT INTO assets (title, kind, source, license) VALUES ('e2e bad kind', 'web-page', 'hermes', 'x')" >/dev/null 2>&1 && fail "assets accepted an unknown kind after 0020"
+q "DELETE FROM assets WHERE id = '$PAGE'" >/dev/null
+q "DELETE FROM pipeline_runs WHERE id = '$SRUN'" >/dev/null
 
 echo "== migration 0007 created the template and pipeline tables"
 for T in templates template_versions template_trials pipeline_runs pipeline_stages work_orders qc_reports; do

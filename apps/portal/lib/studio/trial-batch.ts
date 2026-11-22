@@ -41,6 +41,8 @@ export interface OfferedTemplate {
   description?: string;
   /** Rendered by Hermes with its own tools: research only, never published (always a trial). */
   research?: boolean;
+  /** A pack whose runs draw a page Hermes writes (html-design): research only, shown with HTML_DESIGN_BADGE. */
+  designed?: boolean;
   /** The research group, e.g. "Hermes research styles (from claude-animation-skills)". */
   group?: string;
   /** The Hermes skill a research style renders with, e.g. "/graph". */

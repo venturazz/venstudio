@@ -706,6 +706,7 @@ export function provenanceOf(studyId: string, sources: readonly ExportSource[]):
 /** The style.json a draft becomes: status draft, empty curation, every source in provenance. */
 export function draftStyleJson(draft: DraftSpec, provenance: readonly ProvenanceEntry[]): Record<string, unknown> {
   const engine = draft.renderer;
+  const designed = draft.workflow === "html-design";
   return {
     format: 1,
     id: draft.packId,
@@ -717,7 +718,8 @@ export function draftStyleJson(draft: DraftSpec, provenance: readonly Provenance
     formats: { supported: draft.formats.supported, naturalFrame: draft.formats.naturalFrame },
     renderer: {
       engine,
-      minWorkerVersion: engine === "html-capture" ? "0.10.0" : "0.9.0",
+      // html-design pages need worker 0.11.0 (an uploaded page, its CSP, preview-frames).
+      minWorkerVersion: engine === "html-capture" ? (designed ? "0.11.0" : "0.10.0") : "0.9.0",
       composition: engine === "remotion-2d" ? draft.packId : null,
       ...(engine === "html-capture" ? { drawsCaptions: draft.drawsCaptions } : {}),
     },
@@ -734,7 +736,23 @@ export function draftStyleJson(draft: DraftSpec, provenance: readonly Provenance
     provenance: provenance.map((p) => ({ type: p.type, ref: p.ref.slice(0, 400), licence: p.licence.slice(0, 200) || UNKNOWN_LICENCE, notes: p.notes.slice(0, 2000) })),
     curation: [],
     // A recipe that is not built yet is left out (the validator refuses it); the README says which one was recommended.
-    ...(RECIPES[draft.workflow].implemented ? { workflow: { recipe: draft.workflow } } : {}),
+    // html-design (research only) has the owner check the page and its stills every time, and carries a design brief.
+    ...(RECIPES[draft.workflow].implemented ? { workflow: designed ? { recipe: draft.workflow, review: ["html-design", "preview"] } : { recipe: draft.workflow } } : {}),
+    ...(designed ? { design: draftDesign(draft) } : {}),
+  };
+}
+
+/**
+ * The design brief of an html-design draft: the draft's description and rationale, a neutral two-colour palette and
+ * the run's font. A starting point the owner (or Hermes, in the PR) refines before the pack leaves draft.
+ */
+function draftDesign(draft: DraftSpec): { brief: string; palette: string[]; typography: string; layout: string } {
+  const brief = `${draft.description} ${draft.rationale}`.replace(/\s+/g, " ").trim().slice(0, 2000) || draft.name;
+  return {
+    brief,
+    palette: ["#FFFFFF", "#111111"],
+    typography: "The run's font (props.font); this draft vendors no font yet.",
+    layout: `Keep ${draft.contract.captions.safeAreaPct}% margins; the worker burns the captions at the bottom, so keep the bottom third clear.`,
   };
 }
 

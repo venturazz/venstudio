@@ -17,8 +17,8 @@ test("JobType union and JOB_TYPES list the same types", () => {
 });
 
 test("protocol WORKER_VERSION is 0.10.0", () => {
-  assert.match(protocol, /WORKER_VERSION = "0\.10\.0"/);
+  assert.match(protocol, /WORKER_VERSION = "0\.11\.0"/);
   // The worker reports its own VERSION to the portal; the Workers page flags any worker that differs.
   const worker = readFileSync(new URL("../../worker/venstudio-worker.ts", import.meta.url), "utf8");
-  assert.match(worker, /export const VERSION = "0\.10\.0"/);
+  assert.match(worker, /export const VERSION = "0\.11\.0"/);
 });

@@ -6,7 +6,7 @@ import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.t
 import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Format } from "@/lib/studio/catalog.ts";
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { defaultThemeFor, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
-import { HERMES_RENDER_LABEL, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
 import { MAX_BATCH_TRIALS, MIN_BATCH_TRIALS, TRY_THESE_STYLES, type OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
 import { startBatchTrialAction, startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
@@ -125,6 +125,11 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
           {t.research && (
             <Badge tone="warn">
               <span data-testid="hermes-render-label">{HERMES_RENDER_LABEL}</span>
+            </Badge>
+          )}
+          {t.designed && (
+            <Badge tone="warn">
+              <span data-testid="html-design-label">{HTML_DESIGN_BADGE}</span>
             </Badge>
           )}
           <span className="min-w-0 break-words">

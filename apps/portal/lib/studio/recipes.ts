@@ -15,8 +15,22 @@ import { stageLabel } from "./review.ts";
 export const RECIPE_IDS = ["image-sequence", "scene-spec", "hermes-skill", "html-design", "engine-project", "clip-sequence"] as const;
 export type RecipeId = (typeof RECIPE_IDS)[number];
 /** The recipes the engine runs today. */
-export type BuiltRecipe = "image-sequence" | "scene-spec" | "hermes-skill";
-export const BUILT_RECIPES: readonly BuiltRecipe[] = ["image-sequence", "scene-spec", "hermes-skill"];
+export type BuiltRecipe = "image-sequence" | "scene-spec" | "hermes-skill" | "html-design";
+export const BUILT_RECIPES: readonly BuiltRecipe[] = ["image-sequence", "scene-spec", "hermes-skill", "html-design"];
+/**
+ * Research-only recipes (owner decision, mirror of RESEARCH_RECIPES in styles/tools/validate.mjs): html-design runs a
+ * page Hermes wrote, so its runs are always trials, never published, and its packs never go above Trial.
+ */
+export const RESEARCH_RECIPES: readonly RecipeId[] = ["html-design"];
+/**
+ * Stages the autonomy policy never approves, whatever the level or the pack says: the page Hermes wrote and the still
+ * frames of a page. The owner looks at them every time.
+ */
+export const OWNER_ONLY_STAGES: readonly RunStage[] = ["html-design", "preview"];
+
+export function isResearchRecipe(v: unknown): boolean {
+  return typeof v === "string" && (RESEARCH_RECIPES as readonly string[]).includes(v);
+}
 
 export interface Recipe {
   id: RecipeId;
@@ -27,6 +41,8 @@ export interface Recipe {
   stages: readonly string[];
   /** Stages a pack may leave out (hermes-skill: the voice, when the skill voices itself). */
   optional: readonly RunStage[];
+  /** Earlier stage lists of this recipe that runs already under way may hold (portal only, not in the styles table). */
+  legacy?: readonly (readonly RunStage[])[];
   summary: string;
 }
 
@@ -43,9 +59,11 @@ export const RECIPES: Record<RecipeId, Recipe> = {
     id: "scene-spec",
     label: "Scene spec (data-driven, no pictures)",
     implemented: true,
-    stages: ["idea", "research", "script", "scene-spec", "voice", "render", "qc"],
+    stages: ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"],
     optional: [],
-    summary: "Data-driven: Hermes writes a scene spec (seconds, beat, on-screen elements with sourced numbers, motion tokens, captions) that the page renders directly. No pictures are generated.",
+    // Runs started before the still-frame preview keep their list (no preview stage).
+    legacy: [["idea", "research", "script", "scene-spec", "voice", "render", "qc"]],
+    summary: "Data-driven: Hermes writes a scene spec (seconds, beat, on-screen elements with sourced numbers, motion tokens, captions) that the page renders directly, and the owner sees still frames of the page before the voice and the render. No pictures are generated.",
   },
   "hermes-skill": {
     id: "hermes-skill",
@@ -57,11 +75,11 @@ export const RECIPES: Record<RecipeId, Recipe> = {
   },
   "html-design": {
     id: "html-design",
-    label: "HTML design (reserved)",
-    implemented: false,
-    stages: ["idea", "research", "script", "page-design", "voice", "frame-preview", "render", "qc"],
+    label: "Hermes-designed page (research only, no pictures)",
+    implemented: true,
+    stages: ["idea", "research", "script", "html-design", "preview", "voice", "render", "qc"],
     optional: [],
-    summary: "Reserved, not built: Hermes would write the page for each video (research only), with a frame preview gate. Needs the owner's explicit approval before it is built.",
+    summary: "Research only (owner decision): Hermes writes the HTML page for each video (one self-contained index.html, checked before anything runs), the owner approves still frames of it, then the worker captures it with html-capture. Always a trial, never published.",
   },
   "engine-project": {
     id: "engine-project",
@@ -137,7 +155,9 @@ export function workflowForPack(p: WorkflowSource): { ok: true; workflow: RunWor
   if (!isBuiltRecipe(id) || !recipe.implemented) return { ok: false, error: `This style needs a workflow that isn't built yet: ${id}. ${recipe.summary}` };
   const skillVoice = id === "hermes-skill" && p.hermes?.voice === "skill";
   const stages = recipe.stages.filter((k): k is RunStage => isRunStage(k) && !(skillVoice && k === "voice"));
-  const review = (p.workflow?.review ?? []).filter((k) => stages.includes(k));
+  // The owner-only stages are review points of every list that has them, whatever the pack names.
+  const review = [...new Set([...(p.workflow?.review ?? []), ...OWNER_ONLY_STAGES])].filter((k) => stages.includes(k));
+  if (id === "html-design" && p.engine !== "html-capture") return { ok: false, error: `This style names the html-design workflow but renders with ${p.engine}; a page Hermes writes is captured by html-capture only.` };
   return { ok: true, workflow: { recipe: id, stages, review } };
 }
 
@@ -147,6 +167,7 @@ function allowedLists(recipe: BuiltRecipe): RunStage[][] {
   const full = r.stages.filter((k): k is RunStage => isRunStage(k));
   const lists = [full];
   for (const o of r.optional) lists.push(full.filter((k) => k !== o));
+  for (const l of r.legacy ?? []) lists.push([...l]);
   return lists;
 }
 
@@ -173,9 +194,12 @@ export function runRecipeOf(config: { workflow?: RunWorkflow | null }): BuiltRec
   return config.workflow?.recipe ?? "image-sequence";
 }
 
-/** True when the pack's workflow has the owner review this stage every time, whatever the autonomy level. */
+/**
+ * True when the owner reviews this stage every time, whatever the autonomy level: the pack's workflow says so, or it is
+ * an owner-only stage (the page Hermes wrote, the still frames), which no stored config can turn off.
+ */
 export function alwaysReviewed(config: { workflow?: RunWorkflow | null }, stage: RunStage): boolean {
-  return config.workflow?.review.includes(stage) === true;
+  return OWNER_ONLY_STAGES.includes(stage) || config.workflow?.review.includes(stage) === true;
 }
 
 /** "Idea → Research → Script → Scene spec → Voice → Video → Quality check", for the owner. */
@@ -220,6 +244,7 @@ export function recipeFitIssue(recipe: RecipeId, engine: string, elementAnimatio
     return "scene-spec needs html-capture, or remotion-2d with element animation (the page draws the spec)";
   }
   if (recipe === "hermes-skill" && engine !== "hermes") return "hermes-skill needs the hermes renderer";
+  if (recipe === "html-design" && engine !== "html-capture") return "html-design needs html-capture (the worker captures the page Hermes writes)";
   if (recipe === "image-sequence" && !["image-per-shot", "plates-and-diagrams"].includes(assetModel)) return "image-sequence needs a picture per shot";
   return null;
 }

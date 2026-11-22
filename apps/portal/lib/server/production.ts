@@ -59,7 +59,7 @@ import { recordTrialOutcome } from "./style-trials.ts";
 import { bedNote, MUSIC_TAG, pickMusicBed, type BedCandidate, type BedPick } from "../studio/music-bed.ts";
 import { buildScenePlan, renderParamsForStyle } from "../studio/scene-plan.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
-import type { ReviewMedia } from "../studio/review.ts";
+import { tightenLabel, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
 import {
   addGateIssues,
   asUuid,
@@ -82,6 +82,23 @@ import { finalGatesFor, runRecipeOf, runStagesOf } from "../studio/recipes.ts";
 import { readSceneSpec, sceneSpecShots } from "../studio/scene-spec.ts";
 import { readSkillBrief, skillBriefShots, type SkillBrief } from "../studio/skill-brief.ts";
 import { ensureRunPlate } from "./plate.ts";
+import { ensureRunPage } from "./html-page.ts";
+import { htmlDesignLines, htmlDesignShots, readHtmlDesign, type HtmlDesign } from "../studio/html-design.ts";
+import { sceneSpecLines } from "../studio/scene-spec.ts";
+import {
+  HTML_DESIGN_NEEDS_PREVIEW,
+  NO_PREVIEW_CONTINUE,
+  NO_PREVIEW_WORKER,
+  PREVIEW_NARRATION_PLACEHOLDER,
+  parsePreviewResult,
+  previewNote,
+  previewNotes,
+  previewPayload,
+  previewTimes,
+  previewWorkers,
+  sceneStartsOf as payloadSceneStarts,
+} from "../studio/frame-preview.ts";
+import type { CombinedQc } from "../studio/qc.ts";
 
 /**
  * Phase 4 stage drivers. Each work order is claimed on its own (FOR UPDATE SKIP LOCKED), so a crash loses at most
@@ -526,9 +543,11 @@ async function storyboardShape(q: Q, runId: string): Promise<{ shots: Shot[]; pl
   } else {
     const spec = await latestPassedOutput(q, runId, "scene-spec");
     const brief = spec ? null : await latestPassedOutput(q, runId, "skill-brief");
+    const page = spec || brief ? null : await latestPassedOutput(q, runId, "html-design");
     const s = spec ? readSceneSpec(spec.result) : null;
     const b = brief ? readSkillBrief(brief.result) : null;
-    shots = s ? sceneSpecShots(s) : b ? skillBriefShots(b) : null;
+    const d = page ? readHtmlDesign(page.result) : null;
+    shots = s ? sceneSpecShots(s) : b ? skillBriefShots(b) : d ? htmlDesignShots(d) : null;
   }
   if (!shots) return null;
   return { shots, plannedSec: shots.reduce((n, s) => n + s.seconds, 0) };
@@ -659,13 +678,31 @@ export async function recheckConclusion(
     if (opts.fit) {
       const tempo = conclusion.voice?.fitTempo ?? null;
       if (tempo === null) {
-        return { ok: false, error: "This narration cannot be fitted by a small speed change. Use Tighten the script, keep the pictures." };
+        return { ok: false, error: `This narration cannot be fitted by a small speed change. Use ${tightenLabel(runStagesOf(run.config).includes("assets"))}.` };
       }
       conclusion = voiceConclusionFrom({ ...input, result: { ...result, tempo } });
     }
     return { ok: true, conclusion };
   }
-  return { ok: false, error: "Only the assets and voice steps can be checked again." };
+  if (st.stage === "render") {
+    // A reel that recorded its own voice (hermes-skill, hermes.voice skill): only its voice backend's terms are judged
+    // again, on the video that is already made. Nothing is rendered again.
+    if (opts.fit) return { ok: false, error: "Only a voice card can be fitted to the video." };
+    const result = toObject(st.output.result);
+    const by = toObject(result.narrationBy);
+    const assetId = asUuid(result.assetId);
+    const name = normalizeProvider(text(by.backend) || text(by.provider));
+    if (!assetId || !name) return { ok: false, error: "This video has no voice of its own to check; use Try again." };
+    const [asset] = await q`SELECT id FROM assets WHERE id = ${assetId}`;
+    if (!asset) return { ok: false, error: "The video file is gone. Use Try again." };
+    const base: GateResult = { gate: "G-voice", passed: true, issues: [], executor: "hermes-skill" };
+    const gate = addGateIssues(base, providerTermsIssues([{ title: "Narration (recorded by the skill)", provider: name, kind: "tts" }], providerTerms));
+    return {
+      ok: true,
+      conclusion: { result, gate, extra: { renderer: text(st.output.renderer) || "hermes" }, media: { videoAssetId: assetId, voiceProvider: name }, providers: [{ name, kind: "tts", count: 1 }] },
+    };
+  }
+  return { ok: false, error: "Only the assets, voice and skill-voiced render steps can be checked again." };
 }
 
 /**
@@ -860,25 +897,31 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   }
   // The run's plan: the storyboard (image-sequence, and every run from before workflows), the scene spec or the brief.
   const recipe = runRecipeOf(run.config);
-  const planStage = recipe === "scene-spec" ? "scene-spec" : recipe === "hermes-skill" ? "skill-brief" : "storyboard";
+  const planStage = recipe === "scene-spec" ? "scene-spec" : recipe === "hermes-skill" ? "skill-brief" : recipe === "html-design" ? "html-design" : "storyboard";
   const boardOut = await latestPassedOutput(sql, run.id, planStage);
   const board = recipe === "image-sequence" ? validateStoryboard(boardOut?.result) : null;
   const spec = recipe === "scene-spec" ? readSceneSpec(boardOut?.result) : null;
   const brief: SkillBrief | null = recipe === "hermes-skill" ? readSkillBrief(boardOut?.result) : null;
-  const planShots: Shot[] | null = board ? (board.ok ? board.value.shots : null) : spec ? sceneSpecShots(spec) : brief ? skillBriefShots(brief) : null;
+  const design: HtmlDesign | null = recipe === "html-design" ? readHtmlDesign(boardOut?.result) : null;
+  const planShots: Shot[] | null = board ? (board.ok ? board.value.shots : null) : spec ? sceneSpecShots(spec) : brief ? skillBriefShots(brief) : design ? htmlDesignShots(design) : null;
   const scriptOut = await latestPassedOutput(sql, run.id, "script");
   const script = validateScript(scriptOut?.result);
   const voiceOut = await latestPassedOutput(sql, run.id, "voice");
   const voiceResult = toObject(voiceOut?.result);
   if (!planShots || !script.ok) {
-    const what = recipe === "scene-spec" ? "scene spec" : recipe === "hermes-skill" ? "skill brief" : "storyboard";
+    const what = recipe === "scene-spec" ? "scene spec" : recipe === "hermes-skill" ? "skill brief" : recipe === "html-design" ? "page" : "storyboard";
     await recordStageError(run.id, st.id, "render", `The approved ${what} or script is missing`);
+    return;
+  }
+  // A page Hermes wrote is research only: rendered only for a trial (always so for html-design, run-config.ts).
+  if (recipe === "html-design" && !run.config.stylePack?.trial) {
+    await recordStageError(run.id, st.id, "render", "A page Hermes wrote is research only, so it renders only as a trial. This run is not a trial; nothing was rendered.");
     return;
   }
   const done = await sql`SELECT shot_ref, asset_id FROM work_orders WHERE run_id = ${run.id} AND stage = 'assets' AND state = 'done' AND asset_id IS NOT NULL`;
   const shotAssets: Record<string, string> = {};
   for (const d of done) shotAssets[(d.shot_ref as string | null) ?? ""] = d.asset_id as string;
-  if (recipe === "scene-spec") {
+  if (recipe === "scene-spec" || recipe === "html-design") {
     // No picture is generated: every shot gets the run's plain plate, because the render contract carries one per shot.
     const f = VIDEO_FORMATS[run.config.format];
     const plate = await ensureRunPlate(run, { width: f.width, height: f.height });
@@ -999,6 +1042,13 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     await recordStageError(run.id, st.id, "render", renderStageError(plan.issues, engine));
     return;
   }
+  if (design && boardOut) {
+    // html-design: the page Hermes wrote travels with the job as an html-page asset (the worker serves it as page/).
+    const from = await approvedPlanRow(sql, run.id, "html-design");
+    const pageAssetId = await ensureRunPage(run, design, from ?? { stageId: st.id, attempt: st.attempt });
+    plan.payload.page = { assetId: pageAssetId };
+    plan.payload.inputs = [...plan.payload.inputs, pageAssetId];
+  }
   // A run started with a style pack renders with the pack version this portal serves now (workers update to it) and
   // only on a worker that reports it. Runs started before packs keep the engine routing they had.
   const stylePack = await renderPackFor(run.config.stylePack ?? null);
@@ -1028,6 +1078,204 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     ...(stylePack ? { stylePack } : {}),
     ...(packNote ? { packNote } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Preview (still frames, worker 0.11.0)
+
+/** The newest passed attempt of a plan stage: its row id and attempt (the page asset records where it came from). */
+async function approvedPlanRow(q: Q, runId: string, stage: string): Promise<{ stageId: string; attempt: number } | null> {
+  const [r] = await q`SELECT id, attempt FROM pipeline_stages WHERE run_id = ${runId} AND stage = ${stage} AND state = 'passed' ORDER BY attempt DESC LIMIT 1`;
+  return r ? { stageId: String(r.id), attempt: Number(r.attempt) } : null;
+}
+
+/** What the preview shows: the approved scene spec or page, as shots for the payload and lines for the card. */
+async function previewPlanOf(q: Q, run: RunInfo): Promise<{ shots: Shot[]; plan: NonNullable<ReviewPayload["plan"]>; design: HtmlDesign | null } | null> {
+  const recipe = runRecipeOf(run.config);
+  if (recipe === "html-design") {
+    const design = readHtmlDesign((await latestPassedOutput(q, run.id, "html-design"))?.result);
+    return design ? { shots: htmlDesignShots(design), plan: { kind: "html-design", lines: htmlDesignLines(design), text: design.note }, design } : null;
+  }
+  const spec = readSceneSpec((await latestPassedOutput(q, run.id, "scene-spec"))?.result);
+  return spec ? { shots: sceneSpecShots(spec), plan: { kind: "scene-spec", lines: sceneSpecLines(spec) }, design: null } : null;
+}
+
+/** A failed check that only the owner decides on (production stages are never revised automatically). */
+const PREVIEW_FAILED: CombinedQc = { passed: false, missingGates: [], score: 0, failedGates: [], blocking: false };
+
+/**
+ * The preview stage: still frames of the run's html-capture page with its real render props (the narration's length
+ * when a voice exists, else the planned scene times), taken by a worker that reports preview-frames. Without such a
+ * worker a scene-spec run's card says so and the owner may continue from the spec text (what the studio did before);
+ * an html-design run stops with a stage error instead, because its page is never rendered without the check.
+ */
+async function runPreviewStage(run: RunInfo, st: StageRow, template: Template): Promise<void> {
+  const sql = db();
+  const existing = asUuid(st.output.jobId);
+  if (existing) {
+    const status = await jobStatus(existing);
+    if (status === "queued" || status === "running") return;
+    if (status === "succeeded" || status === "failed" || status === "cancelled") {
+      await completePreview(existing);
+      return;
+    }
+  }
+  const recipe = runRecipeOf(run.config);
+  const shown = await previewPlanOf(sql, run);
+  if (!shown) {
+    await recordStageError(run.id, st.id, "preview", `The approved ${recipe === "html-design" ? "page" : "scene spec"} is missing, so there is nothing to preview`);
+    return;
+  }
+  if (recipe === "html-design" && !run.config.stylePack?.trial) {
+    await recordStageError(run.id, st.id, "preview", "A page Hermes wrote is research only, so it is previewed and rendered only as a trial. This run is not a trial.");
+    return;
+  }
+  const packStyle = await packStyleFor(template.styleId);
+  const renderParams = renderParamsForStyle(template.styleId, packStyle);
+  const engine = renderParams?.engine ?? DEFAULT_RENDER_ENGINE;
+  if (engine !== "html-capture") {
+    // Stills are taken of html-capture pages only (a scene-spec run may render with remotion-2d): continue from the text.
+    if (recipe === "html-design") {
+      await recordStageError(run.id, st.id, "preview", `A page Hermes wrote is captured by html-capture only, but this style renders with ${engine}. Nothing was previewed or rendered.`);
+      return;
+    }
+    await concludeStage(run, st, template, {
+      result: { stills: [], skipped: "engine" },
+      gate: null,
+      plan: { ...shown.plan, note: `Still frames are taken of html-capture pages only, and this style renders with ${engine}. You can approve and continue with the spec text only; the final video's card shows the real render.` },
+    });
+    return;
+  }
+  const stylePack = await renderPackFor(run.config.stylePack ?? null);
+  const packCap = stylePack ? `pack:${stylePack.id}@${stylePack.version}` : null;
+  const workers = previewWorkers(await workerCapabilityLists(sql), packCap);
+  if (workers === "no-worker") {
+    if (recipe === "html-design") {
+      await recordStageError(run.id, st.id, "preview", HTML_DESIGN_NEEDS_PREVIEW);
+      return;
+    }
+    await concludeStage(run, st, template, {
+      result: { stills: [], skipped: "no-worker" },
+      gate: null,
+      plan: { ...shown.plan, note: NO_PREVIEW_CONTINUE },
+      notes: [NO_PREVIEW_WORKER],
+    });
+    return;
+  }
+  const script = validateScript((await latestPassedOutput(sql, run.id, "script"))?.result);
+  if (!script.ok) {
+    await recordStageError(run.id, st.id, "preview", "The approved script is missing");
+    return;
+  }
+  // The narration's timing when the run already has one (a revision after the voice), otherwise the planned scenes.
+  const voiceResult = toObject((await latestPassedOutput(sql, run.id, "voice"))?.result);
+  const tempo = tempoOf(voiceResult.tempo);
+  const recorded = typeof voiceResult.narrationSec === "number" && voiceResult.narrationSec > 0 ? voiceResult.narrationSec / tempo : 0;
+  const shotSpecs = workOrdersFromStoryboard(shown.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
+  const narrationSec = recorded > 0 ? recorded : shotSpecs.reduce((n, x) => n + x.seconds, 0);
+  const frame = VIDEO_FORMATS[run.config.format];
+  const plate = await ensureRunPlate(run, { width: frame.width, height: frame.height });
+  const shotAssets: Record<string, string> = {};
+  for (const x of shotSpecs) shotAssets[x.shotRef] = plate;
+  const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
+  let caps: string[] | null = null;
+  try {
+    const rows = (await sql`SELECT DISTINCT unnest(capabilities) AS cap FROM workers WHERE status <> 'revoked'`) as unknown as Array<{ cap: unknown }>;
+    caps = rows.map((r) => String(r.cap)).filter(Boolean);
+  } catch {
+    caps = null;
+  }
+  const fadeSec = transitionForWorker(caps, shotSpecs.map((x) => x.seconds));
+  const planFor = (transitionSec: number): RenderPlan => {
+    const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: shown.shots, transitionSec, style: packStyle }) : null;
+    if (scenes && !scenes.ok) return { ok: false, issues: scenes.issues };
+    return buildRenderPayload({
+      fontAssetId: font ? asUuid(font.id) : null,
+      format: run.config.format,
+      shots: shotSpecs,
+      shotAssets,
+      narrationAssetId: PREVIEW_NARRATION_PLACEHOLDER,
+      narrationSec,
+      captions: captionLines(script.value.script),
+      targetLufs: template.audio.targetLufs,
+      maxShotSeconds: template.pacing.maxShotSeconds,
+      runId: run.id,
+      engine,
+      transitionSec,
+      ...(scenes?.ok ? { scenePlan: scenes.plan } : {}),
+    });
+  };
+  const plan = withFadeFallback(fadeSec, planFor).result;
+  if (!plan.ok) {
+    await recordStageError(run.id, st.id, "preview", `The still frames could not be planned: ${plan.issues.join(". ")}`.slice(0, 500));
+    return;
+  }
+  const pageAssetId = shown.design ? await ensureRunPage(run, shown.design, (await approvedPlanRow(sql, run.id, "html-design")) ?? { stageId: st.id, attempt: st.attempt }) : null;
+  const times = previewTimes(payloadSceneStarts(plan.payload), plan.payload.durationSec);
+  const jobId = await createJob({
+    type: "preview-frames",
+    payload: previewPayload(plan.payload, times, pageAssetId),
+    channelId: run.channelId,
+    priority: URGENT_PRIORITY,
+    createdBy: null,
+    // Only a worker that has this pack version (and runs preview-frames, 0.11.0+) takes it.
+    ...(packCap ? { capability: packCap as `pack:${string}` } : {}),
+  });
+  await mergeStageOutput(st.id, {
+    jobId,
+    times,
+    narrationTiming: recorded > 0 ? "narration" : "planned",
+    ...(pageAssetId ? { pageAssetId } : {}),
+    ...(stylePack ? { stylePack } : {}),
+    ...(workers === "waiting-pack" ? { packNote: `Waiting for a worker with ${packCap}: workers install it with their next signed update.` } : {}),
+  });
+}
+
+/** Concludes the preview stage from its finished job: the stills on the card, or why there are none. */
+async function completePreview(jobId: string): Promise<boolean> {
+  const job = await loadJob(jobId);
+  if (!job || job.type !== "preview-frames") return false;
+  const runId = asUuid(job.payload.runId);
+  if (!runId) return false;
+  const waiting = await stageWaitingOn(runId, "preview", jobId);
+  if (!waiting) return false;
+  const { run, template, st } = waiting;
+  const shown = await previewPlanOf(db(), run);
+  const designed = runRecipeOf(run.config) === "html-design";
+  const plan = shown?.plan;
+  if (job.status !== "succeeded") {
+    const why = job.status === "cancelled" ? "the job was cancelled" : job.error || "the worker gave no reason";
+    // A page that tried the network or threw fails by name; the owner sends a note back to the page or tries again.
+    await concludeStage(run, st, template, {
+      result: { jobId, stills: [], failed: why.slice(0, 500) },
+      gate: null,
+      extra: { jobId },
+      qc: PREVIEW_FAILED,
+      issues: [`The still frames could not be taken: ${why}`.slice(0, 600)],
+      ...(plan ? { plan: { ...plan, note: designed ? "Send a note back to the page (Send revision), or try again." : "Send a note back to the scene spec, or try again." } } : {}),
+    });
+    return true;
+  }
+  const r = parsePreviewResult(job.result);
+  const rows = await db()`SELECT id, name FROM artifacts WHERE job_id = ${jobId} AND name LIKE 'still-%' ORDER BY name LIMIT 12`;
+  const stills = rows.flatMap((a) => {
+    const at = r.stills.find((x) => x.name === String(a.name));
+    return at ? [{ artifactId: String(a.id), atSec: at.atSec }] : [];
+  });
+  const issues = [
+    ...(stills.length === 0 ? ["The worker finished but sent no still frames back"] : []),
+    ...r.blocked.slice(0, 5).map((b) => `The page tried something the sandbox blocks: ${b}. The render would fail.`),
+  ];
+  await concludeStage(run, st, template, {
+    result: { jobId, stills, page: r.page, consoleErrors: r.consoleErrors, blocked: r.blocked, ...(toObject(job.payload.preview).page ? { pageAssetId: toObject(job.payload.preview).page } : {}) },
+    gate: null,
+    extra: { jobId },
+    media: { stills },
+    notes: previewNotes({ consoleErrors: r.consoleErrors, blocked: [] }),
+    ...(plan ? { plan: { ...plan, note: previewNote({ stills: stills.length, drawsCaptions: r.drawsCaptions, designed }) } } : {}),
+    ...(issues.length > 0 ? { qc: PREVIEW_FAILED, issues } : {}),
+  });
+  return true;
 }
 
 /**
@@ -1528,6 +1776,7 @@ async function completeQc(jobId: string): Promise<boolean> {
 
 /** Runs one claimed production stage. Render and qc only start their job and leave the stage running. */
 export async function runProductionStage(run: RunInfo, st: StageRow, template: Template): Promise<void> {
+  if (st.stage === "preview") return runPreviewStage(run, st, template);
   if (st.stage === "assets") return runAssetsStage(run, st);
   if (st.stage === "voice") return runVoiceStage(run, st, template);
   if (st.stage === "render") return runRenderStage(run, st, template);
@@ -1633,6 +1882,7 @@ export async function onJobFinished(jobId: string): Promise<string | null> {
       return settled;
     }
     if (job.type === "render-video") return (await completeRender(jobId)) ? runId : null;
+    if (job.type === "preview-frames") return (await completePreview(jobId)) ? runId : null;
     if (job.type === "qc-video") return (await completeQc(jobId)) ? runId : null;
     return null;
   } catch (err) {
@@ -1747,7 +1997,7 @@ async function reapStages(touched: Set<string>): Promise<void> {
     FROM pipeline_stages s
     JOIN pipeline_runs r ON r.id = s.run_id
     LEFT JOIN LATERAL (SELECT max(w.updated_at) AS last_at FROM work_orders w WHERE w.run_id = s.run_id AND s.stage = 'assets') act ON true
-    WHERE s.state = 'running' AND r.state = 'running' AND s.stage IN ('assets', 'voice', 'render', 'qc')
+    WHERE s.state = 'running' AND r.state = 'running' AND s.stage IN ('preview', 'assets', 'voice', 'render', 'qc')
   `;
   for (const s of rows) {
     try {
@@ -1769,6 +2019,7 @@ async function reapStages(touched: Set<string>): Promise<void> {
       } else if (act.action === "complete" && jobId) {
         if (stage === "render") await completeRender(jobId);
         else if (stage === "qc") await completeQc(jobId);
+        else if (stage === "preview") await completePreview(jobId);
       } else if (act.action === "fail") {
         await recordStageError(runId, s.id as string, stage, act.reason);
       }

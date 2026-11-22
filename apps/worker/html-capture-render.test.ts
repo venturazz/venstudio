@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -27,6 +27,8 @@ import {
   handlers,
   htmlCaptureUnavailableReason,
   installedHtmlPacks,
+  PAGE_BUNDLE_KIND,
+  previewFramesUnavailableReason,
   makeWavPcm16,
   placeholderUuid,
   withPlaceholderUuids,
@@ -93,10 +95,36 @@ test("the html-capture probe passed on this machine (1 s page rendered, its netw
 const STYLES = new URL("../../styles/", import.meta.url);
 const HTML_PACKS = (JSON.parse(readFileSync(new URL("lock.json", STYLES), "utf8")) as { packs: Array<{ id: string; version: string; engine: string }> }).packs.filter((p) => p.engine === "html-capture");
 
+/** The page bundle the portal uploads for an html-design run, built from a folder of page files (html-design.ts writes the same shape). */
+async function pageBundleFile(dir: string, out: string): Promise<string> {
+  const files: Record<string, string> = {};
+  const walk = (d: string, prefix: string) => {
+    for (const name of readdirSync(d).sort()) {
+      const p = path.join(d, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (statSync(p).isDirectory()) walk(p, rel);
+      else if (/\.(html|js|css|svg)$/.test(name)) files[rel] = readFileSync(p, "utf8");
+    }
+  };
+  walk(dir, "");
+  await writeFile(out, JSON.stringify({ format: 1, kind: PAGE_BUNDLE_KIND, files }));
+  return out;
+}
+
+/** The files a page Hermes wrote may hold: the reference page of an html-design pack, without the pack's vendored folders. */
+async function referencePageDir(packRender: string, dest: string): Promise<string> {
+  await mkdir(dest, { recursive: true });
+  await copyFile(path.join(packRender, "index.html"), path.join(dest, "index.html"));
+  return dest;
+}
+
 for (const lockPack of HTML_PACKS) {
   const PACK = new URL(`packs/${lockPack.id}/`, STYLES);
   const expect = JSON.parse(readFileSync(new URL("fixtures/expect.json", PACK), "utf8")) as { width: number; height: number; fps: number; durationSec: number };
-  const drawsCaptions = (JSON.parse(readFileSync(new URL("style.json", PACK), "utf8")) as { renderer: { drawsCaptions?: boolean } }).renderer.drawsCaptions === true;
+  const styleJson = JSON.parse(readFileSync(new URL("style.json", PACK), "utf8")) as { renderer: { drawsCaptions?: boolean }; workflow?: { recipe?: string } };
+  const drawsCaptions = styleJson.renderer.drawsCaptions === true;
+  // An html-design pack renders only a page uploaded with the job: its reference page, uploaded as a run's page would be.
+  const designed = styleJson.workflow?.recipe === "html-design";
   const frames = Math.round(expect.durationSec * expect.fps);
   test(`${lockPack.id} renders through render-video: ${expect.width}x${expect.height}, ${expect.fps} fps, ${expect.durationSec} s, ${frames} frames, H.264 yuv420p with the narration; qc-video samples 6 frames`, { skip: why ?? false, timeout: 15 * 60_000 }, async (t) => {
     const installed = await installedHtmlPacks(DIR as string);
@@ -123,8 +151,16 @@ for (const lockPack of HTML_PACKS) {
     const kept = new Map<string, string>();
     const work = path.join(home, "work", "render");
     await mkdir(work, { recursive: true });
+    if (designed) {
+      const pageId = "ffffffff-6666-4666-8666-0000000000f1";
+      const pageDir = await referencePageDir(path.join(DIR as string, "html", lockPack.id), path.join(home, "hermes-page"));
+      files.set(pageId, await pageBundleFile(pageDir, path.join(home, "page.json")));
+      payload.inputs = [...(payload.inputs as string[]), pageId];
+      payload.page = { assetId: pageId };
+    }
     const started = Date.now();
     const result = await handlers["render-video"](ctxFor(work, home, "render-video", payload, files, kept, `pack:${lockPack.id}@${lockPack.version}`));
+    if (designed) assert.deepEqual((result.page as { designed?: boolean } | undefined)?.designed, true, "rendered as an uploaded page (CSP and the page guard on)");
     console.log(`html-capture render of ${lockPack.id} (${payload.durationSec} s) took ${((Date.now() - started) / 1000).toFixed(1)} s: ${JSON.stringify(result)}`);
     assert.equal(result.engine, "html-capture");
     assert.equal(result.renderer, "html-capture");
@@ -193,4 +229,122 @@ test("a page that tries the network fails the job by name: fetch, an image from 
     );
     assert.equal(existsSync(path.join(tmp, `${name}.mp4`)) && readFileSync(path.join(tmp, `${name}.mp4`)).length > 0, false, `${name}: no video was written`);
   }
+});
+
+/** A page written like one Hermes writes (page mode): `init` runs `body`, or the markup is in the body when `atLoad`. */
+async function hermesPage(dir: string, body: string, opts: { atLoad?: boolean; frame?: string } = {}): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const page = `<!doctype html><html><body>${opts.atLoad ? body : ""}<script>
+window.VENSTUDIO = {
+  async init(p) { ${opts.atLoad ? "" : body} return { totalFrames: p.totalFrames, fps: p.fps, width: p.width, height: p.height }; },
+  renderFrame(f) { ${opts.frame ?? ""} document.body.style.background = f % 2 ? "#000" : "#fff"; }
+};</script></body></html>`;
+  await writeFile(path.join(dir, "index.html"), page);
+  return dir;
+}
+
+test("preview-frames: the worker reports it only after the still probe passed here", { skip: why ?? false }, async () => {
+  assert.equal(await previewFramesUnavailableReason(DIR as string), null);
+});
+
+/** A preview payload for a pack's fixture: the render payload without the narration, and the times to take. */
+function previewOf(raw: Record<string, unknown>, times: number[], page: string | null): Record<string, unknown> {
+  const p = withPlaceholderUuids(raw) as Record<string, unknown> & { narrationAssetId: string; inputs: string[] };
+  const { narrationAssetId, narrationSec: _n, audio: _a, ...rest } = p;
+  return { ...rest, inputs: [...p.inputs.filter((i) => i !== narrationAssetId), ...(page ? [page] : [])], preview: { times, ...(page ? { page } : {}) } };
+}
+
+for (const id of ["probe-line-graph", "hermes-designed-explainer"]) {
+  test(`preview-frames takes 6 real stills of ${id} (${id === "probe-line-graph" ? "the pack's own page, scene-spec" : "an uploaded page, html-design"}) with the run's props`, { skip: why ?? false, timeout: 5 * 60_000 }, async (t) => {
+    const lockPack = HTML_PACKS.find((p) => p.id === id);
+    assert.ok(lockPack, `${id} is vendored`);
+    const PACK = new URL(`packs/${id}/`, STYLES);
+    const raw = JSON.parse(readFileSync(new URL("fixtures/payload.json", PACK), "utf8")) as Record<string, unknown>;
+    const home = await mkdtemp(path.join(os.tmpdir(), "vs-preview-"));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const files = new Map<string, string>();
+    const fixture = withPlaceholderUuids(raw) as { shots: Array<{ assetId: string }>; durationSec: number };
+    for (const [i, s] of fixture.shots.entries()) {
+      const f = path.join(home, `shot-${i}.png`);
+      execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=0x${["1d3557", "2a9d8f", "6d597a"][i % 3]}:s=540x960`, "-frames:v", "1", f]);
+      files.set(s.assetId, f);
+    }
+    const font = systemFont();
+    assert.ok(font);
+    files.set(placeholderUuid("asset-font"), font);
+    let page: string | null = null;
+    if (id === "hermes-designed-explainer") {
+      page = "ffffffff-6666-4666-8666-0000000000f2";
+      const dir = await referencePageDir(path.join(DIR as string, "html", id), path.join(home, "hermes-page"));
+      files.set(page, await pageBundleFile(dir, path.join(home, "page.json")));
+    }
+    const d = fixture.durationSec;
+    const times = [0.5, d * 0.2, d * 0.4, d * 0.6, d * 0.8, d - 0.1].map((x) => Math.round(x * 100) / 100);
+    const kept = new Map<string, string>();
+    const work = path.join(home, "work");
+    await mkdir(work, { recursive: true });
+    const result = await handlers["preview-frames"](ctxFor(work, home, "preview-frames", previewOf(raw, times, page), files, kept, `pack:${id}@${lockPack.version}`));
+    console.log(`preview-frames of ${id}: ${JSON.stringify(result)}`);
+    const stills = result.stills as Array<{ name: string; atSec: number; frame: number }>;
+    assert.equal(stills.length, 6);
+    assert.deepEqual(stills.map((x) => x.name), ["still-01.jpg", "still-02.jpg", "still-03.jpg", "still-04.jpg", "still-05.jpg", "still-06.jpg"]);
+    assert.equal(result.page, page ? "uploaded" : "pack");
+    assert.deepEqual(result.blocked, [], "nothing was blocked");
+    for (const x of stills) {
+      const file = kept.get(x.name) as string;
+      const bytes = readFileSync(file);
+      assert.equal(bytes[0], 0xff, `${x.name} is a JPEG`);
+      const probe = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=width,height", "-of", "json", file], { encoding: "utf8" })) as { streams: Array<{ width: number; height: number }> };
+      assert.deepEqual([probe.streams[0].width, probe.streams[0].height], [1080, 1920], x.name);
+    }
+    // Different scenes look different: the first and the last still are not the same picture.
+    assert.notEqual(readFileSync(kept.get("still-01.jpg") as string).toString("base64"), readFileSync(kept.get("still-06.jpg") as string).toString("base64"));
+    const out = process.env.VENSTUDIO_REMOTION_OUT;
+    if (out) {
+      await mkdir(path.join(out, `preview-${id}`), { recursive: true });
+      for (const x of stills) await copyFile(kept.get(x.name) as string, path.join(out, `preview-${id}`, x.name));
+    }
+  });
+}
+
+test("an uploaded page fails by name when it tries fetch, an image from another host, an iframe, a WebSocket or eval (the CSP), or throws", { skip: why ?? false, timeout: 8 * 60_000 }, async (t) => {
+  clearHtmlCaptureCache();
+  const chrome = await findChromium(DIR as string);
+  assert.ok(chrome);
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "vs-html-page-"));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const pack = path.join(tmp, "pack");
+  await mkdir(pack, { recursive: true });
+  const blocked = /^The Hermes-designed page tried to use the network or a blocked feature while rendering/;
+  const cases: Array<[string, string, { atLoad?: boolean; frame?: string }, RegExp]> = [
+    ["fetch", `await fetch("https://evil.example/x").catch(() => null);`, {}, blocked],
+    ["img", `<img src="https://198.51.100.7/pic.png">`, { atLoad: true }, blocked],
+    ["iframe", `<iframe src="https://evil.example/"></iframe>`, { atLoad: true }, blocked],
+    ["iframe-js", `try { document.body.appendChild(document.createElement("iframe")); } catch (e) {}`, {}, blocked],
+    ["websocket", `try { new WebSocket("wss://evil.example/live"); } catch (e) {}`, {}, blocked],
+    // eval is refused by the Content-Security-Policy the server sends (no 'unsafe-eval'): proof the header is there.
+    ["eval-csp", `try { eval("1 + 1"); } catch (e) {}`, {}, blocked],
+    ["xhr", `try { new XMLHttpRequest(); } catch (e) {}`, {}, blocked],
+    ["function-ctor", `try { (function () {}).constructor("return 1")(); } catch (e) {}`, {}, blocked],
+    ["throws-init", `throw new Error("boom in init");`, {}, /^The Hermes-designed page threw in init\(props\): Error: boom in init/],
+    ["throws-frame", ``, { frame: `if (f === 2) throw new Error("boom at frame 2");` }, /^The Hermes-designed page threw in renderFrame\(2\): Error: boom at frame 2/],
+  ];
+  for (const [name, body, opts, re] of cases) {
+    const page = await hermesPage(path.join(tmp, name), body, opts);
+    const size = { width: 64, height: 36, fps: 10, totalFrames: 5 };
+    await assert.rejects(
+      captureHtml({ chrome: chrome as string, root: pack, pageRoot: page, inDir: null, props: size, ...size, output: path.join(tmp, `${name}.mp4`), cwd: tmp, burn: null, timeoutMs: 120_000, signal: AbortSignal.timeout(150_000) }),
+      // assert.rejects tests a RegExp against String(err) ("Error: ..."), so match the message itself.
+      { message: re },
+      name,
+    );
+    assert.equal(existsSync(path.join(tmp, `${name}.mp4`)) && readFileSync(path.join(tmp, `${name}.mp4`)).length > 0, false, `${name}: no video was written`);
+  }
+  // A clean page under the same sandbox renders, and its stills come back.
+  const clean = await hermesPage(path.join(tmp, "clean"), "");
+  const size = { width: 64, height: 36, fps: 10, totalFrames: 5 };
+  const got: number[] = [];
+  const r = await captureHtml({ chrome: chrome as string, root: pack, pageRoot: clean, inDir: null, props: size, ...size, output: path.join(tmp, "clean.mp4"), cwd: tmp, burn: null, timeoutMs: 60_000, signal: AbortSignal.timeout(90_000), stills: { frames: [1, 3], onStill: async (_k, f) => void got.push(f) } });
+  assert.deepEqual(got, [1, 3]);
+  assert.deepEqual(r.violations, []);
 });

@@ -6,6 +6,7 @@ import path from "node:path";
 import { env } from "./env.ts";
 import { db } from "./db.ts";
 import { STYLES } from "../studio/catalog.ts";
+import { isResearchRecipe } from "../studio/recipes.ts";
 import { mergeRegistry, packSeedTemplate, parsePack, type OwnerDecision, type RegistryEntry, type StylePack, type TrialGate, type TrialOutcome } from "../studio/style-registry.ts";
 import { packsIndex, type PacksIndex } from "../style-packs-index.ts";
 import { readAdvisory, readRubric } from "../studio/presentation.ts";
@@ -175,10 +176,24 @@ export async function htmlPackSources(): Promise<HtmlPackSource[]> {
       id: p.id,
       version: p.version,
       drawsCaptions: p.drawsCaptions === true,
+      // An html-design pack (worker 0.11.0+): runs render the page Hermes wrote, never this pack's reference page.
+      ...(isResearchRecipe(p.workflow?.recipe) ? { designed: true } : {}),
       files: [...(v.files.get(p.id) ?? new Map<string, string>()).entries()]
         .filter(([rel]) => rel.startsWith("render/"))
         .map(([rel, content]) => ({ path: rel.slice("render/".length), content })),
     }));
+}
+
+/**
+ * The files of an html-design pack a page Hermes writes may load as ../pack/<path>: its render/ files without the
+ * reference page (index.html). Empty for an unknown pack.
+ */
+export async function packVendoredFiles(id: string): Promise<string[]> {
+  const v = await vendoredStyles();
+  return [...(v.files.get(id)?.keys() ?? [])]
+    .filter((rel) => rel.startsWith("render/") && rel !== "render/index.html")
+    .map((rel) => rel.slice("render/".length))
+    .sort();
 }
 
 // ---------------------------------------------------------------------------------------------------------------

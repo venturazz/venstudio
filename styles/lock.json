@@ -2,17 +2,17 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "e33050c1a20a404b10303d8f40775de1f7cbd165"
+    "commit": "d6630e7210004b57ffe334d682299b6e4f66a700"
   },
   "files": {
-    "FORMAT.md": "b687064b81f0c2735f4a156d2070c16e63d15ce9d43b6d78c8139a1cb7144d7f",
-    "schema/style.schema.json": "8414ed9fcae0892b4d9aaf7dc731e54866ccbc0459e0b11d8d8edc3c442fc67d",
-    "tools/assemble-remotion.mjs": "b545f2b2163fdcf9ecdfeeb30610ac3868c53a2d589a31994da615db5b706c39",
+    "FORMAT.md": "31e57231100a9625eaf88602895a7a0f2b3606b6860ac2ae17b36c4d4a4c1068",
+    "schema/style.schema.json": "2a53935fb3a4c6a8a96306fb3c17f038a3d52683888512652430ed76990e2550",
+    "tools/assemble-remotion.mjs": "a505d58c69435cfb520aa0b0f7db380a8e937e86b6f3582a01cd4a54241b141b",
     "tools/check-video.mjs": "1e1bac7a4e8310488930b12ae4637f97dadb8b78a57b4b8a598749af509a1c3f",
     "tools/check-video.test.mjs": "52e176204378a6f8bac5aa965e83960281fc7d5648f9ae9794d0ac1e267947cc",
-    "tools/html-pages.test.mjs": "dc8d5748afe1ad3ad4cf4139d8dd9cb1ad8514cf2270dc4a15dd977b09723776",
-    "tools/validate.mjs": "bbabb94f34cf24b60790ac4e10fe76df12dbff93629f19c6bc7c8d6ed68f7e63",
-    "tools/validate.test.mjs": "0797a1a9a9805ecb4ff5ef4c87c019a2903a30ed03735546fcadb70ecdc5289c"
+    "tools/html-pages.test.mjs": "6aa2dfa20c59e538cf1239badad6b64086aedbfbd10bc576d709e9811bca866b",
+    "tools/validate.mjs": "39a9b333552c047f4678341ba506d939fc5f88454f62e187b0678c67c9b3e904",
+    "tools/validate.test.mjs": "f133e398d6b4884a0d6db5637c37ff39caa4b1c3485cf48af44955241e88b2bf"
   },
   "packs": [
     {
@@ -109,6 +109,24 @@
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "a950080fbba16c266b7b59943d144bb357ba1d181a4fc7ec23b4d2385f5660e7",
         "style.json": "ec8b9acd31504e93eeb48a43cd7cec7aa4070ac782c1a949ab5738f9129c5fd2"
+      }
+    },
+    {
+      "id": "hermes-designed-explainer",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "html-capture",
+      "composition": null,
+      "sha256": "d44422d757da88cf137e7bf84c59aa89dd6b5178414ab4b69ea6b26fb4d62d6d",
+      "files": {
+        "README.md": "35e564ec1414cf27aa8cad25bb8dd3bbf6ee51b968b885255371034ec1e00f72",
+        "fixtures/expect.json": "6890ba69ed1bb760c4c85a07c1388f6fc5b2ac06d6574dae5dc4b429a50bbb8c",
+        "fixtures/payload.json": "16701bd89d6fdbff7f99bda1a4d37e7401e8da74127c6b83354474a61d3f8362",
+        "render/fonts/OFL-inter.txt": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+        "render/fonts/OFL-intertight.txt": "4fde1e56a50d4632cffcee7df85585274c60765ff893abe6f49da0ca9ab675b8",
+        "render/fonts/fonts.css": "1123716fe9cc7b51aa0d2c1b26f5d42c2835e628830f5a569fe3d6dcf03d6d5a",
+        "render/index.html": "a8d812d8bc444d4797cae243dd8ad21cecec17dfac7f92f3691ec716a8e8afa2",
+        "style.json": "1f13c667f66c4f719b0d3a1a817400f58fb5a186ad5816f5842d61ec22e22a91"
       }
     },
     {

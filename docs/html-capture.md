@@ -1,4 +1,4 @@
-# html-capture renderer (worker 0.10.0)
+# html-capture renderer (worker 0.10.0; page mode and preview-frames in 0.11.0)
 
 Phase 2 of `docs/plans/style-system.md`. html-capture renders an HTML page, animated with GSAP, CSS or three.js,
 frame by frame in headless Chromium and encodes the frames with ffmpeg. It is the approach of
@@ -54,6 +54,63 @@ project simply does not report html-capture. `VENSTUDIO_CHROMIUM_PATH` (optional
 One page per render. 30 s at most per frame, 60 s for `init`, 30 s for the page load, and an overall limit of ten
 minutes or 40 s per second of video, whichever is longer (the Remotion limit). Progress is reported every 2 s. The
 browser profile is a fresh temporary folder, removed afterwards with the browser's whole process group.
+
+## Pages Hermes writes (html-design, worker 0.11.0)
+
+A run of an html-design pack (`docs/style-packs.md`, "html-design"; research only) uploads the page Hermes wrote as a
+job input: a page bundle `{ format: 1, kind: "venstudio-html-page", files }`, `payload.page.assetId` for render-video
+and `payload.preview.page` for preview-frames. The portal validated it before queueing; the worker treats it as
+untrusted code all the same:
+
+- **Checked again.** `parsePageBundle`: `index.html` present, at most 20 text files and 300 KB together, plain relative
+  names (`.html` only for index.html, `.js`, `.css`, `.svg`). It is written to `<job>/page/`, outside `<job>/in/`.
+- **Served alone.** The loopback server serves `page/` (the page), `pack/` (the pack's installed, digest-checked files,
+  `../pack/` from the page) and `in/` (the run's media: the plate, the font, `../in/`), nothing else: never the job
+  folder, the bundle file or another job's files. Every response carries
+  `Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:`
+  plus `worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; connect-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'`
+  (`HTML_PAGE_CSP`; `worker-src` and `child-src` would otherwise fall back to `script-src 'self'`), with `nosniff`,
+  `no-referrer` and a `same-origin` resource policy (`captureHeaders`). `eval` is refused because `'unsafe-eval'` is
+  not granted.
+- **Guarded.** Besides the virtual clock, `HTML_PAGE_GUARD_SOURCE` runs before the page's own scripts: `fetch`,
+  `XMLHttpRequest`, `Worker`, `SharedWorker`, `window.open`, `sendBeacon` and `createElement` of frames, objects and
+  embeds are refused and reported, `navigator.serviceWorker` is replaced by one that refuses to register, and every CSP
+  violation (an image or font from another host, a frame, eval, a form) is reported through the same binding as a
+  blocked request, by a listener the guard adds first on `window` in the capture phase. The worker also reads
+  Chromium's own security log (`Log.entryAdded`, source `security`/`violation`), which page code cannot silence. After load, after init and at the end the worker also
+  looks for `<iframe>`, `<object>`, `<embed>`, `<base>`, `<meta http-equiv>` and `<form action>` in the DOM.
+- **Budgeted.** 20 s for `init`, 10 s per frame, at most 54 000 frames (30 minutes at 30 fps, the render limit), and
+  the overall limit of a render. A fresh temporary browser profile, no extensions, the dead proxy and the resolver that
+  resolves nothing (unchanged from 0.10.0).
+- **Chromium's own sandbox.** Signed packs keep 0.10.0's `--no-sandbox` (as Remotion launches the same browser). For an
+  uploaded page the worker first checks, once per process, whether this Chromium starts with its process sandbox on
+  here (`chromiumSandboxWorks`: user namespaces or the setuid helper) and then runs the page sandboxed; where the host
+  does not allow it, the page runs without it and the job result says `sandboxed: false`. The other layers hold either
+  way; a Muse VM or CI runner that refuses unprivileged user namespaces is the case to watch.
+- **Named failures.** "The Hermes-designed page tried to use the network or a blocked feature while rendering (...)",
+  "The Hermes-designed page threw in init(props): ...", "... threw in renderFrame(12): ...", "... did not finish
+  init(props) within 20 s". Nothing is rendered.
+- **Pack and page agree.** An html-design pack is marked `designed` in `html/packs.json`; the worker renders it only
+  with an uploaded page and renders an uploaded page only with such a pack (`htmlPageModeFor`). Its own
+  `render/index.html` is a reference page: `capture-html` renders it in page mode (CSP and guard on), so CI proves the
+  sandbox lets a well-behaved page draw.
+
+## Still frames (preview-frames, worker 0.11.0)
+
+The job type `preview-frames` takes still frames of an html-capture page before the voice and the render: the
+installed pack's page (scene-spec) or the uploaded page (html-design). Its payload is a render-video payload without
+the narration (the run has none yet; `durationSec` is the planned or narrated length) plus `preview: { times, page? }`,
+at most 12 times. `parsePreviewPayload` parses it with `parseRenderSpec`, so the props are exactly the render's. The
+worker downloads only the shots' pictures and the font into `in/`, draws every frame up to the last asked one in order
+(a page that keeps state renders as in the video), captures the asked frames as JPEG (`still-01.jpg` ...), uploads them,
+and returns `{ stills: [{ name, atSec, frame }], consoleErrors, blocked, page, htmlPack, drawsCaptions }`. An uploaded
+page fails on any blocked attempt, as at render; a pack's page only reports it. Captions burned by the worker are not
+in the stills. No ffmpeg runs.
+
+The worker reports `preview-frames` only after the html-capture probe passed and one still of the probe page came back
+as a JPEG (`previewFramesUnavailableReason`, cached per process); the handler checks it again. It also names the
+`preview-frames` job type in its claims only then (`claimJobTypes`), so a worker that has the pack but cannot take
+stills never claims a preview queued under that pack. A 0.10.0 worker never names the job type at all. Worker 0.11.0 reaches Muse through the signed self-update.
 
 ## Probe
 

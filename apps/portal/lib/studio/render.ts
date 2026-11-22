@@ -69,6 +69,11 @@ export interface RenderPayload {
   fontAssetId: string | null;
   /** Every asset id the worker may download. */
   inputs: string[];
+  /**
+   * html-design (worker 0.11.0+): the page Hermes wrote, an html-page asset listed in inputs. Absent for every other
+   * payload, which is then byte-identical to before.
+   */
+  page?: { assetId: string };
 }
 
 export type RenderPlan = { ok: true; payload: RenderPayload } | { ok: false; issues: string[] };
