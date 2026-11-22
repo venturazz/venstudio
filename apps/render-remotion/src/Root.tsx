@@ -1,10 +1,11 @@
 /**
- * One composition per template. The id is what the worker passes to `remotion render`; the worker maps the scene
- * plan's template (the style id) to it in REMOTION_COMPOSITIONS.
+ * One composition per installed style pack. The id is what the worker passes to `remotion render`; the worker maps
+ * the scene plan's template (the pack id) to it from src/packs/packs.json, which the bundle builder writes next to
+ * the generated src/packs/index.ts. The runtime itself carries no look: every composition comes from a pack.
  */
 import React from "react";
 import { Composition, type CalculateMetadataFunction } from "remotion";
-import { FlatVectorExplainer } from "./FlatVectorExplainer.tsx";
+import { PACK_COMPOSITIONS } from "./packs/index.ts";
 import { SAMPLE_PROPS, timelineFor, type TemplateProps } from "./props.ts";
 
 /** Size, frame rate and length come from the job's props, so one composition serves short and long formats. */
@@ -17,15 +18,18 @@ const sample = timelineFor(SAMPLE_PROPS.shots.map((s) => s.seconds), SAMPLE_PROP
 
 export const RemotionRoot: React.FC = () => (
   <>
-    <Composition
-      id="flat-vector-explainer"
-      component={FlatVectorExplainer}
-      defaultProps={SAMPLE_PROPS}
-      calculateMetadata={metadataFromProps}
-      width={SAMPLE_PROPS.width}
-      height={SAMPLE_PROPS.height}
-      fps={SAMPLE_PROPS.fps}
-      durationInFrames={sample.totalFrames}
-    />
+    {PACK_COMPOSITIONS.map((c) => (
+      <Composition
+        key={c.id}
+        id={c.id}
+        component={c.component}
+        defaultProps={SAMPLE_PROPS}
+        calculateMetadata={metadataFromProps}
+        width={SAMPLE_PROPS.width}
+        height={SAMPLE_PROPS.height}
+        fps={SAMPLE_PROPS.fps}
+        durationInFrames={sample.totalFrames}
+      />
+    ))}
   </>
 );

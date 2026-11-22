@@ -19,7 +19,7 @@ import {
   type WorkerUpdateReport,
 } from "../update-manifest.ts";
 
-/** What this portal serves at /install/: the worker file and the Remotion bundle, hashed exactly as served. */
+/** What this portal serves at /install/: the worker file, the Remotion bundle and the style packs index, hashed exactly as served. */
 export async function servedRelease(): Promise<ServedRelease> {
   const files: ManifestFile[] = [];
   let version: string | null = null;
@@ -71,7 +71,7 @@ export async function updateOfferFor(
   if (!decision.offer) return { manifest: null, decision, served };
   const key = await privateSigningKey();
   const manifest = signManifest(
-    buildManifest({ keyId: key.keyId, workerId, served, pinnedVersion: settings.pinnedVersion, now: new Date() }),
+    buildManifest({ keyId: key.keyId, workerId, served, pinnedVersion: settings.pinnedVersion, now: new Date(), worker: report }),
     key.privateKey,
   );
   return { manifest, decision, served };

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useActionState } from "react";
 import { Alert, Badge, Card, CardBody, Input, Textarea } from "@/components/ui.tsx";
+import { TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { SubmitButton } from "@/components/client.tsx";
 import { decisionHint, decisionLabel, decisionOptions, reviewTitle, stageLabel, type ReviewKind, type ReviewPayload } from "@/lib/studio/review.ts";
 import type { BlockingRow } from "@/lib/studio/terms-review.ts";
@@ -16,6 +17,8 @@ export interface ReviewCardView {
   payload: ReviewPayload;
   topic: string;
   channelName: string;
+  /** The run uses a Trial style pack: research only, not for publishing. */
+  trial?: boolean;
   /** Plain-language gate lines, computed on the server. */
   gateLines: string[];
   /** Relative time text, computed on the server. */
@@ -222,6 +225,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             <Badge tone={item.kind === "stage-error" || item.kind === "gate-failure" ? "danger" : item.kind === "idea" ? "accent" : "info"}>
               {stageLabel(item.stage)}
             </Badge>
+            {item.trial && (
+              <span data-testid="trial-badge" title="Research only, not for publishing">
+                <Badge tone="warn">{TRIAL_BADGE}</Badge>
+              </span>
+            )}
             {item.channelName && <span className="text-xs text-muted">{item.channelName}</span>}
             <span className="text-xs text-muted">{item.age}</span>
           </div>

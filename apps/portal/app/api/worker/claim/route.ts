@@ -15,7 +15,7 @@ const MAX_WAIT_SECONDS = 25;
 const POLL_MS = 1500;
 
 const schema = z.object({
-  capabilities: z.array(z.string()).max(20),
+  capabilities: z.array(z.string().max(80)).max(100),
   mode: z.enum(["tick", "hold", "daemon"]),
   version: z.string().max(40),
   waitSeconds: z.number().int().min(0).max(300).optional(),

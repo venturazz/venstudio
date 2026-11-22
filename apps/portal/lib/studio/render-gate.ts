@@ -7,6 +7,7 @@
  */
 import type { Capability } from "@venstudio/protocol";
 import { capabilityForEngine, XFADE_CAPABILITY } from "./render-engine.ts";
+import { packCapability } from "./style-registry.ts";
 
 /**
  * The capability list to gate a render on, or undefined to skip the gate.
@@ -24,7 +25,10 @@ export function gateCapabilities(reported: readonly string[] | null | undefined)
  * Capability the render-video job is queued under, so only a worker that can run the engine claims it.
  * The stills engine keeps "ffmpeg", which is what every render-video job used before engines existed.
  */
-export function renderJobCapability(engine: string, transitionSec: number = 0): Capability {
+export function renderJobCapability(engine: string, transitionSec: number = 0, pack?: { id: string; version: string } | null): Capability {
+  // A run started with a style pack renders only on a worker that installed and probed exactly that pack version
+  // (0.9.0+). Its probe needs the engine (and xfade for stills), so the pack capability implies both.
+  if (pack) return packCapability(pack.id, pack.version) as Capability;
   // An engine whose capability is not a worker one (provider, blender) never gets here: the gate refused it, or no
   // worker is enrolled and nothing will claim the job anyway.
   const need = (capabilityForEngine(engine) ?? "ffmpeg") as Capability;
@@ -46,6 +50,23 @@ export function withFadeFallback<T extends { ok: boolean }>(transitionSec: numbe
   if (faded.ok || !(transitionSec > 0)) return { result: faded, transitionSec };
   const cut = plan(0);
   return cut.ok ? { result: cut, transitionSec: 0 } : { result: faded, transitionSec };
+}
+
+/**
+ * The note on the render stage when workers report capabilities but none reports this pack version yet, or null when
+ * one does (or nothing is reported yet). The job is queued anyway under the pack capability and waits: workers 0.9.0+
+ * install a new pack version with their next signed update (minutes), and the Jobs page says why it waits. An engine
+ * no worker can run at all is still refused at planning, by the engine gate.
+ */
+export function packWaitNote(pack: { id: string; version: string } | null, gate: readonly string[] | undefined): string | null {
+  if (!pack || !gate) return null;
+  const cap = packCapability(pack.id, pack.version);
+  if (gate.includes(cap)) return null;
+  return (
+    `Waiting for a worker with the style pack ${pack.id} ${pack.version} ("${cap}"). Workers 0.9.0 and later install style ` +
+    `packs with their signed updates and report a pack once its renderer probe passes; the render starts then. If it ` +
+    `keeps waiting, check the Workers page (update mode, last update result) or run install.sh again.`
+  );
 }
 
 /** Where the owner finds the Remotion install steps. */

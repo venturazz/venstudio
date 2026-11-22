@@ -92,8 +92,11 @@ audited). Updates never change a channel's category, worker mapping or autonomy.
    the SHA-256 of its worker file and of the Remotion bundle it unpacked (or null without a Remotion project) to
    `POST /api/worker/update`, with its worker token. The portal records what it would offer and, if the mode allows,
    returns a **manifest**: `{format, keyId, workerId, version, pin, release, issuedAt, expiresAt, files:[{name,
-   sha256, bytes}], signature}` for `venstudio-worker.ts` and `render-remotion.json`, the same files served at
-   `/install/`. The signature is Ed25519 over `"venstudio-update-manifest-v1\n"` plus the canonical JSON of the
+   sha256, bytes}], signature}` for `venstudio-worker.ts`, `render-remotion.json` and (worker 0.9.0+)
+   `style-packs.json`, the same files served at `/install/`. The style packs index is listed only for a worker that
+   reports it (as its hash, or null when none is installed), so a 0.8.0 worker keeps getting the two files it accepts;
+   once the worker file is current, a changed index is installed to `<home>/styles/` without a worker version bump
+   (docs/style-packs.md). The signature is Ed25519 over `"venstudio-update-manifest-v1\n"` plus the canonical JSON of the
    manifest without `signature` (keys sorted, no whitespace).
 4. **Verification on the worker** (`checkManifest`, `planUpdate`; `node:crypto` only), in this order: shape; key id is
    the pinned key's; signature; `workerId` is this worker; lifetime at most an hour and not expired (the portal

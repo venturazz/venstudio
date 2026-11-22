@@ -47,6 +47,15 @@ export function queueReasons(job: JobForReasons, workers: WorkerForReasons[], op
       reasons.push(`${w.name} is draining, so it takes no new jobs. Resume it on the Workers page.`);
       continue;
     }
+    if (!w.capabilities.includes(job.capability) && job.capability.startsWith("pack:")) {
+      const [id, version] = job.capability.slice("pack:".length).split("@");
+      const has = w.capabilities.filter((c) => c.startsWith(`pack:${id}@`)).map((c) => c.split("@")[1]);
+      reasons.push(
+        `${w.name} does not report the style pack ${id} ${version}${has.length ? ` (it has ${has.join(", ")})` : ""}. ` +
+          `Workers 0.9.0 and later install style packs with their signed updates and report a pack once its renderer probe passes; check its update mode and version on the Workers page.`,
+      );
+      continue;
+    }
     if (!w.capabilities.includes(job.capability)) {
       const reports = w.capabilities.length ? w.capabilities.join(", ") : "nothing yet";
       reasons.push(`${w.name} has no "${job.capability}" capability (it reports: ${reports}).`);

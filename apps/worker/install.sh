@@ -168,6 +168,17 @@ else
   echo "warning: could not pin the update key; automatic updates stay off until install.sh runs again" >&2
 fi
 
+# --- style packs: the portal's index of curated styles (worker 0.9.0+) ----------------------------------
+# The worker reports pack:<id>@<version> for each pack whose renderer probe passes here, and the portal routes a
+# style's renders only to a worker that reports it. Signed updates keep it current afterwards.
+if curl -fsSL -o "$HOME_DIR/app/style-packs.json.new" "$PORTAL/install/style-packs.json" &&
+  VENSTUDIO_HOME="$HOME_DIR" "$NODE_BIN" --no-warnings "$HOME_DIR/app/venstudio-worker.ts" install-packs --home "$HOME_DIR" --file "$HOME_DIR/app/style-packs.json.new"; then
+  rm -f "$HOME_DIR/app/style-packs.json.new"
+else
+  rm -f "$HOME_DIR/app/style-packs.json.new"
+  echo "warning: could not install the style packs index; the worker takes no style renders until a signed update installs it" >&2
+fi
+
 # --- Remotion renderer (opt-in) ---------------------------------------------------------
 # After enrollment, so a failed Remotion install still leaves a working stills worker.
 REMOTION_FAILED=0

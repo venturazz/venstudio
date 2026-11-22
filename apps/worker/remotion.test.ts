@@ -33,7 +33,7 @@ import {
   planCrossFades,
 } from "./venstudio-worker.ts";
 import { SAMPLE_PROPS, barHeights, captionAt, formatCount, gaugeFraction, layerFrame, timelineFor, transitionFor as templateTransitionFor } from "../render-remotion/src/props.ts";
-import { projectBundle, REMOTION_PROJECT_FILES } from "../portal/lib/install-bundle.ts";
+import { REMOTION_PROJECT_FILES } from "../portal/lib/install-bundle.ts";
 import { fixtureWithUuids, fixtureWithoutMix } from "./testdata/fixture.ts";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
@@ -104,9 +104,14 @@ test("remotionCompositionFor maps the template to its composition and refuses on
   const spec = parseRenderSpec(fixtureWithUuids());
   assert.equal(remotionCompositionFor(spec), "flat-vector-explainer");
   assert.deepEqual(Object.values(REMOTION_COMPOSITIONS), ["flat-vector-explainer"]);
-  assert.ok(readFileSync(path.join(PROJECT, "src/Root.tsx"), "utf8").includes(`id="${REMOTION_COMPOSITIONS["explainer-flat-vector"]}"`));
+  // The composition lives in the vendored style pack now; the built-in map (for projects from before packs) agrees.
+  assert.ok(readFileSync(path.join(PROJECT, "../../styles/packs/explainer-flat-vector/render/index.tsx"), "utf8").includes(`id: "${REMOTION_COMPOSITIONS["explainer-flat-vector"]}"`));
   const other = { ...spec, scenePlan: spec.scenePlan ? { ...spec.scenePlan, template: "kinetic-facts" } : null };
   assert.throws(() => remotionCompositionFor(other), (e: Error) => e instanceof NonRetryableError && /Template "kinetic-facts" has no remotion-2d composition/.test(e.message) && /not drawn with another template/.test(e.message));
+  // From 0.9.0 the installed project's probe names its packs, and that list decides.
+  const installed = [{ id: "explainer-flat-vector", version: "1.0.0", composition: "flat-vector-explainer" }, { id: "kinetic-facts", version: "1.0.0", composition: "kinetic" }];
+  assert.equal(remotionCompositionFor(other, installed), "kinetic");
+  assert.throws(() => remotionCompositionFor(spec, [installed[1]]), /Template "explainer-flat-vector" has no remotion-2d composition .* it has kinetic-facts/);
 });
 
 test("Remotion renders muted, bounded for a 2 vCPU machine, and ffmpeg adds the narration with the stills audio chain", () => {
@@ -186,15 +191,19 @@ test("the probe decides remotion-2d: missing, failing and passing projects, cach
 test("the portal's install bundle unpacks into a project the worker can probe, and bad bundles are refused", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "vs-bundle-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const bundle = JSON.parse(JSON.stringify(projectBundle((p) => readFileSync(path.join(PROJECT, p), "utf8"))));
+  const script = new URL("../../scripts/remotion-project.mjs", import.meta.url).href;
+  const { remotionBundle } = (await import(script)) as { remotionBundle: () => { files: Array<{ path: string; content: string }> } };
+  const bundle = JSON.parse(JSON.stringify(remotionBundle())) as { files: Array<{ path: string; content: string }> };
   // An earlier install: a dependency folder and a probe marker to keep, and a template file that is gone upstream.
   await mkdir(path.join(dir, "node_modules", "remotion"), { recursive: true });
   await writeFile(path.join(dir, "node_modules", "remotion", "package.json"), "{}");
   await writeFile(path.join(dir, ".venstudio-probe.json"), "{}");
   await mkdir(path.join(dir, "src"), { recursive: true });
   await writeFile(path.join(dir, "src", "Old.tsx"), "old");
-  assert.equal(await writeProjectBundle(bundle, dir), REMOTION_PROJECT_FILES.length);
+  assert.equal(await writeProjectBundle(bundle, dir), bundle.files.length);
   for (const p of REMOTION_PROJECT_FILES) assert.equal(await readFile(path.join(dir, p), "utf8"), readFileSync(path.join(PROJECT, p), "utf8"), p);
+  for (const f of bundle.files) assert.equal(await readFile(path.join(dir, f.path), "utf8"), f.content, f.path);
+  assert.ok(existsSync(path.join(dir, "src", "packs", "explainer-flat-vector", "FlatVectorExplainer.tsx")), "the pack's composition is installed under src/packs/");
   assert.ok(!existsSync(path.join(dir, "src", "Old.tsx")), "src/ is replaced whole");
   assert.ok(existsSync(path.join(dir, "node_modules", "remotion", "package.json")), "dependencies are kept");
   assert.ok(existsSync(path.join(dir, ".venstudio-probe.json")));

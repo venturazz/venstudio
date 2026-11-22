@@ -8,7 +8,7 @@ const schema = z.object({
   code: z.string().min(8).max(40),
   name: z.string().max(80).default(""),
   host: z.enum(["muse", "vps", "local"]).optional(),
-  capabilities: z.array(z.string()).max(20),
+  capabilities: z.array(z.string().max(80)).max(100),
   version: z.string().max(40),
 });
 

@@ -40,7 +40,12 @@ export type Capability =
   | "remotion-2d"
   | "remotion-3d"
   | "godot"
-  | "manim";
+  | "manim"
+  /**
+   * A style pack this worker installed (style-packs.json) and whose renderer probe passed here, at exactly this
+   * version: `pack:<id>@<version>`. Worker 0.9.0+. The portal queues a render of a pack under this capability.
+   */
+  | `pack:${string}`;
 
 export const CAPABILITIES: readonly Capability[] = [
   "echo",
@@ -88,7 +93,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.8.0";
+export const WORKER_VERSION = "0.9.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
@@ -152,7 +157,7 @@ export interface ApiError {
 // Signed self-update (worker 0.8.0+). See docs/worker-updates.md and apps/portal/lib/update-manifest.ts.
 
 export interface UpdateManifestFile {
-  name: "venstudio-worker.ts" | "render-remotion.json";
+  name: "venstudio-worker.ts" | "render-remotion.json" | "style-packs.json";
   sha256: string;
   bytes: number;
 }
@@ -174,7 +179,7 @@ export interface UpdateManifest {
 export interface UpdateCheckRequest {
   version: string;
   /** SHA-256 of each file the worker has; the bundle is null without a Remotion project, "unknown" without its marker. */
-  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null };
+  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null; "style-packs.json"?: string | null };
   /** Id of the key this worker pinned, if any. */
   keyId?: string;
 }

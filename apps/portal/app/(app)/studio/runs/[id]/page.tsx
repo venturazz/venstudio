@@ -11,7 +11,8 @@ import { stageLabel } from "@/lib/studio/review.ts";
 import { isEngineStage, isProductionStage, stageSummary } from "@/lib/studio/engine.ts";
 import { productionSummary } from "@/lib/studio/production.ts";
 import { waitingText } from "@/lib/studio/pacing.ts";
-import { parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
+import { isTrialRun, parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
+import { TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { cancelRunAction } from "../actions.ts";
 import { RunStateBadge, StageStateBadge } from "../run-status.tsx";
 
@@ -82,6 +83,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       />
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {storyboardReady ? <Badge tone="ok">Storyboard ready</Badge> : <RunStateBadge state={run.state} />}
+        {isTrialRun(parseRunConfig(run.config)) && (
+          <span data-testid="trial-badge" title="Research only, not for publishing">
+            <Badge tone="warn">{TRIAL_BADGE}: research only, not for publishing</Badge>
+          </span>
+        )}
         <span className="text-xs text-muted" data-testid="run-attempts">
           {attempts} stage attempt{attempts === 1 ? "" : "s"}
         </span>

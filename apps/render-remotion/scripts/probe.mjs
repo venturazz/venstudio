@@ -9,6 +9,10 @@
  *                                   Remotion CLI and its browser, then records the result in .venstudio-probe.json.
  *                                   install.sh --with-remotion and CI run this once after installing.
  *
+ * The compositions come from the installed style packs: src/packs/packs.json lists each pack's id, version and
+ * composition (the portal's bundle builder writes it). Both outputs name them, so the worker reports
+ * pack:<id>@<version> only for a pack whose composition this exact project rendered.
+ *
  * Plain JavaScript and Node built-ins only, so it runs before anything is built.
  */
 import { spawnSync } from "node:child_process";
@@ -20,8 +24,8 @@ import { fileURLToPath } from "node:url";
 
 const DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MARKER = path.join(DIR, ".venstudio-probe.json");
-/** Compositions to probe. Keep in step with src/Root.tsx and REMOTION_COMPOSITIONS in the worker. */
-const COMPOSITIONS = ["flat-vector-explainer"];
+/** The installed packs, from src/packs/packs.json: [{ id, version, composition }]. */
+const PACKS_FILE = path.join(DIR, "src", "packs", "packs.json");
 
 function fail(reason) {
   console.log(JSON.stringify({ ok: false, reason }));
@@ -65,6 +69,20 @@ export function cliEntry(dir = DIR) {
   return existsSync(entry) ? entry : null;
 }
 
+/** The installed packs, or a failure naming why there are none. */
+export function installedPacks(file = PACKS_FILE) {
+  const list = readJson(file);
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const ok = list.every((p) => p && typeof p.id === "string" && typeof p.version === "string" && typeof p.composition === "string");
+  return ok ? list.map((p) => ({ id: p.id, version: p.version, composition: p.composition })) : null;
+}
+
+function packsOrFail() {
+  const packs = installedPacks();
+  if (!packs) fail(`no style pack compositions in ${PACKS_FILE} (reinstall the renderer from the portal: install.sh --with-remotion)`);
+  return packs;
+}
+
 function installed() {
   const cli = readJson(path.join(DIR, "node_modules", "@remotion", "cli", "package.json"));
   const core = readJson(path.join(DIR, "node_modules", "remotion", "package.json"));
@@ -82,11 +100,15 @@ function quick() {
   if (marker.ok !== true) fail(`the last full probe failed: ${String(marker.reason ?? "unknown")}`);
   if (marker.remotion !== version) fail(`the last full probe was for Remotion ${marker.remotion}, but ${version} is installed; run the full probe again`);
   if (marker.sourceHash !== sourceHash()) fail("the templates changed since the last full probe; run the full probe again");
-  console.log(JSON.stringify({ ok: true, remotion: version, compositions: marker.compositions, probedAt: marker.probedAt }));
+  const packs = packsOrFail();
+  if (!Array.isArray(marker.packs)) fail("the last full probe predates style packs; run the full probe again");
+  console.log(JSON.stringify({ ok: true, remotion: version, compositions: marker.compositions, packs, probedAt: marker.probedAt }));
 }
 
 function full() {
   const { version, entry } = installed();
+  const packs = packsOrFail();
+  const COMPOSITIONS = packs.map((p) => p.composition);
   const out = mkdtempSync(path.join(os.tmpdir(), "vs-remotion-probe-"));
   const started = Date.now();
   try {
@@ -106,7 +128,7 @@ function full() {
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
-  const marker = { ok: true, remotion: version, compositions: COMPOSITIONS, sourceHash: sourceHash(), seconds: Math.round((Date.now() - started) / 100) / 10, probedAt: new Date().toISOString() };
+  const marker = { ok: true, remotion: version, compositions: COMPOSITIONS, packs, sourceHash: sourceHash(), seconds: Math.round((Date.now() - started) / 100) / 10, probedAt: new Date().toISOString() };
   writeFileSync(MARKER, JSON.stringify(marker, null, 2));
   console.log(JSON.stringify(marker));
 }

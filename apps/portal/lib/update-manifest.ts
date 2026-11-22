@@ -12,8 +12,12 @@ export const MANIFEST_FORMAT = 1;
 export const MANIFEST_CONTEXT = "venstudio-update-manifest-v1\n";
 /** A manifest is valid this long after it is signed. Short, so an old manifest cannot be replayed later. */
 export const MANIFEST_LIFETIME_SECONDS = 600;
-/** The files a manifest can name, in this order. Both are served from /install/ (lib/server/install-files.ts). */
-export const UPDATE_FILE_NAMES = ["venstudio-worker.ts", "render-remotion.json"] as const;
+/**
+ * The files a manifest can name, in this order. All are served from /install/ (lib/server/install-files.ts). The style
+ * packs index came with worker 0.9.0: a manifest lists it only for a worker that reports it (even as null), because
+ * 0.8.0 refuses a manifest naming a file it does not know (see manifestFilesFor).
+ */
+export const UPDATE_FILE_NAMES = ["venstudio-worker.ts", "render-remotion.json", "style-packs.json"] as const;
 export type UpdateFileName = (typeof UPDATE_FILE_NAMES)[number];
 
 export type UpdateMode = "auto" | "approve" | "off";
@@ -162,7 +166,8 @@ export interface ServedRelease {
 /**
  * What a worker reports when it asks for an update: its version, and the SHA-256 of each file it has. The worker file
  * is always reported; the Remotion bundle is null when this worker has no Remotion project installed (it is never
- * installed by an update), or "unknown" when the project exists but predates the bundle marker.
+ * installed by an update), or "unknown" when the project exists but predates the bundle marker. The style packs index
+ * (0.9.0+) is null when none is installed yet, which makes it pending; a worker that omits the key does not know it.
  */
 export interface WorkerUpdateReport {
   version: string;
@@ -177,9 +182,20 @@ export function pendingFiles(served: ServedRelease, worker: WorkerUpdateReport):
     if (f.name === "venstudio-worker.ts") {
       // Without a reported hash (should not happen from 0.8.0 on), compare versions.
       if (have ? have !== f.sha256 : worker.version !== served.version) out.push(f.name);
+    } else if (f.name === "style-packs.json") {
+      if (have !== undefined && have !== f.sha256) out.push(f.name);
     } else if (have !== null && have !== undefined && have !== f.sha256) out.push(f.name);
   }
   return out;
+}
+
+/**
+ * The served files a manifest for this worker may name: the worker file, and each other file the worker reported a
+ * value for. A worker before 0.9.0 never reports the style packs index, so its manifest stays the two files it accepts.
+ */
+export function manifestFilesFor(served: ServedRelease, worker?: WorkerUpdateReport): ManifestFile[] {
+  if (!worker) return served.files;
+  return served.files.filter((f) => f.name === "venstudio-worker.ts" || worker.files?.[f.name] !== undefined);
 }
 
 export interface OfferDecision {
@@ -219,6 +235,8 @@ export function buildManifest(input: {
   /** The version the owner pinned, if any. Pins only when it equals the served version. */
   pinnedVersion: string | null;
   now: Date;
+  /** The worker's report: limits the files to those it knows (manifestFilesFor). All served files without it. */
+  worker?: WorkerUpdateReport;
 }): UnsignedManifest {
   return {
     format: MANIFEST_FORMAT,
@@ -229,7 +247,7 @@ export function buildManifest(input: {
     release: input.served.release,
     issuedAt: input.now.toISOString(),
     expiresAt: new Date(input.now.getTime() + MANIFEST_LIFETIME_SECONDS * 1000).toISOString(),
-    files: input.served.files.map((f) => ({ name: f.name, sha256: f.sha256, bytes: f.bytes })),
+    files: manifestFilesFor(input.served, input.worker).map((f) => ({ name: f.name, sha256: f.sha256, bytes: f.bytes })),
   };
 }
 

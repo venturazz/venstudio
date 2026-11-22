@@ -65,6 +65,9 @@ import {
 } from "../studio/terms-review.ts";
 import type { ProviderKind } from "../studio/asset-plan.ts";
 import { buildRunConfig, parseRunConfig, topicFromBrief, type RunConfig, type RunRequest } from "../studio/run-config.ts";
+import { runStylePack, startRefusal } from "../studio/style-registry.ts";
+import { registryEntry } from "./style-packs.ts";
+import { recordTrialOutcome } from "./style-trials.ts";
 
 /**
  * The run engine: idea, research, script and storyboard are Hermes stages; assets, voice, render and qc are the
@@ -237,11 +240,17 @@ export async function startRun(
     const tpl: Template = template;
     if (template.status === "retired") return { ok: false, error: "This template is retired" };
     if (!template.formats.includes(input.format)) return { ok: false, error: `This template does not make ${input.format} videos` };
+    // Only a Listed or Trial style pack starts a run; planned styles, drafts and retired packs never do.
+    const entry = await registryEntry(template.styleId);
+    const refusal = startRefusal(entry);
+    if (refusal || !entry?.pack) return { ok: false, error: refusal ?? "Unknown style" };
+    if (!entry.pack.formats.includes(input.format)) return { ok: false, error: `This style does not make ${input.format} videos` };
 
     // The theme defaults to the channel category; an override lives on this run only and never on the channel.
     const built = buildRunConfig(input, { category: (c.category as string | null) ?? "" }, template);
     if (!built.ok) return { ok: false, error: built.error };
-    const config: RunConfig = built.config;
+    // The pack version and status go with the run (additive): a Trial pack marks it research only.
+    const config: RunConfig = { ...built.config, stylePack: runStylePack(entry.pack) };
     const topic = topicFromBrief(config.topicHint);
     let productionId: string | null = null;
     if (input.productionId) {
@@ -259,7 +268,7 @@ export async function startRun(
       await insertPending(tx, id, "idea", "", 0);
       return id;
     });
-    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource } });
+    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack } });
     return { ok: true, runId };
   } catch (err) {
     console.error("startRun failed", err);
@@ -915,6 +924,8 @@ export async function decideReview(input: {
       await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
       message = target === stage ? "Revision sent. Hermes is redoing this step." : `Revision sent. Hermes goes back to the ${stageLabel(target).toLowerCase()} step.`;
     });
+    // The owner's final decision on a Trial pack's video goes into the curation log.
+    if (stage === "qc") await recordTrialOutcome(runId);
     const action = fitRequest ? "review.fit-script" : `review.${decision}`;
     await safeAudit({ userId: input.userId, action, target: input.reviewId, detail: { runId, stage, kind, ...(decision === "override" ? { issues: storedIssues } : {}), ...(fitRequest ? { fit: fitRequest } : {}) } });
     return { ok: true, runId, message };

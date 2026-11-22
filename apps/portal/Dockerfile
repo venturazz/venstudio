@@ -28,6 +28,8 @@ COPY apps/worker/venstudio-worker.ts apps/worker/install.sh apps/worker/SETUP.md
 COPY apps/render-remotion/package.json apps/render-remotion/tsconfig.json ./render-remotion/
 COPY apps/render-remotion/src ./render-remotion/src
 COPY apps/render-remotion/scripts ./render-remotion/scripts
+# The vendored style packs (scripts/sync-styles.mjs): the registry, /install/style-packs.json and the Remotion packs.
+COPY styles ./styles
 RUN mkdir -p /data/artifacts && chown -R node:node /data
 USER node
 EXPOSE 3000
