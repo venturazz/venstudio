@@ -7,6 +7,7 @@ import { installFileSha256, portalUrl } from "@/lib/server/install-files.ts";
 import { publicSigningKey } from "@/lib/server/update-key.ts";
 import { servedRelease, updateSettings, type UpdateSettings } from "@/lib/server/updates.ts";
 import { needsAttention, presence, RUN_NOW_MESSAGE } from "@/lib/server/workers.ts";
+import { parseWorkerEnvironments, workerEnvironmentLabel } from "@/lib/studio/style-registry.ts";
 import { compareVersions, describeUpdateResult, UPDATE_MODE_LABEL, UPDATE_MODES, type ServedRelease } from "@/lib/update-manifest.ts";
 import { manualUpdateMessage } from "@/lib/worker-update-message.ts";
 import { Alert, Badge, Card, CardBody, CardHeader, EmptyState, PageHeader, timeAgo } from "@/components/ui.tsx";
@@ -153,6 +154,18 @@ export default async function WorkersPage() {
                           ))
                         )}
                       </div>
+                      {parseWorkerEnvironments(w.environments).length > 0 && (
+                        <ul className="space-y-1 pt-1 text-xs" data-testid={`worker-environments-${String(w.name)}`}>
+                          {parseWorkerEnvironments(w.environments).map((e) => {
+                            const l = workerEnvironmentLabel(e);
+                            return (
+                              <li key={`${e.id}@${e.version}`} className="break-words">
+                                <Badge tone={l.tone}>{e.status}</Badge> <span>{l.text}</span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
                     </div>
                     {isOwner && (
                       <div className="flex shrink-0 flex-wrap gap-2">

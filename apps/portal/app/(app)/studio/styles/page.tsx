@@ -3,7 +3,7 @@ import { Alert, Badge, Card, CardBody, CardHeader, LinkButton, PageHeader } from
 import { CopyButton } from "@/components/client.tsx";
 import { ENGINES, FAMILY_LABELS, THEMES, VIDEO_FORMATS } from "@/lib/studio/catalog.ts";
 import { listTemplates } from "@/lib/server/templates.ts";
-import { reportedCapabilities } from "@/lib/server/workers.ts";
+import { reportedCapabilities, workerEnvironmentRows } from "@/lib/server/workers.ts";
 import { env } from "@/lib/server/env.ts";
 import { listTrialOutcomes, styleRegistry, vendoredStyles } from "@/lib/server/style-packs.ts";
 import { creditOf, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
@@ -16,6 +16,7 @@ import {
   STYLE_GROUP_LABEL,
   TRIAL_LABEL,
   availabilityOf,
+  environmentLine,
   isResearchEngine,
   curationRecord,
   labTrialCounts,
@@ -30,6 +31,7 @@ import {
   type RegistryStatus,
   type StyleGroup,
   type TrialOutcome,
+  type WorkerEnvironment,
 } from "@/lib/studio/style-registry.ts";
 import { TrialQueue } from "../trial-queue.tsx";
 import type { Template } from "@/lib/studio/templates.ts";
@@ -73,6 +75,7 @@ export default async function StyleLibraryPage() {
   let commit: string | null = null;
   let problems: string[] = [];
   let queue: TrialQueueBatch[] = [];
+  let envWorkers: Array<{ name: string; capabilities: string[]; environments: WorkerEnvironment[] }> = [];
   let loadError = "";
   try {
     const vendored = await vendoredStyles();
@@ -80,11 +83,12 @@ export default async function StyleLibraryPage() {
     problems = vendored.problems;
     entries = await styleRegistry();
     // Stored rows only: no call to a worker or to GitHub while the page renders.
-    [caps, outcomes, templates, queue] = await Promise.all([
+    [caps, outcomes, templates, queue, envWorkers] = await Promise.all([
       reportedCapabilities().catch(() => [] as string[]),
       listTrialOutcomes().catch(() => [] as TrialOutcome[]),
       listTemplates().catch(() => [] as Template[]),
       trialQueue(),
+      workerEnvironmentRows().catch(() => []),
     ]);
   } catch (err) {
     console.error("styles page: could not load", err);
@@ -146,6 +150,7 @@ export default async function StyleLibraryPage() {
                   key={e.id}
                   entry={e}
                   caps={caps}
+                  envWorkers={envWorkers}
                   hermes={hermes}
                   outcomes={outcomes.filter((o) => o.packId === e.id)}
                   template={templates.find((t) => t.styleId === e.id) ?? null}
@@ -213,9 +218,12 @@ function PackCard({
   outcomes,
   template,
   variant,
+  envWorkers,
 }: {
   entry: RegistryEntry;
   caps: string[];
+  /** Stored worker rows (capabilities and reported environments), for the environment line of a pack that has one. */
+  envWorkers: Array<{ name: string; capabilities: string[]; environments: WorkerEnvironment[] }>;
   hermes: boolean;
   outcomes: TrialOutcome[];
   template: Template | null;
@@ -231,6 +239,7 @@ function PackCard({
   const variantOffered = variant?.pack && variant.pack.status === "trial" && hermes;
   const engine = ENGINES[pack.engine];
   const avail = availabilityOf(e, caps, { hermes });
+  const envLine = environmentLine(pack, envWorkers);
   const research = isResearchEngine(pack.engine);
   const counts = trialCounts(outcomes, pack.version);
   const issues = pack.status === "trial" ? packPromotionIssues(pack, template, counts) : [];
@@ -273,6 +282,11 @@ function PackCard({
             <Badge tone="warn">No worker reports {engine?.capability ?? pack.engine} yet</Badge>
           )}
         </span>
+        {envLine && (
+          <span data-testid="pack-environment">
+            <Badge tone={envLine.state === "ready" ? "ok" : envLine.state === "failed" ? "danger" : "warn"}>{envLine.text}</Badge>
+          </span>
+        )}
       </div>
 
       {labable && labOption && (

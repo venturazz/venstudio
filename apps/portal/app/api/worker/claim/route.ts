@@ -20,6 +20,20 @@ const schema = z.object({
   version: z.string().max(40),
   waitSeconds: z.number().int().min(0).max(300).optional(),
   jobTypes: z.array(z.string().max(40)).max(20).optional(),
+  // Worker 0.12.0+: how each environment its packs need stands (installing, ready after its probe, failed with why).
+  environments: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/),
+        version: z.string().regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}$/),
+        status: z.enum(["installing", "ready", "failed"]),
+        detail: z.string().max(500),
+        packs: z.array(z.string().max(80)).max(20),
+        at: z.string().max(40),
+      }),
+    )
+    .max(50)
+    .optional(),
 });
 
 /** Workers released before job types were sent can only run these. */
@@ -33,10 +47,12 @@ export async function POST(req: Request) {
     if (input instanceof Response) return input;
     const capabilities = sanitizeCapabilities(input.capabilities);
     const jobTypes = input.jobTypes ?? LEGACY_JOB_TYPES;
+    // A worker before 0.12.0 sends no environments: stored as an empty list, so nothing stale is shown for it.
+    const environments = JSON.stringify((input.environments ?? []).map((e) => ({ ...e, detail: e.detail.slice(0, 300) })));
     const sql = db();
     await sql`
       UPDATE workers SET capabilities = ${capabilities}::text[], mode = ${input.mode}, version = ${input.version},
-        job_types = ${jobTypes}::text[], last_claim_at = now()
+        job_types = ${jobTypes}::text[], environments = ${environments}::text::jsonb, last_claim_at = now()
       WHERE id = ${worker.id}
     `;
     // Workers in hold mode call here every ~25 s, so this is the studio's heartbeat when no page is open: it resumes

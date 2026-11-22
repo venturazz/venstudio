@@ -52,7 +52,9 @@ const RESEARCH_SKILLS = ["breakdown", "dan-koe", "graph", "kurzgesagt", "low-pol
 const RESEARCH_IDS = RESEARCH_SKILLS.map((s) => `hermes-${s}`);
 
 test("the vendored packs: the explainer and the six stills styles (Trial 1.0.1), the html-capture probe (Lab), the two claude-animation-skills adaptations (Trial 0.1.2), the Hermes research pack and one Hermes research pack per claude-animation-skills skill (Trial)", () => {
-  assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS, "hermes-research-explainer", "probe-line-graph", "animated-line-graph", "minimal-line-art", "hermes-designed-explainer", ...RESEARCH_IDS].sort());
+  assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS, "hermes-research-explainer", "probe-line-graph", "animated-line-graph", "minimal-line-art", "hermes-designed-explainer", "three-low-poly", ...RESEARCH_IDS].sort());
+  const command = pack("three-low-poly");
+  assert.deepEqual([command.status, command.engine, command.minWorkerVersion, command.composition, command.environment?.id, command.workflow?.recipe], ["draft", "command", "0.12.0", null, "three-svg", "image-sequence"]);
   const designed = pack("hermes-designed-explainer");
   assert.deepEqual([designed.status, designed.engine, designed.minWorkerVersion, designed.drawsCaptions, designed.workflow?.recipe], ["trial", "html-capture", "0.11.0", false, "html-design"]);
   assert.ok(designed.design && designed.design.palette.length >= 2 && designed.design.brief.length > 0, "the design brief is read");
@@ -133,10 +135,10 @@ test("the validator's vocabularies are the portal's", async () => {
 test("mergeRegistry: packs override their catalogue entry; the other catalogue styles are planned; unknown packs follow", () => {
   const extra = pack("documentary-stills", { id: "brand-new-look", name: "Brand new look" });
   const reg = mergeRegistry(STYLES, [...vendored, extra]);
-  assert.equal(reg.length, STYLES.length + 5 + RESEARCH_IDS.length);
+  assert.equal(reg.length, STYLES.length + 6 + RESEARCH_IDS.length);
   assert.deepEqual(reg.slice(0, STYLES.length).map((e) => e.id), STYLES.map((s) => s.id), "catalogue order is kept");
   // Packs the catalogue does not know follow, by id: the html-capture probe is one of them.
-  assert.deepEqual(reg.slice(STYLES.length).map((e) => e.id), ["animated-line-graph", "brand-new-look", "hermes-designed-explainer", ...RESEARCH_IDS, "minimal-line-art", "probe-line-graph"].sort());
+  assert.deepEqual(reg.slice(STYLES.length).map((e) => e.id), ["animated-line-graph", "brand-new-look", "hermes-designed-explainer", ...RESEARCH_IDS, "minimal-line-art", "probe-line-graph", "three-low-poly"].sort());
   // Their style comes from the pack's own contract, so they plan and render like a catalogue style (never as stills).
   const graph = reg.find((e) => e.id === "animated-line-graph")!;
   assert.equal(graph.catalogued, false);

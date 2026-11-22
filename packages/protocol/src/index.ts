@@ -50,6 +50,11 @@ export type Capability =
    * only after the html-capture probe and a still of the probe page passed on this machine. Worker 0.11.0+.
    */
   | "preview-frames"
+  /**
+   * render-video renders engine command: a style pack's fixed render argv run with the tools its environment
+   * installed, then the shared encode, caption, audio and probe steps. Reported where ffmpeg runs. Worker 0.12.0+.
+   */
+  | "command"
   | "remotion-3d"
   | "godot"
   | "manim"
@@ -57,7 +62,12 @@ export type Capability =
    * A style pack this worker installed (style-packs.json) and whose renderer probe passed here, at exactly this
    * version: `pack:<id>@<version>`. Worker 0.9.0+. The portal queues a render of a pack under this capability.
    */
-  | `pack:${string}`;
+  | `pack:${string}`
+  /**
+   * An environment a style pack's recipe installed on this worker (`env:<id>@<version>`, <home>/envs/<id>@<version>/),
+   * reported only after its probe passed here. Worker 0.12.0+.
+   */
+  | `env:${string}`;
 
 export const CAPABILITIES: readonly Capability[] = [
   "echo",
@@ -70,6 +80,7 @@ export const CAPABILITIES: readonly Capability[] = [
   "remotion-2d",
   "html-capture",
   "preview-frames",
+  "command",
   "remotion-3d",
   "godot",
   "manim",
@@ -109,7 +120,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.11.0";
+export const WORKER_VERSION = "0.12.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
@@ -119,6 +130,21 @@ export interface ClaimRequest {
   version: string;
   /** Long-poll: the portal may hold the request up to this many seconds (max 25) waiting for a job. */
   waitSeconds?: number;
+  /** The environments this worker's packs need and how their installs stand (worker 0.12.0+). */
+  environments?: EnvironmentReport[];
+}
+
+/** One environment on a worker: installing, ready (its probe passed; also reported as env:<id>@<version>) or failed. */
+export interface EnvironmentReport {
+  id: string;
+  version: string;
+  status: "installing" | "ready" | "failed";
+  /** Why it failed, or what it is doing. */
+  detail: string;
+  /** The packs that use it, as <id>@<version>. */
+  packs: string[];
+  /** When the status last changed (ISO 8601). */
+  at: string;
 }
 
 export interface ClaimedJob {
@@ -173,7 +199,7 @@ export interface ApiError {
 // Signed self-update (worker 0.8.0+). See docs/worker-updates.md and apps/portal/lib/update-manifest.ts.
 
 export interface UpdateManifestFile {
-  name: "venstudio-worker.ts" | "render-remotion.json" | "style-packs.json";
+  name: "venstudio-worker.ts" | "render-remotion.json" | "style-packs.json" | "env-packs.json";
   sha256: string;
   bytes: number;
 }
@@ -195,7 +221,7 @@ export interface UpdateManifest {
 export interface UpdateCheckRequest {
   version: string;
   /** SHA-256 of each file the worker has; the bundle is null without a Remotion project, "unknown" without its marker. */
-  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null; "style-packs.json"?: string | null };
+  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null; "style-packs.json"?: string | null; "env-packs.json"?: string | null };
   /** Id of the key this worker pinned, if any. */
   keyId?: string;
 }

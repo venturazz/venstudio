@@ -34,7 +34,7 @@ export const PACK_ASSET_SOURCES = ["upload", "hermes", "muse", "worker", "licens
 export const PACK_MUSIC_POLICIES = ["none", "self-generated", "licensed", "self-or-licensed"] as const;
 export const PACK_FRAMES = ["landscape", "portrait", "both"] as const;
 /** Engines VenStudio can run today (the validator's RUNNABLE_ENGINES); any other engine keeps a pack at draft. */
-export const RUNNABLE_ENGINES = ["ffmpeg-stills", "remotion-2d", "html-capture", "hermes"] as const;
+export const RUNNABLE_ENGINES = ["ffmpeg-stills", "remotion-2d", "html-capture", "hermes", "command"] as const;
 const RESEARCH_ENGINES = ["hermes"];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -561,6 +561,7 @@ export function synthesisMessages(i: {
     "Choose the renderer by what was learned, from these engines (reported = a worker can render it now):",
     ...i.engines.map((e) => `- ${e.id}: ${e.label}${e.reported ? " (reported)" : " (no worker reports it)"}`),
     "If the look needs a renderer no worker reports, name it anyway; the owner is told plainly. hermes is research only and is never published.",
+    "A look that needs tools no worker has (three.js, Godot, Manim, Blender, Python libraries) reaches workers as engine command: Hermes hands it over with the exact environment it rendered with (docs/hermes-handover.md). Nothing is built by guess.",
     "Recommend the workflow its runs follow (workflow), from these recipes:",
     ...RECIPE_IDS.map((id) => `- ${id}: ${RECIPES[id].summary}${RECIPES[id].implemented ? "" : " (not built yet)"}`),
     "Pick the one the look needs, even when it is not built yet; the owner is told plainly. scene-spec needs html-capture (or remotion-2d with element animation), hermes-skill needs hermes, image-sequence needs a picture per shot.",
@@ -611,20 +612,29 @@ export interface RendererVerdict {
  */
 export function rendererVerdict(engine: string, reported: readonly string[], opts: { hermes?: boolean } = {}): RendererVerdict {
   const e = Object.hasOwn(ENGINES, engine) ? ENGINES[engine] : undefined;
-  if (!e) return { engine, label: engine, available: false, researchOnly: false, text: `needs a renderer that isn't installed: ${engine} (VenStudio has no such renderer)` };
+  if (!e) return { engine, label: engine, available: false, researchOnly: false, text: `${HANDOVER_TEXT}; VenStudio has no ${engine} renderer, so the look renders as engine command with the exact tools Hermes used` };
   if (RESEARCH_ENGINES.includes(engine)) {
     return opts.hermes
       ? { engine, label: e.label, available: true, researchOnly: true, text: "Hermes renders it with its own tools: research and trials only, never published" }
       : { engine, label: e.label, available: false, researchOnly: true, text: "needs a renderer that isn't installed: hermes (set HERMES_BASE_URL); research only in any case" };
   }
   if (!(RUNNABLE_ENGINES as readonly string[]).includes(engine)) {
-    return { engine, label: e.label, available: false, researchOnly: false, text: `needs a renderer that isn't installed: ${engine} (VenStudio has no ${engine} renderer yet, so a pack for it stays a draft)` };
+    // A provider is bought, not handed over; every other engine is a set of tools Hermes can hand over (owner decision:
+    // nothing is pre-built by guess, learning flows Hermes -> venstudio-styles -> Muse).
+    if (engine === "provider-video") return { engine, label: e.label, available: false, researchOnly: false, text: `needs a renderer that isn't installed: ${engine} (no worker runs a video provider, so a pack for it stays a draft)` };
+    return { engine, label: e.label, available: false, researchOnly: false, text: `${HANDOVER_TEXT}; no worker has a ${engine} renderer, so the look renders as engine command with the exact tools Hermes used` };
   }
   if (!reported.includes(e.capability)) {
     return { engine, label: e.label, available: false, researchOnly: false, text: `needs a renderer that isn't installed: ${engine} (no worker reports ${e.capability})` };
   }
   return { engine, label: e.label, available: true, researchOnly: false, text: `A worker reports ${e.capability}` };
 }
+
+/**
+ * What the owner reads when a look needs tools no worker has: Hermes hands the style over (a PR to venstudio-styles with
+ * the pack, engine command, and the environment it actually used), CI proves it, the owner merges, workers install it.
+ */
+export const HANDOVER_TEXT = "needs an environment: hand it over from Hermes (docs/hermes-handover.md)";
 
 export type TrialOption = { ok: true; packId: string; templateId: string } | { ok: false; reason: string };
 

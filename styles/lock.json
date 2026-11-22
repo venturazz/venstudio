@@ -2,17 +2,18 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "d6630e7210004b57ffe334d682299b6e4f66a700"
+    "commit": "810fce701e4557939ad61e6ddcc1f1c6375f6552"
   },
   "files": {
-    "FORMAT.md": "31e57231100a9625eaf88602895a7a0f2b3606b6860ac2ae17b36c4d4a4c1068",
-    "schema/style.schema.json": "2a53935fb3a4c6a8a96306fb3c17f038a3d52683888512652430ed76990e2550",
+    "FORMAT.md": "3d71cd146c8f8ffae11d1adff30c167b2e140cb60ed66af694194b94dbb69032",
+    "schema/style.schema.json": "61df9bee75d6ad15669e4ab95cfa0c6c6f8ae06c0748cef072582e4cd1799595",
     "tools/assemble-remotion.mjs": "a505d58c69435cfb520aa0b0f7db380a8e937e86b6f3582a01cd4a54241b141b",
     "tools/check-video.mjs": "1e1bac7a4e8310488930b12ae4637f97dadb8b78a57b4b8a598749af509a1c3f",
     "tools/check-video.test.mjs": "52e176204378a6f8bac5aa965e83960281fc7d5648f9ae9794d0ac1e267947cc",
+    "tools/environment.test.mjs": "1db1bbc05972e3bf526b6aad467dd0731a3bc3d93ed0286fb52e793310bfb224",
     "tools/html-pages.test.mjs": "6aa2dfa20c59e538cf1239badad6b64086aedbfbd10bc576d709e9811bca866b",
-    "tools/validate.mjs": "39a9b333552c047f4678341ba506d939fc5f88454f62e187b0678c67c9b3e904",
-    "tools/validate.test.mjs": "f133e398d6b4884a0d6db5637c37ff39caa4b1c3485cf48af44955241e88b2bf"
+    "tools/validate.mjs": "8cee76220d8f5b258690964084a2fadb306e265428df136920ac25cdc18b5b82",
+    "tools/validate.test.mjs": "c554f3aa97fc10b60f65cf7e13b6484970d6c2978853335d375eda49114dc731"
   },
   "packs": [
     {
@@ -333,6 +334,25 @@
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "6fa48175230657a206baaaf80db82e5ea9ab2af6c34726928edf0078ae09ce71",
         "style.json": "d765a1e550b4f3224853ce77724378f3a95c5e57549af7171cb87ff3d29e1666"
+      }
+    },
+    {
+      "id": "three-low-poly",
+      "version": "0.1.0",
+      "status": "draft",
+      "engine": "command",
+      "composition": null,
+      "sha256": "1050d81748c61a542ebcd7c91afda25031cc7af68a825814f69c71915c162f8f",
+      "files": {
+        "README.md": "81cc6670f76611cc32a543cede2735ab7f5e8e79e3ff3db6c0828a1658891d6a",
+        "env/package-lock.json": "2a74303b7bf2db19ef35a751adf91ed6672450ab7b95452a1ac30930e871efca",
+        "env/package.json": "66bf109b60ed6858fc109c80f050ca083dd2e112ecbaaeec09e22ab4cce3f3bb",
+        "fixtures/expect.json": "5e6d188555030db3ed34da1cf57ae7c9073b9331bd7955d844d95d5891006ac1",
+        "fixtures/payload.json": "83c358e872dee080ffc644c8d8470bef65a769b76286ebf1773646872760b24f",
+        "render/probe.mjs": "793e800f8e061b7c8016e3d9a716f8a4583f13327c495f083f5fc77c8fa60fc2",
+        "render/render.mjs": "239468bd8bb9a05f621e8cad99d3614165c3c0a017dc3c8b975059a813790fff",
+        "render/scene.mjs": "87b375f2d2a8dd970d8df5c591baac6e0746d8bf75e9ab151e29f2b0285a81ea",
+        "style.json": "298c79259d6ae351a35296b99b82354b69ef9e15c294152b93d1e4e3023dc854"
       }
     },
     {

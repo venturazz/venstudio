@@ -53,6 +53,8 @@ export interface OfferedTemplate {
   lab?: boolean;
   /** The workflow its runs follow, for the owner (recipes.ts workflowText), e.g. "Scene spec (...): Idea → ...". */
   workflow?: string;
+  /** A pack with an environment: the worker-availability line ("A worker has env:<id>@<v>", installing…, failed: why). */
+  environment?: { state: "ready" | "installing" | "failed" | "none"; text: string };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

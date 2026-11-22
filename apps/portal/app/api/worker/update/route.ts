@@ -17,6 +17,7 @@ const schema = z.object({
       "render-remotion.json": z.union([sha, z.literal("unknown"), z.null()]),
       // Worker 0.9.0+: the installed style packs index, null when none is installed yet. Absent from older workers.
       "style-packs.json": z.union([sha, z.null()]).optional(),
+      "env-packs.json": z.union([sha, z.null()]).optional(),
     })
     .optional(),
   keyId: z.string().regex(/^[0-9a-f]{16}$/).optional(),

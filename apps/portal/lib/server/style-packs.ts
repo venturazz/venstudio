@@ -9,6 +9,7 @@ import { STYLES } from "../studio/catalog.ts";
 import { isResearchRecipe } from "../studio/recipes.ts";
 import { mergeRegistry, packSeedTemplate, parsePack, type OwnerDecision, type RegistryEntry, type StylePack, type TrialGate, type TrialOutcome } from "../studio/style-registry.ts";
 import { packsIndex, type PacksIndex } from "../style-packs-index.ts";
+import { envPacksBundle, type EnvPacksBundle } from "../env-packs.ts";
 import { readAdvisory, readRubric } from "../studio/presentation.ts";
 import type { HtmlPackSource, RemotionPackSource } from "../install-bundle.ts";
 import type { Template } from "../studio/templates.ts";
@@ -150,6 +151,15 @@ export async function packContract(id: string): Promise<Record<string, unknown> 
 export async function servedPacksIndex(): Promise<PacksIndex> {
   const v = await vendoredStyles();
   return packsIndex({ commit: v.commit, packs: v.packs });
+}
+
+/** /install/env-packs.json: every pack with an environment, with all its files (worker 0.12.0+). */
+export async function servedEnvPacks(): Promise<EnvPacksBundle> {
+  const v = await vendoredStyles();
+  return envPacksBundle({
+    commit: v.commit,
+    packs: v.packs.filter((p) => p.environment).map((p) => ({ id: p.id, version: p.version, sha256: p.sha256, files: v.files.get(p.id) ?? new Map<string, string>() })),
+  });
 }
 
 /** The render projects of the remotion-2d packs, for the Remotion bundle. */

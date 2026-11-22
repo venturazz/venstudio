@@ -626,6 +626,54 @@ function dbExec(sql) {
   if (!dbUrl) return null;
   return execFileSync("psql", [dbUrl, "-X", "-qtA", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
+/** The first engine command pack (docs/hermes-handover.md): its version and environment, read from the vendored copy. */
+const ENV_PACK = "three-low-poly";
+function envPackFacts() {
+  const s = JSON.parse(readFileSync(path.join(ROOT, "styles", "packs", ENV_PACK, "style.json"), "utf8"));
+  return { version: packVersion(ENV_PACK), cap: `env:${s.environment.id}@${s.environment.version}`, env: s.environment };
+}
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Styles, Workers and New Video show the engine command pack and its environment line, scoped to that pack's card. With
+ * database access, a draining check worker reports the environment as failed with a known reason, so the line is
+ * predictable: "A worker has env:..." when a real worker has it, else installing or failed. The check worker is removed.
+ */
+async function checkEnvironmentPack(page) {
+  const { version, cap, env } = envPackFacts();
+  const checkName = "UI env check";
+  const reason = "UI check: sha256 mismatch (not a real install)";
+  const inserted = dbExec(
+    `INSERT INTO workers (name, host, status, last_seen_at, environments) VALUES ('${checkName}', 'local', 'draining', now(), '${JSON.stringify([{ id: env.id, version: env.version, status: "failed", detail: reason, packs: [`${ENV_PACK}@${version}`], at: new Date().toISOString() }])}'::jsonb) RETURNING id`,
+  );
+  try {
+    await page.goto(`${APP}/studio/styles`);
+    const card = page.getByTestId(`style-pack-${ENV_PACK}`);
+    await card.getByText("Draft", { exact: true }).first().waitFor();
+    await card.getByText(/Renderer: A pack's own renderer/).first().waitFor();
+    const line = card.getByTestId("pack-environment");
+    const any = new RegExp(`^(A worker has ${reEsc(cap)}|${reEsc(cap)}: installing… on .+|${reEsc(cap)}: failed on .+: .+|No worker has ${reEsc(cap)} yet .+)$`);
+    await line.getByText(any).first().waitFor();
+    if (inserted !== null) {
+      const has = Number(dbValue(`SELECT count(*) FROM workers WHERE status <> 'revoked' AND '${cap}' = ANY(capabilities)`));
+      const installing = Number(dbValue(`SELECT count(*) FROM workers w, jsonb_array_elements(w.environments) e WHERE w.status <> 'revoked' AND e->>'id' = '${env.id}' AND e->>'version' = '${env.version}' AND e->>'status' = 'installing'`));
+      const want = has > 0 ? new RegExp(`^A worker has ${reEsc(cap)}$`) : installing > 0 ? new RegExp(`^${reEsc(cap)}: installing… on .+$`) : new RegExp(`^${reEsc(cap)}: failed on .+: .+$`);
+      await line.getByText(want).first().waitFor();
+      console.log(`   ${ENV_PACK}@${version}: ${(await line.innerText()).trim()}`);
+      await page.goto(`${APP}/workers`);
+      const list = page.getByTestId(`worker-environments-${checkName}`);
+      await list.getByText(`${cap}: failed: ${reason} (for ${ENV_PACK}@${version})`, { exact: true }).first().waitFor();
+    }
+    // New Video, as a lab trial of the Draft pack: the engine line names the environment when a worker can render it,
+    // otherwise the page says exactly why the lab trial cannot start.
+    await page.goto(`${APP}/studio/new?lab=${ENV_PACK}`);
+    const engineEnv = page.getByTestId("engine-environment");
+    const refused = page.getByText(new RegExp(`A lab trial of .+ cannot start: (No worker reports command|No worker has ${reEsc(cap)} yet|No worker reports pack:${reEsc(ENV_PACK)}@${reEsc(version)} yet)`));
+    await engineEnv.or(refused).first().waitFor();
+    if (await engineEnv.count()) await engineEnv.getByText(new RegExp(`^A worker has ${reEsc(cap)}$`)).first().waitFor();
+  } finally {
+    dbExec(`DELETE FROM workers WHERE name = '${checkName}'`);
+  }
+}
 function runWorker(args) {
   return execFileSync("bash", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
@@ -1567,6 +1615,9 @@ try {
       if (scored !== "80 owner 5 remotion-2d") throw new Error(`the curation log has "${scored}", expected the owner's 80 with its rubric and the remotion-2d renderer`);
       await explainerCard.getByTestId("promotion-issues").getByText("Needs at least 5 trial runs (has 1)", { exact: true }).waitFor();
     }
+    await checkEnvironmentPack(page);
+    // checkEnvironmentPack ends on New Video; the planned-style checks are on Styles.
+    await page.goto(`${APP}/studio/styles`);
     const plannedCard = page.getByTestId("planned-style-kinetic-facts");
     await plannedCard.getByText("Planned", { exact: true }).waitFor();
     await plannedCard.getByText("Not selectable for a run", { exact: true }).waitFor();
