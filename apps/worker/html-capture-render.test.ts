@@ -56,7 +56,7 @@ function systemFont(): string | null {
 
 function ctxFor(workDir: string, home: string, type: string, payload: Record<string, unknown>, files: Map<string, string>, kept: Map<string, string>, capability: string): JobContext {
   return {
-    job: { id: `eeeeeeee-4444-4444-8444-${type === "qc-video" ? "000000000002" : "000000000001"}`, type: type as JobContext["job"]["type"], payload, capability, attempt: 1, leaseExpiresAt: "", heartbeatIntervalSeconds: 30 },
+    job: { id: `eeeeeeee-4444-4444-8444-${type === "qc-video" ? "000000000002" : "000000000001"}`, type: type as JobContext["job"]["type"], payload, capability: capability as JobContext["job"]["capability"], attempt: 1, leaseExpiresAt: "", heartbeatIntervalSeconds: 30 },
     workDir,
     home,
     signal: new AbortController().signal,

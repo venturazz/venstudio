@@ -85,7 +85,15 @@ VENSTUDIO_REMOTION_DIR=/tmp/vs-remotion node --test apps/worker/html-capture-ren
 the above; the styles repo's CI runs `capture-html` with its vendored copy of this worker
 (`runtime/html-capture/venstudio-worker.ts`) and `check-video.mjs`.
 
-## The first pack
+## The packs
+
+`animated-line-graph` and `minimal-line-art` (status `draft` until CI has rendered them) adapt the `graph` and
+`minimalistic-graphics` skills of github.com/artemnovitckii/claude-animation-skills (MIT, fonts OFL; commit
+`86f70106c9ae`) to this contract: data from the render payload, plain JavaScript and SVG with a small frame-driven
+timeline instead of GSAP, fonts embedded as `data:` URLs. CI renders every vendored html-capture pack the same way
+(`html-capture-render.test.ts` loops over `styles/lock.json`). See `docs/template-lab.md`.
+
+### The first pack
 
 `probe-line-graph` (status `lab`): an original line graph written for VenStudio, with a heading, a line that draws
 itself with its points popping in, and a counter. Its page is plain JavaScript and SVG driven by the frame number:

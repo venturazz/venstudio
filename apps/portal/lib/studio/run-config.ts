@@ -38,7 +38,14 @@ export interface RunConfig {
    * the Trial badge and recorded in the curation log; later publishing must refuse it. Absent on runs from before packs.
    */
   stylePack?: RunStylePack;
+  /**
+   * The Template Lab study this run is a trial for (additive, docs/template-lab.md). Such a run is always a trial:
+   * startRun marks its stylePack trial, and the study page lists it with its QC and presentation scores.
+   */
+  labStudyId?: string;
 }
+
+const STUDY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -65,6 +72,7 @@ export function parseRunConfig(raw: unknown): RunConfig {
     subtitles: strings(c.subtitles),
     themeSource: source,
     ...stylePackOf(c.stylePack),
+    ...(typeof c.labStudyId === "string" && STUDY_ID_RE.test(c.labStudyId) ? { labStudyId: c.labStudyId } : {}),
   };
 }
 
@@ -173,6 +181,8 @@ export interface RunFormPrefill {
   brief: string;
   /** The saved plan this came from, kept on the run as `production_id`. */
   productionId: string;
+  /** A Template Lab study the run is a trial for (from "Start a trial video with the closest pack"), or empty. */
+  labStudyId?: string;
 }
 
 export const EMPTY_PREFILL: RunFormPrefill = {
@@ -250,5 +260,6 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
     ...(config.stylePack
       ? [{ label: "Style pack", value: `${config.stylePack.id} ${config.stylePack.version}${config.stylePack.trial ? ", Trial: research only, not for publishing" : ""}` }]
       : []),
+    ...(config.labStudyId ? [{ label: "Lab study", value: config.labStudyId }] : []),
   ];
 }

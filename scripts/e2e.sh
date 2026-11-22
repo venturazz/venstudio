@@ -147,6 +147,30 @@ q "UPDATE style_trial_outcomes SET owner_rubric = '[5,4]' WHERE run_id = '$TRUN'
 q "UPDATE style_trial_outcomes SET renderer = 'Not A Renderer' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a malformed renderer"
 q "DELETE FROM pipeline_runs WHERE id = '$TRUN'" >/dev/null
 
+echo "== migration 0017: Template Lab studies and sources, additive only"
+for T in lab_studies lab_sources; do
+  [ "$(q "SELECT to_regclass('public.$T') IS NOT NULL")" = "t" ] || fail "table $T missing after migration 0017"
+done
+for col in id title goal base_pack notes draft draft_state draft_error draft_at revision revisions created_by created_at updated_at; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'lab_studies' AND column_name = '$col'")" = "1" ] || fail "column lab_studies.$col missing after migration 0017"
+done
+for col in id study_id type ref ref_path licence asset_id analysis_job_id status reason findings created_by created_at updated_at; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'lab_sources' AND column_name = '$col'")" = "1" ] || fail "column lab_sources.$col missing after migration 0017"
+done
+[ "$(q "SELECT count(*) FROM lab_studies")" = "0" ] || fail "lab_studies should start empty"
+LSTUDY=$(q "INSERT INTO lab_studies (title, notes) VALUES ('e2e study', 'calm pace') RETURNING id")
+[ "$(q "SELECT goal || ' ' || draft_state || ' ' || revision || ' ' || jsonb_array_length(revisions) FROM lab_studies WHERE id = '$LSTUDY'")" = "new none 0 0" ] || fail "a new study does not start as a new style with no draft and no revision"
+q "INSERT INTO lab_sources (study_id, type, ref, licence) VALUES ('$LSTUDY', 'link', 'https://www.youtube.com/watch?v=e2e', 'unknown')" >/dev/null || fail "lab_sources refused a YouTube link with an unknown licence"
+q "INSERT INTO lab_sources (study_id, type, ref, licence, status) VALUES ('$LSTUDY', 'owner-note', 'slower cuts', 'owner', 'analyzed')" >/dev/null || fail "lab_sources refused an owner note"
+q "INSERT INTO lab_sources (study_id, type, ref, licence) VALUES ('$LSTUDY', 'link', 'www.youtube.com/watch?v=e2e', 'unknown')" >/dev/null 2>&1 && fail "lab_sources accepted a link that is not an http(s) URL"
+q "INSERT INTO lab_sources (study_id, type, ref, licence) VALUES ('$LSTUDY', 'link', 'https://example.org/x', '')" >/dev/null 2>&1 && fail "lab_sources accepted a source without a licence"
+q "INSERT INTO lab_sources (study_id, type, ref, licence) VALUES ('$LSTUDY', 'frames', 'x', 'unknown')" >/dev/null 2>&1 && fail "lab_sources accepted an unknown source type"
+q "UPDATE lab_sources SET status = 'failed' WHERE study_id = '$LSTUDY' AND type = 'link'" >/dev/null 2>&1 && fail "lab_sources accepted a failed source without a reason"
+q "UPDATE lab_studies SET revision = 6 WHERE id = '$LSTUDY'" >/dev/null 2>&1 && fail "lab_studies accepted more than 5 revisions"
+q "UPDATE lab_studies SET draft_state = 'maybe' WHERE id = '$LSTUDY'" >/dev/null 2>&1 && fail "lab_studies accepted an unknown draft state"
+q "DELETE FROM lab_studies WHERE id = '$LSTUDY'" >/dev/null
+[ "$(q "SELECT count(*) FROM lab_sources")" = "0" ] || fail "a study's sources must go with the study"
+
 echo "== migration 0007 created the template and pipeline tables"
 for T in templates template_versions template_trials pipeline_runs pipeline_stages work_orders qc_reports; do
   [ "$(q "SELECT to_regclass('public.$T') IS NOT NULL")" = "t" ] || fail "table $T missing after migration 0007"

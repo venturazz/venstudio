@@ -124,6 +124,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
         </Alert>
       )}
       <input type="hidden" name="productionId" value={prefill.productionId} />
+      <input type="hidden" name="labStudyId" value={prefill.labStudyId ?? ""} />
 
       <Field label="Channel" htmlFor="channelId">
         <Select id="channelId" name="channelId" value={channelId} onChange={(e) => pickChannel(e.target.value)} required>
@@ -221,7 +222,16 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             )}
           </Select>
         </Field>
-        {template?.trial && (
+        {prefill.labStudyId && (
+          <p className="text-xs text-muted" data-testid="lab-study-link">
+            Linked to a Template Lab study: this run is a trial whatever the style&apos;s status, and its result shows on the{" "}
+            <Link href={`/studio/lab/${prefill.labStudyId}`} className="text-accent underline-offset-2 hover:underline">
+              study page
+            </Link>
+            .
+          </p>
+        )}
+        {(template?.trial || (prefill.labStudyId && template)) && (
           <Alert tone="warn">
             <span data-testid="trial-style-note">
               {TRIAL_BADGE}: research only, not for publishing. The run is marked as a trial and its result is recorded for the style&apos;s curation.

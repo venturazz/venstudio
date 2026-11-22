@@ -99,6 +99,53 @@ function directorReply(messages) {
   const first = textOf(messages.find((m) => m.role === "user")?.content);
   const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
   if (stage === "selftest") return '{"ok":true,"sum":5}';
+  // Template Lab (Phase 3): notes on one source, then a draft pack spec. The source is only named in a DATA block;
+  // the fake never looks it up, and the portal must not either.
+  if (stage === "lab-source") {
+    fakeStats.labSourceAsks++;
+    const src = /<<<DATA source\n([\s\S]*?)\nDATA source>>>/.exec(first)?.[1] ?? "";
+    const type = /^type: (\w[\w-]*)/m.exec(src)?.[1] ?? "";
+    if (/youtube/i.test(src)) {
+      fakeStats.labYoutubeAsks++;
+      fakeStats.labYoutubePrompt = first;
+    }
+    return JSON.stringify({
+      pacing: "Short shots, a cut every two to three seconds",
+      transitions: "Hard cuts, no wipes",
+      textLayout: "One large number near the top, a small plain label above it",
+      motion: "A line draws itself while the number counts up",
+      hookStructure: "The number starts moving within the first second",
+      audioFeel: "Calm narration, quiet bed",
+      summary: `Fake notes on a ${type} source: one number, one line, calm pace.`,
+      numbers: { shotSeconds: [2, 4], cutsPerMinute: [15, 25], hookWithinMs: 900 },
+      ...(type === "repo" ? { licence: "MIT", techniques: ["HTML page captured frame by frame", "Paused timeline seeked per frame"] } : {}),
+    });
+  }
+  if (stage === "lab-synthesis") {
+    fakeStats.labSynthesisAsks++;
+    const revised = /<<<DATA owner revision note\n([\s\S]*?)\nDATA owner revision note>>>/.exec(first)?.[1];
+    return JSON.stringify({
+      packId: "e2e-calm-count-up",
+      name: `E2E calm count-up${revised ? " (revised)" : ""}`,
+      description: "One line draws itself while one number counts up; a plain label, calm narration.",
+      family: "motion-graphics",
+      formats: { supported: ["short"], naturalFrame: "portrait" },
+      renderer: "remotion-2d",
+      contract: {
+        pacing: { shotSeconds: [9, 12], hookWithinMs: 5000, cutsPerMinute: [5, 6], transitionSec: 0 },
+        onScreen: { elements: ["heading", "counter", "bar"], motionTokens: ["draw", "counter"], elementAnimation: true },
+        captions: { required: true, safeAreaPct: 8 },
+        audio: { narrated: true, targetLufs: -14, maxTruePeakDb: -1, musicPolicy: "self-or-licensed" },
+        assets: { model: "plates-and-diagrams", kinds: ["image"], allowedSources: ["upload", "hermes", "worker", "generated"], forbidKinds: ["reference-video"] },
+      },
+      themes: ["finance"],
+      keywords: ["count up", "line graph"],
+      cautions: ["Never invent data."],
+      rationale: "Every source animates one number with one line; Remotion draws that on the workers that report it.",
+      closestPack: "explainer-flat-vector",
+      closestReason: "Animated counters and bars over plates.",
+    });
+  }
   // Renderer hermes (research only): Hermes renders the whole video and publishes it under /clip/ on its media host.
   if (stage === "hermes-render") {
     fakeStats.hermesRenders++;
@@ -254,7 +301,7 @@ function fakeClipBytes() {
   return fakeClip;
 }
 
-const fakeStats = { hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
+const fakeStats = { labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -270,6 +317,13 @@ const fakeHermes = createServer((req, res) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
+  // Tripwire: nothing may ever ask this server for a YouTube page (a study's link is only ever named to Hermes).
+  if (/youtube|youtu\.be/i.test(`${req.headers.host ?? ""}${req.url ?? ""}`)) {
+    fakeStats.youtubeHits++;
+    console.error(`FAKE HERMES: a request for YouTube reached it: ${req.method} ${req.headers.host}${req.url}`);
+    res.writeHead(599);
+    return res.end("the e2e forbids any request to YouTube");
+  }
   // The fake image link is public, like a real image host. It answers before the key check.
   const link = /^\/fake-image\/(\d+)\.png$/.exec(req.url ?? "");
   if (link) {
@@ -685,7 +739,7 @@ try {
   await page.goto(`${APP}/studio`);
   const studioNav = page.getByRole("navigation", { name: "Studio" });
   await studioNav.getByRole("link", { name: "New video", exact: true }).waitFor();
-  for (const name of ["Runs", "Styles", "Templates", "Test render"]) await studioNav.getByRole("link", { name, exact: true }).waitFor();
+  for (const name of ["Runs", "Styles", "Lab", "Templates", "Test render"]) await studioNav.getByRole("link", { name, exact: true }).waitFor();
   if ((await page.getByText("New production", { exact: true }).count()) !== 0) throw new Error("/studio still offers New production");
   if ((await page.getByText(/Planning only/).count()) !== 0) throw new Error("/studio still says Planning only");
   // Old links keep working: the run list moved to /studio.
@@ -1543,6 +1597,163 @@ try {
   step("director: reject cancels the run and empties the inbox");
   await m.getByRole("button", { name: "Reject" }).first().click();
   await m.getByText("Nothing waiting for you.").waitFor();
+
+  step("template lab: a study with an upload, a YouTube link and a repo; Hermes's notes and draft; export; revise; a trial from the study");
+  {
+    // Neither browser may load anything from YouTube (no embed, no thumbnail): every such request is recorded and aborted.
+    const youtubeFromBrowser = [];
+    for (const ctx of [desktop, mobile]) {
+      await ctx.route(/^https?:\/\/([^/]*\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com|ytimg\.com|googlevideo\.com)\//, (route) => {
+        youtubeFromBrowser.push(route.request().url());
+        return route.abort();
+      });
+    }
+    const YT = "https://www.youtube.com/watch?v=venstudioE2E";
+    const REPO = "https://github.com/artemnovitckii/claude-animation-skills";
+    await page.goto(`${APP}/studio/lab`);
+    await page.getByRole("heading", { name: "Template Lab", exact: true }).waitFor();
+    const form = page.getByTestId("new-study-form");
+    await form.getByLabel("Name", { exact: true }).fill("E2E count-up study");
+    await form.getByLabel("Your notes (optional)").fill("Bigger numbers, calm pace");
+    await form.getByRole("button", { name: "Start the study", exact: true }).click();
+    await page.waitForURL(/\/studio\/lab\/[0-9a-f-]{36}$/);
+    const studyId = /([0-9a-f-]{36})$/.exec(page.url())[1];
+    const studyHref = `/studio/lab/${studyId}`;
+
+    // An upload with rights: the reference analyzed in the assets step (its analysis is reused, no new worker job).
+    const upload = page.getByTestId("add-upload");
+    await upload.getByLabel("Upload (with rights)").selectOption({ label: "Test reference" });
+    await upload.getByRole("button", { name: "Add the upload", exact: true }).click();
+    await page.getByText("Upload added. Its analysis is linked.", { exact: true }).waitFor();
+    const link = page.getByTestId("add-link");
+    await link.getByLabel("Public link (YouTube included)").fill(YT);
+    await link.getByRole("button", { name: "Add the link", exact: true }).click();
+    await page.getByText("Link added. Hermes is looking at it.", { exact: true }).waitFor();
+    const repo = page.getByTestId("add-repo");
+    await repo.getByLabel("Public repository").fill(REPO);
+    await repo.getByLabel("Path inside it (optional)").fill("skills/graph");
+    await repo.getByRole("button", { name: "Add the repository", exact: true }).click();
+    await page.getByText("Repository added. Hermes is reading it.", { exact: true }).waitFor();
+
+    const analyzed = page.locator('[data-testid="lab-source"][data-status="analyzed"]');
+    for (let i = 0; i < 30 && (await analyzed.count()) < 3; i++) {
+      await page.waitForTimeout(1000);
+      await page.goto(`${APP}${studyHref}`);
+    }
+    if ((await analyzed.count()) !== 3) {
+      const text = (await page.getByTestId("lab-sources").innerText()).replace(/\s+/g, " ").slice(0, 1500);
+      throw new Error(`the three sources are not analyzed: ${text}`);
+    }
+    const src = (type) => page.locator(`[data-testid="lab-source"][data-type="${type}"]`);
+    await src("upload").getByTestId("source-licence").getByText("Own test clip, study only", { exact: true }).waitFor();
+    await src("upload").getByTestId("source-measured").waitFor();
+    await src("link").getByTestId("source-licence").getByText("unknown", { exact: true }).waitFor();
+    await src("link").getByText("YouTube: watched, never downloaded", { exact: true }).waitFor();
+    await src("link").getByTestId("source-notes").getByText("Fake notes on a link source: one number, one line, calm pace.", { exact: true }).waitFor();
+    await src("repo").getByTestId("source-licence").getByText("MIT (read by Hermes)", { exact: true }).waitFor();
+    await src("repo").getByTestId("source-ref").getByText(`${REPO} · path skills/graph`, { exact: true }).waitFor();
+    if (fakeStats.labSourceAsks < 2 || fakeStats.labYoutubeAsks < 1) throw new Error(`Hermes was asked about ${fakeStats.labSourceAsks} source(s), ${fakeStats.labYoutubeAsks} of them YouTube`);
+    // The link reached Hermes only as data: inside the DATA block, with the watch-only rule outside it.
+    const ytAsk = fakeStats.labYoutubePrompt;
+    if (!dataBlock(ytAsk, "source").includes(`reference: ${YT}`)) throw new Error("the YouTube link did not reach Hermes in a DATA block");
+    if (ytAsk.replace(/<<<DATA source\n[\s\S]*?\nDATA source>>>/, "").includes(YT)) throw new Error("the YouTube link appears outside the DATA block");
+    if (!/do not download it/.test(ytAsk)) throw new Error("Hermes was not told not to download the YouTube video");
+    const sourceRows = dbValue(`SELECT string_agg(type || ':' || status || ':' || licence, ' | ' ORDER BY created_at) FROM lab_sources WHERE study_id = '${studyId}'`);
+    if (sourceRows !== null && sourceRows !== "upload:analyzed:Own test clip, study only | link:analyzed:unknown | repo:analyzed:MIT (read by Hermes)") throw new Error(`lab_sources has "${sourceRows}"`);
+    // Only notes are stored for the link: its findings are the validated JSON, never media.
+    const linkFindings = dbValue(`SELECT findings->>'kind' || ' ' || (findings::text ~* '(base64|\\.mp4|googlevideo)')::text FROM lab_sources WHERE study_id = '${studyId}' AND type = 'link'`);
+    if (linkFindings !== null && linkFindings !== "hermes-notes false") throw new Error(`the link's findings are "${linkFindings}"`);
+
+    // Synthesis: Hermes's draft, with the numbers measured from the upload overriding its guesses.
+    await page.getByRole("button", { name: "Synthesize a draft pack", exact: true }).click();
+    await page.getByText("Hermes is drafting the pack.", { exact: true }).waitFor();
+    const draftName = page.getByTestId("draft-name");
+    for (let i = 0; i < 30 && !(await draftName.isVisible().catch(() => false)); i++) {
+      await page.waitForTimeout(1000);
+      await page.goto(`${APP}${studyHref}`);
+    }
+    await draftName.getByText("E2E calm count-up", { exact: true }).waitFor();
+    const synthAsk = lastPrompt["lab-synthesis"] ?? "";
+    if (!dataBlock(synthAsk, "study").includes("Bigger numbers, calm pace")) throw new Error("the synthesis prompt carries no study DATA block with the owner's notes");
+    if (!dataBlock(synthAsk, "measured numbers")) throw new Error("the synthesis prompt carries no measured numbers");
+    await page.getByTestId("renderer-verdict").getByText("A worker reports remotion-2d", { exact: true }).waitFor();
+    const measured = await page.getByTestId("draft-measured").innerText();
+    if (!measured.includes("contract.pacing.shotSeconds") || !measured.includes("contract.pacing.hookWithinMs")) throw new Error(`the draft's measured fields are "${measured}"`);
+    if ((await page.getByTestId("draft-summary").innerText()).includes("shots 9-12 s")) throw new Error("Hermes's guessed shot lengths were kept over the measured ones");
+    await page.getByTestId("draft-closest").getByText(/^explainer-flat-vector: /).waitFor();
+    await shot("26-lab-study-desktop");
+
+    // Export: one JSON file the vendored styles validator accepts.
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: "Download draft pack", exact: true }).click()]);
+    const exported = JSON.parse(readFileSync(await download.path(), "utf8"));
+    if (exported.kind !== "venstudio-lab-draft-pack" || exported.packId !== "e2e-calm-count-up") throw new Error(`the export is ${exported.kind} ${exported.packId}`);
+    const validator = await import(path.join(ROOT, "styles/tools/validate.mjs"));
+    const style = JSON.parse(exported.files["packs/e2e-calm-count-up/style.json"]);
+    const styleIssues = validator.validateStyle(style, { dirName: "e2e-calm-count-up" });
+    if (styleIssues.length) throw new Error(`the exported style.json is not valid: ${styleIssues.join("; ")}`);
+    if (style.status !== "draft" || style.provenance.length !== 3) throw new Error(`the exported style.json is ${style.status} with ${style.provenance.length} sources`);
+    const licences = style.provenance.map((p) => `${p.type}:${p.licence}`).join(" | ");
+    if (licences !== "upload:Own test clip, study only | link:unknown | repo:MIT (as read by Hermes; check before adapting code)") throw new Error(`the provenance licences are "${licences}"`);
+    if (style.provenance[1].ref !== YT || !/never downloaded/.test(style.provenance[1].notes)) throw new Error("the YouTube source's provenance is not the link with its watched-only note");
+    if (!exported.steps.some((t) => t.includes("no GitHub token"))) throw new Error("the export does not say that no GitHub token is needed");
+    await page.getByTestId("export-steps").getByText("node tools/validate.mjs", { exact: false }).first().waitFor();
+
+    // One revision through Hermes, with the owner's note.
+    const revise = page.getByTestId("revise-form");
+    await revise.getByLabel(/^Ask for a revision \(0 of 5 used\)/).fill("Slower, please");
+    await revise.getByRole("button", { name: "Revise the draft", exact: true }).click();
+    await page.getByText("Hermes is revising the draft.", { exact: true }).waitFor();
+    for (let i = 0; i < 30 && !(await page.getByTestId("draft-name").getByText("E2E calm count-up (revised)", { exact: true }).isVisible().catch(() => false)); i++) {
+      await page.waitForTimeout(1000);
+      await page.goto(`${APP}${studyHref}`);
+    }
+    await page.getByTestId("draft-name").getByText("E2E calm count-up (revised)", { exact: true }).waitFor();
+    await page.getByTestId("revisions").getByText("Revision 1: Slower, please", { exact: true }).waitFor();
+    if (!dataBlock(lastPrompt["lab-synthesis"] ?? "", "owner revision note").includes("Slower, please")) throw new Error("the revision note did not reach Hermes in a DATA block");
+
+    // A trial from the study: New Video pre-filled with the closest pack and the study's notes; the run is linked.
+    await page.getByRole("link", { name: "Start a trial video with the closest pack", exact: true }).click();
+    await page.waitForURL(new RegExp(`/studio/new\\?study=${studyId}$`));
+    await page.getByTestId("lab-study-trial-note").getByText(/^Trial for the lab study "E2E count-up study" with the closest pack, explainer-flat-vector\./).waitFor();
+    await page.getByTestId("lab-study-link").waitFor();
+    if ((await page.locator("#templateId").inputValue()) !== "tpl-explainer-flat-vector") throw new Error("New Video is not pre-filled with the closest pack");
+    if (!(await page.locator("#brief").inputValue()).startsWith('Trial for the Template Lab study "E2E count-up study".\nOwner notes: Bigger numbers, calm pace')) throw new Error("New Video's brief is not the study's notes");
+    await page.selectOption("#channelId", { label: "Myth Stories" });
+    await page.getByRole("button", { name: "Ask Hermes for ideas", exact: true }).click();
+    await page.getByText("Run started.", { exact: false }).first().waitFor();
+    const linked = dbValue(`SELECT (config->'stylePack'->>'trial') || ' ' || (config->'stylePack'->>'id') FROM pipeline_runs WHERE config->>'labStudyId' = '${studyId}'`);
+    if (linked !== null && linked !== "true explainer-flat-vector") throw new Error(`the study's trial run is "${linked}"`);
+    await page.goto(`${APP}${studyHref}`);
+    const trialRow = page.getByTestId("lab-trial");
+    await trialRow.getByRole("link", { name: "Trial run with explainer-flat-vector 1.0.0", exact: true }).waitFor();
+    await trialRow.getByTestId("trial-outcome").getByText(/^QC: not run yet · presentation not scored · decision none yet/).waitFor();
+
+    // 390 px.
+    await m.goto(`${APP}${studyHref}`);
+    await m.getByTestId("lab-trial").first().waitFor();
+    await assertNoOverflow(m, studyHref);
+    await assertTapTargets(m, [["Revise the draft", m.getByRole("button", { name: "Revise the draft", exact: true })]]);
+    await shot("27-lab-study-mobile", m);
+    await m.goto(`${APP}/studio/lab`);
+    await m.getByTestId("lab-study-row").first().waitFor();
+    await assertNoOverflow(m, "/studio/lab");
+
+    // Nobody fetched the YouTube link: not the browsers, not the fake Hermes, not the portal (CI's fetch canary).
+    if (youtubeFromBrowser.length) throw new Error(`a browser requested YouTube: ${youtubeFromBrowser.join(", ")}`);
+    if (fakeStats.youtubeHits) throw new Error(`${fakeStats.youtubeHits} request(s) for YouTube reached the fake Hermes`);
+    const canary = process.env.E2E_FETCH_CANARY;
+    if (!canary) console.log("   E2E_FETCH_CANARY unset: the portal-side fetch canary is not checked");
+    else {
+      let hits = "";
+      try {
+        hits = readFileSync(canary, "utf8").trim();
+      } catch {
+        hits = "";
+      }
+      if (hits) throw new Error(`the portal itself fetched a study link:\n${hits}`);
+      console.log("   the portal made no request to YouTube or GitHub (fetch canary empty)");
+    }
+  }
 
   if (errors.length) throw new Error(`browser errors:\n${errors.join("\n")}`);
   console.log("UI E2E PASS");
