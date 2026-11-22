@@ -20,7 +20,10 @@ import {
   type Template,
   type TemplateEvidence,
 } from "./templates.ts";
-import { parsePackWorkflow, type PackWorkflow } from "./recipes.ts";
+import { isResearchRecipe, parsePackWorkflow, type PackWorkflow } from "./recipes.ts";
+import { HTML_DESIGN_BADGE } from "./html-design.ts";
+
+export { HTML_DESIGN_BADGE };
 import { ELEMENT_KINDS, type ElementKind } from "./director.ts";
 
 export const PACK_STATUSES = ["draft", "lab", "trial", "proven", "listed", "retired"] as const;
@@ -148,6 +151,24 @@ export interface StylePack {
   hermes?: PackHermesSkill | null;
   /** style.json `workflow`, or null when the pack names none (the recipe is then inferred, recipes.ts). */
   workflow?: PackWorkflow | null;
+  /** html-design packs: the brief Hermes designs each page from (style.json `design`), or null. */
+  design?: PackDesign | null;
+}
+
+/** style.json `design` of an html-design pack, as the portal reads it (the styles validator already checked it). */
+export interface PackDesign {
+  brief: string;
+  palette: string[];
+  typography: string;
+  layout: string;
+}
+
+function designOf(raw: unknown): PackDesign | null {
+  if (!isRecord(raw)) return null;
+  const brief = str(raw.brief).slice(0, 2000);
+  const palette = strs(raw.palette, 12).filter((c) => /^#[0-9A-Fa-f]{6}$/.test(c));
+  if (!brief || palette.length < 2) return null;
+  return { brief, palette, typography: str(raw.typography).slice(0, 600), layout: str(raw.layout).slice(0, 1000) };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -228,6 +249,9 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
   if (!ID_RE.test(id) || !SEMVER_RE.test(version) || !status || !ENGINES[engine]) return null;
   // Research-only engines never go above Trial: a pack that says otherwise is left out, not shown as Listed.
   if (isResearchEngine(engine) && !RESEARCH_MAX_STATUSES.includes(status)) return null;
+  // The same for a research-only recipe (html-design: Hermes writes the page), and only on html-capture.
+  const flow = parsePackWorkflow(raw.workflow);
+  if (flow && isResearchRecipe(flow.recipe) && (!RESEARCH_MAX_STATUSES.includes(status) || engine !== "html-capture")) return null;
   const formats = (Array.isArray(f.supported) ? f.supported : []).filter((x): x is Format => x === "short" || x === "long");
   const frame: Frame = f.naturalFrame === "landscape" || f.naturalFrame === "portrait" ? f.naturalFrame : "both";
   const list = <T,>(v: unknown, pick: (x: Record<string, unknown>) => T): T[] => (Array.isArray(v) ? v.filter(isRecord).map(pick) : []);
@@ -250,7 +274,8 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
     plan: planOf(raw),
     // The skill block is only honoured for a research engine (the styles validator refuses it elsewhere).
     hermes: isResearchEngine(engine) ? hermesOf(raw.hermes) : null,
-    workflow: parsePackWorkflow(raw.workflow),
+    workflow: flow,
+    design: flow && isResearchRecipe(flow.recipe) ? designOf(raw.design) : null,
   };
 }
 
@@ -530,7 +555,7 @@ export function newVideoStyles(entries: readonly RegistryEntry[], reported: read
   for (const e of entries) {
     if (!e.pack || !STARTABLE.includes(e.pack.status)) continue;
     if (!availabilityOf(e, reported, opts).pack) out.waiting.push(e);
-    else if (e.pack.status === "listed" && !isResearchEngine(e.pack.engine)) out.listed.push(e);
+    else if (e.pack.status === "listed" && !isResearchEngine(e.pack.engine) && !isDesignedPack(e.pack)) out.listed.push(e);
     else out.trial.push(e);
   }
   return out;
@@ -550,16 +575,28 @@ export interface RunStylePack {
    * pack's promotion counts, and shown apart on Styles.
    */
   lab?: boolean;
+  /**
+   * The run draws a page Hermes wrote (workflow html-design, owner decision: research only). Always a trial, never
+   * published, whatever else the stored config says.
+   */
+  designed?: boolean;
+}
+
+/** A pack whose runs draw a page Hermes writes (workflow html-design): research only. */
+export function isDesignedPack(pack: Pick<StylePack, "workflow">): boolean {
+  return isResearchRecipe(pack.workflow?.recipe);
 }
 
 export function runStylePack(pack: StylePack, opts: { lab?: boolean } = {}): RunStylePack {
+  const designed = isDesignedPack(pack);
   return {
     id: pack.id,
     version: pack.version,
     status: pack.status,
-    trial: opts.lab === true || pack.status === "trial" || isResearchEngine(pack.engine),
+    trial: opts.lab === true || pack.status === "trial" || isResearchEngine(pack.engine) || designed,
     engine: pack.engine,
     ...(opts.lab ? { lab: true } : {}),
+    ...(designed ? { designed: true } : {}),
   };
 }
 
@@ -568,9 +605,18 @@ export function parseRunStylePack(raw: unknown): RunStylePack | null {
   const status = PACK_STATUSES.find((s) => s === raw.status);
   if (!ID_RE.test(str(raw.id)) || !SEMVER_RE.test(str(raw.version)) || !status) return null;
   const engine = str(raw.engine);
-  // A hermes render and a lab trial are always trials, even if a stored config claims otherwise.
+  // A hermes render, a lab trial and a Hermes-designed page are always trials, even if a stored config claims otherwise.
   const lab = raw.lab === true;
-  return { id: str(raw.id), version: str(raw.version), status, trial: raw.trial === true || lab || isResearchEngine(engine), ...(engine ? { engine } : {}), ...(lab ? { lab: true } : {}) };
+  const designed = raw.designed === true;
+  return {
+    id: str(raw.id),
+    version: str(raw.version),
+    status,
+    trial: raw.trial === true || lab || designed || isResearchEngine(engine),
+    ...(engine ? { engine } : {}),
+    ...(lab ? { lab: true } : {}),
+    ...(designed ? { designed: true } : {}),
+  };
 }
 
 /**
@@ -578,8 +624,9 @@ export function parseRunStylePack(raw: unknown): RunStylePack | null {
  * (hermes) never is published, whatever its pack says. Publishing, auto-publishing and any later upload stage call
  * this; there is no bypass.
  */
-export function publishRefusal(pack: RunStylePack | null, renderer?: string | null): string | null {
+export function publishRefusal(pack: RunStylePack | null, renderer?: string | null, recipe?: string | null): string | null {
   if (isResearchEngine(renderer) || isResearchEngine(pack?.engine)) return `${HERMES_RENDER_LABEL}: a video Hermes rendered is never published.`;
+  if (pack?.designed || isResearchRecipe(recipe)) return `${HTML_DESIGN_BADGE}: a video drawn from a page Hermes wrote is never published.`;
   if (pack?.lab) return `${LAB_TRIAL_BADGE} ${pack.id} ${pack.version}: research only, never published.`;
   if (pack?.trial) return `Trial style ${pack.id} ${pack.version}: research only, not for publishing.`;
   return null;
@@ -589,8 +636,8 @@ export function publishRefusal(pack: RunStylePack | null, renderer?: string | nu
  * The publishing guard on a run's final video: the autonomy policy may never approve or publish a trial or a Hermes
  * render by itself. The owner scores it (Review card) and decides. Other decisions pass through unchanged.
  */
-export function guardFinalDecision<D extends { action: string; reason: string }>(decision: D, pack: RunStylePack | null | undefined, renderer?: string | null): D {
-  const refusal = publishRefusal(pack ?? null, renderer);
+export function guardFinalDecision<D extends { action: string; reason: string }>(decision: D, pack: RunStylePack | null | undefined, renderer?: string | null, recipe?: string | null): D {
+  const refusal = publishRefusal(pack ?? null, renderer, recipe);
   if (!refusal || (decision.action !== "auto-approve" && decision.action !== "auto-publish")) return decision;
   return { ...decision, action: "ask-owner", reason: `${refusal} The owner scores the video and decides.` };
 }

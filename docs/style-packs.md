@@ -223,9 +223,10 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
 | Recipe | Stages | Packs |
 | --- | --- | --- |
 | `image-sequence` | idea, research, script, storyboard, assets, voice, render, qc | the six stills packs, `explainer-flat-vector`. Today's pipeline, byte for byte. |
-| `scene-spec` | idea, research, script, **scene-spec**, voice, render, qc | `animated-line-graph`, `minimal-line-art`, `probe-line-graph` (all with `review: ["scene-spec"]`) |
+| `scene-spec` | idea, research, script, **scene-spec**, **preview**, voice, render, qc | `animated-line-graph`, `minimal-line-art`, `probe-line-graph` (all with `review: ["scene-spec"]`; the preview is always reviewed) |
 | `hermes-skill` | idea, research, script, **skill-brief**, voice, render, qc (no voice when `hermes.voice` is `skill`) | the ten `hermes-*` skill packs and `hermes-research-explainer` (all with `review: ["skill-brief"]`) |
-| `html-design`, `engine-project`, `clip-sequence` | reserved | none: refused by the validator and by `startRun`. `html-design` (Hermes writes the page per video) needs the owner's explicit approval before it is built. |
+| `html-design` | idea, research, script, **html-design**, **preview**, voice, render, qc. **Research only** (owner decision) | `hermes-designed-explainer` (trial, `review: ["html-design", "preview"]`) |
+| `engine-project`, `clip-sequence` | reserved | none: refused by the validator and by `startRun`. |
 
 ### How a run's list is chosen and stored
 
@@ -264,8 +265,68 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   shot, so the portal draws one plain-colour plate per run (`lib/studio/plate.ts`, source `generated`, executor
   `portal-plate`, no model) and every shot points at it. Labels and sources stay in the spec for Review.
 - Review: the scene-spec card lists the scenes as text (elements, numbers with the note each cites, motion, caption).
-  There is no still preview before the render: the worker has no stills mode for html-capture pages (it captures the
-  whole video), so the card says so; the final video's card shows the real render.
+  The preview stage that follows shows still frames of the pack's page (below).
+
+### The still-frame preview (scene-spec and html-design)
+
+- After the scene spec (or the page Hermes wrote) is approved, and before the voice and the render, the preview stage
+  queues a `preview-frames` job (worker 0.11.0, `docs/html-capture.md`) under the run's `pack:<id>@<version>`: the
+  render payload without the narration (`frame-preview.ts` `previewPayload`), six times (`previewTimes`: the middle of
+  each scene, spread or filled to six), and for html-design the page asset. The narration's length is used when the run
+  already has one (a revision after the voice), otherwise the planned scene times.
+- The worker draws every frame up to the last asked one through the same loopback server, request blocking and
+  virtual clock as a render, captures the asked ones as JPEG (`still-01.jpg` ...) and reports the page's console errors
+  and anything it tried that was blocked. The Review card shows the stills (`/api/artifacts/<id>`), the plan and a note.
+  The owner approves the look, or a revision note goes back to the stage before the preview (`revisionTarget`: a note on
+  a preview card restarts the scene spec or the page, or an earlier stage when it says so).
+- The preview is an owner-only stage (`OWNER_ONLY_STAGES` in `recipes.ts`, with `html-design`): no autonomy level and no
+  stored config approves it.
+- No worker reports `preview-frames` (`previewWorkers`, stored rows only): a scene-spec run's card says so and the owner
+  continues with the spec text only, as before previews. An html-design run stops with a stage error instead
+  (`HTML_DESIGN_NEEDS_PREVIEW`): its page is never rendered without the check. Workers that report preview-frames but
+  not yet the pack version leave the job waiting, as a render does.
+- A failed preview job (the page threw, tried the network, the worker refused) becomes a gate-failure card with the
+  worker's error: Retry, Send revision (to the scene spec or the page) or Reject.
+
+### html-design (research only)
+
+The owner approved building it: Hermes writes the HTML page for each video. It is the one place model-written code
+runs, so the page is checked before anything runs and run in a sandbox, and every run is research only.
+
+- **The stage.** `html-design` asks Hermes, through the Hermes gate (`hermesJson`), for JSON: `html` (one
+  self-contained `index.html`, inline CSS and JS), optional `files` (small `.js`, `.css`, `.svg`), a short `note`, and
+  `scenes` (beat, seconds, caption: the script's beats mapped to times), plus optional `backend`/`plugin`
+  (`lib/studio/html-design.ts`). The prompt carries the pack's `design` brief (palette, typography, layout), its contract,
+  the frame, the props contract and the rules below, and the pack's vendored files the page may load as `../pack/<path>`.
+- **The validator** (`pageIssues`, best effort by token scan, before anything runs): 300 KB and 20 files at most, text
+  only, plain relative names; no URL to another host anywhere (`http(s)://`, `ws(s)://`, `//host`, `@import` of a host,
+  `<base>`; XML namespace names are allowed only outside URL attributes); `data:` only for images (a font comes from
+  `../pack/` or the run's font, and `@font-face` sources are checked for it, so every font has a recorded licence); no
+  `<iframe>`, `<object>`, `<embed>`, `<form action>`, any `<meta http-equiv>`, service workers, `Worker`, blob
+  URLs, `WebSocket`, `fetch`, `XMLHttpRequest`, `EventSource`, `sendBeacon`, `import()`, `eval`, `new Function`, string
+  timers, `window.open`, navigation, `atob`/`fromCharCode`, `local()` fonts or GSAP; `window.VENSTUDIO` with `init` and
+  `renderFrame`; every reference is the page's own file, `../pack/<vendored file>` or `../in/<input>`. The issues go
+  back to Hermes through hermesJson's retry (with the line they are on), then through the owner's revision loop. The
+  gate (`htmlDesignGate`) checks the scene list's pacing and narration coverage with the storyboard's limits.
+- **Storage and provenance.** The approved page is stored as the run's `html-page` asset (migration 0020, additive), a
+  page bundle `{ format: 1, kind: "venstudio-html-page", files }` saved as `application/json` (never `text/html`, so the
+  portal never serves it as a document), source `hermes`, executor `hermes-html-design`, `researchOnly: true`, the
+  backend and plugin Hermes named, the stage it came from and its sha256 (`lib/server/html-page.ts`). One asset per run
+  and page; the preview and the render share it.
+- **The render.** `render-video` carries `page: { assetId }` (listed in `inputs`) under `pack:<id>@<version>`. Worker
+  0.11.0 serves the page as `page/`, the pack's files as `../pack/`, the run's media as `../in/`, with a strict CSP and
+  the page guard (`docs/html-capture.md`), and renders an html-design pack only with an uploaded page (`designed` in
+  `html/packs.json`), so a pack's reference page never stands in for a run's page.
+- **Research only, each rule in code:** the validator keeps an html-design pack at most `trial` and on `html-capture`;
+  `parsePack` leaves out one that claims more; `runStylePack`, `parseRunStylePack` and `parseRunConfig` make every
+  html-design run a trial (`stylePack.designed`), whatever a stored config says; `publishRefusal` and
+  `guardFinalDecision` refuse publishing and auto-approval ("Hermes-designed page (research only): a video drawn from a
+  page Hermes wrote is never published."); the html-design and preview stages are owner-only; the html-design stage,
+  the preview and the render refuse a run that is not a trial; New Video shows such packs only in the Trial section,
+  with the badge "Hermes-designed page (research only)" (also on the run page and every Review card).
+- **Template Lab.** html-design is a built recipe: a draft may recommend it (html-capture only); its exported
+  style.json carries `workflow: { recipe: "html-design", review: ["html-design", "preview"] }`, worker 0.11.0 and a
+  starting `design` block, so it validates; Start a trial works with an html-design pack like any Trial pack.
 
 ### hermes-skill
 
@@ -289,15 +350,20 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
 
 ### Known limits
 
-- No still preview of the page before the render (no stills mode in the worker); the scene-spec card says so.
 - A skill that voices itself is checked only by its voice backend's provider terms on the render card, and by qc-video
   on the finished reel (loudness, silence, length); there is no separate narration file to check for language or
-  clipping. When those terms block, the owner confirms them and presses Try again, which asks Hermes to render again
-  (the render card has no "Check the terms again").
-- Some voice-card labels still say "keep the pictures" in runs without pictures.
+  clipping. When only those terms block, the render card offers **Check the terms again**: the terms are judged again
+  on the reel that is already made (nothing is rendered again), and a terms change in Settings re-checks such cards on
+  its own, like assets and voice cards.
+- Voice-card labels and hints in runs without pictures say "keep the plan" (`tightenLabel`, `keptWord`).
+- The html-design validator is a token scan: it cannot prove a page safe (a page can build a name at run time). That is
+  why the worker's sandbox (CSP, request blocking, the page guard, the DOM check, the frame budget) is the boundary,
+  and the validator the first, readable line.
+- The preview's stills of a page that does not draw its own captions have no captions (they are burned at the render);
+  the card says so.
 - The skill brief's own numbers are not checked against the research notes (research-only rules are as before).
 - Rolling the portal back after 0019 leaves runs with scene-spec or skill-brief stages unclaimed (the old code does
-  not know those kinds); cancel them first.
+  not know those kinds); cancel them first. The same holds for html-design and preview stages after 0020.
 
 ### Template Lab
 
@@ -343,4 +409,7 @@ trials: `lib/studio/trial-batch.ts`, `lib/server/trial-queue.ts`, `app/(app)/stu
 `packSeedTemplate`, `styleGroup`, `researchGroupOf`, `labTrialOption`, `researchVariantFor`, `labTrialCounts`.
 Workflows: `lib/studio/recipes.ts`, `lib/studio/scene-spec.ts`, `lib/studio/skill-brief.ts`, `lib/studio/plan-review.ts`,
 `lib/studio/plate.ts`, `lib/server/plate.ts`, `db/migrations/0019_workflow_stages.sql`, `fixtures/prompts/`, and the
-tests `recipes.test.ts`, `scene-spec.test.ts`, `skill-brief.test.ts`, `image-sequence-golden.test.ts`.
+tests `recipes.test.ts`, `scene-spec.test.ts`, `skill-brief.test.ts`, `image-sequence-golden.test.ts`. html-design and
+the preview: `lib/studio/html-design.ts`, `lib/studio/frame-preview.ts`, `lib/server/html-page.ts`, the preview stage in
+`lib/server/production.ts`, `db/migrations/0020_html_design.sql`, `lib/studio/html-design.test.ts`, and worker
+`preview-frames`, `parsePageBundle`, `HTML_PAGE_CSP`, `HTML_PAGE_GUARD_SOURCE` (`apps/worker/html-design.test.ts`).

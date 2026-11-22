@@ -6,25 +6,32 @@ import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
 import { guessRevisionStage, type DirectorStage, type Idea, type ResearchNote, type RevisableStage, type Shot } from "./director.ts";
 
 export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "script", "storyboard"];
-/** Phase 4 stages. They are not model calls: assets runs work orders, voice runs TTS, render and qc wait for a worker job. */
-export type ProductionStage = "assets" | "voice" | "render" | "qc";
-export const PRODUCTION_STAGES: readonly ProductionStage[] = ["assets", "voice", "render", "qc"];
+/**
+ * Production stages. They are not model calls: assets runs work orders, voice runs TTS, preview (0.11.0 workers),
+ * render and qc wait for a worker job.
+ */
+export type ProductionStage = "preview" | "assets" | "voice" | "render" | "qc";
+export const PRODUCTION_STAGES: readonly ProductionStage[] = ["preview", "assets", "voice", "render", "qc"];
 /**
  * Hermes stages that stand where the storyboard stands in a workflow without pictures (recipes.ts): the scene spec of a
- * data-driven page, and the brief a Hermes skill renders from. Model calls, like the storyboard.
+ * data-driven page, the brief a Hermes skill renders from, and the page Hermes writes (html-design, research only).
+ * Model calls, like the storyboard.
  */
-export type PlanStage = "scene-spec" | "skill-brief";
-export const PLAN_STAGES: readonly PlanStage[] = ["scene-spec", "skill-brief"];
+export type PlanStage = "scene-spec" | "skill-brief" | "html-design";
+export const PLAN_STAGES: readonly PlanStage[] = ["scene-spec", "skill-brief", "html-design"];
 export type RunStage = DirectorStage | PlanStage | ProductionStage;
 /**
  * The stages of a run started before workflows, and of every image-sequence run (recipes.ts): the original pipeline,
  * in order. A run's own list is in its config (runStagesOf); this stays the list for runs that have none.
  */
-export const RUN_STAGES: readonly RunStage[] = [...ENGINE_STAGES, ...PRODUCTION_STAGES];
+export const RUN_STAGES: readonly RunStage[] = [...ENGINE_STAGES, "assets", "voice", "render", "qc"];
 /** Every stage kind the engine runs, in canonical order (the plan stages share the storyboard's place). */
-export const STAGE_KINDS: readonly RunStage[] = ["idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "assets", "voice", "render", "qc"];
-/** Where a kind sits in a run: the storyboard and the plan stages share a place, so a note about one finds the other. */
-const SLOT: Record<RunStage, number> = { idea: 0, research: 1, script: 2, storyboard: 3, "scene-spec": 3, "skill-brief": 3, assets: 4, voice: 5, render: 6, qc: 7 };
+export const STAGE_KINDS: readonly RunStage[] = ["idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "html-design", "preview", "assets", "voice", "render", "qc"];
+/**
+ * Where a kind sits in a run: the storyboard and the plan stages share a place, so a note about one finds the other.
+ * The still-frame preview sits right after the plan it shows.
+ */
+const SLOT: Record<RunStage, number> = { idea: 0, research: 1, script: 2, storyboard: 3, "scene-spec": 3, "skill-brief": 3, "html-design": 3, preview: 3.5, assets: 4, voice: 5, render: 6, qc: 7 };
 /** Worst case for one stage: hermesJson makes up to 3 asks, each up to 180 s plus its wait for a gate slot. */
 export const HERMES_WORST_CASE_SEC = 3 * HERMES_ASK_WORST_SEC;
 /** A stage that has been running this long is treated as lost (restart, crash) and failed: worst case plus 6 minutes for the gate and DB work. */
@@ -44,7 +51,7 @@ export function isPlanStage(s: string): s is PlanStage {
   return PLAN_STAGES.some((e) => e === s);
 }
 
-/** A stage Hermes answers (idea, research, script, storyboard, scene spec, skill brief), as opposed to a production stage. */
+/** A stage Hermes answers (idea, research, script, storyboard, scene spec, skill brief, HTML design), as opposed to a production stage. */
 export function isModelStage(s: string): s is DirectorStage | PlanStage {
   return isEngineStage(s) || isPlanStage(s);
 }
@@ -73,7 +80,8 @@ export function nextRunStage(stage: RunStage, stages: readonly RunStage[] = RUN_
 export function stageInRun(kind: RunStage, stages: readonly RunStage[] = RUN_STAGES): RunStage {
   if (stages.includes(kind)) return kind;
   let best: RunStage = stages[0] ?? "idea";
-  for (const s of stages) if (SLOT[s] <= SLOT[kind]) best = s;
+  // The preview has nothing to redo of its own: a note about the pictures or the plan lands on the plan before it.
+  for (const s of stages) if (SLOT[s] <= SLOT[kind] && s !== "preview") best = s;
   return best;
 }
 
@@ -87,6 +95,12 @@ export function nextStage(stage: DirectorStage): DirectorStage | null {
  * note with no keyword restarts the stage the owner was looking at. The result is never later than that stage.
  */
 export function revisionTarget(classified: RunStage | null, note: string, own: RunStage, stages: readonly RunStage[] = RUN_STAGES): RunStage {
+  // A note on the still frames is about the plan they show: it goes back to the stage before the preview (the scene
+  // spec, or the page Hermes wrote), or earlier when the note says so. The preview itself has nothing to redo.
+  if (own === "preview") {
+    const before = stages[stageIndex("preview", stages) - 1];
+    if (before) own = before;
+  }
   let target: RunStage;
   if (classified) target = classified;
   else {
@@ -118,6 +132,12 @@ export function isOrphaned(runState: string, stages: readonly { stage: string; s
 /** One short line for the review card and the run timeline. */
 export function stageSummary(stage: DirectorStage | PlanStage, result: unknown): string {
   const r = (typeof result === "object" && result !== null ? result : {}) as Record<string, unknown>;
+  if (stage === "html-design") {
+    const scenes = Array.isArray(r.scenes) ? r.scenes : [];
+    const secs = scenes.reduce((sum: number, s) => sum + (typeof s === "object" && s !== null && typeof (s as Record<string, unknown>).seconds === "number" ? ((s as Record<string, unknown>).seconds as number) : 0), 0);
+    const files = Array.isArray(r.files) ? r.files.length : 0;
+    return `A page Hermes designed: ${files} file${files === 1 ? "" : "s"}, ${scenes.length} scene${scenes.length === 1 ? "" : "s"}, about ${Math.round(secs)} seconds (research only)`;
+  }
   if (stage === "scene-spec" || stage === "skill-brief") {
     const list = Array.isArray(r.scenes) ? r.scenes : Array.isArray(r.shots) ? r.shots : [];
     const secs = list.reduce((sum: number, s) => sum + (typeof s === "object" && s !== null && typeof (s as Record<string, unknown>).seconds === "number" ? ((s as Record<string, unknown>).seconds as number) : 0), 0);

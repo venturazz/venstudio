@@ -76,6 +76,8 @@ export default async function ReviewPage() {
         trial: r.trial,
         hermesRender: r.hermesRender,
         labTrial: r.labTrial,
+        designed: r.designed,
+        pictures: r.pictures,
         ...(scores.get(r.id) ?? {}),
         gateLines: r.kind === "gate-failure" ? describeGateIssues(r.gates.filter((g) => !g.passed)) : [],
         age: timeAgo(r.createdAt),

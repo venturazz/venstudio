@@ -8,7 +8,9 @@ Phase 3 (the Template Lab and the first packs adapted from claude-animation-skil
 in `docs/template-lab.md`; research trials (a Hermes research pack per claude-animation-skills skill, lab trials of
 Draft and Lab packs, batch trials) on `feat/research-trials`, described in `docs/style-packs.md`; workflows (each pack
 names the recipe its runs follow: image-sequence, scene-spec, hermes-skill) on `feat/recipes`, described in
-`docs/style-packs.md` "Workflows"; phases 4 and 5 are the plan.
+`docs/style-packs.md` "Workflows"; the html-design workflow (Hermes writes the page per video, research only, owner
+decision) and the still-frame preview shared with scene-spec (worker 0.11.0 `preview-frames`) on `feat/html-design`,
+described in `docs/style-packs.md` and `docs/html-capture.md`; phases 4 and 5 are the plan.
 
 Phase 1 changes one thing in section 2 below, by owner decision (no new secrets): the portal has no GitHub token, so it
 does not read signed releases from the styles repo. venstudio vendors a pinned copy (`styles/`, `styles/lock.json`)

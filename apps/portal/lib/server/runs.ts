@@ -66,7 +66,7 @@ export interface RunDetail {
   gates: GateResult[];
 }
 
-const STAGE_ORDER = ["idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "assets", "voice", "draft", "render", "qc", "approval", "upload", "claim-watch", "publish", "learn"];
+const STAGE_ORDER = ["idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "html-design", "preview", "assets", "voice", "draft", "render", "qc", "approval", "upload", "claim-watch", "publish", "learn"];
 
 function obj(v: unknown): Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};

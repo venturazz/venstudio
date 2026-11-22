@@ -148,7 +148,7 @@ export function productionStageAction(p: StageProbe): StageAction {
   if (p.stage === "voice") {
     return p.idleMinutes > PRODUCTION_STUCK_MINUTES ? { action: "fail", reason: "The voice step stopped answering and was cancelled" } : { action: "none" };
   }
-  const what = p.stage === "render" ? "The video render" : "The quality check";
+  const what = p.stage === "render" ? "The video render" : p.stage === "preview" ? "The still-frame preview" : "The quality check";
   if (p.stage === "render" && p.portalRender && p.jobStatus === null) {
     return p.idleMinutes > HERMES_RENDER_STUCK_MINUTES ? { action: "fail", reason: "Hermes did not finish the render (research only) and it was cancelled" } : { action: "none" };
   }
@@ -156,6 +156,8 @@ export function productionStageAction(p: StageProbe): StageAction {
     return p.idleMinutes > PRODUCTION_STUCK_MINUTES ? { action: "fail", reason: `${what} was never queued` } : { action: "none" };
   }
   if (p.jobStatus === "succeeded") return { action: "complete" };
+  // A preview that failed or was cancelled becomes a card the owner decides on (the page tried the network, threw...).
+  if (p.stage === "preview" && (p.jobStatus === "failed" || p.jobStatus === "cancelled")) return { action: "complete" };
   if (p.jobStatus === "failed") return { action: "fail", reason: `${what} failed: ${(p.jobError ?? "").trim().slice(0, 300) || "the worker gave no reason"}` };
   if (p.jobStatus === "cancelled") return { action: "fail", reason: `${what} was cancelled` };
   return { action: "none" };
@@ -278,6 +280,12 @@ export function productionSummary(stage: ProductionStage, result: unknown): stri
     const played = tempo > 0 && tempo !== 1 ? `, played at ${tempo}x (${Math.round(sec / tempo)} seconds) to fit the shots` : "";
     const fitted = num(r.fittedWords) > 0 ? `. The script was fitted to the pictures (${num(r.fittedWords)} words)` : "";
     return `Narration by ${provider}${via}${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${played}${fitted}${unchecked}`;
+  }
+  if (stage === "preview") {
+    const stills = Array.isArray(r.stills) ? r.stills.length : 0;
+    if (r.skipped === "no-worker") return "No still frames: no worker reports preview-frames yet. Continue with the spec text only, or send a revision";
+    if (r.skipped === "engine") return "No still frames: this style does not render with html-capture. Continue with the spec text only, or send a revision";
+    return `${stills} still frame${stills === 1 ? "" : "s"} of the page${r.page === "uploaded" ? " Hermes designed (research only)" : ""}, before the voice and the render`;
   }
   if (stage === "render") {
     const sec = num(r.durationSec);

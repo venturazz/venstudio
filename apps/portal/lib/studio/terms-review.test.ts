@@ -114,7 +114,11 @@ test("canRecheck: assets gate failures with a terms issue, and every voice gate 
   assert.ok(!termsHeld("gate-failure", "voice", [otherIssue]));
   assert.ok(termsHeld("gate-failure", "voice", [otherIssue, termsIssue]));
   assert.ok(!canRecheck("gate-failure", "assets", [otherIssue]));
-  assert.ok(!canRecheck("gate-failure", "render", [termsIssue]));
+  // A reel that voiced itself, held up only by its voice backend's terms: checked again without a new render.
+  assert.ok(canRecheck("gate-failure", "render", [termsIssue]));
+  assert.ok(!canRecheck("gate-failure", "render", [termsIssue, otherIssue]), "anything else on a render needs a new render");
+  assert.ok(!canRecheck("gate-failure", "render", []));
+  assert.ok(!canRecheck("gate-failure", "qc", [termsIssue]));
   assert.ok(!canRecheck("stage-error", "assets", [termsIssue]));
   assert.ok(!canRecheck("approval", "voice", []));
 });
@@ -150,6 +154,8 @@ test("a re-check that now passes concludes; one still blocked yields a new card 
   assert.deepEqual(providerTermsIssues(uses, allYes), []);
   assert.deepEqual(blockingRows(providerRowsUsed(uses), allYes), []);
   assert.match(recheckMessage("assets", "asked-approval", []), /checks pass now\. Nothing was made again: approve the assets/);
+  assert.equal(recheckMessage("render", "approved", []), "The checks pass now. The video was kept and the studio continues.");
+  assert.match(recheckMessage("render", "asked-approval", []), /approve the video to continue/);
   assert.match(recheckMessage("voice", "approved", []), /narration was kept/);
   const someYes = [t("canva", "image", "yes")];
   const still = blockingRows(providerRowsUsed(uses), someYes).map((r) => r.name);
@@ -172,7 +178,10 @@ test("decisionOptions and labels for terms cards", () => {
   assert.equal(decisionLabel("recheck", "gate-failure", "voice", { issues: [otherIssue] }), "Check again");
   assert.equal(decisionLabel("recheck", "gate-failure", "voice", { issues: [termsIssue] }), "Check the terms again");
   // Other gate failures, and calls without context, are unchanged.
-  assert.deepEqual(decisionOptions("gate-failure", { stage: "render", issues: [termsIssue] }), ["retry", "revise", "reject"]);
+  assert.deepEqual(decisionOptions("gate-failure", { stage: "render", issues: [termsIssue] }), ["recheck", "retry", "revise", "reject"], "Check the terms again on a skill-voiced reel held up only by terms");
+  assert.equal(decisionLabel("recheck", "gate-failure", "render", { issues: [termsIssue] }), "Check the terms again");
+  assert.match(decisionHint("recheck", "gate-failure", "render", { issues: [termsIssue] }) ?? "", /Nothing is rendered again/);
+  assert.deepEqual(decisionOptions("gate-failure", { stage: "render", issues: [otherIssue] }), ["retry", "revise", "reject"]);
   assert.deepEqual(decisionOptions("gate-failure"), ["retry", "revise", "reject"]);
   assert.ok(!decisionOptions("stage-error", { stage: "assets", issues: [termsIssue] }).includes("recheck"));
 

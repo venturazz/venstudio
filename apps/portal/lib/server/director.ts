@@ -51,7 +51,10 @@ import { alwaysReviewed, runRecipeOf, runStagesOf, workflowForPack } from "../st
 import { planReview } from "../studio/plan-review.ts";
 import { sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, validateSceneSpec } from "../studio/scene-spec.ts";
 import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill } from "../studio/skill-brief.ts";
-import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
+import { htmlDesignGate, htmlDesignPrompt, validateHtmlDesign, type DesignBrief } from "../studio/html-design.ts";
+import { packVendoredFiles } from "./style-packs.ts";
+import { VIDEO_FORMATS } from "../studio/catalog.ts";
+import { decisionOptions, reviewTitle, stageLabel, tightenLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
 import { addGateIssues, finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
 import { cancelRunWork, narrationTempoReady, planScriptFit, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
 import { paceForRun } from "./speech-rate.ts";
@@ -323,7 +326,7 @@ async function claimNext(runId: string): Promise<StageRow | null> {
     UPDATE pipeline_stages s SET state = 'running', started_at = now(), error = NULL, not_before = NULL, output = s.output - 'hermesWait'
     WHERE s.id = (
       SELECT p.id FROM pipeline_stages p JOIN pipeline_runs r ON r.id = p.run_id
-      WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'assets', 'voice', 'render', 'qc')
+      WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'html-design', 'preview', 'assets', 'voice', 'render', 'qc')
         AND (p.not_before IS NULL OR p.not_before <= now())
       ORDER BY p.attempt, p.id LIMIT 1 FOR UPDATE OF p SKIP LOCKED
     ) AND s.state = 'pending'
@@ -425,6 +428,31 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     const r = fromHermes(await hermesJson(sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length })));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: sceneSpecGate(template, r.value, notes, narrationSec) };
+  }
+  if (st.stage === "html-design") {
+    // Research only (owner decision): Hermes writes the page, checked here before anything runs (html-design.ts).
+    const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
+    if (!pack || !pack.design || pack.engine !== "html-capture") return { ok: false, error: "This run's style pack has no design brief for an html-capture page, so Hermes cannot design the page" };
+    if (!run.config.stylePack?.trial) return { ok: false, error: "A page Hermes writes is research only, so it runs only as a trial. This run is not a trial; nothing was asked." };
+    const f = VIDEO_FORMATS[run.config.format];
+    const brief: DesignBrief = {
+      name: pack.name,
+      brief: pack.design.brief,
+      palette: pack.design.palette,
+      typography: pack.design.typography,
+      layout: pack.design.layout,
+      elements: pack.plan?.elements ?? [],
+      motionTokens: pack.plan?.motionTokens ?? [],
+      vendored: await packVendoredFiles(pack.id),
+      width: f.width,
+      height: f.height,
+      fps: f.fps,
+      safeAreaPct: template.captions.safeAreaPct,
+      drawsCaptions: pack.drawsCaptions === true,
+    };
+    const r = fromHermes(await hermesJson(htmlDesignPrompt(ctx, checkedScript.value.script, brief, hint), (v) => validateHtmlDesign(v, { vendored: brief.vendored })));
+    if (!r.ok) return r;
+    return { ok: true, result: r.value, gate: htmlDesignGate(template, r.value, narrationSec) };
   }
   if (st.stage === "skill-brief") {
     const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
@@ -573,6 +601,8 @@ export interface StageConclusion {
   notes?: string[];
   /** Voice: what the gate found and which fixes the card can offer. */
   voice?: VoiceFix;
+  /** Preview: the plan the stills show (the scene spec or the page), shown on the card with the stills. */
+  plan?: ReviewPayload["plan"];
 }
 
 /** What concludeStage decided, worked out before any write. */
@@ -605,7 +635,7 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
   // A revision cannot fix a provider terms or render problem, so production stages ask the owner instead.
   const staged = isProductionStage(stage) ? productionDecision(raw) : raw;
   // A trial (and every Hermes render) is never approved or published by the policy: the owner scores and decides.
-  const guarded = outcome.final ? guardFinalDecision(staged, run.config.stylePack ?? null) : staged;
+  const guarded = outcome.final ? guardFinalDecision(staged, run.config.stylePack ?? null, null, runRecipeOf(run.config)) : staged;
   // A review point of the pack's workflow (style.json workflow.review): the owner looks at it whatever the level.
   const decision =
     !outcome.final && alwaysReviewed(run.config, stage) && (guarded.action === "auto-approve" || guarded.action === "auto-publish")
@@ -622,7 +652,8 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
     ...(outcome.recheckedAt ? { recheckedAt: outcome.recheckedAt } : {}),
     ...(outcome.notes && outcome.notes.length > 0 ? { notes: outcome.notes } : {}),
     ...(outcome.voice ? { voice: outcome.voice } : {}),
-    ...(isPlanStage(stage) ? planReview(stage, outcome.result) : {}),
+    ...(isPlanStage(stage) ? planReview(stage, outcome.result, runStagesOf(run.config)) : {}),
+    ...(outcome.plan ? { plan: outcome.plan } : {}),
   };
   return { decision, base, summary, issues, reason, detail, autoRevisions, result: outcome.result };
 }
@@ -766,7 +797,7 @@ export async function reapStuckStages(): Promise<string[]> {
     const sql = db();
     const stuck = await sql`
       SELECT id FROM pipeline_stages
-      WHERE state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int) AND stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief')
+      WHERE state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int) AND stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'html-design')
     `;
     for (const row of stuck) {
       try {
@@ -794,7 +825,7 @@ export async function reapStuckStages(): Promise<string[]> {
     const orphaned = await sql`
       SELECT r.id FROM pipeline_runs r
       WHERE r.state = 'running'
-        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'assets', 'voice', 'render', 'qc')
+        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'html-design', 'preview', 'assets', 'voice', 'render', 'qc')
           AND (p.not_before IS NULL OR p.not_before <= now()))
         AND NOT EXISTS (SELECT 1 FROM pipeline_stages q WHERE q.run_id = r.id AND q.state = 'running')
     `;
@@ -842,10 +873,13 @@ const CLOSED = "This run is already finished or cancelled";
 
 function approveMessage(stage: RunStage, next: RunStage | null = null): string {
   if (isPlanStage(stage)) {
-    const what = stage === "scene-spec" ? "scene spec" : "skill brief";
+    const what = stage === "scene-spec" ? "scene spec" : stage === "html-design" ? "page" : "skill brief";
+    if (next === "preview") return `Approved. The ${what} is ready and a worker takes still frames of the page next.`;
     return next === "voice" ? `Approved. The ${what} is ready and the studio records the narration next.` : `Approved. The ${what} is ready and Hermes renders the video next.`;
   }
   switch (stage) {
+    case "preview":
+      return "Approved. The look is approved and the studio records the narration next.";
     case "storyboard":
       return "Approved. The storyboard is ready and asset sourcing comes next.";
     case "assets":
@@ -973,7 +1007,7 @@ export async function decideReview(input: {
         await insertPending(tx, runId, "voice", note, 0, { tighten: fitRequest });
         await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
         const secs = typeof fitRequest.targetSec === "number" ? Math.round(fitRequest.targetSec) : 0;
-        const kept = stages.includes("assets") ? "The storyboard and every image are kept" : stages.includes("scene-spec") ? "The scene spec is kept" : "The plan is kept";
+        const kept = stages.includes("assets") ? "The storyboard and every image are kept" : stages.includes("scene-spec") ? "The scene spec is kept" : stages.includes("html-design") ? "The page is kept" : "The plan is kept";
         message = `Hermes is fitting the script to about ${secs} seconds. ${kept}; only the voice is recorded again.`;
         return;
       }
@@ -1045,17 +1079,17 @@ export async function recheckReview(input: { reviewId: string; userId: string | 
     if (!rv) return { ok: false, error: "Unknown review item" };
     const runId = rv.run_id as string;
     const stageText = rv.stage as string;
-    if (!isTermsStage(stageText)) return { ok: false, error: "Only an assets card held up by provider terms, or a voice card that did not pass, can be checked again." };
+    if (!isTermsStage(stageText)) return { ok: false, error: "Only an assets card held up by provider terms, a voice card that did not pass, or a reel held up by its voice's terms can be checked again." };
     const stage = stageText;
     const fit = input.fit === true;
     if (fit && stage !== "voice") return { ok: false, error: "Only a voice card can be fitted to the video." };
     // A fitted narration is played at its tempo by the worker, so every render worker must be able to (0.6.0+).
-    if (fit && !(await narrationTempoReady())) {
-      return { ok: false, error: "Fitting the narration needs worker 0.6.0 or later on every render worker. Update the worker, or use Tighten the script, keep the pictures." };
-    }
     const pre = await loadRun(sql, runId);
     const template = pre?.templateId ? await getTemplate(pre.templateId) : null;
     if (!pre || !template) return { ok: false, error: "The run or its template no longer exists" };
+    if (fit && !(await narrationTempoReady())) {
+      return { ok: false, error: `Fitting the narration needs worker 0.6.0 or later on every render worker. Update the worker, or use ${tightenLabel(runStagesOf(pre.config).includes("assets"))}.` };
+    }
 
     const recheckedAt = new Date().toISOString();
     const done = await sql.begin(async (tx): Promise<{ action: ConclusionAction; gate: GateResult | null; stillBlocking: string[]; attempt: number; tempo: number }> => {
@@ -1119,7 +1153,7 @@ export async function recheckTermsReviews(changed: { name: string; kind: Provide
   try {
     const rows = await db()`
       SELECT id, stage, kind, payload FROM review_items
-      WHERE state = 'open' AND kind = 'gate-failure' AND stage IN ('assets', 'voice')
+      WHERE state = 'open' AND kind = 'gate-failure' AND stage IN ('assets', 'voice', 'render')
       ORDER BY created_at LIMIT 50
     `;
     const items = rows

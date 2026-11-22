@@ -80,7 +80,7 @@ export function parseRunConfig(raw: unknown): RunConfig {
     topicHint: typeof c.topicHint === "string" ? c.topicHint : "",
     subtitles: strings(c.subtitles),
     themeSource: source,
-    ...stylePackOf(c.stylePack),
+    ...stylePackOf(c.stylePack, c.workflow),
     ...(typeof c.labStudyId === "string" && STUDY_ID_RE.test(c.labStudyId) ? { labStudyId: c.labStudyId } : {}),
     ...trialBatchOf(c.trialBatch),
     ...workflowOf(c.workflow),
@@ -97,9 +97,11 @@ function trialBatchOf(raw: unknown): { trialBatch?: TrialBatch } {
   return b ? { trialBatch: b } : {};
 }
 
-function stylePackOf(raw: unknown): { stylePack?: RunStylePack } {
+function stylePackOf(raw: unknown, workflow: unknown): { stylePack?: RunStylePack } {
   const p = parseRunStylePack(raw);
-  return p ? { stylePack: p } : {};
+  // A run on the html-design workflow draws a page Hermes wrote: research only, a trial whatever its stored pack says.
+  const designed = parseRunWorkflow(workflow)?.recipe === "html-design";
+  return p ? { stylePack: designed ? { ...p, trial: true, designed: true } : p } : {};
 }
 
 /** True when the run was started with a Trial style pack (research only, not for publishing). */

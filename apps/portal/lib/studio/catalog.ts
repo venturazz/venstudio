@@ -38,7 +38,9 @@ export type AssetKind =
   | "sprite-sheet"
   | "model-3d"
   | "script"
-  | "other";
+  | "other"
+  /** The page bundle of an html-design run (Hermes wrote it; research only). Made by the portal, never uploaded. */
+  | "html-page";
 export type AssetSource = "upload" | "hermes" | "muse" | "worker" | "licensed" | "generated";
 
 export const ASSET_KINDS = [

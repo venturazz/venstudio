@@ -25,6 +25,8 @@ export const STAGE_LABELS: Record<string, string> = {
   storyboard: "Storyboard",
   "scene-spec": "Scene spec",
   "skill-brief": "Skill brief",
+  "html-design": "HTML design",
+  preview: "Preview",
   assets: "Assets",
   voice: "Voice",
   render: "Video",
@@ -58,6 +60,18 @@ export interface DecisionContext {
   voice?: VoiceFix | null;
   /** True when every render worker can play narration at a changed tempo (worker 0.6.0+). Needed for "fit". */
   tempoReady?: boolean;
+  /** False for a run whose workflow makes no pictures (scene spec, skill brief, HTML design): labels say "the plan". */
+  pictures?: boolean;
+}
+
+/** What a script fit keeps, in the run's own words: its pictures, or the plan of a workflow that makes none. */
+export function keptWord(pictures: boolean | undefined): string {
+  return pictures === false ? "the plan" : "the pictures";
+}
+
+/** The Tighten (or Lengthen) button text for a run. */
+export function tightenLabel(pictures: boolean | undefined, lengthen = false): string {
+  return `${lengthen ? "Lengthen" : "Tighten"} the script, keep ${keptWord(pictures)}`;
 }
 
 /**
@@ -100,6 +114,8 @@ export function decisionOptions(kind: ReviewKind, ctx: DecisionContext = {}): Re
       const stage = ctx.stage ?? "";
       if (stage === "voice") return voiceOptions(ctx.issues ?? [], ctx.voice, ctx.tempoReady === true);
       if (!canRecheck(kind, stage, ctx.issues)) return ["retry", "revise", "reject"];
+      // A reel whose own voice is held up only by provider terms: the terms are checked again, nothing is rendered again.
+      if (stage === "render") return ["recheck", "retry", "revise", "reject"];
       if (!onlyTermsIssues(ctx.issues ?? [])) return ["retry", "recheck", "revise", "reject"];
       return stage === "assets" ? ["recheck", "revise", "reject"] : ["recheck", "retry", "revise", "reject"];
     }
@@ -122,7 +138,7 @@ export const DECISION_LABELS: Record<ReviewDecision, string> = {
 /** The button text, named after what the choice really does on this card. */
 export function decisionLabel(decision: ReviewDecision, kind: ReviewKind, stage: string, ctx: DecisionContext = {}): string {
   if (decision === "recheck" && stage === "voice" && !hasTermsIssues(ctx.issues)) return "Check again";
-  if (decision === "tighten" && ctx.voice?.tightenSec && ctx.voice.tightenSec > ctx.voice.narrationSec) return "Lengthen the script, keep the pictures";
+  if (decision === "tighten") return tightenLabel(ctx.pictures, Boolean(ctx.voice?.tightenSec && ctx.voice.tightenSec > ctx.voice.narrationSec));
   if (decision === "retry") {
     if (kind === "gate-failure" && stage === "assets") return "Retry failed shots";
     if (kind === "gate-failure" && stage === "voice") return "Make the voice again";
@@ -131,7 +147,7 @@ export function decisionLabel(decision: ReviewDecision, kind: ReviewKind, stage:
   return DECISION_LABELS[decision];
 }
 
-const PRODUCTION = ["assets", "voice", "render", "qc"];
+const PRODUCTION = ["preview", "assets", "voice", "render", "qc"];
 const sec = (n: number) => String(Math.round(n * 10) / 10);
 
 /** One plain line under a button when its effect is not obvious from the label. */
@@ -139,6 +155,7 @@ export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: 
   const fix = ctx.voice;
   if (decision === "recheck") {
     if (stage === "voice" && !hasTermsIssues(ctx.issues)) return "Checks this narration again with the current rules. Nothing is recorded again.";
+    if (stage === "render") return "Checks the reel's own voice against the provider terms as they are now. Nothing is rendered again.";
     return stage === "voice"
       ? "Checks the narration you have against the provider terms. Nothing is recorded again."
       : "Checks the images you have against the provider terms. Nothing is made again.";
@@ -149,18 +166,20 @@ export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: 
   }
   if (decision === "tighten") {
     const to = fix?.tightenSec ? ` to about ${sec(fix.tightenSec)} s` : " to fit the shots";
-    return `Hermes rewrites the script${to} with the same beats, and only the voice is recorded again. The storyboard and every image are kept.`;
+    return `Hermes rewrites the script${to} with the same beats, and only the voice is recorded again. ${ctx.pictures === false ? "The plan is kept." : "The storyboard and every image are kept."}`;
   }
   if (decision === "override") return "Owner only. Uses this narration as it is, after you have listened to it. Your decision is recorded in the audit log.";
   if (decision === "reject") {
-    return PRODUCTION.includes(stage) ? "Cancels the run. The images and narration already made stay in Assets." : "Cancels the run.";
+    if (!PRODUCTION.includes(stage)) return "Cancels the run.";
+    return ctx.pictures === false ? "Cancels the run. The narration and video already made stay in Assets." : "Cancels the run. The images and narration already made stay in Assets.";
   }
   if (decision === "revise" && stage === "voice") {
-    return "A note about length or speed rewrites the script to fit and keeps the pictures. A note about the voice or accent records the voice again.";
+    return `A note about length or speed rewrites the script to fit and keeps ${keptWord(ctx.pictures)}. A note about the voice or accent records the voice again.`;
   }
   if (decision === "retry" && kind === "gate-failure" && stage === "assets") return "Makes only the shots that failed again. Finished images are kept.";
   if (decision === "retry" && kind === "gate-failure" && stage === "voice") return "Records the whole narration again.";
   if (decision === "revise" && stage === "assets" && (kind === "gate-failure" || kind === "approval")) return "Makes every image again with your note.";
+  if (decision === "revise" && stage === "preview") return "Your note goes back to the step these stills show (the scene spec or the page), which is made again.";
   return null;
 }
 
@@ -228,8 +247,11 @@ export interface ReviewPayload {
    * Scene spec and skill brief cards (workflows without pictures, plan-review.ts): the plan as one line per scene or
    * shot, the brief's project text, and a note on what the card shows.
    */
-  plan?: { kind: "scene-spec" | "skill-brief"; lines: string[]; text?: string; note?: string };
+  plan?: { kind: PlanKind; lines: string[]; text?: string; note?: string };
 }
+
+/** The kinds of plan a card can show (plan-review.ts). */
+export type PlanKind = "scene-spec" | "skill-brief" | "html-design";
 
 export interface ReviewMedia {
   /** provider is the name terms are tracked under (the backend for Hermes images); plugin is the Hermes plugin in front of it. */
@@ -238,4 +260,6 @@ export interface ReviewMedia {
   videoAssetId?: string;
   /** Voice provider, for the audio card. */
   voiceProvider?: string;
+  /** Preview cards: still frames of the page (worker artifacts, served by /api/artifacts/<id>), with their time. */
+  stills?: Array<{ artifactId: string; atSec: number }>;
 }

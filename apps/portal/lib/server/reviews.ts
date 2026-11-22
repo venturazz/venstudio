@@ -25,6 +25,10 @@ export interface ReviewCard {
   hermesRender: boolean;
   /** A lab trial of a Draft or Lab pack (pipeline_runs.config.stylePack.lab): research only, counted apart. */
   labTrial: boolean;
+  /** The run draws a page Hermes wrote (workflow html-design): research only, always a trial, never published. */
+  designed: boolean;
+  /** False when the run's workflow makes no pictures (no assets stage): labels say "the plan", not "the pictures". */
+  pictures: boolean;
 }
 
 function toPayload(raw: unknown): ReviewPayload {
@@ -64,6 +68,14 @@ function toPayload(raw: unknown): ReviewPayload {
     if (audio) media.audioAssetId = audio;
     if (video) media.videoAssetId = video;
     if (typeof m.voiceProvider === "string") media.voiceProvider = m.voiceProvider;
+    if (Array.isArray(m.stills)) {
+      const stills = m.stills.flatMap((x) => {
+        const r = (typeof x === "object" && x !== null ? x : {}) as Record<string, unknown>;
+        const artifactId = id(r.artifactId);
+        return artifactId && typeof r.atSec === "number" && Number.isFinite(r.atSec) ? [{ artifactId, atSec: r.atSec }] : [];
+      });
+      if (stills.length > 0) media.stills = stills.slice(0, 12);
+    }
     payload.media = media;
   }
   const providers = parseProviderRows(p.providers);
@@ -109,9 +121,12 @@ export async function latestGatesByRun(runIds: string[]): Promise<Map<string, Ga
 export async function listOpenReviews(): Promise<ReviewCard[]> {
   const rows = await db()`
     SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name,
-      coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS trial,
+      coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false)
+        OR coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) AS trial,
       coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render,
-      coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial
+      coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial,
+      coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) OR coalesce((r.config->'stylePack'->>'designed')::boolean, false) AS designed,
+      (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures
     FROM review_items ri
     JOIN pipeline_runs r ON r.id = ri.run_id
     LEFT JOIN channels c ON c.id = r.channel_id
@@ -135,6 +150,8 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     trial: r.trial === true,
     hermesRender: r.hermes_render === true,
     labTrial: r.lab_trial === true,
+    designed: r.designed === true,
+    pictures: r.pictures !== false,
   }));
 }
 

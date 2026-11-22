@@ -110,9 +110,12 @@ export function hasTermsIssues(issues: readonly string[] | undefined): boolean {
   return (issues ?? []).some(isTermsIssue);
 }
 
-/** Stages whose gate checks provider terms on work that is already made, so the gate alone can run again. */
-export function isTermsStage(stage: string): stage is "assets" | "voice" {
-  return stage === "assets" || stage === "voice";
+/**
+ * Stages whose gate checks provider terms on work that is already made, so the gate alone can run again: the images,
+ * the narration, and the render of a reel that recorded its own voice (hermes-skill with hermes.voice skill).
+ */
+export function isTermsStage(stage: string): stage is "assets" | "voice" | "render" {
+  return stage === "assets" || stage === "voice" || stage === "render";
 }
 
 /** True for an assets or voice gate failure with at least one provider-terms issue: the card shows the blocking rows. */
@@ -127,6 +130,8 @@ export function termsHeld(kind: ReviewKind, stage: string, issues: readonly stri
  */
 export function canRecheck(kind: ReviewKind, stage: string, issues: readonly string[] | undefined): boolean {
   if (kind === "gate-failure" && stage === "voice") return true;
+  // A render card only when its sole problem is the terms of the reel's own voice: anything else needs a new render.
+  if (stage === "render") return kind === "gate-failure" && onlyTermsIssues(issues ?? []);
   return termsHeld(kind, stage, issues);
 }
 
@@ -146,7 +151,7 @@ export function autoRecheckMatches(
 /** Why a card cannot be checked again right now, or null when it can. */
 export function recheckRefusal(input: { reviewState: string; kind: ReviewKind; stage: string; issues: readonly string[]; runState: string; stageState: string | null }): string | null {
   if (input.reviewState !== "open") return "This card was already decided or checked again. Refresh to see the new one.";
-  if (!canRecheck(input.kind, input.stage, input.issues)) return "Only an assets card held up by provider terms, or a voice card that did not pass, can be checked again.";
+  if (!canRecheck(input.kind, input.stage, input.issues)) return "Only an assets card held up by provider terms, a voice card that did not pass, or a reel held up only by its voice's provider terms can be checked again.";
   if (input.runState !== "waiting-human") return "This run is no longer waiting for you.";
   if (input.stageState !== "waiting-human") return "This step is no longer waiting for you.";
   return null;
@@ -156,13 +161,13 @@ export function recheckRefusal(input: { reviewState: string; kind: ReviewKind; s
 export type ConclusionAction = "approved" | "asked-approval" | "gate-failure" | "blocked" | "revise" | "dropped";
 
 /** The line the owner reads after a re-check. */
-export function recheckMessage(stage: "assets" | "voice", action: ConclusionAction, stillBlocking: readonly string[]): string {
-  const what = stage === "assets" ? "images" : "narration";
+export function recheckMessage(stage: "assets" | "voice" | "render", action: ConclusionAction, stillBlocking: readonly string[]): string {
+  const what = stage === "assets" ? "images" : stage === "voice" ? "narration" : "video";
   switch (action) {
     case "approved":
       return `The checks pass now. The ${what} ${stage === "assets" ? "were" : "was"} kept and the studio continues.`;
     case "asked-approval":
-      return `The checks pass now. Nothing was made again: approve the ${stage === "assets" ? "assets" : "voice"} to continue.`;
+      return `The checks pass now. Nothing was made again: approve the ${stage === "assets" ? "assets" : stage === "voice" ? "voice" : "video"} to continue.`;
     case "gate-failure":
       return stillBlocking.length > 0
         ? `Checked again. Still blocked by ${stillBlocking.join(", ")}. Nothing was made again.`

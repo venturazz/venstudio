@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useActionState } from "react";
 import { Alert, Badge, Card, CardBody, Input, Textarea } from "@/components/ui.tsx";
-import { HERMES_RENDER_LABEL, LAB_TRIAL_BADGE, TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { SubmitButton } from "@/components/client.tsx";
 import { decisionHint, decisionLabel, decisionOptions, reviewTitle, stageLabel, type ReviewKind, type ReviewPayload } from "@/lib/studio/review.ts";
 import type { BlockingRow } from "@/lib/studio/terms-review.ts";
@@ -24,6 +24,10 @@ export interface ReviewCardView {
   hermesRender?: boolean;
   /** A lab trial of a Draft or Lab pack: research only, never published, counted apart. */
   labTrial?: boolean;
+  /** The run draws a page Hermes wrote (html-design): research only, never published. */
+  designed?: boolean;
+  /** False when the run's workflow makes no pictures, so the voice fixes say "keep the plan". */
+  pictures?: boolean;
   /** The final video's presentation score (qc cards). */
   presentation?: PresentationView | null;
   /** Hermes's advisory rating of the final video (qc cards); never decides. */
@@ -158,15 +162,15 @@ function NotesBlock({ notes }: { notes: string[] | undefined }) {
 }
 
 /**
- * Scene spec and skill brief cards (workflows without pictures): the plan as text, one line per scene or shot. There
- * is no image grid here; only an image-sequence assets card has one.
+ * Scene spec, skill brief and HTML design cards (workflows without pictures): the plan as text, one line per scene,
+ * shot or file. There is no image grid here; only an image-sequence assets card has one (and a preview card its stills).
  */
 function PlanBlock({ payload }: { payload: ReviewPayload }) {
   const plan = payload.plan;
   if (!plan) return null;
   return (
-    <div className="space-y-2" data-testid={plan.kind === "scene-spec" ? "scene-spec-card" : "skill-brief-card"}>
-      <ol className="space-y-1 rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid={plan.kind === "scene-spec" ? "scene-spec-list" : "skill-brief-list"}>
+    <div className="space-y-2" data-testid={`${plan.kind}-card`}>
+      <ol className="space-y-1 rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid={`${plan.kind}-list`}>
         {plan.lines.map((line, i) => (
           <li key={`${i}-${line}`} className="break-words" data-testid="plan-line">
             {line}
@@ -174,7 +178,7 @@ function PlanBlock({ payload }: { payload: ReviewPayload }) {
         ))}
       </ol>
       {plan.text && (
-        <p className="whitespace-pre-wrap break-words rounded-lg border border-border p-3 text-sm" data-testid="skill-brief-text">
+        <p className="whitespace-pre-wrap break-words rounded-lg border border-border p-3 text-sm" data-testid={plan.kind === "html-design" ? "html-design-note" : "skill-brief-text"}>
           {plan.text}
         </p>
       )}
@@ -192,9 +196,21 @@ function MediaBlock({ stage, payload, termsShown }: { stage: string; payload: Re
   const checks = payload.checks ?? [];
   const images = media?.images ?? [];
   const termsLine = [...(payload.issues ?? []), ...checks].some((l) => /commercial-use terms|provider terms/i.test(l));
+  const stills = stage === "preview" ? (media?.stills ?? []) : [];
   if (!media && checks.length === 0) return null;
   return (
     <div className="space-y-3" data-testid="review-media">
+      {stills.length > 0 && (
+        <ul className="grid grid-cols-3 gap-2" data-testid="preview-stills">
+          {stills.map((x, i) => (
+            <li key={x.artifactId} className="min-w-0 space-y-1" data-testid="preview-still">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={`/api/artifacts/${x.artifactId}`} alt={`Still ${i + 1} at ${x.atSec} s`} loading="lazy" className="aspect-[9/16] w-full rounded-lg border border-border bg-surface-2 object-cover" />
+              <p className="text-xs text-muted">{x.atSec} s</p>
+            </li>
+          ))}
+        </ul>
+      )}
       {stage === "assets" && images.length > 0 && (
         <ul className="grid grid-cols-2 gap-2" data-testid="asset-grid">
           {images.map((img) => (
@@ -247,7 +263,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
   const p = item.payload;
   const issues = p.issues && p.issues.length > 0 ? p.issues : item.gateLines;
   const ideas = p.ideas ?? [];
-  const ctx = { stage: item.stage, issues: p.issues ?? [], voice: p.voice ?? null, tempoReady: item.tempoReady };
+  const ctx = { stage: item.stage, issues: p.issues ?? [], voice: p.voice ?? null, tempoReady: item.tempoReady, pictures: item.pictures !== false };
   const actions = decisionOptions(item.kind, ctx);
   const reviseHint = decisionHint("revise", item.kind, item.stage, ctx);
   const rejectHint = decisionHint("reject", item.kind, item.stage, ctx);
@@ -270,6 +286,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             {item.hermesRender && (
               <span data-testid="hermes-render-badge" title="Hermes renders this video with its own tools; it is never published">
                 <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
+              </span>
+            )}
+            {item.designed && (
+              <span data-testid="html-design-badge" title="Hermes wrote the page this video is drawn from; research only, never published">
+                <Badge tone="warn">{HTML_DESIGN_BADGE}</Badge>
               </span>
             )}
             {item.labTrial && (
