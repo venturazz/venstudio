@@ -372,6 +372,8 @@ function directorReply(messages) {
 // The newest first user message per stage marker (idea, research, script, storyboard ...), so the UI test can check
 // what the New video form carried into the director prompts.
 const lastPrompt = {};
+/** Every prompt per stage, oldest first, so a check can pick its own run's prompt after later runs asked again. */
+const allPrompts = {};
 /** Text of a chat message's content: a string, or the text parts of OpenAI-style content parts (vision turns). */
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -465,7 +467,10 @@ const fakeHermes = createServer((req, res) => {
       }
       const first = textOf(messages.find((m) => m.role === "user")?.content);
       const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
-      if (stage) lastPrompt[stage] = first;
+      if (stage) {
+        lastPrompt[stage] = first;
+        (allPrompts[stage] ??= []).push(first);
+      }
       if (stage === "image" && fakeStats.hermes429 < HERMES_429_BURST) {
         fakeStats.hermes429++;
         res.writeHead(429, { "content-type": "application/json", "retry-after": String(HERMES_RETRY_AFTER_SEC) });
@@ -2041,12 +2046,14 @@ try {
 
   step("director: the script and storyboard prompts carried the purposes and subtitles");
   {
-    const scriptAsk = lastPrompt.script ?? "";
+    // The production run's own prompts: trial runs started later ask for scripts and boards with other briefs.
+    const ownPrompt = (stage) => [...(allPrompts[stage] ?? [])].reverse().find((t) => t.includes(STUDIO_BRIEF)) ?? "";
+    const scriptAsk = ownPrompt("script");
     for (const want of ["contains affiliate links", "call to action", "hook to the next episode", "translate well"]) {
       if (!scriptAsk.includes(want)) throw new Error(`the script prompt misses "${want}"`);
     }
     if (!dataBlock(scriptAsk, "owner brief").includes(STUDIO_BRIEF)) throw new Error("the script prompt has no owner brief block");
-    const boardAsk = lastPrompt.storyboard ?? "";
+    const boardAsk = ownPrompt("storyboard");
     for (const want of ["disclosure card", "same in every shot", "bottom fifth of every frame"]) {
       if (!boardAsk.includes(want)) throw new Error(`the storyboard prompt misses "${want}"`);
     }
