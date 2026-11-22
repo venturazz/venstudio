@@ -147,9 +147,17 @@ function directorReply(messages) {
     });
   }
   // Renderer hermes (research only): Hermes renders the whole video and publishes it under /clip/ on its media host.
+  // A research pack names its Hermes skill (claude-animation-skills, e.g. /graph): the fake records which skill arrived
+  // and answers with a real clip made for that skill.
   if (stage === "hermes-render") {
     fakeStats.hermesRenders++;
-    return JSON.stringify({ status: "ok", video: { type: "url", value: `http://127.0.0.1:${HERMES_PORT}/clip/render-${fakeStats.hermesRenders}.mp4`, mimeType: "video/mp4" }, provider: "capcut", source: "capcut", model: "fake-capcut-render" });
+    const skill = /"skill":\{"name":"(\/[a-z0-9-]+)"/.exec(first)?.[1] ?? "";
+    if (skill) {
+      if (!first.includes(`with your ${skill} skill`)) throw new Error(`the hermes-render request names ${skill} in its data but not in its instruction`);
+      fakeStats.hermesSkills.push(skill);
+    }
+    const name = skill ? `${skill.slice(1)}-${fakeStats.hermesRenders}` : `render-${fakeStats.hermesRenders}`;
+    return JSON.stringify({ status: "ok", video: { type: "url", value: `http://127.0.0.1:${HERMES_PORT}/clip/${name}.mp4`, mimeType: "video/mp4" }, provider: "capcut", source: "capcut", model: skill ? `fake-${skill.slice(1)}` : "fake-capcut-render" });
   }
   // The presentation advisory: a vision rating of the stills the quality check sampled (attached as image parts).
   if (stage === "presentation-advisory") {
@@ -294,6 +302,18 @@ function textOf(content) {
 // The clip the fake Hermes "renders": a real H.264/AAC MP4, made once with ffmpeg, served under /clip/ like the media host.
 const FAKE_CLIP = path.join(OUT, "fake-hermes-clip.mp4");
 let fakeClip = null;
+const skillClips = new Map();
+/** A real clip per research skill (a different hue each), so every skill's render is its own file. */
+function fakeClipFor(name) {
+  const skill = /^([a-z0-9-]+?)-\d+$/.exec(name)?.[1] ?? "render";
+  if (skill === "render") return fakeClipBytes();
+  if (skillClips.has(skill)) return skillClips.get(skill);
+  const file = path.join(OUT, `fake-hermes-${skill}.mp4`);
+  const hue = (skillClips.size + 1) * 70;
+  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=16", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=16", "-shortest", "-vf", `hue=h=${hue}`, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", file], { timeout: 120_000 });
+  skillClips.set(skill, readFileSync(file));
+  return skillClips.get(skill);
+}
 function fakeClipBytes() {
   if (fakeClip) return fakeClip;
   execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=16", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=16", "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", FAKE_CLIP], { timeout: 120_000 });
@@ -301,7 +321,7 @@ function fakeClipBytes() {
   return fakeClip;
 }
 
-const fakeStats = { labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
+const fakeStats = { hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -331,9 +351,10 @@ const fakeHermes = createServer((req, res) => {
     return res.end(makePng(540, 960, Number(link[1])));
   }
   // The media host's /clip/ folder, public like the image link.
-  if (/^\/clip\/render-\d+\.mp4$/.test(req.url ?? "")) {
+  const clip = /^\/clip\/([a-z0-9-]+-\d+)\.mp4$/.exec(req.url ?? "");
+  if (clip) {
     fakeStats.clipDownloads++;
-    const body = fakeClipBytes();
+    const body = fakeClipFor(clip[1]);
     res.writeHead(200, { "content-type": "video/mp4", "content-length": String(body.length) });
     return res.end(body);
   }
@@ -1428,7 +1449,7 @@ try {
           SELECT channel_id, 'tpl-hermes-research-explainer', (SELECT current_version FROM templates WHERE id = 'tpl-hermes-research-explainer'),
                  topic || ' (Hermes render)', autonomy_level,
                  jsonb_set(jsonb_set(config, '{styleId}', '"hermes-research-explainer"'), '{stylePack}',
-                   '{"id":"hermes-research-explainer","version":"0.1.0","status":"trial","trial":true,"engine":"hermes"}'), 'running'
+                   '{"id":"hermes-research-explainer","version":"0.1.1","status":"trial","trial":true,"engine":"hermes"}'), 'running'
           FROM pipeline_runs WHERE id = '${prodRunId}' RETURNING id`)
       : null;
     if (!hermesRunId) console.log("   no database access (UI_DB unset): the Hermes render run is skipped");
@@ -1504,7 +1525,7 @@ try {
         if (logged && / (approved|rejected) /.test(logged)) break;
         await m.waitForTimeout(1000);
       }
-      if (!/^hermes-research-explainer@0\.1\.0 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
+      if (!/^hermes-research-explainer@0\.1\.1 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
         await dumpPipeline(m, hermesHref, "the Hermes render's trial outcome was not recorded");
         throw new Error(`the Hermes render's curation entry is "${logged}"`);
       }
@@ -1513,14 +1534,234 @@ try {
       await page.goto(`${APP}/studio/styles`);
       const hermesPack = page.getByTestId("style-pack-hermes-research-explainer");
       await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
-      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.0: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
+      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.1: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
       await shot("15c-styles-hermes-desktop");
     }
+  }
+
+  // Research styles and lab trials (docs/style-packs.md, "Research styles and lab trials"). Runs below reuse the finished
+  // production's approved script, storyboard, pictures and narration (copied rows), so only the render, the quality
+  // check and the review run again.
+  const RESEARCH_SKILLS = ["breakdown", "dan-koe", "graph", "kurzgesagt", "low-poly", "map-route", "minecraft", "minimalistic-graphics", "stick-figure", "zach-d-films"];
+  const RESEARCH_GROUP = "Hermes research styles (from claude-animation-skills)";
+  const prodRunIdForTrials = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
+  /** Points a freshly started run at the production's approved stages, with only the render left to do. */
+  async function reuseProduction(runId, why) {
+    // Wait until the run's first stage has settled (its idea card is open), so nothing is running while it is rewritten.
+    let settled = false;
+    for (let i = 0; i < 60 && !settled; i++) {
+      const busy = dbValue(`SELECT count(*) FROM pipeline_stages WHERE run_id = '${runId}' AND state = 'running'`);
+      const open = dbValue(`SELECT count(*) FROM review_items WHERE run_id = '${runId}' AND state = 'open'`);
+      settled = busy === "0" && open !== "0";
+      if (!settled) await page.waitForTimeout(1000);
+    }
+    if (!settled) {
+      await dumpPipeline(page, `/studio/runs/${runId}`, `${why}: the run's first stage never settled on an open review card`);
+      throw new Error(`${why}: the run's first stage never settled on an open review card`);
+    }
+    dbExec(`UPDATE review_items SET state = 'superseded' WHERE run_id = '${runId}' AND state = 'open'`);
+    dbExec(`DELETE FROM pipeline_stages WHERE run_id = '${runId}'`);
+    dbExec(`INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
+      SELECT '${runId}', stage, state, attempt, output, finished_at FROM pipeline_stages
+      WHERE run_id = '${prodRunIdForTrials}' AND state = 'passed' AND stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice')`);
+    try {
+      dbExec(`INSERT INTO work_orders (run_id, stage, shot_ref, executor, spec, state, asset_id)
+        SELECT '${runId}', stage, shot_ref, executor, spec, state, asset_id FROM work_orders WHERE run_id = '${prodRunIdForTrials}' AND stage = 'assets' AND state = 'done'`);
+    } catch (err) {
+      console.log(`   the pictures were not copied for ${why} (${String(err).slice(0, 200)})`);
+    }
+    dbExec(`UPDATE pipeline_runs SET state = 'running', topic = (SELECT topic FROM pipeline_runs WHERE id = '${prodRunIdForTrials}') || ' (${why})' WHERE id = '${runId}'`);
+    dbExec(`INSERT INTO pipeline_stages (run_id, stage, state, attempt) VALUES ('${runId}', 'render', 'pending', 1)`);
+  }
+  const cardOf = (runId, stage) => m.locator(`[data-testid="review-card"][data-stage="${stage}"]`).filter({ has: m.locator(`a[href="/studio/runs/${runId}"]`) });
+  /** Review restarts the run; the render card is approved, the worker runs qc-video (and a worker render). */
+  async function driveToQc(runIds, label) {
+    const left = new Set(runIds);
+    for (let i = 0; i < 24 && left.size > 0; i++) {
+      await m.goto(`${APP}/review`);
+      for (const id of runIds) {
+        const broken = cardOf(id, "render").or(cardOf(id, "qc")).and(m.locator('[data-kind="stage-error"]'));
+        if (await broken.first().isVisible().catch(() => false)) {
+          await dumpPipeline(m, `/studio/runs/${id}`, `${label}: a stage stopped with an error`);
+          throw new Error(`${label}: ${((await broken.first().innerText()) || "").replace(/\s+/g, " ").slice(0, 500)}`);
+        }
+        const render = cardOf(id, "render");
+        if (await render.first().getByRole("button", { name: "Approve", exact: true }).isVisible().catch(() => false)) {
+          await render.first().getByTestId("render-video").waitFor();
+          await render.first().getByRole("button", { name: "Approve", exact: true }).click();
+          await m.waitForLoadState("networkidle");
+        }
+      }
+      runWorker([`${OUT}/worker/run.sh`, "tick"]);
+      await m.goto(`${APP}/review`);
+      for (const id of [...left]) if (await cardOf(id, "qc").first().isVisible().catch(() => false)) left.delete(id);
+      if (left.size > 0) await m.waitForTimeout(3000);
+    }
+    if (left.size > 0) {
+      for (const id of left) await dumpPipeline(m, `/studio/runs/${id}`, `${label}: the quality check never reached Review`);
+      throw new Error(`${label}: the quality check never reached Review for ${[...left].join(", ")}`);
+    }
+  }
+  /** The owner scores the final video on its card, then decides (approve when offered, else reject). */
+  async function scoreAndDecide(runId, stars, shown) {
+    await m.goto(`${APP}/review`);
+    const card = cardOf(runId, "qc").first();
+    await scoreVideo(card, stars, shown);
+    const approve = card.getByRole("button", { name: "Approve", exact: true });
+    if (await approve.isVisible().catch(() => false)) await approve.click();
+    else await card.getByRole("button", { name: "Reject", exact: true }).click();
+    await m.waitForLoadState("networkidle");
+    for (let i = 0; i < 20; i++) {
+      if (/ (approved|rejected)$/.test(dbValue(`SELECT pack_id || ' ' || coalesce(owner_decision, 'none') FROM style_trial_outcomes WHERE run_id = '${runId}'`) ?? "")) return;
+      await m.waitForTimeout(1000);
+    }
+    await dumpPipeline(m, `/studio/runs/${runId}`, "the trial outcome was not recorded with the owner's decision");
+    throw new Error(`the trial outcome of ${runId} was not recorded with the owner's decision`);
+  }
+
+  step("research styles: New Video shows every claude-animation-skills skill in its own group, badged, described and credited; the lifecycle is said plainly");
+  {
+    await page.goto(`${APP}/studio/new`);
+    await page.getByTestId("lifecycle").getByText("Research styles (Hermes render) and lab trials are for testing and curating, never for publishing.", { exact: true }).waitFor();
+    await page.getByTestId("lifecycle").getByText("Only Listed styles publish.", { exact: true }).waitFor();
+    const group = page.locator(`[data-testid="research-group"][data-group="${RESEARCH_GROUP}"]`);
+    await group.getByTestId("research-group-title").getByText(RESEARCH_GROUP, { exact: true }).waitFor();
+    const rows = group.locator('li[data-testid^="trial-style-hermes-"]');
+    const ids = (await rows.evaluateAll((ls) => ls.map((l) => l.getAttribute("data-testid")))).sort();
+    const want = RESEARCH_SKILLS.map((s) => `trial-style-hermes-${s}`).sort();
+    if (JSON.stringify(ids) !== JSON.stringify(want)) throw new Error(`the research group lists ${ids.join(", ")}, expected ${want.join(", ")}`);
+    for (const s of RESEARCH_SKILLS) {
+      const row = group.getByTestId(`trial-style-hermes-${s}`);
+      await row.getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
+      await row.getByTestId("trial-style-credit").getByText("From claude-animation-skills by Artem Novitckii (MIT).", { exact: true }).waitFor();
+      if (!((await row.getByTestId("trial-style-about").innerText()).includes(`/${s}`))) throw new Error(`the ${s} research style does not name its skill in its description`);
+    }
+    const groups = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
+    if (!groups.includes(RESEARCH_GROUP)) throw new Error(`no research group in the style list: ${groups.join(", ")}`);
+    await shot("28-new-video-research-desktop");
+    await m.goto(`${APP}/studio/new`);
+    await m.locator(`[data-testid="research-group"][data-group="${RESEARCH_GROUP}"]`).waitFor();
+    await assertNoOverflow(m, "/studio/new (research styles)");
+    await shot("28b-new-video-research-mobile", m);
+  }
+
+  step("batch trial: two research styles from one brief; Hermes is asked with each skill and answers with a real clip; both reach the owner's score; Styles shows them; nothing is publishable");
+  {
+    await page.goto(`${APP}/studio/new`);
+    await page.selectOption("#channelId", { label: "Myth Stories" });
+    await page.fill("#brief", "Batch trial: one thing that compounds");
+    const batchBox = page.getByTestId("batch-trial");
+    await batchBox.getByRole("checkbox", { name: "Try Line graph (Hermes /graph)", exact: true }).check();
+    await batchBox.getByRole("checkbox", { name: "Try Branching line art (Hermes /dan-koe)", exact: true }).check();
+    await batchBox.getByRole("button", { name: "Start 2 trials", exact: true }).click();
+    await batchBox.getByTestId("batch-started").getByText(/^2 trial runs started from one brief\. Hermes works through them one ask at a time\.$/).waitFor();
+    const hrefs = await batchBox.getByTestId("batch-run-link").evaluateAll((as) => as.map((a) => a.getAttribute("href")));
+    const batchIds = hrefs.map((h) => /([0-9a-f-]{36})$/.exec(h ?? "")?.[1]).filter(Boolean);
+    if (batchIds.length !== 2) throw new Error(`the batch started ${batchIds.length} run(s): ${hrefs.join(", ")}`);
+    const stored = dbValue(`SELECT string_agg((config->'stylePack'->>'id') || ':' || (config->'stylePack'->>'trial') || ':' || (config->'trialBatch'->>'index') || '/' || (config->'trialBatch'->>'total'), ' ' ORDER BY (config->'trialBatch'->>'index')) FROM pipeline_runs WHERE id IN ('${batchIds.join("','")}')`);
+    if (stored !== null && stored !== "hermes-graph:true:1/2 hermes-dan-koe:true:2/2") throw new Error(`the batch runs are stored as "${stored}"`);
+    // The queue shows both runs, in batch order.
+    await page.goto(`${APP}/studio/styles`);
+    const queue = page.getByTestId("trial-queue");
+    await queue.locator(`[data-testid="trial-queue-run"][data-run-id="${batchIds[0]}"]`).getByText("1 of 2", { exact: true }).waitFor();
+    await queue.locator(`[data-testid="trial-queue-run"][data-run-id="${batchIds[1]}"]`).getByText("2 of 2", { exact: true }).waitFor();
+    await shot("29-styles-trial-queue-desktop");
+    if (!prodRunIdForTrials || stored === null) console.log("   no database access (UI_DB unset) or no finished production: the batch renders are skipped");
+    else {
+      const before = fakeStats.hermesSkills.length;
+      await reuseProduction(batchIds[0], "batch trial /graph");
+      await reuseProduction(batchIds[1], "batch trial /dan-koe");
+      await driveToQc(batchIds, "batch trial");
+      const skills = fakeStats.hermesSkills.slice(before).sort();
+      if (JSON.stringify(skills) !== JSON.stringify(["/dan-koe", "/graph"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /graph and /dan-koe`);
+      for (const [id, skill] of [[batchIds[0], "graph"], [batchIds[1], "dan-koe"]]) {
+        const jobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${id}'`);
+        if (jobs !== "0") throw new Error(`a research render queued ${jobs} worker render job(s)`);
+        const prov = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'backend', '?') || ' ' || coalesce(a.metadata->>'hermesSkill', 'no-skill') || ' ' || a.origin_url FROM assets a
+          WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${id}' AND stage = 'render' AND state = 'passed' LIMIT 1)`);
+        if (!new RegExp(`^hermes-render capcut /${skill} http://127\\.0\\.0\\.1:\\d+/clip/${skill}-\\d+\\.mp4$`).test(prov ?? "")) throw new Error(`the ${skill} render's provenance is "${prov}"`);
+        const card = cardOf(id, "qc").first();
+        await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
+        await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
+      }
+      await scoreAndDecide(batchIds[0], { hook: 4, pacing: 4, legibility: 5, polish: 4, audio: 3 }, "75/100 by the owner");
+      await scoreAndDecide(batchIds[1], { hook: 5, pacing: 5, legibility: 5, polish: 5, audio: 5 }, "100/100 by the owner");
+      await shot("29b-review-batch-scored-mobile", m);
+      await page.goto(`${APP}/studio/styles`);
+      await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
+      const research = page.getByTestId("style-group-research");
+      await research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.0: 1 .*mean presentation 75 \(1 scored\) · owner (approved 1, rejected 0|approved 0, rejected 1)$/).waitFor();
+      await research.getByTestId("style-pack-hermes-dan-koe").getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
+      await research.getByTestId("style-pack-hermes-graph").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
+      await shot("29c-styles-research-scored-desktop");
+      // Nothing from these runs is publishable: research only, never an upload or publish step.
+      for (const id of batchIds) {
+        await page.goto(`${APP}/studio/runs/${id}`);
+        await page.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
+        await page.getByTestId("trial-badge").waitFor();
+      }
+      const published = dbValue(`SELECT count(*) FROM pipeline_stages WHERE run_id IN ('${batchIds.join("','")}') AND stage IN ('upload', 'publish') AND state <> 'skipped'`);
+      if (published !== "0") throw new Error(`a research run reached ${published} upload or publish stage(s)`);
+    }
+  }
+
+  step("lab trial: a Lab pack the worker reports runs from Styles, badged Lab trial, recorded apart from promotion, never publishable");
+  {
+    await page.goto(`${APP}/studio/styles`);
+    await page.getByTestId("style-group-lab").waitFor();
+    const probeCard = page.getByTestId("style-pack-probe-line-graph");
+    const action = probeCard.getByTestId("lab-trial-action");
+    const tryIt = action.getByRole("link", { name: "Try it (lab trial)", exact: true });
+    if (!(await tryIt.isVisible().catch(() => false))) {
+      const why = (await action.getByTestId("lab-trial-unavailable").innerText().catch(() => "")) || "(no reason shown)";
+      throw new Error(`the Lab pack probe-line-graph cannot run as a lab trial on the CI worker: ${why}`);
+    }
+    await shot("30-styles-lab-trial-desktop");
+    await tryIt.click();
+    await page.waitForURL(/\/studio\/new\?lab=probe-line-graph$/);
+    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Probe: line graph \(html-capture\) 0\.1\.0 is lab\./).waitFor();
+    if ((await page.locator("#templateId").inputValue()) !== "tpl-probe-line-graph") throw new Error("New Video is not pre-filled with the lab pack");
+    await page.getByTestId("lab-trial-note").waitFor();
+    await page.selectOption("#channelId", { label: "Myth Stories" });
+    await page.getByRole("button", { name: "Ask Hermes for ideas", exact: true }).click();
+    await page.getByText(/^Lab trial started \(Lab trial \(draft pack\), never published\)\./).first().waitFor();
+    const labHref = await page.getByTestId("run-started-link").getAttribute("href");
+    const labRunId = /([0-9a-f-]{36})$/.exec(labHref ?? "")?.[1];
+    if (!labRunId) throw new Error(`no link to the lab trial run: ${labHref}`);
+    const labStored = dbValue(`SELECT (config->'stylePack'->>'id') || ':' || (config->'stylePack'->>'status') || ':' || (config->'stylePack'->>'lab') || ':' || (config->'stylePack'->>'trial') FROM pipeline_runs WHERE id = '${labRunId}'`);
+    if (labStored !== null && labStored !== "probe-line-graph:lab:true:true") throw new Error(`the lab trial is stored as "${labStored}"`);
+    await page.goto(`${APP}${labHref}`);
+    await page.getByTestId("lab-trial-badge").getByText("Lab trial (draft pack)", { exact: true }).waitFor();
+    if (!prodRunIdForTrials || labStored === null) console.log("   no database access (UI_DB unset) or no finished production: the lab trial render is skipped");
+    else {
+      await reuseProduction(labRunId, "lab trial");
+      await driveToQc([labRunId], "lab trial");
+      const cap = dbValue(`SELECT capability FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${labRunId}' ORDER BY created_at DESC LIMIT 1`);
+      if (cap !== "pack:probe-line-graph@0.1.0") throw new Error(`the lab trial's render is queued under ${cap}, not the pack capability`);
+      const card = cardOf(labRunId, "qc").first();
+      await card.getByTestId("lab-trial-badge").getByText("Lab trial (draft pack)", { exact: true }).waitFor();
+      await scoreAndDecide(labRunId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
+      const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || lab_trial::text || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${labRunId}'`);
+      if (!/^probe-line-graph@0\.1\.0 true html-capture \d+$/.test(logged ?? "")) throw new Error(`the lab trial's curation row is "${logged}"`);
+      await page.goto(`${APP}/studio/styles`);
+      const probe = page.getByTestId("style-pack-probe-line-graph");
+      await probe.getByTestId("lab-trial-record").getByText(/^Lab trial \(draft pack\) runs: 1 · mean presentation \d+ \(1 scored\)/).waitFor();
+      if (await probe.getByTestId("trial-record").count()) throw new Error("a Lab pack shows a promotion record");
+      await shot("30b-styles-lab-trial-counted-desktop");
+      const published = dbValue(`SELECT count(*) FROM pipeline_stages WHERE run_id = '${labRunId}' AND stage IN ('upload', 'publish') AND state <> 'skipped'`);
+      if (published !== "0") throw new Error(`the lab trial reached ${published} upload or publish stage(s)`);
+    }
+    await m.goto(`${APP}/studio/styles`);
+    await m.getByTestId("style-group-research").waitFor();
+    await assertNoOverflow(m, "/studio/styles (research and lab)");
+    await shot("30c-styles-mobile", m);
   }
 
   step("production: the render mixed the tagged music track as its bed, never the narration");
   {
     const musicId = dbValue(`SELECT id FROM assets WHERE title = 'Test music bed' AND 'music' = ANY(tags) ORDER BY created_at DESC LIMIT 1`);
+    const productionRunIdForBed = (productionRunHref ?? "").match(/[0-9a-f-]{36}/)?.[0] ?? "";
+    if (musicId !== null && !productionRunIdForBed) throw new Error(`no production run id to check the bed against (${productionRunHref})`);
     if (musicId === null) {
       console.log("   no database access (UI_DB unset): the bed check is skipped");
     } else {
@@ -1528,7 +1769,8 @@ try {
       const row = dbValue(
         `SELECT coalesce(payload->'audio'->'bed'->>'assetId', 'none') || ' ' || coalesce(payload->>'narrationAssetId', '') || ' ' || ` +
           `coalesce(payload->'audio'->'ambient'->>'color', 'none') || ' ' || (payload->'inputs' ? '${musicId}')::text || ' ' || (payload ? 'captionStyle')::text ` +
-          `FROM jobs WHERE type = 'render-video' AND payload ? 'runId' ORDER BY created_at DESC LIMIT 1`,
+          // The production run's own render: later trial runs (batch, lab) queue newer render jobs of their own.
+          `FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${productionRunIdForBed}' ORDER BY created_at DESC LIMIT 1`,
       );
       const [bedId, narrationId, ambient, listed, styled] = (row ?? "").split(" ");
       if (bedId !== musicId) {
@@ -1539,9 +1781,9 @@ try {
       if (ambient !== "brown") throw new Error(`the render job's mix has no ambience (${ambient})`);
       if (listed !== "true") throw new Error("the music track is not among the render job's inputs, so the worker could not download it");
       if (styled !== "true") throw new Error("the render job carries no captionStyle, though the worker reports caption-style");
-      const result = dbValue(`SELECT coalesce(result->'audioMix'->'bed'->>'assetId', 'none') FROM jobs WHERE type = 'render-video' AND payload ? 'runId' ORDER BY created_at DESC LIMIT 1`);
+      const result = dbValue(`SELECT coalesce(result->'audioMix'->'bed'->>'assetId', 'none') FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${productionRunIdForBed}' ORDER BY created_at DESC LIMIT 1`);
       if (result !== musicId) throw new Error(`the worker did not report mixing the bed (result.audioMix.bed = ${result})`);
-      const licence = dbValue(`SELECT license FROM assets WHERE kind = 'video' AND metadata->>'executor' = 'render-video' ORDER BY created_at DESC LIMIT 1`) ?? "";
+      const licence = dbValue(`SELECT license FROM assets WHERE kind = 'video' AND metadata->>'executor' = 'render-video' AND metadata->>'runId' = '${productionRunIdForBed}' ORDER BY created_at DESC LIMIT 1`) ?? "";
       if (!licence.includes("Music bed: Test music bed (uploaded from https://example.com/venstudio-test-music): Own composition for tests, all rights")) {
         throw new Error(`the render's licence does not name the music bed: ${licence.slice(0, 300)}`);
       }

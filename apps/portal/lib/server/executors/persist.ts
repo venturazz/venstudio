@@ -37,6 +37,8 @@ export interface GeneratedAssetInput {
   shotRef?: string;
   channelId?: string | null;
   createdBy?: string | null;
+  /** Hermes render of a research pack: the Hermes skill it was asked to render with (e.g. "/graph"). Kept in metadata. */
+  hermesSkill?: string | null;
 }
 
 export interface SavedAsset {
@@ -123,6 +125,7 @@ export async function saveGeneratedAsset(input: GeneratedAssetInput): Promise<Sa
     workOrderId: input.workOrderId ?? null,
     promptSha256,
     generatedAt: new Date().toISOString(),
+    ...(input.hermesSkill ? { hermesSkill: input.hermesSkill.slice(0, 64) } : {}),
   };
   delete metadata.prompt;
 

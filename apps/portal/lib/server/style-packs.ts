@@ -6,10 +6,11 @@ import path from "node:path";
 import { env } from "./env.ts";
 import { db } from "./db.ts";
 import { STYLES } from "../studio/catalog.ts";
-import { mergeRegistry, parsePack, type OwnerDecision, type RegistryEntry, type StylePack, type TrialGate, type TrialOutcome } from "../studio/style-registry.ts";
+import { mergeRegistry, packSeedTemplate, parsePack, type OwnerDecision, type RegistryEntry, type StylePack, type TrialGate, type TrialOutcome } from "../studio/style-registry.ts";
 import { packsIndex, type PacksIndex } from "../style-packs-index.ts";
 import { readAdvisory, readRubric } from "../studio/presentation.ts";
 import type { HtmlPackSource, RemotionPackSource } from "../install-bundle.ts";
+import type { Template } from "../studio/templates.ts";
 
 /**
  * The vendored style packs (styles/ and styles/lock.json, written by scripts/sync-styles.mjs), read from disk once
@@ -123,6 +124,14 @@ export async function registryEntry(styleId: string): Promise<RegistryEntry | un
   return (await styleRegistry()).find((e) => e.id === styleId);
 }
 
+/**
+ * Seed templates for the vendored packs the catalogue does not know (tpl-<id>, from the pack's contract), so every
+ * pack can be offered and started like a catalogue style. Retired packs get none.
+ */
+export async function packSeedTemplates(): Promise<Template[]> {
+  return (await styleRegistry()).flatMap((e) => (e.pack && !e.catalogued && e.pack.status !== "retired" ? [packSeedTemplate(e.pack)] : []));
+}
+
 /** A vendored pack's contract (style.json contract: pacing, on-screen elements, captions, audio, assets), or null. */
 export async function packContract(id: string): Promise<Record<string, unknown> | null> {
   const v = await vendoredStyles();
@@ -197,6 +206,7 @@ function rowToOutcome(r: Record<string, unknown>): TrialOutcome {
     ownerRubric: readRubric(r.owner_rubric),
     hermesAdvisory: readAdvisory(r.hermes_advisory),
     renderer: typeof r.renderer === "string" ? r.renderer : null,
+    labTrial: r.lab_trial === true,
   };
 }
 
@@ -204,7 +214,7 @@ function rowToOutcome(r: Record<string, unknown>): TrialOutcome {
 export async function listTrialOutcomes(sql: Q = db()): Promise<TrialOutcome[]> {
   const rows = await sql`
     SELECT run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision, video_asset_id, decided_at, created_at,
-           owner_rubric, hermes_advisory, renderer
+           owner_rubric, hermes_advisory, renderer, lab_trial
     FROM style_trial_outcomes ORDER BY created_at DESC LIMIT 2000
   `;
   return rows.map((r) => rowToOutcome(r as Record<string, unknown>));

@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useState, useTransition, type FormEvent } from "react";
+import { useActionState, useRef, useState, useTransition, type FormEvent } from "react";
 import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.tsx";
 import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Format } from "@/lib/studio/catalog.ts";
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { defaultThemeFor, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
-import { HERMES_RENDER_LABEL, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
+import { MAX_BATCH_TRIALS, MIN_BATCH_TRIALS, TRY_THESE_STYLES, type OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
-import { startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
+import { startBatchTrialAction, startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
 
 export interface RunFormChannel {
   id: string;
@@ -18,18 +19,8 @@ export interface RunFormChannel {
   plan: string;
   autonomy: string;
 }
-export interface RunFormTemplate {
-  id: string;
-  label: string;
-  styleId: string;
-  formats: Format[];
-  /** A Trial style pack: research only, not for publishing. */
-  trial?: boolean;
-  /** The style pack version. */
-  version?: string;
-  /** Rendered by Hermes with its own tools: research only, never published (always a trial). */
-  research?: boolean;
-}
+/** A style New Video offers: a Listed or Trial pack's template, or a lab trial of a Draft or Lab pack. */
+export type RunFormTemplate = Omit<OfferedTemplate, "trial"> & { trial?: boolean };
 export interface RunFormOptions {
   channels: RunFormChannel[];
   /** Listed style packs a worker reports. */
@@ -38,6 +29,8 @@ export interface RunFormOptions {
   trialTemplates?: RunFormTemplate[];
   /** Listed or Trial styles no worker reports yet, as plain labels. */
   waiting?: string[];
+  /** A lab trial of a Draft or Lab pack (from Styles or a study), offered only when the page was opened for it. */
+  labTemplates?: RunFormTemplate[];
   /** Capabilities enrolled workers report, from the stored rows. */
   capabilities: string[];
   prefill: RunFormPrefill;
@@ -63,10 +56,16 @@ function themeFor(channel: RunFormChannel | undefined): string {
  * The New video form. Every field is controlled and the form submits through onSubmit and a transition, not a form
  * action: React 19 resets a form after its action runs, which would clear the native selects.
  */
-export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], capabilities, prefill }: RunFormOptions) {
-  const templates = [...listed, ...trialTemplates];
+export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill }: RunFormOptions) {
+  const templates = [...listed, ...trialTemplates, ...labTemplates];
   const [state, dispatch] = useActionState(startRunAction, undefined);
+  const [batchState, dispatchBatch] = useActionState(startBatchTrialAction, undefined);
   const [isPending, startTransition] = useTransition();
+  const formRef = useRef<HTMLFormElement>(null);
+  const [batch, setBatch] = useState<string[]>([]);
+  // Research styles that name a Hermes skill, by group ("Hermes research styles (from claude-animation-skills)").
+  const plainTrials = trialTemplates.filter((t) => !t.group);
+  const groups = [...new Set(trialTemplates.flatMap((t) => (t.group ? [t.group] : [])))].map((g) => ({ label: g, items: trialTemplates.filter((t) => t.group === g) }));
   const known = (id: string) => channels.some((c) => c.id === id);
   const [channelId, setChannelId] = useState(known(prefill.channelId) ? prefill.channelId : "");
   const channel = channels.find((c) => c.id === channelId);
@@ -82,7 +81,8 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
   const [suggested, setSuggested] = useState<Array<{ templateId: string; label: string; matched: string[] }> | null>(null);
 
   const template = templates.find((t) => t.id === templateId);
-  const engine = template ? engineView(template.styleId, capabilities) : null;
+  const engine = template ? engineView(template.styleId, capabilities, template.engine) : null;
+  const labTrial = Boolean(template?.lab && prefill.labTrialPackId && template.styleId === prefill.labTrialPackId);
   const muse = engine ? (MUSE[engine.muse] ?? MUSE.external) : null;
   const lang = LANGUAGE_BY_CODE[language];
   const kokoro = lang ? KOKORO[lang.tts] : undefined;
@@ -107,11 +107,46 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
+    fd.delete("batchTemplateIds");
     startTransition(() => dispatch(fd));
+  }
+  function startBatch() {
+    if (!formRef.current) return;
+    const fd = new FormData(formRef.current);
+    fd.delete("batchTemplateIds");
+    for (const id of batch) fd.append("batchTemplateIds", id);
+    startTransition(() => dispatchBatch(fd));
+  }
+  function trialRow(t: RunFormTemplate) {
+    return (
+      <li key={t.id} className="space-y-1 text-sm" data-testid={`trial-style-${t.styleId}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="warn">{TRIAL_BADGE}</Badge>
+          {t.research && (
+            <Badge tone="warn">
+              <span data-testid="hermes-render-label">{HERMES_RENDER_LABEL}</span>
+            </Badge>
+          )}
+          <span className="min-w-0 break-words">
+            {t.label}
+            {t.version ? <span className="text-xs text-muted"> v{t.version}</span> : null}
+          </span>
+          <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${researchLabel(t)}`}>
+            {t.id === templateId ? "Chosen" : "Use for research"}
+          </Button>
+        </div>
+        {(t.description || t.credit) && (
+          <p className="break-words text-xs text-muted" data-testid="trial-style-about">
+            {t.description}
+            {t.credit ? <span data-testid="trial-style-credit"> {t.credit}.</span> : null}
+          </p>
+        )}
+      </li>
+    );
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-5" data-testid="run-form">
+    <form ref={formRef} onSubmit={onSubmit} className="space-y-5" data-testid="run-form">
       {state?.error && <Alert tone="danger">{state.error}</Alert>}
       {state?.ok && (
         <Alert tone="ok">
@@ -125,6 +160,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
       )}
       <input type="hidden" name="productionId" value={prefill.productionId} />
       <input type="hidden" name="labStudyId" value={prefill.labStudyId ?? ""} />
+      <input type="hidden" name="labTrialPackId" value={labTrial ? (prefill.labTrialPackId ?? "") : ""} />
 
       <Field label="Channel" htmlFor="channelId">
         <Select id="channelId" name="channelId" value={channelId} onChange={(e) => pickChannel(e.target.value)} required>
@@ -210,11 +246,31 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
                 ))}
               </optgroup>
             )}
-            {trialTemplates.length > 0 && (
+            {plainTrials.length > 0 && (
               <optgroup label={TRIAL_LABEL}>
-                {trialTemplates.map((t) => (
+                {plainTrials.map((t) => (
                   <option key={t.id} value={t.id}>
                     {researchLabel(t)} (trial)
+                    {t.formats.includes(format) ? "" : " (not for this format)"}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {groups.map((g) => (
+              <optgroup key={g.label} label={g.label}>
+                {g.items.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {researchLabel(t)} (research trial)
+                    {t.formats.includes(format) ? "" : " (not for this format)"}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+            {labTemplates.length > 0 && (
+              <optgroup label={LAB_TRIAL_BADGE}>
+                {labTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label} ({LAB_TRIAL_BADGE})
                     {t.formats.includes(format) ? "" : " (not for this format)"}
                   </option>
                 ))}
@@ -231,12 +287,21 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             .
           </p>
         )}
-        {(template?.trial || (prefill.labStudyId && template)) && (
+        {labTrial ? (
           <Alert tone="warn">
-            <span data-testid="trial-style-note">
-              {TRIAL_BADGE}: research only, not for publishing. The run is marked as a trial and its result is recorded for the style&apos;s curation.
+            <span data-testid="lab-trial-note">
+              {LAB_TRIAL_BADGE}: research only, never published. The pack is not at Trial yet, so this run&apos;s result is recorded on Styles apart from the
+              pack&apos;s promotion counts.
             </span>
           </Alert>
+        ) : (
+          (template?.trial || (prefill.labStudyId && template)) && (
+            <Alert tone="warn">
+              <span data-testid="trial-style-note">
+                {TRIAL_BADGE}: research only, not for publishing. The run is marked as a trial and its result is recorded for the style&apos;s curation.
+              </span>
+            </Alert>
+          )
         )}
         {listed.length === 0 && (
           <p className="text-xs text-muted" data-testid="no-listed-styles">
@@ -250,25 +315,63 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
           {trialTemplates.length === 0 ? (
             <p className="text-xs text-muted">No Trial style can be rendered by a worker right now.</p>
           ) : (
-            <ul className="space-y-1.5">
-              {trialTemplates.map((t) => (
-                <li key={t.id} className="flex flex-wrap items-center gap-2 text-sm" data-testid={`trial-style-${t.styleId}`}>
-                  <Badge tone="warn">{TRIAL_BADGE}</Badge>
-                  {t.research && (
-                    <Badge tone="warn">
-                      <span data-testid="hermes-render-label">{HERMES_RENDER_LABEL}</span>
-                    </Badge>
-                  )}
-                  <span className="min-w-0 break-words">
-                    {t.label}
-                    {t.version ? <span className="text-xs text-muted"> v{t.version}</span> : null}
+            plainTrials.length > 0 && <ul className="space-y-2">{plainTrials.map(trialRow)}</ul>
+          )}
+          {groups.map((g) => (
+            <div key={g.label} className="space-y-2 border-t border-border pt-2" data-testid="research-group" data-group={g.label}>
+              <h4 className="text-sm font-medium" data-testid="research-group-title">
+                {g.label}
+              </h4>
+              <p className="text-xs text-muted">Hermes renders each one with the named skill. Selectable whenever Hermes is set up; no worker is needed.</p>
+              <ul className="space-y-2">{g.items.map(trialRow)}</ul>
+            </div>
+          ))}
+          {trialTemplates.length >= MIN_BATCH_TRIALS && (
+            <fieldset className="space-y-2 border-t border-border pt-2" data-testid="batch-trial">
+              <legend className="text-sm font-medium">{TRY_THESE_STYLES}</legend>
+              <p className="text-xs text-muted">
+                One brief, one trial run per style you tick (at most {MAX_BATCH_TRIALS}), using the channel, brief, format and language above. Hermes works through
+                them one ask at a time; the queue below shows where each run is.
+              </p>
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {trialTemplates.map((t) => (
+                  <label key={t.id} className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-border p-2 text-sm">
+                    <input
+                      type="checkbox"
+                      value={t.id}
+                      checked={batch.includes(t.id)}
+                      onChange={(e) => setBatch((b) => (e.target.checked ? [...b.filter((x) => x !== t.id), t.id] : b.filter((x) => x !== t.id)))}
+                      className="size-4 shrink-0 accent-[var(--vs-accent)]"
+                      aria-label={`Try ${t.label}`}
+                    />
+                    <span className="min-w-0 break-words">{t.label}</span>
+                  </label>
+                ))}
+              </div>
+              <Button type="button" onClick={startBatch} disabled={isPending || batch.length < MIN_BATCH_TRIALS || !channelId} className="min-h-11" aria-busy={isPending}>
+                {batch.length < MIN_BATCH_TRIALS ? `Tick at least ${MIN_BATCH_TRIALS} styles` : `Start ${batch.length} trials`}
+              </Button>
+              {batchState?.error && <Alert tone="danger">{batchState.error}</Alert>}
+              {batchState?.ok && (
+                <Alert tone="ok">
+                  <span className="break-words" data-testid="batch-started">
+                    {batchState.ok}
                   </span>
-                  <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${researchLabel(t)}`}>
-                    {t.id === templateId ? "Chosen" : "Use for research"}
-                  </Button>
-                </li>
-              ))}
-            </ul>
+                </Alert>
+              )}
+              {batchState?.runs && batchState.runs.length > 0 && (
+                <ol className="space-y-1 text-sm" data-testid="batch-runs">
+                  {batchState.runs.map((r) => (
+                    <li key={r.runId} className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-muted">{r.position}</span>
+                      <Link href={`/studio/runs/${r.runId}`} className="break-words text-accent underline-offset-2 hover:underline" data-testid="batch-run-link">
+                        {r.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </fieldset>
           )}
           {waiting.length > 0 && (
             <p className="text-xs text-muted" data-testid="waiting-styles">

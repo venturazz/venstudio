@@ -22,6 +22,8 @@ export interface ReviewCard {
   trial: boolean;
   /** The run's pack renders with Hermes (research only, never published). */
   hermesRender: boolean;
+  /** A lab trial of a Draft or Lab pack (pipeline_runs.config.stylePack.lab): research only, counted apart. */
+  labTrial: boolean;
 }
 
 function toPayload(raw: unknown): ReviewPayload {
@@ -105,7 +107,8 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
   const rows = await db()`
     SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name,
       coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS trial,
-      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render
+      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render,
+      coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial
     FROM review_items ri
     JOIN pipeline_runs r ON r.id = ri.run_id
     LEFT JOIN channels c ON c.id = r.channel_id
@@ -128,6 +131,7 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     gates: gates.get(r.run_id as string) ?? [],
     trial: r.trial === true,
     hermesRender: r.hermes_render === true,
+    labTrial: r.lab_trial === true,
   }));
 }
 

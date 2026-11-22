@@ -2,46 +2,48 @@ import Link from "next/link";
 import { z } from "zod";
 import { requireUser, hasRole } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
-import { ensureSeedTemplates, listTemplates } from "@/lib/server/templates.ts";
 import { getSavedPlan, listSavedPlans, type SavedPlanRow } from "@/lib/server/productions.ts";
-import { reportedCapabilities } from "@/lib/server/workers.ts";
-import { styleRegistry } from "@/lib/server/style-packs.ts";
-import { isResearchEngine, newVideoStyles } from "@/lib/studio/style-registry.ts";
-import { env } from "@/lib/server/env.ts";
+import { newVideoOffer, offeredTemplate, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
+import { LAB_TRIAL_BADGE, LIFECYCLE_TEXT, labTrialOption } from "@/lib/studio/style-registry.ts";
 import { Alert, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { THEME_BY_ID } from "@/lib/studio/catalog.ts";
 import { autonomyText, EMPTY_PREFILL, prefillFromProduction, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { RunForm, type RunFormChannel, type RunFormTemplate } from "../runs/run-form.tsx";
 import { StudioNav } from "../studio-nav.tsx";
+import { TrialQueue } from "../trial-queue.tsx";
 import { getStudy, studyTrialState } from "@/lib/server/lab-studies.ts";
 
 export const metadata = { title: "New video" };
 export const dynamic = "force-dynamic";
 
-export default async function NewVideoPage({ searchParams }: { searchParams: Promise<{ from?: string; study?: string }> }) {
+const PACK_ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
+
+export default async function NewVideoPage({ searchParams }: { searchParams: Promise<{ from?: string; study?: string; lab?: string; style?: string }> }) {
   const user = await requireUser();
   const canEdit = hasRole(user.role, "editor");
-  const { from, study: studyParam } = await searchParams;
+  const { from, study: studyParam, lab: labParam, style: styleParam } = await searchParams;
 
   let channels: RunFormChannel[] = [];
   let templates: RunFormTemplate[] = [];
   let trialTemplates: RunFormTemplate[] = [];
+  let labTemplates: RunFormTemplate[] = [];
   let waiting: string[] = [];
   let capabilities: string[] = [];
   let saved: SavedPlanRow[] = [];
+  let queue: TrialQueueBatch[] = [];
   let prefill: RunFormPrefill = EMPTY_PREFILL;
   let loadError = "";
   let studyNote: { tone: "warn" | "info"; title: string; text: string } | null = null;
+  let labNote: { tone: "warn" | "info"; text: string } | null = null;
   try {
-    await ensureSeedTemplates();
-    const [channelRows, templateList, caps, plans, registry] = await Promise.all([
+    const [channelRows, offer, plans, batches] = await Promise.all([
       db()`SELECT id, name, category, plan, autonomy_level, autonomy_paused FROM channels ORDER BY name`,
-      listTemplates(),
-      // Stored worker rows only: no call to a worker while the page renders.
-      reportedCapabilities().catch(() => [] as string[]),
+      // Listed and Trial styles from the vendored packs and stored worker rows: no call to a worker while the page renders.
+      // Research-only packs (engine hermes) are rendered by the portal through Hermes: offered, in the Trial section only,
+      // when Hermes is set up, grouped by their source.
+      newVideoOffer(),
       listSavedPlans().catch(() => [] as SavedPlanRow[]),
-      // The vendored style packs, read from disk once per process.
-      styleRegistry(),
+      trialQueue(),
     ]);
     channels = channelRows.map((c) => {
       const category = (c.category as string | null) ?? "";
@@ -54,41 +56,46 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
         autonomy: autonomyText(Number(c.autonomy_level), c.autonomy_paused === true),
       };
     });
-    // Listed packs a worker reports, and Trial packs (research only) in their own section. Planned, draft, lab,
-    // proven and retired styles are never offered.
-    // Research-only packs (engine hermes) are rendered by the portal through Hermes: offered, in the Trial section only,
-    // when Hermes is set up.
-    const hermes = Boolean(env().HERMES_BASE_URL);
-    const offer = newVideoStyles(registry, caps, { hermes });
-    const usable = templateList.filter((t) => t.status !== "retired");
-    const toForm = (ids: string[], trial: boolean) =>
-      ids.flatMap((styleId) => {
-        const t = usable.find((x) => x.styleId === styleId);
-        const e = registry.find((x) => x.id === styleId);
-        return t && e?.pack
-          ? [{ id: t.id, label: e.label, styleId, formats: [...e.pack.formats], trial, version: e.pack.version, ...(isResearchEngine(e.pack.engine) ? { research: true } : {}) }]
-          : [];
-      });
-    templates = toForm(offer.listed.map((e) => e.id), false);
-    trialTemplates = toForm(offer.trial.map((e) => e.id), true);
-    waiting = offer.waiting.map((e) =>
-      isResearchEngine(e.engine)
-        ? `${e.label} (Trial, needs Hermes: set HERMES_BASE_URL)`
-        : `${e.label} (${e.pack?.status === "trial" ? "Trial" : "Listed"}, needs pack:${e.id}@${e.pack?.version ?? "?"})`,
-    );
-    capabilities = caps;
+    templates = offer.listed;
+    trialTemplates = offer.trial;
+    waiting = offer.waiting;
+    capabilities = offer.capabilities;
     saved = plans;
+    queue = batches;
     if (from && z.uuid().safeParse(from).success) {
       const p = await getSavedPlan(from);
       if (p) prefill = prefillFromProduction(p);
     }
+    // "Try the Hermes research variant" (Styles): preselect an offered style by its id.
+    if (styleParam && PACK_ID_RE.test(styleParam)) {
+      const t = [...templates, ...trialTemplates].find((x) => x.styleId === styleParam);
+      if (t) prefill = { ...prefill, templateId: t.id };
+    }
+    // "Try it (lab trial)" from Styles or a Template Lab study: a Draft or Lab pack, research only, when a worker (or
+    // Hermes) can render it. The reason and the fix are shown when it cannot.
+    if (labParam && PACK_ID_RE.test(labParam)) {
+      const entry = offer.registry.find((e) => e.id === labParam);
+      const option = labTrialOption(entry, offer.capabilities, { hermes: offer.hermes });
+      const t = entry && option.ok ? offeredTemplate(entry, offer.templates, true) : null;
+      if (entry && option.ok && t) {
+        labTemplates = [{ ...t, lab: true }];
+        prefill = { ...EMPTY_PREFILL, templateId: t.id, labTrialPackId: entry.id, brief: `Lab trial of the ${entry.label} pack (${entry.pack?.version ?? "?"}).` };
+        labNote = { tone: "info", text: `${LAB_TRIAL_BADGE}: ${entry.label} ${entry.pack?.version ?? ""} is ${entry.pack?.status ?? "?"}. The run is research only, never published, and its result is counted apart from the pack's promotion.` };
+      } else {
+        labNote = { tone: "warn", text: `A lab trial of ${entry?.label ?? labParam} cannot start: ${option.ok ? "it has no template yet" : `${option.reason}. ${option.fix}`}` };
+      }
+    }
     // "Start a trial video with the closest pack" on a Template Lab study: the closest pack and the study's notes as
-    // the brief. The run is a trial linked to the study (startRun checks the study and marks the pack trial).
+    // the brief. The run is a trial linked to the study (startRun checks the study and marks the pack trial). With
+    // `lab` too, the study's lab trial of a Draft or Lab pack.
     if (studyParam && z.uuid().safeParse(studyParam).success) {
       const study = await getStudy(studyParam);
       if (study) {
         const t = await studyTrialState(study);
-        if (t.option.ok && [...templates, ...trialTemplates].some((x) => x.id === (t.option.ok ? t.option.templateId : ""))) {
+        if (labTemplates.length > 0) {
+          prefill = { ...prefill, brief: t.brief, labStudyId: study.id };
+          studyNote = { tone: "info", title: study.title, text: `Lab trial for the lab study "${study.title}". The run is linked to the study; its result shows on the study page.` };
+        } else if (t.option.ok && [...templates, ...trialTemplates].some((x) => x.id === (t.option.ok ? t.option.templateId : ""))) {
           prefill = { ...EMPTY_PREFILL, templateId: t.option.templateId, brief: t.brief, labStudyId: study.id };
           studyNote = { tone: "info", title: study.title, text: `Trial for the lab study "${study.title}" with the closest pack, ${t.option.packId}. The run is marked as a trial linked to the study; its result shows on the study page.` };
         } else {
@@ -107,6 +114,18 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       {loadError && (
         <div className="mb-4">
           <Alert tone="warn">{loadError}</Alert>
+        </div>
+      )}
+      <ul className="mb-4 space-y-0.5 text-xs text-muted" data-testid="lifecycle">
+        {LIFECYCLE_TEXT.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      {labNote && (
+        <div className="mb-4" data-testid="lab-trial-start-note">
+          <Alert tone={labNote.tone}>
+            <span className="break-words">{labNote.text}</span>
+          </Alert>
         </div>
       )}
       {studyNote && (
@@ -132,10 +151,11 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
               </p>
             ) : (
               <RunForm
-                key={prefill.productionId || prefill.labStudyId || "blank"}
+                key={prefill.productionId || prefill.labTrialPackId || prefill.labStudyId || prefill.templateId || "blank"}
                 channels={channels}
                 templates={templates}
                 trialTemplates={trialTemplates}
+                labTemplates={labTemplates}
                 waiting={waiting}
                 capabilities={capabilities}
                 prefill={prefill}
@@ -143,23 +163,26 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
             )}
           </CardBody>
         </Card>
-        {saved.length > 0 && canEdit && (
-          <Card className="h-fit" data-testid="saved-plans">
-            <CardHeader title="Start from a saved plan" description="Plans saved with the old planner. Picking one fills in the form." />
-            <ul className="divide-y divide-border">
-              {saved.map((p) => (
-                <li key={p.id}>
-                  <Link href={`/studio/new?from=${p.id}`} className="block min-h-12 px-4 py-3 hover:bg-surface-2 sm:px-5">
-                    <span className="block break-words text-sm font-medium">{p.title}</span>
-                    <span className="block text-xs text-muted">
-                      {p.format === "long" ? "Long" : "Short"} · {timeAgo(p.created_at)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        )}
+        <div className="min-w-0 space-y-6">
+          {queue.length > 0 && <TrialQueue batches={queue} />}
+          {saved.length > 0 && canEdit && (
+            <Card className="h-fit" data-testid="saved-plans">
+              <CardHeader title="Start from a saved plan" description="Plans saved with the old planner. Picking one fills in the form." />
+              <ul className="divide-y divide-border">
+                {saved.map((p) => (
+                  <li key={p.id}>
+                    <Link href={`/studio/new?from=${p.id}`} className="block min-h-12 px-4 py-3 hover:bg-surface-2 sm:px-5">
+                      <span className="block break-words text-sm font-medium">{p.title}</span>
+                      <span className="block text-xs text-muted">
+                        {p.format === "long" ? "Long" : "Short"} · {timeAgo(p.created_at)}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </div>
       </div>
     </>
   );

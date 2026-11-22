@@ -6,20 +6,32 @@ import { listTemplates } from "@/lib/server/templates.ts";
 import { reportedCapabilities } from "@/lib/server/workers.ts";
 import { env } from "@/lib/server/env.ts";
 import { listTrialOutcomes, styleRegistry, vendoredStyles } from "@/lib/server/style-packs.ts";
+import { creditOf, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
 import {
   HERMES_RENDER_LABEL,
+  LAB_TRIAL_BADGE,
+  LIFECYCLE_TEXT,
   PROMOTION_RULE_TEXT,
   STATUS_LABEL,
+  STYLE_GROUP_LABEL,
   TRIAL_LABEL,
   availabilityOf,
   isResearchEngine,
   curationRecord,
+  labTrialCounts,
+  labTrialOption,
   packPromotionIssues,
+  researchGroupOf,
+  researchSourceOf,
+  researchVariantFor,
+  styleGroup,
   trialCounts,
   type RegistryEntry,
   type RegistryStatus,
+  type StyleGroup,
   type TrialOutcome,
 } from "@/lib/studio/style-registry.ts";
+import { TrialQueue } from "../trial-queue.tsx";
 import type { Template } from "@/lib/studio/templates.ts";
 
 export const metadata = { title: "Style library" };
@@ -49,6 +61,8 @@ const STATUS_TONE: Record<RegistryStatus, "ok" | "warn" | "danger" | "neutral" |
   planned: "neutral",
 };
 const PACK_ORDER: RegistryStatus[] = ["listed", "proven", "trial", "lab", "draft", "retired"];
+/** Styles page sections, in order: research styles first (what the owner tests now), then by lifecycle. */
+const GROUP_ORDER: StyleGroup[] = ["research", "trial", "lab", "listed", "proven", "retired"];
 
 export default async function StyleLibraryPage() {
   await requireUser();
@@ -58,6 +72,7 @@ export default async function StyleLibraryPage() {
   let templates: Template[] = [];
   let commit: string | null = null;
   let problems: string[] = [];
+  let queue: TrialQueueBatch[] = [];
   let loadError = "";
   try {
     const vendored = await vendoredStyles();
@@ -65,10 +80,11 @@ export default async function StyleLibraryPage() {
     problems = vendored.problems;
     entries = await styleRegistry();
     // Stored rows only: no call to a worker or to GitHub while the page renders.
-    [caps, outcomes, templates] = await Promise.all([
+    [caps, outcomes, templates, queue] = await Promise.all([
       reportedCapabilities().catch(() => [] as string[]),
       listTrialOutcomes().catch(() => [] as TrialOutcome[]),
       listTemplates().catch(() => [] as Template[]),
+      trialQueue(),
     ]);
   } catch (err) {
     console.error("styles page: could not load", err);
@@ -76,6 +92,8 @@ export default async function StyleLibraryPage() {
   }
   const packs = entries.filter((e) => e.pack).sort((a, b) => PACK_ORDER.indexOf(a.status) - PACK_ORDER.indexOf(b.status));
   const planned = entries.filter((e) => !e.pack);
+  const hermes = Boolean(env().HERMES_BASE_URL);
+  const sections = GROUP_ORDER.map((g) => ({ group: g, items: packs.filter((e) => styleGroup(e) === g) })).filter((x) => x.items.length > 0);
 
   return (
     <>
@@ -103,15 +121,40 @@ export default async function StyleLibraryPage() {
         pull request the owner merges; this page never changes a pack. New Video offers Listed packs a worker reports, and Trial packs in a separate
         section marked research only.
       </p>
+      <ul className="mb-6 space-y-0.5 text-sm" data-testid="lifecycle">
+        {LIFECYCLE_TEXT.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      {queue.length > 0 && (
+        <div className="mb-6">
+          <TrialQueue batches={queue} />
+        </div>
+      )}
 
       <section className="space-y-3" data-testid="style-packs">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Style packs</h2>
         {packs.length === 0 && <p className="text-sm text-muted">No style pack is vendored.</p>}
-        <div className="grid gap-3 lg:grid-cols-2">
-          {packs.map((e) => (
-            <PackCard key={e.id} entry={e} caps={caps} hermes={Boolean(env().HERMES_BASE_URL)} outcomes={outcomes.filter((o) => o.packId === e.id)} template={templates.find((t) => t.styleId === e.id) ?? null} />
-          ))}
-        </div>
+        {sections.map((sec) => (
+          <div key={sec.group} className="space-y-3" data-testid={`style-group-${sec.group}`}>
+            <h3 className="text-sm font-medium" data-testid="style-group-title">
+              {STYLE_GROUP_LABEL[sec.group]} ({sec.items.length})
+            </h3>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {sec.items.map((e) => (
+                <PackCard
+                  key={e.id}
+                  entry={e}
+                  caps={caps}
+                  hermes={hermes}
+                  outcomes={outcomes.filter((o) => o.packId === e.id)}
+                  template={templates.find((t) => t.styleId === e.id) ?? null}
+                  variant={researchVariantFor(e, entries)}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
       </section>
 
       <section className="mt-10 space-y-3" data-testid="planned-styles">
@@ -169,14 +212,23 @@ function PackCard({
   hermes,
   outcomes,
   template,
+  variant,
 }: {
   entry: RegistryEntry;
   caps: string[];
   hermes: boolean;
   outcomes: TrialOutcome[];
   template: Template | null;
+  /** The Hermes research variant of this style (a hermes pack whose variantOf names it), if any. */
+  variant: RegistryEntry | null;
 }) {
   const pack = e.pack!;
+  const group = researchGroupOf(pack);
+  const source = researchSourceOf(pack);
+  const lab = labTrialCounts(outcomes);
+  const labable = pack.status === "draft" || pack.status === "lab";
+  const labOption = labable ? labTrialOption(e, caps, { hermes }) : null;
+  const variantOffered = variant?.pack && variant.pack.status === "trial" && hermes;
   const engine = ENGINES[pack.engine];
   const avail = availabilityOf(e, caps, { hermes });
   const research = isResearchEngine(pack.engine);
@@ -195,6 +247,14 @@ function PackCard({
       </div>
       <p className="mt-1 text-sm text-muted">{pack.description}</p>
       {pack.status === "trial" && <p className="mt-1 text-xs font-medium text-warn">{research ? HERMES_RENDER_LABEL : TRIAL_LABEL}</p>}
+      {research && pack.hermes && (
+        <p className="mt-1 break-words text-xs text-muted" data-testid="pack-hermes-skill">
+          Hermes skill {pack.hermes.skill}
+          {pack.hermes.aliases.length ? ` (also ${pack.hermes.aliases.join(", ")})` : ""}, {pack.hermes.mode === "project" ? "a full reel with its own voice timing" : "a quick skill from a small spec"}
+          {group ? ` · ${group}` : ""}
+          {source ? ` · ${creditOf(e)}` : ""}
+        </p>
+      )}
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted">
           Renderer: {engine?.label ?? pack.engine}
@@ -214,6 +274,36 @@ function PackCard({
           )}
         </span>
       </div>
+
+      {labable && labOption && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs" data-testid="lab-trial-action">
+          {labOption.ok ? (
+            <LinkButton href={`/studio/new?lab=${pack.id}`} variant="secondary">
+              Try it (lab trial)
+            </LinkButton>
+          ) : (
+            <>
+              <button type="button" disabled className="min-h-11 cursor-not-allowed rounded-lg border border-border px-3 text-sm text-muted opacity-70" aria-describedby={`lab-why-${pack.id}`}>
+                Try it (lab trial)
+              </button>
+              <span id={`lab-why-${pack.id}`} className="min-w-0 break-words text-muted" data-testid="lab-trial-unavailable">
+                {labOption.reason}. {labOption.fix}
+              </span>
+            </>
+          )}
+          <span className="text-muted">{LAB_TRIAL_BADGE}: research only, never published, counted apart.</span>
+        </div>
+      )}
+      {variantOffered && variant?.pack && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" data-testid="research-variant">
+          <LinkButton href={`/studio/new?style=${variant.id}`} variant="secondary">
+            Try the Hermes research variant
+          </LinkButton>
+          <span className="text-muted">
+            {variant.label} ({variant.pack.hermes?.skill ?? "Hermes"}), {HERMES_RENDER_LABEL}
+          </span>
+        </div>
+      )}
 
       {pack.status === "trial" && (
         <div className="mt-3 space-y-1.5 rounded-lg border border-border p-3 text-xs" data-testid="trial-record">
@@ -242,6 +332,16 @@ function PackCard({
         </div>
       )}
 
+      {lab.runs > 0 && (
+        <div className="mt-3 space-y-1 rounded-lg border border-dashed border-warn/60 p-3 text-xs" data-testid="lab-trial-record">
+          <p className="font-medium">
+            {LAB_TRIAL_BADGE} runs: {lab.runs} · mean presentation {lab.meanPresentationScore === null ? "not scored" : Math.round(lab.meanPresentationScore)} ({lab.scored}{" "}
+            scored) · owner approved {lab.approved}, rejected {lab.rejected}
+          </p>
+          <p className="text-muted">Counted apart: lab trials never count toward this pack&apos;s promotion. Once the pack is at Trial, its trial runs do.</p>
+        </div>
+      )}
+
       <details className="mt-3 text-xs">
         <summary className="min-h-11 cursor-pointer py-2 font-medium">Provenance ({pack.provenance.length})</summary>
         <ul className="space-y-1.5">
@@ -263,7 +363,7 @@ function PackCard({
           ))}
           {outcomes.map((o) => (
             <li key={o.runId} className="break-words">
-              {o.createdAt.slice(0, 10)} <Badge>portal trial</Badge>{" "}
+              {o.createdAt.slice(0, 10)} <Badge>{o.labTrial ? "lab trial" : "portal trial"}</Badge>{" "}
               <Badge tone={o.qcPassed ? "ok" : "danger"}>{o.qcPassed ? "QC pass" : "QC fail"}</Badge> v{o.packVersion}, decision {o.ownerDecision ?? "pending"}
               {o.presentationScore !== null ? `, presentation ${o.presentationScore}` : ""}.{" "}
               <a href={`/studio/runs/${o.runId}`} className="text-accent underline-offset-2 hover:underline">

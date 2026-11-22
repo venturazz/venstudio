@@ -7,7 +7,8 @@
 import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, type Format, type MusePlacement } from "./catalog.ts";
 import { DEFAULT_DURATION_SEC } from "./engine.ts";
 import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
-import { parseRunStylePack, type RunStylePack } from "./style-registry.ts";
+import { LAB_TRIAL_BADGE, parseRunStylePack, type RunStylePack } from "./style-registry.ts";
+import { parseTrialBatch, type TrialBatch } from "./trial-batch.ts";
 
 /** The brief the owner may type. Empty means Hermes picks ideas from the channel plan. */
 export const MAX_BRIEF_CHARS = 2000;
@@ -43,6 +44,8 @@ export interface RunConfig {
    * startRun marks its stylePack trial, and the study page lists it with its QC and presentation scores.
    */
   labStudyId?: string;
+  /** One run of a batch trial (several styles from one brief, trial-batch.ts). Additive. */
+  trialBatch?: TrialBatch;
 }
 
 const STUDY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,7 +76,13 @@ export function parseRunConfig(raw: unknown): RunConfig {
     themeSource: source,
     ...stylePackOf(c.stylePack),
     ...(typeof c.labStudyId === "string" && STUDY_ID_RE.test(c.labStudyId) ? { labStudyId: c.labStudyId } : {}),
+    ...trialBatchOf(c.trialBatch),
   };
+}
+
+function trialBatchOf(raw: unknown): { trialBatch?: TrialBatch } {
+  const b = parseTrialBatch(raw);
+  return b ? { trialBatch: b } : {};
 }
 
 function stylePackOf(raw: unknown): { stylePack?: RunStylePack } {
@@ -161,9 +170,10 @@ export interface EngineView {
   worker: "yes" | "no" | "external";
 }
 
-export function engineView(styleId: string, reported: readonly string[]): EngineView | null {
+export function engineView(styleId: string, reported: readonly string[], packEngine?: string): EngineView | null {
+  // A pack the catalogue does not know names its engine itself (New Video passes it).
   const style = STYLE_BY_ID[styleId];
-  const engine = style ? ENGINES[style.engine] : undefined;
+  const engine = style ? ENGINES[style.engine] : packEngine ? ENGINES[packEngine] : undefined;
   if (!engine) return null;
   const worker = NON_WORKER_CAPABILITIES.includes(engine.capability) || isPortalEngine(engine.id) ? "external" : reported.includes(engine.capability) ? "yes" : "no";
   return { engineId: engine.id, label: engine.label, muse: engine.muse, capability: engine.capability, worker };
@@ -183,6 +193,8 @@ export interface RunFormPrefill {
   productionId: string;
   /** A Template Lab study the run is a trial for (from "Start a trial video with the closest pack"), or empty. */
   labStudyId?: string;
+  /** "Try it (lab trial)": the Draft or Lab pack id the run is a lab trial of, or empty. */
+  labTrialPackId?: string;
 }
 
 export const EMPTY_PREFILL: RunFormPrefill = {
@@ -258,8 +270,9 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
     { label: "Purpose", value: config.purposes.map((p) => PURPOSE_BY_ID[p]?.label ?? p).join(", ") || "None" },
     { label: "Brief", value: config.topicHint || "None: Hermes picks from the channel plan" },
     ...(config.stylePack
-      ? [{ label: "Style pack", value: `${config.stylePack.id} ${config.stylePack.version}${config.stylePack.trial ? ", Trial: research only, not for publishing" : ""}` }]
+      ? [{ label: "Style pack", value: `${config.stylePack.id} ${config.stylePack.version}${config.stylePack.lab ? `, ${LAB_TRIAL_BADGE}: research only, never published` : config.stylePack.trial ? ", Trial: research only, not for publishing" : ""}` }]
       : []),
     ...(config.labStudyId ? [{ label: "Lab study", value: config.labStudyId }] : []),
+    ...(config.trialBatch ? [{ label: "Batch trial", value: `${config.trialBatch.index} of ${config.trialBatch.total}` }] : []),
   ];
 }

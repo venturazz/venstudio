@@ -55,6 +55,8 @@ export interface Template {
   derivedFrom: { sampleSha256: string; analyzedAt: string; sampleCount: number } | null;
   /** Template Lab revisions used so far (hard cap in template-lab.ts). */
   labRevisions: number;
+  /** For a template seeded from a style pack the catalogue does not know: the pack version it was made from. */
+  packVersion?: string;
   promoted: { userId: string; date: string } | null;
   demotionReason: string | null;
 }
@@ -87,7 +89,12 @@ function shapeFor(family: Family): keyof typeof BEATS_BY_SHAPE {
 }
 
 export function beatsFor(family: Family, maxShotSeconds: number): Beat[] {
-  return BEATS_BY_SHAPE[shapeFor(family)].map(([role, share]) => ({ id: role, role, shareOfDuration: [share[0], share[1]], maxShotSeconds }));
+  return beatsForShape(shapeFor(family), maxShotSeconds);
+}
+
+/** The beats of a beat shape (a style pack's portal.beatShape). */
+export function beatsForShape(shape: keyof typeof BEATS_BY_SHAPE, maxShotSeconds: number): Beat[] {
+  return BEATS_BY_SHAPE[shape].map(([role, share]) => ({ id: role, role, shareOfDuration: [share[0], share[1]], maxShotSeconds }));
 }
 
 export const STANDARD_CHECKLIST: Array<{ id: string; label: string }> = [

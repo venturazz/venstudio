@@ -23,7 +23,9 @@ const has = (issues: string[], re: RegExp) => issues.some((i) => re.test(i));
 test("the vendored packs are valid", () => {
   const { packs, issues } = V.validateRepo(STYLES);
   assert.deepEqual(issues, []);
-  assert.equal(packs.length, 11);
+  // 11 packs, plus one Hermes research pack per claude-animation-skills skill (ten; zach-3d-films is an alias).
+  assert.equal(packs.length, 21);
+  assert.equal(packs.filter((p: { id: string }) => p.id.startsWith("hermes-") && p.id !== "hermes-research-explainer").length, 10);
 });
 
 test("every required field is required", () => {

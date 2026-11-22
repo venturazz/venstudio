@@ -1,18 +1,56 @@
 import "server-only";
 import { db } from "./db.ts";
 import { seedTemplates, type Template } from "../studio/templates.ts";
+import { refreshedPackTemplate } from "../studio/style-registry.ts";
+import { packSeedTemplates } from "./style-packs.ts";
 import type { TrialScore } from "../studio/template-lab.ts";
 
 /**
  * Inserts the seed styles as candidate templates. Existing rows are never touched, so a template the owner
- * has signed or promoted keeps its state.
+ * has signed or promoted keeps its state. A template seeded from a style pack the catalogue does not know gets a new
+ * version when the vendored pack version changes (its contract, with the same status and the owner's sign-offs).
  */
 export async function ensureSeedTemplates(): Promise<void> {
   const sql = db();
-  const seeds = seedTemplates();
+  // The catalogue's styles, then every vendored pack the catalogue does not know (from its own contract).
+  const packSeeds = await packSeedTemplates().catch(() => [] as Template[]);
+  const seeds = [...seedTemplates(), ...packSeeds];
   // One cheap read decides whether any seed is missing; the inserts only run on first use or after a new seed ships.
   const [have] = await sql`SELECT count(*)::int AS n FROM templates WHERE id = ANY(${seeds.map((t) => t.id)}::text[])`;
-  if ((have?.n as number) >= seeds.length) return;
+  if (Number(have?.n ?? 0) < seeds.length) await insertSeeds(seeds);
+  await refreshPackTemplates(packSeeds);
+}
+
+async function refreshPackTemplates(packSeeds: readonly Template[]): Promise<void> {
+  if (packSeeds.length === 0) return;
+  const sql = db();
+  const rows = await sql`
+    SELECT t.id, t.current_version, v.spec FROM templates t
+    JOIN template_versions v ON v.template_id = t.id AND v.version = t.current_version
+    WHERE t.id = ANY(${packSeeds.map((t) => t.id)}::text[])
+  `;
+  for (const r of rows) {
+    const seed = packSeeds.find((t) => t.id === String(r.id));
+    const current = r.spec as Template | null;
+    if (!seed || !current || typeof current !== "object") continue;
+    const next = refreshedPackTemplate({ ...current, version: Number(r.current_version) }, seed);
+    if (!next) continue;
+    await sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO template_versions (template_id, version, spec, checklist)
+        VALUES (${next.id}, ${next.version}, ${JSON.stringify(next)}::text::jsonb, ${JSON.stringify(next.copyrightChecklist)}::text::jsonb)
+        ON CONFLICT (template_id, version) DO NOTHING
+      `;
+      await tx`
+        UPDATE templates SET current_version = ${next.version}, name = ${next.label}, updated_at = now()
+        WHERE id = ${next.id} AND current_version = ${next.version - 1}
+      `;
+    });
+  }
+}
+
+async function insertSeeds(seeds: readonly Template[]): Promise<void> {
+  const sql = db();
   for (const t of seeds) {
     await sql.begin(async (tx) => {
       await tx`
