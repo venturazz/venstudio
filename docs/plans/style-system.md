@@ -5,7 +5,9 @@ Status: agreed with the owner. Phase 0 (signed automatic worker updates) is impl
 described in `docs/style-packs.md`; Phase 2 (renderer plugins, html-capture, the hermes research renderer and the
 owner's presentation score) on `feat/renderers`, described in `docs/style-packs.md` and `docs/html-capture.md`;
 Phase 3 (the Template Lab and the first packs adapted from claude-animation-skills) on `feat/template-lab`, described
-in `docs/template-lab.md`; phases 4 and 5 are the plan.
+in `docs/template-lab.md`; research trials (a Hermes research pack per claude-animation-skills skill, lab trials of
+Draft and Lab packs, batch trials) on `feat/research-trials`, described in `docs/style-packs.md`; phases 4 and 5 are
+the plan.
 
 Phase 1 changes one thing in section 2 below, by owner decision (no new secrets): the portal has no GitHub token, so it
 does not read signed releases from the styles repo. venstudio vendors a pinned copy (`styles/`, `styles/lock.json`)

@@ -1,4 +1,4 @@
-# Style packs (Phases 1 and 2)
+# Style packs (Phases 1 and 2, research trials)
 
 A look is a **style pack**: a versioned, tested, curated directory with its contract, renderer requirement, render
 project (when the renderer has one), fixture, learning provenance and curation record. Plan:
@@ -42,7 +42,8 @@ planner keeps reading `catalog.ts` and the templates as before; wiring a pack's 
 | --- | --- | --- |
 | Listed | Main list, when a worker reports `pack:<id>@<version>` | Normal |
 | Trial | Separate section "Trial styles (research only, not for publishing)", when a worker reports the pack | `pipeline_runs.config.stylePack.trial = true`; "Trial style" badge on the run page and Review cards; outcome recorded |
-| Draft, Lab, Proven, Retired | Never | Refused by `startRun` |
+| Draft, Lab | Only as a lab trial, opened from Styles or a study (`?lab=<id>`) | Lab trial: `stylePack.lab = true`, research only, counted apart (below); otherwise refused by `startRun` |
+| Proven, Retired | Never | Refused by `startRun` |
 | Planned (no pack) | Never | Refused by `startRun` |
 
 Listed or Trial packs no worker reports yet are named under the Trial section as "waiting for a worker".
@@ -123,6 +124,92 @@ Migration 0016 (additive) adds `owner_rubric`, `presentation_by`, `hermes_adviso
 `style_trial_outcomes`. With five owner-scored trials at a mean of 80 or more (and the rest of the rule met), the
 Styles page reaches **Ready to promote**.
 
+## Research styles and lab trials
+
+What the owner sees, in plain words, on New Video and Styles (`LIFECYCLE_TEXT`):
+
+- Research styles (Hermes render) and lab trials are for testing and curating, never for publishing.
+- Trial packs collect evidence toward Proven.
+- Only Listed styles publish.
+
+### Research styles: one Hermes research pack per claude-animation-skills skill
+
+The styles repo has ten `hermes-*` packs at `trial`, one per skill of
+github.com/artemnovitckii/claude-animation-skills at `86f70106c9ae` (MIT, fonts OFL; `zach-3d-films` is an alias
+inside `hermes-zach-d-films`). Hermes has that repository installed and renders with the skill itself, so a pack is a
+contract plus a `hermes` block: the skill (`/graph`), its aliases, `mode` (`spec`: a quick skill from a small JSON
+spec; `project`: a full reel with its own voice and caption timing) and how the storyboard, narration and captions
+map to its input. Their evidence for `trial` is a `research-source` curation entry (the pinned skill and the owner's
+report that it works in Hermes); there is no CI render for a hermes pack (FORMAT.md).
+
+| Pack | Hermes skill |
+| --- | --- |
+| `hermes-breakdown` | `/breakdown` |
+| `hermes-dan-koe` | `/dan-koe` |
+| `hermes-graph` | `/graph` (research variant of `animated-line-graph`) |
+| `hermes-kurzgesagt` | `/kurzgesagt` |
+| `hermes-low-poly` | `/low-poly` |
+| `hermes-map-route` | `/map-route` |
+| `hermes-minecraft` | `/minecraft` |
+| `hermes-minimalistic-graphics` | `/minimalistic-graphics` (research variant of `minimal-line-art`) |
+| `hermes-stick-figure` | `/stick-figure` (full project) |
+| `hermes-zach-d-films` | `/zach-d-films`, alias `/zach-3d-films` (full project) |
+
+New Video shows them in the Trial section under "Hermes research styles (from claude-animation-skills)"
+(`researchGroupOf`), each with the "Hermes render (research only)" badge, its description and the source credit.
+They are selectable whenever `HERMES_BASE_URL` is set; no worker is needed. The render request
+(`hermesRenderMessages`) names the skill in its instruction and in its data (`skill.name`, `skill.input`,
+`skill.output`); a `project` skill is told to use the run's narration and captions where it can, and that the result
+is a reel the studio checks. Hermes's reply is handled exactly as before: a `/clip/` URL, parsed, downloaded from a
+trusted media origin, sniffed, then qc-video. The video asset's metadata records `executor: hermes-render`, the
+backend, the plugin and `hermesSkill`; the render stage's result carries `hermesSkill` too.
+
+### Packs the catalogue does not know
+
+A pack without a catalogue entry (the html-capture adaptations, the research packs, a future learned pack) gets its
+style from its own contract (`styleFromPack`) and a seed template `tpl-<id>` from it (`packSeedTemplate`, seeded by
+`ensureSeedTemplates`). The scene plan and the render parameters read that style (`buildScenePlan({ style })`,
+`renderParamsForStyle(id, style)`), so such a pack renders with its own engine instead of falling back to stills.
+
+### Batch trials ("Try these styles")
+
+New Video's Trial section has a "Try these styles" list: tick two or more Trial or research styles and press
+"Start N trials". One brief (channel, brief, format, language and theme from the form) starts one trial run per style,
+in the order ticked (`startBatchTrialAction`; `batchTrialIssues` refuses fewer than 2 or more than 12 picks, repeats,
+styles New Video does not offer in its Trial section, lab trials and the wrong format, before any run starts). Each run
+records `config.trialBatch` (`{ id, index, total }`, additive). They start together; Hermes takes one ask at a time
+through its gate (concurrency 1 unless `HERMES_MAX_CONCURRENCY` says otherwise) and a Hermes render holds the slot for
+the whole render, so the runs move in turn. The **Trial queue** card on New Video and Styles shows the newest batches,
+each run with its position and where it is (queued for Hermes, Hermes is on it, waiting for you in Review, finished).
+
+### Lab trials (Draft and Lab packs)
+
+A Draft or Lab pack can run as a **lab trial** without waiting for promotion:
+
+- From Styles: "Try it (lab trial)" on each Draft or Lab pack opens `/studio/new?lab=<id>`.
+- From a Template Lab study: "Lab trial" for the closest pack and every other Draft or Lab pack opens
+  `/studio/new?lab=<id>&study=<study>` (linked to the study).
+
+`labTrialOption` decides from stored worker rows only. A hermes pack needs Hermes set up. Any other pack needs a worker
+that reports `pack:<id>@<version>`; otherwise the button is disabled with the exact reason and the fix: "No worker
+reports html-capture" (update the worker to 0.10.0 or later with the Remotion renderer), "No worker reports
+pack:<id>@<version> yet" (update the worker: it installs the pack with its next signed update), or "Needs a renderer
+that isn't installed: <engine>" (a 3D or other engine no worker runs). When a hermes pack names the pack in
+`hermes.variantOf`, Styles also offers "Try the Hermes research variant".
+
+`startRun({ labTrial: true })` accepts only Draft and Lab packs and checks `labTrialOption` again. The run's
+`stylePack` gets `lab: true` (and `trial: true`): badged "Lab trial (draft pack)" on New Video, the run page and Review;
+refused by `publishRefusal` ("Lab trial (draft pack) <id> <version>: research only, never published.") and kept from
+auto-approval by `guardFinalDecision`. Its outcome is written to `style_trial_outcomes` with `lab_trial = true`
+(migration 0018, additive), shown on Styles as its own record, and never counted by `trialCounts` or copied by
+`curationRecord`: only runs of the pack once it is at Trial count toward Proven.
+
+### Where each style sits on Styles
+
+Styles groups the packs (`styleGroup`): Research styles (every hermes pack), Trial, Draft and Lab, Listed, Proven,
+Retired, then Planned. Each Trial pack shows its trial count, technical pass rate, mean presentation score and the
+owner's decisions for its current version; a pack with lab trials shows those apart.
+
 ## Curation log and promotion
 
 A Trial run's outcome is written to `style_trial_outcomes` (migration 0015, additive) after its quality check and
@@ -154,4 +241,7 @@ missing it shows **Ready to promote** with a JSON block of curation entries and 
 `packCapabilitiesFor`, `installPacksIndex` and `install-packs`. Phase 2: `lib/studio/presentation.ts`,
 `lib/server/presentation.ts`, `lib/studio/hermes-render.ts`, `lib/server/executors/hermes-render.ts`,
 `app/(app)/review/presentation-form.tsx`, `db/migrations/0016_presentation_scores.sql`, worker `RENDERERS`,
-`captureHtml`, `htmlCaptureUnavailableReason`, `capture-html`, `apps/worker/html-capture-render.test.ts`.
+`captureHtml`, `htmlCaptureUnavailableReason`, `capture-html`, `apps/worker/html-capture-render.test.ts`. Research
+trials: `lib/studio/trial-batch.ts`, `lib/server/trial-queue.ts`, `app/(app)/studio/trial-queue.tsx`,
+`lib/studio/research-trials.test.ts`, `db/migrations/0018_lab_trials.sql`, and in `style-registry.ts` `styleFromPack`,
+`packSeedTemplate`, `styleGroup`, `researchGroupOf`, `labTrialOption`, `researchVariantFor`, `labTrialCounts`.

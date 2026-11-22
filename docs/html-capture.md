@@ -87,7 +87,7 @@ the above; the styles repo's CI runs `capture-html` with its vendored copy of th
 
 ## The packs
 
-`animated-line-graph` and `minimal-line-art` (status `draft` until CI has rendered them) adapt the `graph` and
+`animated-line-graph` and `minimal-line-art` (status `trial` 0.1.1, on venstudio CI run 44981421800 and styles CI run 44980615532) adapt the `graph` and
 `minimalistic-graphics` skills of github.com/artemnovitckii/claude-animation-skills (MIT, fonts OFL; commit
 `86f70106c9ae`) to this contract: data from the render payload, plain JavaScript and SVG with a small frame-driven
 timeline instead of GSAP, fonts embedded as `data:` URLs. CI renders every vendored html-capture pack the same way

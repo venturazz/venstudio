@@ -86,6 +86,10 @@ with the pack chosen and the study's notes and draft summary as the brief. `star
 and its outcome goes to the curation log. The study page lists those runs with their state, G-technical, the owner's
 presentation score and decision (`style_trial_outcomes`). Otherwise the page names the reason.
 
+The study page also lists every Draft and Lab pack (the closest pack first) with a **Lab trial** button that opens
+`/studio/new?lab=<pack>&study=<id>`: a lab trial linked to the study (docs/style-packs.md, "Research styles and lab
+trials"). When nothing can render a pack, its row says why and what fixes it instead of offering the button.
+
 Nothing in the lab writes a channel's category, the worker mapping or autonomy.
 
 ## Storage
@@ -97,7 +101,7 @@ columns and constraints.
 
 ## The first packs from claude-animation-skills
 
-`animated-line-graph` and `minimal-line-art` (styles repo, status `draft` until CI renders them) adapt the `graph` and
+`animated-line-graph` and `minimal-line-art` (styles repo, `trial` 0.1.1 since CI run 44981421800 rendered them) adapt the `graph` and
 `minimalistic-graphics` skills of github.com/artemnovitckii/claude-animation-skills at `86f70106c9ae` (MIT; fonts
 OFL) to html-capture. Their READMEs say what was adapted and what changed; CI here renders every html-capture pack
 through render-video (`apps/worker/html-capture-render.test.ts`) and with `capture-html` + `check-video.mjs`.
