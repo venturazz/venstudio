@@ -97,3 +97,54 @@ export async function deleteWorker(id: string) {
   await audit({ userId: user.id, action: "worker.delete", target: id, ip: (await requestMeta()).ip });
   revalidatePath("/workers");
 }
+
+// ---- signed automatic updates (owner only) ----
+
+const modeSchema = z.enum(["auto", "approve", "off"]);
+
+/** Automatic / Approve each update / Off. Changes only the update switch, never channels, mappings or autonomy. */
+export async function setUpdateMode(fd: FormData) {
+  const user = await requireUser("owner");
+  const p = modeSchema.safeParse(str(fd, "mode", 10));
+  if (!p.success) return;
+  await db()`UPDATE worker_update_settings SET mode = ${p.data}, updated_by = ${user.id}, updated_at = now() WHERE id = 'default'`;
+  await audit({ userId: user.id, action: "worker.update_mode", detail: { mode: p.data }, ip: (await requestMeta()).ip });
+  revalidatePath("/workers");
+}
+
+/** Approve the release this worker was last offered (Approve each update mode). */
+export async function approveWorkerUpdate(id: string) {
+  const user = await requireUser("owner");
+  if (!idSchema.safeParse(id).success) return;
+  const rows = await db()`
+    UPDATE workers SET update_approved_release = update_offered_release
+    WHERE id = ${id} AND status <> 'revoked' AND update_offered_release IS NOT NULL
+    RETURNING update_offered_release
+  `;
+  const release = rows.map((r) => String(r.update_offered_release))[0];
+  if (release) await audit({ userId: user.id, action: "worker.update_approve", target: id, detail: { release }, ip: (await requestMeta()).ip });
+  revalidatePath("/workers");
+}
+
+export async function approveAllWorkerUpdates() {
+  const user = await requireUser("owner");
+  const rows = await db()`
+    UPDATE workers SET update_approved_release = update_offered_release
+    WHERE status <> 'revoked' AND update_offered_release IS NOT NULL
+    RETURNING id
+  `;
+  await audit({ userId: user.id, action: "worker.update_approve_all", detail: { workers: rows.length }, ip: (await requestMeta()).ip });
+  revalidatePath("/workers");
+}
+
+/**
+ * Pin a version: workers then accept exactly that version even when it is older than theirs (a deliberate downgrade,
+ * e.g. after rolling the portal back). `version` null removes the pin.
+ */
+export async function setPinnedVersion(version: string | null) {
+  const user = await requireUser("owner");
+  if (version !== null && !/^\d{1,6}(\.\d{1,6}){0,3}$/.test(version)) return;
+  await db()`UPDATE worker_update_settings SET pinned_version = ${version}, updated_by = ${user.id}, updated_at = now() WHERE id = 'default'`;
+  await audit({ userId: user.id, action: "worker.update_pin", detail: { version }, ip: (await requestMeta()).ip });
+  revalidatePath("/workers");
+}

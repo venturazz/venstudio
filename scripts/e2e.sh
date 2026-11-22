@@ -9,9 +9,14 @@ export APP_URL="http://localhost:$PORT"
 export ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(openssl rand -base64 32)}"
 export SETUP_TOKEN="e2e-setup-token"
 export ARTIFACT_DIR="$ROOT/.e2e/artifacts"
-export WORKER_DIR="$ROOT/apps/worker"
 WORK="$ROOT/.e2e"
 rm -rf "$WORK" && mkdir -p "$WORK"
+# The portal serves the worker from a copy, so the self-update steps below can change what it serves (an older
+# version, a broken one) without touching the repo. Same files as apps/worker and the Remotion project.
+mkdir -p "$WORK/src/render-remotion"
+cp -r "$ROOT/apps/worker" "$WORK/src/worker"
+cp -r "$ROOT/apps/render-remotion/package.json" "$ROOT/apps/render-remotion/tsconfig.json" "$ROOT/apps/render-remotion/scripts" "$ROOT/apps/render-remotion/src" "$WORK/src/render-remotion/"
+export WORKER_DIR="$WORK/src/worker"
 
 fail() { echo "E2E FAIL: $*" >&2; [ -f "$WORK/portal.log" ] && tail -n 80 "$WORK/portal.log" >&2; exit 1; }
 q() { psql "$DATABASE_URL" -qtAX -v ON_ERROR_STOP=1 -c "$1"; }
@@ -23,7 +28,8 @@ node "$ROOT/apps/portal/scripts/migrate.mjs" | grep -q "up to date" || fail "sec
 echo "== start portal"
 (cd "$ROOT/apps/portal" && PORT=$PORT npx next start -p "$PORT" > "$WORK/portal.log" 2>&1) &
 PORTAL_PID=$!
-trap 'kill $PORTAL_PID 2>/dev/null || true' EXIT
+PROXY_PID=""
+trap 'kill $PORTAL_PID $PROXY_PID 2>/dev/null || true' EXIT
 for i in $(seq 1 60); do
   curl -fsS "$APP_URL/api/health" >/dev/null 2>&1 && break
   sleep 1
@@ -245,6 +251,183 @@ URGENT_JOB=$(q "INSERT INTO jobs (type, capability, preferred_worker_id, priorit
 [ "$(q "SELECT status FROM jobs WHERE id = '$URGENT_JOB'")" = "succeeded" ] || fail "urgent job not taken by a free worker"
 [ "$(q "SELECT status FROM jobs WHERE id = '$NORMAL_JOB'")" = "queued" ] || fail "normal job jumped the home-worker wait"
 q "DELETE FROM jobs WHERE id = '$NORMAL_JOB'" >/dev/null
+
+echo "== migration 0014: update signing key, settings and worker columns, additive only"
+for T in update_signing_keys worker_update_settings; do
+  [ "$(q "SELECT to_regclass('public.$T') IS NOT NULL")" = "t" ] || fail "table $T missing after migration 0014"
+done
+for col in update_offered_version update_offered_release update_approved_release update_key_id update_checked_at update_status update_detail update_result_version update_result_at; do
+  [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'workers' AND column_name = '$col'")" = "1" ] || fail "column workers.$col missing after migration 0014"
+done
+[ "$(q "SELECT mode FROM worker_update_settings WHERE id = 'default'")" = "auto" ] || fail "update mode should default to auto"
+[ "$(q "SELECT pinned_version IS NULL FROM worker_update_settings")" = "t" ] || fail "no version should be pinned by default"
+q "UPDATE workers SET update_status = 'maybe' WHERE id = '$WORKER'" >/dev/null 2>&1 && fail "workers accepted an unknown update status"
+q "UPDATE worker_update_settings SET mode = 'sometimes'" >/dev/null 2>&1 && fail "worker_update_settings accepted an unknown mode"
+
+echo "== the signing key: made on first use, private half encrypted, public half carried by install.sh and pinned"
+[ "$(q "SELECT count(*) FROM update_signing_keys")" = "1" ] || fail "serving install.sh should have created exactly one signing key"
+KEY_ID=$(q "SELECT key_id FROM update_signing_keys")
+PUB=$(q "SELECT public_key FROM update_signing_keys")
+KEY_ENC=$(q "SELECT private_key_enc FROM update_signing_keys")
+[[ "$KEY_ENC" == v1.* ]] || fail "the private key is not stored encrypted"
+# Every Ed25519 PKCS#8 key in base64 starts like this; it must not appear in the stored value.
+[[ "$KEY_ENC" != *MC4CAQAwBQYDK2VwBCIEI* ]] || fail "the private key is stored in plain text"
+INSTALL_BODY=$(curl -fsS "$APP_URL/install/install.sh") || fail "install.sh not served"
+grep -qF "UPDATE_KEY=\"$PUB\"" <<<"$INSTALL_BODY" || fail "install.sh does not carry the signing key"
+if grep -qF "{{UPDATE_PUBLIC_KEY}}" <<<"$INSTALL_BODY"; then fail "install.sh still has the key placeholder"; fi
+cfg_get() { node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(c[process.argv[2]] ?? "")' "$WORK/worker/config.json" "$1"; }
+[ "$(cfg_get updateKey)" = "$PUB" ] || fail "install.sh did not pin the update key in config.json"
+[ "$(stat -c '%a' "$WORK/worker/config.json")" = "600" ] || fail "config.json not chmod 600 after pinning the key"
+[ "$(q "SELECT update_key_id FROM workers WHERE id = '$WORKER'")" = "$KEY_ID" ] || fail "the worker did not report the key it pinned"
+[ -z "$(q "SELECT update_offered_version FROM workers WHERE id = '$WORKER'")" ] || fail "a current worker is shown an update"
+
+echo "== signed self-update: a worker of the previous version updates itself from the portal"
+SRC="$WORKER_DIR/venstudio-worker.ts"
+PRISTINE="$WORK/pristine-worker.ts"
+cp "$SRC" "$PRISTINE"
+CURRENT=$(sed -n 's/^export const VERSION = "\(.*\)";$/\1/p' "$PRISTINE")
+[ -n "$CURRENT" ] || fail "no VERSION in the worker"
+LIVE="$WORK/worker/app/venstudio-worker.ts"
+LOGF="$WORK/worker/logs/worker.log"
+fsha() { sha256sum "$1" | cut -d' ' -f1; }
+wq() { q "SELECT $1 FROM workers WHERE id = '$WORKER'"; }
+run_tick() { "$WORK/worker/run.sh" tick || { tail -n 40 "$LOGF"; fail "$1: tick exited non-zero"; }; }
+# patch_worker <version> <output file> [line added after VERSION]: the pristine worker with another VERSION.
+patch_worker() {
+  node -e 'const fs=require("fs"); const [src,v,out,inj]=process.argv.slice(1); const s=fs.readFileSync(src,"utf8");
+    const t=s.replace(/^export const VERSION = ".*";$/m, `export const VERSION = "${v}";` + (inj ? "\n" + inj : "")); if (t===s) process.exit(1); fs.writeFileSync(out,t)' \
+    "$PRISTINE" "$1" "$2" "${3:-}" || fail "could not patch the worker to $1"
+}
+expect_live() { # <expected sha> <what>
+  [ "$(fsha "$LIVE")" = "$1" ] || { tail -n 30 "$LOGF"; fail "$2"; }
+}
+patch_worker 0.7.99 "$LIVE"
+OLD_SHA=$(fsha "$LIVE")
+run_tick "self-update"
+expect_live "$(fsha "$PRISTINE")" "the worker did not install the version the portal serves"
+[ "$(wq version)" = "$CURRENT" ] || fail "the worker reports v$(wq version), expected v$CURRENT after updating"
+[ "$(wq update_status)" = "ok" ] || fail "update not reported ok: $(wq update_status) $(wq update_detail)"
+[ "$(wq update_result_version)" = "$CURRENT" ] || fail "update result names v$(wq update_result_version)"
+[ "$(fsha "$WORK/worker/app/prev/venstudio-worker.ts")" = "$OLD_SHA" ] || fail "the previous version was not kept in app/prev"
+[ ! -e "$WORK/worker/app/update-pending" ] || fail "the update is still pending after the new version's first claim"
+grep -q "signature and checksum verified" "$LOGF" || fail "the log does not show the verification"
+grep -q "update to v$CURRENT confirmed (from v0.7.99)" "$LOGF" || fail "the new version did not confirm itself"
+[ -z "$(wq update_offered_version)" ] || fail "an installed update is still shown as offered"
+[ "$(q "SELECT count(*) FROM audit_log WHERE worker_id = '$WORKER' AND action = 'worker.update.ok'")" -ge 1 ] || fail "no audit entry for the update"
+
+echo "== approve mode: offered and shown, installed only after the owner approves"
+q "UPDATE worker_update_settings SET mode = 'approve'" >/dev/null
+patch_worker 0.7.99 "$LIVE"
+OLD_SHA=$(fsha "$LIVE")
+run_tick "approve mode"
+expect_live "$OLD_SHA" "approve mode installed an update nobody approved"
+[ "$(wq update_offered_version)" = "$CURRENT" ] || fail "approve mode does not show the offered version"
+[ "$(wq version)" = "0.7.99" ] || fail "the waiting worker should still run v0.7.99"
+# What the Approve button does (approveWorkerUpdate).
+q "UPDATE workers SET update_approved_release = update_offered_release WHERE id = '$WORKER'" >/dev/null
+run_tick "approved"
+expect_live "$(fsha "$PRISTINE")" "the approved update was not installed"
+[ -z "$(wq update_offered_version)" ] || fail "the installed update is still shown as available"
+
+echo "== off: nothing installs by itself"
+q "UPDATE worker_update_settings SET mode = 'off'" >/dev/null
+patch_worker 0.7.99 "$LIVE"
+OLD_SHA=$(fsha "$LIVE")
+run_tick "updates off"
+expect_live "$OLD_SHA" "an update installed while updates are off"
+[ "$(wq update_offered_version)" = "$CURRENT" ] || fail "updates off should still show what is available"
+q "UPDATE worker_update_settings SET mode = 'auto'" >/dev/null
+
+echo "== tampered file, bad signature, expired manifest: refused, reported, nothing run"
+PROXY_PORT=$((PORT + 7))
+MODE_FILE="$WORK/proxy-mode"
+echo pass > "$MODE_FILE"
+SIGNING_KEY_ENC="$KEY_ENC" SIGNING_KEY_ID="$KEY_ID" node "$ROOT/scripts/e2e-update-proxy.mjs" "$PROXY_PORT" "$APP_URL" "$MODE_FILE" > "$WORK/proxy.log" 2>&1 &
+PROXY_PID=$!
+for i in $(seq 1 30); do
+  curl -fsS "http://localhost:$PROXY_PORT/api/health" >/dev/null 2>&1 && break
+  sleep 0.5
+  [ "$i" = 30 ] && { cat "$WORK/proxy.log"; fail "update proxy did not start"; }
+done
+set_portal() {
+  node -e 'const fs=require("fs"); const f=process.argv[1]; const c=JSON.parse(fs.readFileSync(f,"utf8")); c.portalUrl=process.argv[2]; fs.writeFileSync(f, JSON.stringify(c, null, 2))' "$WORK/worker/config.json" "$1"
+}
+set_portal "http://localhost:$PROXY_PORT"
+for CASE in "tamper-file|checksum mismatch" "bad-signature|bad signature" "expired|expired"; do
+  M=${CASE%%|*}
+  WANT=${CASE#*|}
+  echo "$M" > "$MODE_FILE"
+  patch_worker 0.7.99 "$LIVE"
+  OLD_SHA=$(fsha "$LIVE")
+  run_tick "$M"
+  expect_live "$OLD_SHA" "$M: the worker installed a refused update"
+  [ ! -e "$WORK/worker/app/next/venstudio-worker.ts" ] || fail "$M: a refused file was left staged"
+  [ "$(wq update_status)" = "refused" ] || fail "$M: not reported as refused: $(wq update_status) $(wq update_detail)"
+  DETAIL=$(wq update_detail)
+  grep -qF "$WANT" <<<"$DETAIL" || fail "$M: the reason should mention '$WANT', got: $DETAIL"
+  [ "$(wq version)" = "0.7.99" ] || fail "$M: the old version did not keep working"
+  echo "   $M refused: $DETAIL"
+done
+grep -q "tampered /install/venstudio-worker.ts" "$WORK/proxy.log" || fail "the proxy never tampered with the file"
+echo pass > "$MODE_FILE"
+set_portal "$APP_URL"
+kill "$PROXY_PID" 2>/dev/null || true
+PROXY_PID=""
+
+echo "== downgrade: refused, unless the owner pins exactly that version"
+cp "$PRISTINE" "$LIVE"
+patch_worker 0.7.50 "$SRC"
+run_tick "downgrade"
+expect_live "$(fsha "$PRISTINE")" "an unpinned downgrade was installed"
+[ "$(wq update_status)" = "refused" ] || fail "the downgrade was not reported as refused"
+grep -qF "older than this worker" <<<"$(wq update_detail)" || fail "downgrade reason: $(wq update_detail)"
+q "UPDATE worker_update_settings SET pinned_version = '0.7.50'" >/dev/null
+run_tick "pinned downgrade"
+expect_live "$(fsha "$SRC")" "the pinned downgrade was not installed"
+[ "$(wq version)" = "0.7.50" ] || fail "the worker reports v$(wq version) after the pinned downgrade"
+q "UPDATE worker_update_settings SET pinned_version = NULL" >/dev/null
+cp "$PRISTINE" "$SRC"
+run_tick "back to current"
+expect_live "$(fsha "$PRISTINE")" "the worker did not update from v0.7.50 back to v$CURRENT"
+
+echo "== rollback: a version whose self-test fails is never swapped in, and not tried again"
+patch_worker 9.9.0 "$SRC" 'if (process.argv[2] === "selftest") { console.log(JSON.stringify({ ok: false, reason: "injected e2e failure" })); process.exit(3); }'
+run_tick "self-test failure"
+expect_live "$(fsha "$PRISTINE")" "a version that failed its self-test was installed"
+[ "$(wq update_status)" = "rolled_back" ] || fail "self-test failure not reported as rolled back: $(wq update_status)"
+grep -qF "injected e2e failure" <<<"$(wq update_detail)" || fail "self-test failure reason: $(wq update_detail)"
+[ ! -e "$WORK/worker/app/next" ] || fail "the failed version was left staged"
+run_tick "self-test failure, again"
+tail -n 5 "$LOGF" | grep -q "failed here before" || fail "the failed release was tried again"
+
+echo "== rollback: a version that exits with an error twice before its first claim is restored by the old process"
+patch_worker 9.9.1 "$SRC" 'if (process.argv[2] === "tick") process.exit(4);'
+run_tick "start failure"
+expect_live "$(fsha "$PRISTINE")" "the old process did not restore the previous version"
+[ "$(wq update_status)" = "rolled_back" ] || fail "start failure not reported as rolled back: $(wq update_status)"
+grep -qF "before its first claim" <<<"$(wq update_detail)" || fail "start failure reason: $(wq update_detail)"
+[ "$(wq version)" = "$CURRENT" ] || fail "the previous version did not carry on"
+[ ! -e "$WORK/worker/app/update-pending" ] || fail "update-pending left after the rollback"
+cp "$PRISTINE" "$SRC"
+
+echo "== rollback: run.sh restores the previous version when the new one crashed with no process left to supervise it"
+patch_worker 9.9.2 "$WORK/broken.ts" 'if (process.argv[2] === "tick") process.exit(4);'
+cp "$PRISTINE" "$WORK/worker/app/prev/venstudio-worker.ts"
+cp "$WORK/broken.ts" "$LIVE"
+echo 0 > "$WORK/worker/app/update-pending"
+node -e 'const fs=require("fs"); const [f,sha,from]=process.argv.slice(1); const s=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,"utf8")):{};
+  s.pending={version:"9.9.2",from,sha256:sha,at:new Date().toISOString()}; fs.writeFileSync(f, JSON.stringify(s))' \
+  "$WORK/worker/app/update-state.json" "$(fsha "$WORK/broken.ts")" "$CURRENT"
+if "$WORK/worker/run.sh" tick; then fail "the broken version should exit with an error"; fi
+[ "$(cat "$WORK/worker/app/update-pending")" = "1" ] || fail "run.sh did not count the failed start"
+if "$WORK/worker/run.sh" tick; then fail "the broken version should exit with an error again"; fi
+expect_live "$(fsha "$PRISTINE")" "run.sh did not restore the previous version after two failed starts"
+[ ! -e "$WORK/worker/app/update-pending" ] || fail "run.sh left update-pending after the rollback"
+tail -n 3 "$LOGF" | grep -q "restored the previous version" || fail "run.sh did not log the rollback"
+run_tick "after run.sh rollback"
+[ "$(wq update_status)" = "rolled_back" ] || fail "the run.sh rollback was not reported"
+grep -qF "v9.9.2" <<<"$(wq update_detail)" || fail "run.sh rollback reason: $(wq update_detail)"
+expect_live "$(fsha "$PRISTINE")" "the worker changed after the run.sh rollback"
 
 echo "== drained worker gets no new jobs; revoked worker is rejected"
 q "UPDATE workers SET status = 'draining' WHERE id = '$WORKER'" >/dev/null

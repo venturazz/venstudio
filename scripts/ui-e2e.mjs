@@ -513,6 +513,18 @@ try {
   await page.goto(`${APP}/workers`);
   await page.getByText("CI Worker").first().waitFor();
 
+  step("worker updates: the owner switches the update mode on the Workers page");
+  const updatesCard = page.getByTestId("worker-updates");
+  const modeNow = updatesCard.getByTestId("update-mode-current");
+  await modeNow.filter({ hasText: "Now: Automatic" }).waitFor();
+  await page.locator("#update-mode-approve").check();
+  await page.getByRole("button", { name: "Save update mode" }).click();
+  await modeNow.filter({ hasText: "Now: Approve each update" }).waitFor();
+  await shot("05b-worker-updates-desktop");
+  await page.locator("#update-mode-auto").check();
+  await page.getByRole("button", { name: "Save update mode" }).click();
+  await modeNow.filter({ hasText: "Now: Automatic" }).waitFor();
+
   step("queue an echo job and a smoke test from the Jobs page");
   for (const [type, label] of [
     ["echo", "Echo (connectivity test)"],

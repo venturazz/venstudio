@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { env } from "./env.ts";
 import { REMOTION_BUNDLE_NAME, REMOTION_PROJECT_FILES, projectBundle } from "../install-bundle.ts";
+import { publicSigningKey } from "./update-key.ts";
 
 /**
  * Public install files for workers. Muse VMs can't read the private GitHub repo,
@@ -35,7 +36,23 @@ export async function renderInstallFile(name: string): Promise<string | null> {
     return JSON.stringify(projectBundle((rel) => texts.get(rel) as string));
   }
   const body = await readFile(path.join(/*turbopackIgnore: true*/ dir, entry.source), "utf8");
-  return entry.template ? body.replaceAll("{{PORTAL_URL}}", portalUrl()) : body;
+  if (!entry.template) return body;
+  let out = body.replaceAll("{{PORTAL_URL}}", portalUrl());
+  // install.sh carries the update signing key, so the owner's one sha256 check of install.sh also pins the key the
+  // worker will trust for automatic updates (docs/worker-updates.md). Creates the key pair on first use.
+  // Without a usable key the script is still served, with an empty key: install.sh then warns that automatic updates
+  // stay off, which is the safe side (the Workers page shows why).
+  if (out.includes("{{UPDATE_PUBLIC_KEY}}")) {
+    const key = await publicSigningKey().then(
+      (k) => k.publicKey,
+      (err: unknown) => {
+        console.error("update signing key unavailable; install.sh served without it:", err);
+        return "";
+      },
+    );
+    out = out.replaceAll("{{UPDATE_PUBLIC_KEY}}", key);
+  }
+  return out;
 }
 
 /** SHA-256 of a served install file, so the owner can check the downloaded copy is the same. */
