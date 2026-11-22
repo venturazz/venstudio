@@ -20,6 +20,7 @@ import {
   latestPassedOutput,
   loadRun,
   recordStageError,
+  slowStreakOf,
   type RunInfo,
   type StageConclusion,
   type StageRow,
@@ -765,10 +766,11 @@ async function fitScript(run: RunInfo, st: StageRow, request: TightenRequest): P
     language: run.config.language,
     note: request.note || undefined,
   });
-  const r = await hermesJson(prompt, (v) => validateFittedScript(v, targetWords));
+  const streak = slowStreakOf(st.output) + 1;
+  const r = await hermesJson(prompt, (v) => validateFittedScript(v, targetWords), { kind: "script-fit", slowStreak: streak });
   if (!r.ok) {
     if (r.cause === "busy" && r.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
-      await deferStage(run.id, st.id, r.busyUntil, r.error);
+      await deferStage(run.id, st.id, r.busyUntil, r.error, r.slow ? { slow: { afterMs: r.slow.afterMs, streak } } : {});
       return null;
     }
     await recordStageError(run.id, st.id, "voice", `Hermes could not fit the script to the pictures: ${r.error}`.slice(0, 500));
@@ -816,10 +818,10 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
   if (!tts.ok) {
     // 9router could not speak and Hermes is rate limited: wait for Hermes instead of failing the voice.
     if (tts.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
-      await deferStage(run.id, st.id, tts.busyUntil, tts.error);
+      await deferStage(run.id, st.id, tts.busyUntil, tts.error, tts.slow ? { slow: { afterMs: tts.slow.afterMs, streak: slowStreakOf(st.output) + 1 } } : {});
       return;
     }
-    await recordStageError(run.id, st.id, "voice", tts.busyUntil ? `${giveUpMessage()} ${tts.error}` : tts.error);
+    await recordStageError(run.id, st.id, "voice", tts.busyUntil ? `${giveUpMessage(undefined, tts.slow ? "slow" : "rate-limit")} ${tts.error}` : tts.error);
     return;
   }
   const n = tts.narration;
@@ -1358,8 +1360,14 @@ async function runHermesRenderStage(
     ...(skillVoice ? { voice: "skill" as const, script: i.script ?? "" } : {}),
   });
   if (!rendered.ok) {
-    if (rendered.cause === "busy" && rendered.busyUntil) await deferStage(run.id, st.id, rendered.busyUntil, rendered.error);
-    else await recordStageError(run.id, st.id, "render", `Hermes could not render the video: ${rendered.error}`);
+    // A busy or slow Hermes waits, up to the same 3-hour cap as every other wait for Hermes.
+    const busy = rendered.cause === "busy" && rendered.busyUntil !== undefined;
+    if (busy && rendered.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
+      await deferStage(run.id, st.id, rendered.busyUntil, rendered.error, rendered.slow ? { slow: { afterMs: rendered.slow.afterMs, streak: slowStreakOf(st.output) + 1 } } : {});
+    } else {
+      const capped = busy ? `${giveUpMessage(undefined, rendered.slow ? "slow" : "rate-limit")} ` : "";
+      await recordStageError(run.id, st.id, "render", `${capped}Hermes could not render the video: ${rendered.error}`);
+    }
     return;
   }
   const v = rendered.video;

@@ -37,7 +37,7 @@ export interface HermesRender {
 
 export type HermesRenderResult =
   | { ok: true; video: HermesRender; attempts: number }
-  | { ok: false; error: string; cause: FailureClass; busyUntil?: Date };
+  | { ok: false; error: string; cause: FailureClass; busyUntil?: Date; slow?: { afterMs: number } };
 
 
 export function hermesClipBase(): string | null {
@@ -78,6 +78,6 @@ export async function renderWithHermes(request: Omit<HermesRenderRequest, "clipB
     // Hermes is one agent: while it renders, the gate's slot is held, so other Hermes asks wait (research only, rare).
     { busyFromReply: true, timeoutMs: HERMES_RENDER_TIMEOUT_MS, retries: HERMES_RENDER_ASKS - 1 },
   );
-  if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil };
+  if (!result.ok) return { ok: false, error: result.error, cause: result.cause, busyUntil: result.busyUntil, ...(result.slow ? { slow: result.slow } : {}) };
   return { ok: true, video: result.value, attempts: result.attempts };
 }

@@ -354,8 +354,8 @@ these rules, so a run stuck on "limit 10 percent" continues without making anyth
 cancelled run's assets in a new run is a later feature (not built).
 
 ### Calling Hermes
-The portal posts to `/v1/chat/completions` (model `hermes-agent`, `stream: false`, 180 s timeout) from
-`lib/server/hermes-json.ts`. Each prompt starts with a marker line `VENSTUDIO_STAGE: <stage>`, asks for JSON only and
+The portal posts to `/v1/chat/completions` (model `hermes-agent`, `stream: false`) from
+`lib/server/hermes-json.ts`, with a call timeout per ask (see "Slow answers" below; 180 s for asks without one). Each prompt starts with a marker line `VENSTUDIO_STAGE: <stage>`, asks for JSON only and
 wraps untrusted text (channel plan, past titles, owner notes) in labelled DATA blocks that the model is told not to
 obey. The reply is parsed tolerantly (fences and surrounding text are stripped) and checked by a hand-written
 validator in `lib/studio/director.ts` (pure, no zod, so it runs under `node --test`). On a transport error, bad JSON
@@ -397,6 +397,41 @@ and Hermes is busy) do the same. `claimNext` and `claimOrder` skip anything whos
 page and the Review inbox show "Waiting for Hermes (rate limited), next try at HH:MM UTC, in about N min" (UTC
 because pages render on the server). `output.waitSince` marks when the wait began; a stage that has waited 3 hours
 (`HERMES_WAIT_GIVE_UP_MS`) without progress becomes a stage error with Retry.
+
+**Slow answers are waits too.** Each Hermes ask has a call timeout sized to its work (`HERMES_ASK_TIMEOUT_SEC` in
+`lib/studio/pacing.ts`):
+
+| Ask | Timeout |
+|---|---|
+| idea | 4 min |
+| research (web search with Hermes's tools) | 10 min |
+| script, script fit (voice stage) | 6 min |
+| storyboard, scene spec, skill brief | 8 min |
+| HTML design | 12 min |
+| images, voice through Hermes, CC0 search (no kind) | 180 s |
+| revision classifier, Test Hermes JSON, capability scan, Check skills, lab analyses, Hermes render | their own (45 s, 60 s, ..., 30 min) |
+
+The call is made with `node:http` (`lib/hermes-transport.ts`), not fetch: fetch's client stops waiting for headers
+after 300 s, which would cut a 10-minute research ask at 5, and its timeout cannot say whether the connection was made.
+A failure is read by `lib/fetch-error.ts`:
+- refused, DNS, or no connection within 15 s (`UND_ERR_CONNECT_TIMEOUT`): unreachable, asked again in the loop as before;
+- connected, but no full answer within the call timeout (`UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_BODY_TIMEOUT`): slow.
+  `hermesText` returns at once with `cause: "busy"` and `slow`, without asking again back to back. The stage waits
+  like a rate-limited one (pending, `not_before`, `output.hermesWait.reason = "slow"`, `output.slowStreak`), 2, 5,
+  then 10 minutes, and the run page says "Hermes is busy or slow (it answered nothing in 10 min); trying again at
+  HH:MM UTC". The 3-hour give-up applies. A slow turn does not set `hermes_gate.busy_until`: that time stops every
+  Hermes call, and one long research turn says nothing about whether a short idea ask would finish; the gate's
+  concurrency already keeps a second turn from piling onto a busy Hermes.
+- The stage error and the status cards only say "use the internal address" for a public domain that could not be
+  connected to. An internal name (no dot) or a private IP is never told to switch addresses.
+
+Stuck-stage limits follow the same table: a model stage is reaped after 3 asks at its own timeout plus the gate wait
+(`MODEL_STAGE_STUCK_MINUTES` in `lib/studio/engine.ts`: research 43 min, HTML design 49 min, idea 25 min). The voice
+stage has its own limit for the script fit (`VOICE_STUCK_MINUTES`); render limits are unchanged.
+
+`VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE` (test only): a factor between 0 and 1 for the per-ask timeouts and the slow
+backoff, read only when `NODE_ENV=test` or `CI` is `true`/`1`. CI's browser end-to-end sets 0.1 so its held research ask
+times out in a minute. It is never needed in production and is ignored there.
 
 Resuming, and why both: an in-process timer (`scheduleResume`) calls `advanceRun` when the not-before passes, so a
 short wait resumes within a second. A timer dies with the process, so the worker claim route also calls

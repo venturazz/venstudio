@@ -22,6 +22,21 @@ import {
   systemicPause,
   waitExpired,
   waitingText,
+  durationText,
+  GATE_QUEUE_TIMEOUT_SEC,
+  HERMES_ASK_TIMEOUT_SEC,
+  HERMES_ASK_WORST_SEC,
+  HERMES_DEFAULT_ASK_TIMEOUT_SEC,
+  hermesAskTimeoutMs,
+  hermesAskWorstSec,
+  hermesStageWorstSec,
+  hermesTimeoutScale,
+  readStoredWait,
+  scaledMs,
+  SLOW_BACKOFF_MS,
+  slowBackoffMs,
+  slowWaitText,
+  stageWaitText,
 } from "./pacing.ts";
 
 const NOW = Date.UTC(2026, 10, 21, 14, 0, 0);
@@ -158,4 +173,75 @@ test("gateConcurrency defaults to 1 and bounds an override", () => {
   assert.equal(gateConcurrency("abc"), 1);
   assert.equal(gateConcurrency("3"), 3);
   assert.equal(gateConcurrency("99"), 8);
+});
+
+test("each Hermes ask kind has a call timeout sized to its work", () => {
+  assert.deepEqual({ ...HERMES_ASK_TIMEOUT_SEC }, {
+    idea: 240,
+    research: 600,
+    script: 360,
+    storyboard: 480,
+    "scene-spec": 480,
+    "skill-brief": 480,
+    "html-design": 720,
+    "script-fit": 360,
+  });
+  assert.equal(hermesAskTimeoutMs("research"), 600_000);
+  // Asks without a kind (images, voice, the CC0 search) keep 180 s, and the media limits keep their worst case.
+  assert.equal(HERMES_DEFAULT_ASK_TIMEOUT_SEC, 180);
+  assert.equal(HERMES_ASK_WORST_SEC, 180 + GATE_QUEUE_TIMEOUT_SEC);
+  assert.equal(hermesAskWorstSec("research"), 600 + GATE_QUEUE_TIMEOUT_SEC + 10);
+  assert.equal(hermesStageWorstSec("research"), 3 * (600 + GATE_QUEUE_TIMEOUT_SEC + 10));
+  assert.equal(hermesStageWorstSec("research", 1), 600 + GATE_QUEUE_TIMEOUT_SEC + 10);
+});
+
+test("a slow answer waits 2, 5, then 10 minutes", () => {
+  assert.deepEqual([...SLOW_BACKOFF_MS], [120_000, 300_000, 600_000]);
+  assert.equal(slowBackoffMs(1), 120_000);
+  assert.equal(slowBackoffMs(2), 300_000);
+  assert.equal(slowBackoffMs(3), 600_000);
+  assert.equal(slowBackoffMs(9), 600_000);
+  assert.equal(slowBackoffMs(0), 120_000);
+  assert.equal(slowBackoffMs(Number.NaN), 120_000);
+  // Shortened only by the test scale, never below a second.
+  assert.equal(slowBackoffMs(1, 0.01), 1_200);
+  assert.equal(slowBackoffMs(1, 0.0001), 1_000);
+});
+
+test("the test-only timeout scale is ignored outside tests and CI", () => {
+  const on = { VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE: "0.02" };
+  assert.equal(hermesTimeoutScale({ ...on, NODE_ENV: "production" }), 1);
+  assert.equal(hermesTimeoutScale(on), 1);
+  assert.equal(hermesTimeoutScale({ ...on, NODE_ENV: "test" }), 0.02);
+  assert.equal(hermesTimeoutScale({ ...on, NODE_ENV: "production", CI: "true" }), 0.02);
+  assert.equal(hermesTimeoutScale({ ...on, CI: "1" }), 0.02);
+  assert.equal(hermesTimeoutScale({ ...on, CI: "false" }), 1);
+  for (const bad of ["", "0", "-1", "2", "abc"]) assert.equal(hermesTimeoutScale({ CI: "true", VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE: bad }), 1, bad);
+  assert.equal(hermesAskTimeoutMs("research", 0.02), 12_000);
+  assert.equal(hermesAskTimeoutMs("idea", 0.001), 1_000);
+  assert.equal(scaledMs(60_000, 5), 60_000);
+});
+
+test("durationText says minutes from a minute up, seconds below", () => {
+  assert.equal(durationText(600_000), "10 min");
+  assert.equal(durationText(180_000), "3 min");
+  assert.equal(durationText(90_000), "2 min");
+  assert.equal(durationText(15_000), "15 s");
+  assert.equal(durationText(200), "1 s");
+});
+
+test("a stage waiting after a slow answer says busy or slow and when it tries again; older waits stay rate limits", () => {
+  const until = NOW + 2 * 60_000;
+  assert.equal(slowWaitText(until, NOW, 600_000), "Hermes is busy or slow (it answered nothing in 10 min); trying again at 14:02 UTC, in about 2 min");
+  assert.equal(stageWaitText({ until: "x", text: "t", reason: "slow", afterMs: 600_000 }, until, NOW), slowWaitText(until, NOW, 600_000));
+  assert.equal(stageWaitText({ until: "x", text: "t" }, until, NOW), waitingText(until, NOW));
+  assert.equal(stageWaitText(undefined, until, NOW), waitingText(until, NOW));
+  assert.equal(stageWaitText({ reason: "slow" }, until, NOW), waitingText(until, NOW), "a slow wait without its timeout reads as before");
+  assert.deepEqual(readStoredWait({ reason: "slow", afterMs: 1234 }), { reason: "slow", afterMs: 1234 });
+  assert.deepEqual(readStoredWait("garbage"), { reason: "rate-limit", afterMs: 0 });
+});
+
+test("the 3-hour give-up says which kind of wait it was", () => {
+  assert.match(giveUpMessage(undefined, "slow"), /^Hermes stayed busy or slow for more than 3 hours, so this step stopped\. Press Retry/);
+  assert.match(giveUpMessage(), /^Hermes stayed rate limited for more than 3 hours/);
 });

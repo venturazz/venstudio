@@ -170,12 +170,14 @@ export interface WaitingRun {
   channelName: string;
   stage: string;
   until: Date;
+  /** The stage's stored wait (why it waits: a rate limit or a slow answer), for pacing.ts stageWaitText. */
+  hermesWait: unknown;
 }
 
 /** Runs whose current stage waits for a rate-limited Hermes, for the Review inbox. Database only, no network. */
 export async function listWaitingRuns(limit = 20): Promise<WaitingRun[]> {
   const rows = await db()`
-    SELECT r.id, r.topic, c.name AS channel_name, s.stage, s.not_before
+    SELECT r.id, r.topic, c.name AS channel_name, s.stage, s.not_before, s.output->'hermesWait' AS hermes_wait
     FROM pipeline_stages s
     JOIN pipeline_runs r ON r.id = s.run_id
     LEFT JOIN channels c ON c.id = r.channel_id
@@ -193,6 +195,7 @@ export async function listWaitingRuns(limit = 20): Promise<WaitingRun[]> {
       channelName: (r.channel_name as string | null) ?? "",
       stage: r.stage as string,
       until,
+      hermesWait: r.hermes_wait ?? null,
     });
   }
   return out;

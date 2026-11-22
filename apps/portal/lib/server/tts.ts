@@ -332,7 +332,10 @@ export interface Narration {
   skipped: string[];
 }
 
-export type SynthesisResult = { ok: true; narration: Narration } | { ok: false; error: string; busyUntil?: Date };
+export type SynthesisResult =
+  | { ok: true; narration: Narration }
+  /** `slow`: Hermes took the voice request but had not finished in time (a wait, like a rate limit). */
+  | { ok: false; error: string; busyUntil?: Date; slow?: { afterMs: number } };
 
 function measure(audio: Uint8Array): { durationSec: number | null; clipped: boolean | null; deferredCheck: boolean } {
   try {
@@ -382,7 +385,7 @@ export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, l
     return { ok: true, value: { audio, mime: info.mime, model: parsed.model, provider: maker.provider, backend: maker.backend, plugin: maker.plugin } };
   }, { busyFromReply: true });
   if (!result.ok) {
-    if (result.cause === "busy") return { ok: false, error: `${what} is waiting. ${result.error}`, busyUntil: result.busyUntil };
+    if (result.cause === "busy") return { ok: false, error: `${what} is waiting. ${result.error}`, busyUntil: result.busyUntil, ...(result.slow ? { slow: result.slow } : {}) };
     return { ok: false, error: `${what} failed. ${result.error}` };
   }
   const { audio, mime, model, provider, backend, plugin } = result.value;
@@ -500,6 +503,7 @@ export async function synthesize(script: string, language: string, opts: { ignor
     return { ok: false, error: [missingCapabilityMessage("voice", scanStateOf(snap)), ...notes].join(" ") };
   }
   let busyUntil: Date | undefined;
+  let slow: { afterMs: number } | undefined;
   for (const a of attempts) {
     // Hermes is rate limited: its other voice path would only wait too, so the stage waits instead of failing.
     if (busyUntil && (a.engine === "hermes-kokoro" || a.engine === "hermes-capcut")) continue;
@@ -508,9 +512,12 @@ export async function synthesize(script: string, language: string, opts: { ignor
       return { ok: true, narration: { ...r.narration, skipped: notes, note: notes.length > 0 ? `Other voice paths: ${notes.join(" ")}` : "" } };
     }
     notes.push(r.error);
-    if (r.busyUntil) busyUntil = r.busyUntil;
+    if (r.busyUntil) {
+      busyUntil = r.busyUntil;
+      slow = r.slow;
+    }
   }
-  if (busyUntil) return { ok: false, error: `No voice yet. ${notes.join(" ")}`.slice(0, 900), busyUntil };
+  if (busyUntil) return { ok: false, error: `No voice yet. ${notes.join(" ")}`.slice(0, 900), busyUntil, ...(slow ? { slow } : {}) };
   return { ok: false, error: `No voice path worked. ${notes.join(" ")}`.slice(0, 900) };
 }
 

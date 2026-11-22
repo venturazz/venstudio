@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_DURATION_SEC,
-  HERMES_WORST_CASE_SEC,
+  MODEL_STAGE_STUCK_MINUTES,
+  modelStageWorstCaseSec,
   isEngineStage,
   isOrphaned,
   isProductionStage,
@@ -11,11 +12,13 @@ import {
   nextRunStage,
   RUN_STAGES,
   STUCK_MINUTES,
+  stuckMinutesFor,
   nextStage,
   revisionTarget,
   stageSummary,
 } from "./engine.ts";
 import { VIDEO_FORMATS } from "./catalog.ts";
+import { GATE_QUEUE_TIMEOUT_SEC, HERMES_ASK_TIMEOUT_SEC, HERMES_RETRY_PAUSE_SEC, HERMES_STAGE_ASKS } from "./pacing.ts";
 
 test("stage order ends after the storyboard", () => {
   assert.equal(nextStage("idea"), "research");
@@ -44,13 +47,46 @@ test("revisionTarget prefers the classifier, then keywords, then the item's own 
 test("isStuck compares against the limit", () => {
   const now = new Date("2026-01-01T12:00:00Z");
   assert.equal(isStuck(null, now), false);
-  assert.equal(isStuck(new Date("2026-01-01T11:55:00Z"), now), false);
-  assert.equal(isStuck(new Date("2026-01-01T11:49:00Z"), now), false);
-  assert.equal(isStuck(new Date("2026-01-01T11:30:00Z"), now), true);
+  assert.equal(isStuck(new Date("2026-01-01T11:55:00Z"), now, 21), false);
+  assert.equal(isStuck(new Date("2026-01-01T11:49:00Z"), now, 21), false);
+  assert.equal(isStuck(new Date("2026-01-01T11:30:00Z"), now, 21), true);
+  // Without a limit, the longest model stage limit applies.
+  assert.equal(isStuck(new Date(now.getTime() - STUCK_MINUTES * 60_000 + 1000), now), false);
+  assert.equal(isStuck(new Date(now.getTime() - STUCK_MINUTES * 60_000 - 1000), now), true);
 });
 
 test("the stuck threshold exceeds the worst-case Hermes time", () => {
-  assert.ok(STUCK_MINUTES * 60 > HERMES_WORST_CASE_SEC);
+  for (const [stage, minutes] of Object.entries(MODEL_STAGE_STUCK_MINUTES)) {
+    const worst = modelStageWorstCaseSec(stage as keyof typeof MODEL_STAGE_STUCK_MINUTES);
+    assert.ok(minutes * 60 > worst, `${stage}: ${minutes} min must exceed its worst case of ${worst} s`);
+    assert.ok(STUCK_MINUTES >= minutes, "the default limit is the longest");
+  }
+});
+
+test("each model stage's stuck limit comes from its own call timeout and its 3 asks", () => {
+  for (const [stage, minutes] of Object.entries(MODEL_STAGE_STUCK_MINUTES)) {
+    const kind = stage as keyof typeof MODEL_STAGE_STUCK_MINUTES;
+    assert.equal(modelStageWorstCaseSec(kind), HERMES_STAGE_ASKS * (HERMES_ASK_TIMEOUT_SEC[kind] + GATE_QUEUE_TIMEOUT_SEC + HERMES_RETRY_PAUSE_SEC));
+    assert.equal(minutes, Math.ceil(modelStageWorstCaseSec(kind) / 60) + 6);
+    assert.equal(stuckMinutesFor(kind), minutes);
+  }
+  // Research asks for up to 10 minutes, 3 times: 3 x (600 + 120 + 10) s = 36.5 min, plus 6 = 43 min.
+  assert.equal(MODEL_STAGE_STUCK_MINUTES.research, 43);
+  assert.equal(MODEL_STAGE_STUCK_MINUTES.idea, 25);
+  // The HTML design writes a whole page: 3 x (720 + 120 + 10) s = 42.5 min, plus 6 = 49 min.
+  assert.equal(MODEL_STAGE_STUCK_MINUTES["html-design"], 49);
+  assert.ok(MODEL_STAGE_STUCK_MINUTES["html-design"] > MODEL_STAGE_STUCK_MINUTES.research);
+});
+
+test("a research stage that has run 9 minutes (or three full 10-minute asks) is not reaped as stuck", () => {
+  const now = new Date("2026-01-01T12:00:00Z");
+  const ago = (min: number) => new Date(now.getTime() - min * 60_000);
+  assert.equal(isStuck(ago(9), now, stuckMinutesFor("research")), false);
+  assert.equal(isStuck(ago(31), now, stuckMinutesFor("research")), false);
+  assert.equal(isStuck(ago(42), now, stuckMinutesFor("research")), false);
+  assert.equal(isStuck(ago(44), now, stuckMinutesFor("research")), true);
+  // The idea stage has a shorter ask, so it is reaped sooner.
+  assert.equal(isStuck(ago(26), now, stuckMinutesFor("idea")), true);
 });
 
 test("isOrphaned finds a running run with only unclaimed engine stages", () => {
