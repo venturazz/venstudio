@@ -12,7 +12,14 @@ import { blockedAddressReason, hopTrust } from "../net-address.ts";
  * Redirects are followed by hand (at most 3) and each hop goes through the same checks.
  */
 
-export class SafeFetchError extends Error {}
+export class SafeFetchError extends Error {
+  /** The HTTP status the file host answered with, when that is why it failed (404: not there). */
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    if (status !== undefined) this.status = status;
+  }
+}
 
 export interface FetchedMedia {
   bytes: Buffer;
@@ -92,7 +99,7 @@ function once(url: URL, isTrusted: boolean, opts: Required<Pick<FetchMediaOption
         }
         if (status < 200 || status >= 300) {
           res.resume();
-          return reject(new SafeFetchError(`The file host answered HTTP ${status}`));
+          return reject(new SafeFetchError(`The file host answered HTTP ${status}`, status));
         }
         const declared = Number(res.headers["content-length"] ?? 0);
         if (declared > opts.maxBytes) {
@@ -161,4 +168,39 @@ export async function fetchMedia(rawUrl: string, options: FetchMediaOptions): Pr
     return { bytes: result.bytes, contentType: result.contentType, finalUrl: current };
   }
   throw new SafeFetchError(`The file address redirected more than ${maxRedirects} times`);
+}
+
+export interface HeadResult {
+  status: number;
+  /** Content-Length, or null when the host did not send one. */
+  size: number | null;
+  contentType: string;
+}
+
+/**
+ * A HEAD request to a file on a media host the owner configured (a trusted origin only, e.g. the Hermes media host),
+ * to see whether a file is there yet and how large it is, without downloading it. Redirects are not followed. Any
+ * HTTP status is returned (404 means not there yet); a connection problem throws an owner-safe SafeFetchError.
+ */
+export async function headMedia(rawUrl: string, options: { trustedOrigins: string[]; timeoutMs?: number }): Promise<HeadResult> {
+  const { url, isTrusted } = checkUrl(rawUrl, options.trustedOrigins, true);
+  if (!isTrusted) throw new SafeFetchError("Only a media host the owner configured is checked this way");
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  try {
+    return await new Promise<HeadResult>((resolve, reject) => {
+      const reqOptions: http.RequestOptions = { method: "HEAD", headers: { "user-agent": "VenStudio/1", accept: "*/*" } };
+      const onResponse = (res: http.IncomingMessage) => {
+        res.resume();
+        const raw = res.headers["content-length"];
+        const n = raw === undefined ? NaN : Number(raw);
+        resolve({ status: res.statusCode ?? 0, size: Number.isFinite(n) && n >= 0 ? n : null, contentType: String(res.headers["content-type"] ?? "") });
+      };
+      const req = url.protocol === "https:" ? https.request(url, reqOptions, onResponse) : http.request(url, reqOptions, onResponse);
+      req.setTimeout(timeoutMs, () => req.destroy(new SafeFetchError(`The file host did not answer within ${Math.round(timeoutMs / 1000)} s`)));
+      req.on("error", (e) => reject(e));
+      req.end();
+    });
+  } catch (err) {
+    throw plain(err, rawUrl);
+  }
 }

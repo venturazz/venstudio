@@ -266,7 +266,10 @@ export function slowWaitText(untilMs: number, nowMs: number, afterMs: number): s
   return `Hermes is busy or slow (it answered nothing in ${durationText(afterMs)}); trying again at ${clockUtc(untilMs)} UTC, ${untilText(untilMs, nowMs)}`;
 }
 
-/** Why a stage waits, as deferStage stores it in `output.hermesWait`. Older rows have no reason: a rate limit. */
+/**
+ * Why a stage waits, as deferStage stores it in `output.hermesWait`. Older rows have no reason: a rate limit. A render
+ * Hermes is working on ("rendering") is read by readRenderingWait.
+ */
 export interface StoredWait {
   reason: "rate-limit" | "slow";
   afterMs: number;
@@ -278,8 +281,45 @@ export function readStoredWait(v: unknown): StoredWait {
   return w.reason === "slow" && afterMs > 0 ? { reason: "slow", afterMs } : { reason: "rate-limit", afterMs: 0 };
 }
 
-/** The run page and Review line for a stage that waits: the slow-answer text when that is why, else the rate limit text. */
+/**
+ * A hermes render the studio waits for (hermes-render-job.ts renderingWait): Hermes renders on its own, the studio
+ * checks the media host for the finished file. Null for every other wait.
+ */
+export interface RenderingWait {
+  skill: string;
+  startedAtMs: number;
+  everyMs: number;
+}
+
+export function readRenderingWait(v: unknown): RenderingWait | null {
+  const w = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  if (w.reason !== "rendering") return null;
+  const startedAtMs = readTime(w.startedAt);
+  if (startedAtMs === null) return null;
+  const everyMs = typeof w.everyMs === "number" && Number.isFinite(w.everyMs) && w.everyMs > 0 ? w.everyMs : 60_000;
+  return { skill: typeof w.skill === "string" ? w.skill.slice(0, 64) : "", startedAtMs, everyMs };
+}
+
+/** The status line while the studio waits for a render's file (after "Video: " on the run page and in Review). */
+export function renderingText(w: RenderingWait, nowMs: number): string {
+  const mins = Math.max(0, Math.floor((nowMs - w.startedAtMs) / 60_000));
+  const ago = mins < 1 ? "just now" : `${mins} min ago`;
+  const every = w.everyMs >= 55_000 && w.everyMs <= 65_000 ? "every minute" : `every ${durationText(w.everyMs)}`;
+  return `Hermes is rendering${w.skill ? ` with ${w.skill}` : ""} (started ${clockUtc(w.startedAtMs)} UTC, ${ago}). The studio checks for the finished file ${every}; nothing is restarted.`;
+}
+
+/** True when the stored wait is a render the studio waits for: its text is complete, the pages add no "Nothing failed". */
+export function isRenderingWait(hermesWait: unknown): boolean {
+  return readRenderingWait(hermesWait) !== null;
+}
+
+/**
+ * The run page and Review line for a stage that waits: a render Hermes is working on, the slow-answer text, else the
+ * rate limit text.
+ */
 export function stageWaitText(hermesWait: unknown, untilMs: number, nowMs: number): string {
+  const rendering = readRenderingWait(hermesWait);
+  if (rendering) return renderingText(rendering, nowMs);
   const w = readStoredWait(hermesWait);
   return w.reason === "slow" ? slowWaitText(untilMs, nowMs, w.afterMs) : waitingText(untilMs, nowMs);
 }
