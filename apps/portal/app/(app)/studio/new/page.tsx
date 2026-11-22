@@ -6,7 +6,8 @@ import { ensureSeedTemplates, listTemplates } from "@/lib/server/templates.ts";
 import { getSavedPlan, listSavedPlans, type SavedPlanRow } from "@/lib/server/productions.ts";
 import { reportedCapabilities } from "@/lib/server/workers.ts";
 import { styleRegistry } from "@/lib/server/style-packs.ts";
-import { newVideoStyles } from "@/lib/studio/style-registry.ts";
+import { isResearchEngine, newVideoStyles } from "@/lib/studio/style-registry.ts";
+import { env } from "@/lib/server/env.ts";
 import { Alert, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { THEME_BY_ID } from "@/lib/studio/catalog.ts";
 import { autonomyText, EMPTY_PREFILL, prefillFromProduction, type RunFormPrefill } from "@/lib/studio/run-config.ts";
@@ -53,17 +54,26 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
     });
     // Listed packs a worker reports, and Trial packs (research only) in their own section. Planned, draft, lab,
     // proven and retired styles are never offered.
-    const offer = newVideoStyles(registry, caps);
+    // Research-only packs (engine hermes) are rendered by the portal through Hermes: offered, in the Trial section only,
+    // when Hermes is set up.
+    const hermes = Boolean(env().HERMES_BASE_URL);
+    const offer = newVideoStyles(registry, caps, { hermes });
     const usable = templateList.filter((t) => t.status !== "retired");
     const toForm = (ids: string[], trial: boolean) =>
       ids.flatMap((styleId) => {
         const t = usable.find((x) => x.styleId === styleId);
         const e = registry.find((x) => x.id === styleId);
-        return t && e?.pack ? [{ id: t.id, label: e.label, styleId, formats: [...e.pack.formats], trial, version: e.pack.version }] : [];
+        return t && e?.pack
+          ? [{ id: t.id, label: e.label, styleId, formats: [...e.pack.formats], trial, version: e.pack.version, ...(isResearchEngine(e.pack.engine) ? { research: true } : {}) }]
+          : [];
       });
     templates = toForm(offer.listed.map((e) => e.id), false);
     trialTemplates = toForm(offer.trial.map((e) => e.id), true);
-    waiting = offer.waiting.map((e) => `${e.label} (${e.pack?.status === "trial" ? "Trial" : "Listed"}, needs pack:${e.id}@${e.pack?.version ?? "?"})`);
+    waiting = offer.waiting.map((e) =>
+      isResearchEngine(e.engine)
+        ? `${e.label} (Trial, needs Hermes: set HERMES_BASE_URL)`
+        : `${e.label} (${e.pack?.status === "trial" ? "Trial" : "Listed"}, needs pack:${e.id}@${e.pack?.version ?? "?"})`,
+    );
     capabilities = caps;
     saved = plans;
     if (from && z.uuid().safeParse(from).success) {

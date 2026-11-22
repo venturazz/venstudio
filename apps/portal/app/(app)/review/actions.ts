@@ -6,6 +6,8 @@ import { z } from "zod";
 import { hasRole, requireUser } from "@/lib/server/auth.ts";
 import { advanceRun, decideReview, recheckReview, recheckTermsReviews } from "@/lib/server/director.ts";
 import { saveProviderTerms } from "@/lib/server/provider-terms.ts";
+import { scorePresentation } from "@/lib/server/presentation.ts";
+import { parseRubric, rubricField } from "@/lib/studio/presentation.ts";
 import { PROVIDER_NAME_MAX } from "@/lib/studio/asset-plan.ts";
 import { fail, str } from "@/lib/form.ts";
 import type { FormState } from "@/lib/form.ts";
@@ -60,6 +62,24 @@ export async function decideReviewAction(_prev: FormState, fd: FormData): Promis
     after(() => advanceRun(runId));
   }
   return { ok: result.message };
+}
+
+/**
+ * The owner scores the final video on its Review card (hook, pacing, legibility, visual polish, audio; 1 to 5 stars).
+ * Saved as the run's G-presentation for that video; a trial run needs it before its decision. Owner only.
+ */
+export async function scorePresentationAction(_prev: FormState, fd: FormData): Promise<FormState> {
+  const owner = await requireUser("owner");
+  const reviewId = z.uuid().safeParse(str(fd, "reviewId", 40));
+  if (!reviewId.success) return fail(fd, "Unknown review item");
+  const rubric = parseRubric((id) => str(fd, rubricField(id), 2));
+  if (!rubric.ok) return fail(fd, `${rubric.issues[0]}.`);
+  const r = await scorePresentation({ reviewId: reviewId.data, rubric: rubric.value, userId: owner.id, isOwner: hasRole(owner.role, "owner") });
+  revalidatePath("/review");
+  if (!r.ok) return fail(fd, r.error);
+  revalidatePath(`/studio/runs/${r.runId}`);
+  revalidatePath("/studio/styles");
+  return { ok: `Saved: presentation ${r.score}/100 (${r.passed ? "passes" : "below the bar"}).` };
 }
 
 const STATUS_TEXT = { yes: "Commercial use OK", no: "Not for commercial use", unknown: "Not confirmed" } as const;

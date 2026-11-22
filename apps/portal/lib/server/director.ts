@@ -65,9 +65,10 @@ import {
 } from "../studio/terms-review.ts";
 import type { ProviderKind } from "../studio/asset-plan.ts";
 import { buildRunConfig, parseRunConfig, topicFromBrief, type RunConfig, type RunRequest } from "../studio/run-config.ts";
-import { runStylePack, startRefusal } from "../studio/style-registry.ts";
+import { guardFinalDecision, runStylePack, startRefusal } from "../studio/style-registry.ts";
 import { registryEntry } from "./style-packs.ts";
 import { recordTrialOutcome } from "./style-trials.ts";
+import { scoreRefusal } from "./presentation.ts";
 
 /**
  * The run engine: idea, research, script and storyboard are Hermes stages; assets, voice, render and qc are the
@@ -540,7 +541,9 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
   };
   const raw = outcome.final ? decideNext({ ...common, point: "final" }) : decideNext({ ...common, point: "stage", stage });
   // A revision cannot fix a provider terms or render problem, so production stages ask the owner instead.
-  const decision = isProductionStage(stage) ? productionDecision(raw) : raw;
+  const staged = isProductionStage(stage) ? productionDecision(raw) : raw;
+  // A trial (and every Hermes render) is never approved or published by the policy: the owner scores and decides.
+  const decision = outcome.final ? guardFinalDecision(staged, run.config.stylePack ?? null) : staged;
   const base = { result: outcome.result, feedback, autoRevisions, ...(gate ? { gate } : {}), ...(outcome.extra ?? {}) };
   const summary = isProductionStage(stage) ? productionSummary(stage, outcome.result) : stageSummary(stage, outcome.result);
   const issues = outcome.issues ?? (gate && !gate.passed ? gate.issues : []);
@@ -819,6 +822,11 @@ export async function decideReview(input: {
     const options = decisionOptions(kind, { stage, issues: storedIssues, voice: voiceFix, tempoReady: true });
     if (!options.includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
     if (decision === "override" && input.isOwner !== true) return { ok: false, error: "Only the owner can approve anyway" };
+    // A trial's final video is scored by the owner before it is decided (the curation log needs the score).
+    if (stage === "qc") {
+      const refusal = await scoreRefusal(input.reviewId, decision);
+      if (refusal) return { ok: false, error: refusal };
+    }
     const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
 
     let target: RunStage = stage;

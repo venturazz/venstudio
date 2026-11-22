@@ -6,7 +6,7 @@ import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.t
 import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Format } from "@/lib/studio/catalog.ts";
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { defaultThemeFor, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
-import { TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
 import { MUSE } from "../studio-form.tsx";
 import { startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
 
@@ -27,6 +27,8 @@ export interface RunFormTemplate {
   trial?: boolean;
   /** The style pack version. */
   version?: string;
+  /** Rendered by Hermes with its own tools: research only, never published (always a trial). */
+  research?: boolean;
 }
 export interface RunFormOptions {
   channels: RunFormChannel[];
@@ -39,6 +41,12 @@ export interface RunFormOptions {
   /** Capabilities enrolled workers report, from the stored rows. */
   capabilities: string[];
   prefill: RunFormPrefill;
+}
+
+/** A Hermes-rendered style always reads "Hermes render (research only)" first, whatever its pack is named. */
+function researchLabel(t: RunFormTemplate): string {
+  if (!t.research) return t.label;
+  return t.label === HERMES_RENDER_LABEL ? HERMES_RENDER_LABEL : `${HERMES_RENDER_LABEL}: ${t.label}`;
 }
 
 const KOKORO: Record<string, { tone: "ok" | "warn"; label: string }> = {
@@ -205,7 +213,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
               <optgroup label={TRIAL_LABEL}>
                 {trialTemplates.map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.label} (trial)
+                    {researchLabel(t)} (trial)
                     {t.formats.includes(format) ? "" : " (not for this format)"}
                   </option>
                 ))}
@@ -236,11 +244,11 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
               {trialTemplates.map((t) => (
                 <li key={t.id} className="flex flex-wrap items-center gap-2 text-sm" data-testid={`trial-style-${t.styleId}`}>
                   <Badge tone="warn">{TRIAL_BADGE}</Badge>
-                  <span className="min-w-0 break-words">
-                    {t.label}
+                  <span className="min-w-0 break-words" data-testid={t.research ? "hermes-render-label" : undefined}>
+                    {researchLabel(t)}
                     {t.version ? <span className="text-xs text-muted"> v{t.version}</span> : null}
                   </span>
-                  <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${t.label}`}>
+                  <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${researchLabel(t)}`}>
                     {t.id === templateId ? "Chosen" : "Use for research"}
                   </Button>
                 </li>
@@ -249,7 +257,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
           )}
           {waiting.length > 0 && (
             <p className="text-xs text-muted" data-testid="waiting-styles">
-              Waiting for a worker that reports the pack: {waiting.join("; ")}. Workers 0.9.0 and later install packs with their signed updates.
+              Waiting for a worker that reports the pack (or for Hermes): {waiting.join("; ")}. Workers 0.9.0 and later install packs with their signed updates.
             </p>
           )}
         </section>

@@ -2,7 +2,9 @@
 
 Status: agreed with the owner. Phase 0 (signed automatic worker updates) is implemented on
 `feat/auto-update`; Phase 1 (pack format, vendored registry, Listed/Trial in New Video) on `feat/style-registry`,
-described in `docs/style-packs.md`; phases 2 to 5 are the plan.
+described in `docs/style-packs.md`; Phase 2 (renderer plugins, html-capture, the hermes research renderer and the
+owner's presentation score) on `feat/renderers`, described in `docs/style-packs.md` and `docs/html-capture.md`;
+phases 3 to 5 are the plan.
 
 Phase 1 changes one thing in section 2 below, by owner decision (no new secrets): the portal has no GitHub token, so it
 does not read signed releases from the styles repo. venstudio vendors a pinned copy (`styles/`, `styles/lock.json`)

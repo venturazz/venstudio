@@ -12,6 +12,7 @@ import type { ReviewKind } from "./review.ts";
 import { HERMES_ASK_WORST_SEC } from "./pacing.ts";
 import { bareProviderName, isShotNeed, type ShotNeed } from "./providers.ts";
 import { RENDER_LIMITS } from "./render-limits.ts";
+import { HERMES_RENDER_MAX_MINUTES } from "./hermes-render.ts";
 
 /** Hermes image attempts per shot before the CC0 library (each attempt already re-asks Hermes up to 2 times). */
 export const HERMES_IMAGE_ATTEMPTS = 2;
@@ -116,7 +117,15 @@ export interface StageProbe {
   jobStatus: string | null;
   jobError?: string | null;
   orders?: OrderCounts;
+  /** The render stage is a hermes render (the portal waits for Hermes, there is no worker job). */
+  portalRender?: boolean;
 }
+
+/**
+ * How long a hermes render may run before the reaper gives up: every ask and download at its limit plus slack
+ * (hermes-render.ts), never less than the other production steps get.
+ */
+export const HERMES_RENDER_STUCK_MINUTES = Math.max(PRODUCTION_STUCK_MINUTES + 1, HERMES_RENDER_MAX_MINUTES);
 
 export type StageAction =
   | { action: "none" }
@@ -140,6 +149,9 @@ export function productionStageAction(p: StageProbe): StageAction {
     return p.idleMinutes > PRODUCTION_STUCK_MINUTES ? { action: "fail", reason: "The voice step stopped answering and was cancelled" } : { action: "none" };
   }
   const what = p.stage === "render" ? "The video render" : "The quality check";
+  if (p.stage === "render" && p.portalRender && p.jobStatus === null) {
+    return p.idleMinutes > HERMES_RENDER_STUCK_MINUTES ? { action: "fail", reason: "Hermes did not finish the render (research only) and it was cancelled" } : { action: "none" };
+  }
   if (p.jobStatus === null) {
     return p.idleMinutes > PRODUCTION_STUCK_MINUTES ? { action: "fail", reason: `${what} was never queued` } : { action: "none" };
   }

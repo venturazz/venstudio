@@ -96,9 +96,21 @@ export function makeWav(seconds, sampleRate = 24000, hz = 220) {
 // that is not JSON, to prove the failure path. The script and storyboard are sized from numbers in the prompt itself,
 // so they satisfy the script and storyboard gates for whichever template is used.
 function directorReply(messages) {
-  const first = messages.find((m) => m.role === "user")?.content ?? "";
+  const first = textOf(messages.find((m) => m.role === "user")?.content);
   const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
   if (stage === "selftest") return '{"ok":true,"sum":5}';
+  // Renderer hermes (research only): Hermes renders the whole video and publishes it under /clip/ on its media host.
+  if (stage === "hermes-render") {
+    fakeStats.hermesRenders++;
+    return JSON.stringify({ status: "ok", video: { type: "url", value: `http://127.0.0.1:${HERMES_PORT}/clip/render-${fakeStats.hermesRenders}.mp4`, mimeType: "video/mp4" }, provider: "capcut", source: "capcut", model: "fake-capcut-render" });
+  }
+  // The presentation advisory: a vision rating of the stills the quality check sampled (attached as image parts).
+  if (stage === "presentation-advisory") {
+    fakeStats.advisoryAsks++;
+    const user = messages.find((m) => m.role === "user")?.content;
+    fakeStats.advisoryImages = Math.max(fakeStats.advisoryImages, Array.isArray(user) ? user.filter((part) => part?.type === "image_url").length : 0);
+    return JSON.stringify({ rubric: { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, notes: "Fake advisory: readable captions, plain pictures." });
+  }
   if (stage === "classify") return JSON.stringify({ stage: "idea", reason: "The owner wants different ideas" });
   if (stage === "idea") {
     if (first.includes("BREAK-JSON")) return "Sorry, I cannot put that into JSON right now.";
@@ -225,7 +237,24 @@ function directorReply(messages) {
 // The newest first user message per stage marker (idea, research, script, storyboard ...), so the UI test can check
 // what the New video form carried into the director prompts.
 const lastPrompt = {};
-const fakeStats = { scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
+/** Text of a chat message's content: a string, or the text parts of OpenAI-style content parts (vision turns). */
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
+  return "";
+}
+
+// The clip the fake Hermes "renders": a real H.264/AAC MP4, made once with ffmpeg, served under /clip/ like the media host.
+const FAKE_CLIP = path.join(OUT, "fake-hermes-clip.mp4");
+let fakeClip = null;
+function fakeClipBytes() {
+  if (fakeClip) return fakeClip;
+  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=16", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=16", "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", FAKE_CLIP], { timeout: 120_000 });
+  fakeClip = readFileSync(FAKE_CLIP);
+  return fakeClip;
+}
+
+const fakeStats = { hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0 };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -246,6 +275,13 @@ const fakeHermes = createServer((req, res) => {
   if (link) {
     res.writeHead(200, { "content-type": "image/png" });
     return res.end(makePng(540, 960, Number(link[1])));
+  }
+  // The media host's /clip/ folder, public like the image link.
+  if (/^\/clip\/render-\d+\.mp4$/.test(req.url ?? "")) {
+    fakeStats.clipDownloads++;
+    const body = fakeClipBytes();
+    res.writeHead(200, { "content-type": "video/mp4", "content-length": String(body.length) });
+    return res.end(body);
   }
   if (req.headers.authorization !== `Bearer ${HERMES_KEY}`) return json(401, { error: { code: "gateway_auth_failed" } });
   if (req.url === "/v1/capabilities") {
@@ -272,7 +308,7 @@ const fakeHermes = createServer((req, res) => {
       } catch {
         return json(400, { error: "bad json" });
       }
-      const first = messages.find((m) => m.role === "user")?.content ?? "";
+      const first = textOf(messages.find((m) => m.role === "user")?.content);
       const stage = /^VENSTUDIO_STAGE: ([\w-]+)/m.exec(first)?.[1] ?? "";
       if (stage) lastPrompt[stage] = first;
       if (stage === "image" && fakeStats.hermes429 < HERMES_429_BURST) {
@@ -379,6 +415,12 @@ function dbValue(sql) {
   const dbUrl = process.env.UI_DB ?? process.env.DATABASE_URL;
   if (!dbUrl) return null;
   return execFileSync("psql", [dbUrl, "-X", "-tA", "-c", sql], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+/** Runs a statement quietly (no command tag), stopping on the first error; returns its rows like dbValue, or null without a database. */
+function dbExec(sql) {
+  const dbUrl = process.env.UI_DB ?? process.env.DATABASE_URL;
+  if (!dbUrl) return null;
+  return execFileSync("psql", [dbUrl, "-X", "-qtA", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 function runWorker(args) {
   return execFileSync("bash", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
@@ -818,6 +860,8 @@ try {
   const trialSection = page.getByTestId("trial-styles");
   await trialSection.getByRole("heading", { name: "Trial styles (research only, not for publishing)", exact: true }).waitFor();
   await trialSection.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
+  // The Hermes research pack is rendered by the portal, so it is offered here (only here) once Hermes is set up.
+  await trialSection.getByTestId("trial-style-hermes-research-explainer").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
   await page.getByTestId("no-listed-styles").waitFor();
   const styleOptions = await page.locator("#templateId option").evaluateAll((os) => os.map((o) => o.value));
   for (const planned of ["tpl-kinetic-facts", "tpl-math-explainer", "tpl-blender-3d", "tpl-ai-character-sketch"]) {
@@ -887,6 +931,13 @@ try {
       if (!box) throw new Error(`${label} is not visible`);
       if (box.height < 44) throw new Error(`${label} is ${box.height}px tall, under 44px`);
     }
+  }
+  /** Rates every rubric line on a quality-check card, saves the score and waits for the card to show it. */
+  async function scoreVideo(card, stars, shown) {
+    const labels = { hook: "Hook", pacing: "Pacing", legibility: "Legibility", polish: "Visual polish", audio: "Audio" };
+    for (const [id, n] of Object.entries(stars)) await card.getByTestId(`rubric-${id}`).getByRole("radio", { name: `${labels[id]}: ${n} of 5`, exact: true }).check();
+    await card.getByTestId("presentation-score").getByRole("button", { name: /^(Save|Update) score$/ }).click();
+    await card.getByTestId("presentation-value").getByText(shown, { exact: true }).waitFor({ timeout: 20_000 });
   }
   async function assertNoOverflow(p, url) {
     const wide = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
@@ -1263,10 +1314,18 @@ try {
   await m.waitForLoadState("networkidle");
   await assertNoOverflow(m, "/review (quality check)");
   await shot("24-review-qc-mobile", m);
-  const qc = m.locator('[data-testid="review-card"]', { hasText: "Quality check" }).first();
+  const qc = m.locator('[data-testid="review-card"][data-stage="qc"]').first();
+  // A trial run's final video is scored by the owner on its card before the decision (hook, pacing, legibility,
+  // visual polish, audio; 1-5 stars, 0-100 on the server). Deciding first is refused by name.
   const approveQc = qc.getByRole("button", { name: "Approve", exact: true });
-  if (await approveQc.isVisible().catch(() => false)) await approveQc.click();
-  else await qc.getByRole("button", { name: "Reject" }).click();
+  const canApprove = await approveQc.isVisible().catch(() => false);
+  await (canApprove ? approveQc : qc.getByRole("button", { name: "Reject", exact: true })).click();
+  await qc.getByText(/^This is a trial run: the owner scores the video/).waitFor();
+  await scoreVideo(qc, { hook: 5, pacing: 4, legibility: 4, polish: 4, audio: 4 }, "80/100 by the owner");
+  await shot("24b-review-qc-scored-mobile", m);
+  if (canApprove) await qc.getByRole("button", { name: "Approve", exact: true }).click();
+  else await qc.getByRole("button", { name: "Reject", exact: true }).click();
+  await m.waitForLoadState("networkidle");
 
   step("style packs: the render was routed by the pack, the trial outcome is in the curation log, and Styles shows it");
   {
@@ -1292,7 +1351,10 @@ try {
     await explainerCard.getByText("Trial", { exact: true }).first().waitFor();
     await explainerCard.getByTestId("pack-availability").getByText("A worker reports pack:explainer-flat-vector@1.0.0", { exact: true }).waitFor();
     if (outcome !== null) {
-      await explainerCard.getByTestId("trial-record").getByText(/^Trial runs of v1\.0\.0: 1 /).waitFor();
+      // Counted with the owner's score: 80 from 5, 4, 4, 4, 4 stars.
+      await explainerCard.getByTestId("trial-record").getByText(/^Trial runs of v1\.0\.0: 1 .*mean presentation 80 \(1 scored\)/).waitFor();
+      const scored = dbValue(`SELECT presentation_score::text || ' ' || coalesce(presentation_by, 'none') || ' ' || coalesce(owner_rubric->>'hook', '?') || ' ' || coalesce(renderer, '?') FROM style_trial_outcomes WHERE run_id = '${prodRunId}'`);
+      if (scored !== "80 owner 5 remotion-2d") throw new Error(`the curation log has "${scored}", expected the owner's 80 with its rubric and the remotion-2d renderer`);
       await explainerCard.getByTestId("promotion-issues").getByText("Needs at least 5 trial runs (has 1)", { exact: true }).waitFor();
     }
     const plannedCard = page.getByTestId("planned-style-kinetic-facts");
@@ -1300,6 +1362,106 @@ try {
     await plannedCard.getByText("Not selectable for a run", { exact: true }).waitFor();
     await page.getByTestId("planned-styles").getByRole("heading", { name: "Planned styles (not selectable)", exact: true }).waitFor();
     await shot("15b-styles-desktop");
+  }
+
+  step("hermes render (research only): a trial run Hermes renders goes through QC and Review with its badge, is scored and counted");
+  {
+    const prodRunId = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
+    // The run reuses the finished production's approved script, storyboard, pictures and narration (copied rows), so
+    // only the render, the quality check and the review run again. It is a trial of the Hermes research pack.
+    const hermesRunId = prodRunId
+      ? dbExec(`INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, state)
+          SELECT channel_id, 'tpl-hermes-research-explainer', (SELECT current_version FROM templates WHERE id = 'tpl-hermes-research-explainer'),
+                 topic || ' (Hermes render)', autonomy_level,
+                 jsonb_set(jsonb_set(config, '{styleId}', '"hermes-research-explainer"'), '{stylePack}',
+                   '{"id":"hermes-research-explainer","version":"0.1.0","status":"trial","trial":true,"engine":"hermes"}'), 'running'
+          FROM pipeline_runs WHERE id = '${prodRunId}' RETURNING id`)
+      : null;
+    if (!hermesRunId) console.log("   no database access (UI_DB unset): the Hermes render run is skipped");
+    else {
+      dbExec(`INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
+        SELECT '${hermesRunId}', stage, state, attempt, output, finished_at FROM pipeline_stages
+        WHERE run_id = '${prodRunId}' AND state = 'passed' AND stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice')`);
+      try {
+        dbExec(`INSERT INTO work_orders (run_id, stage, shot_ref, executor, spec, state, asset_id)
+          SELECT '${hermesRunId}', stage, shot_ref, executor, spec, state, asset_id FROM work_orders WHERE run_id = '${prodRunId}' AND stage = 'assets' AND state = 'done'`);
+      } catch (err) {
+        console.log(`   the pictures were not copied (${String(err).slice(0, 200)}); Hermes draws those shots from their descriptions`);
+      }
+      dbExec(`INSERT INTO pipeline_stages (run_id, stage, state, attempt) VALUES ('${hermesRunId}', 'render', 'pending', 1)`);
+      const hermesHref = `/studio/runs/${hermesRunId}`;
+      // The Review page restarts a running run with a pending stage; the portal then asks Hermes (no worker job).
+      const hermesCard = (stage) => m.locator(`[data-testid="review-card"][data-stage="${stage}"]`).filter({ has: m.getByTestId("hermes-render-badge") });
+      let qcShown = false;
+      for (let i = 0; i < 14 && !qcShown; i++) {
+        await m.goto(`${APP}/review`);
+        const broken = m.locator('[data-testid="review-card"][data-kind="stage-error"]').filter({ has: m.getByTestId("hermes-render-badge") });
+        if (await broken.first().isVisible().catch(() => false)) {
+          await dumpPipeline(m, hermesHref, "the Hermes render stopped with an error");
+          throw new Error(`the Hermes render stopped: ${((await broken.first().innerText()) || "").replace(/\s+/g, " ").slice(0, 500)}`);
+        }
+        const renderCard = hermesCard("render");
+        if (await renderCard.first().isVisible().catch(() => false)) {
+          await renderCard.first().getByTestId("render-video").waitFor();
+          await renderCard.first().getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
+          await renderCard.first().getByRole("button", { name: "Approve", exact: true }).click();
+          await m.waitForLoadState("networkidle");
+        }
+        // The quality check is the worker's qc-video, as for any render.
+        runWorker([`${OUT}/worker/run.sh`, "tick"]);
+        await m.goto(`${APP}/review`);
+        qcShown = await hermesCard("qc").first().isVisible().catch(() => false);
+        if (!qcShown) await m.waitForTimeout(3000);
+      }
+      if (!qcShown) {
+        await dumpPipeline(m, hermesHref, "the Hermes render's quality check never reached Review");
+        throw new Error("the Hermes render's quality check never reached Review");
+      }
+      if (fakeStats.hermesRenders < 1 || fakeStats.clipDownloads < 1) throw new Error(`Hermes was asked ${fakeStats.hermesRenders} time(s) and its clip downloaded ${fakeStats.clipDownloads} time(s)`);
+      const renderAsk = lastPrompt["hermes-render"] ?? "";
+      for (const want of ['"scenePlan"', '"contract"', '"shots"', '"id":"hermes-research-explainer"', "/clip/"]) {
+        if (!renderAsk.includes(want)) throw new Error(`the hermes-render request misses ${want}`);
+      }
+      const renderJobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${hermesRunId}'`);
+      if (renderJobs !== "0") throw new Error(`a Hermes render queued ${renderJobs} worker render job(s)`);
+      const provenance = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'backend', '?') || ' ' || a.origin_url FROM assets a
+        WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${hermesRunId}' AND stage = 'render' AND state = 'passed' LIMIT 1)`);
+      if (!/^hermes-render capcut http:\/\/127\.0\.0\.1:\d+\/clip\/render-\d+\.mp4$/.test(provenance ?? "")) throw new Error(`the Hermes render's provenance is "${provenance}"`);
+      const card = hermesCard("qc").first();
+      await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
+      await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
+      // Hermes's advisory on the sampled stills arrives in the background; it is shown, never decides.
+      for (let i = 0; i < 10 && !(await card.getByTestId("presentation-advisory").isVisible().catch(() => false)); i++) {
+        await m.waitForTimeout(2000);
+        await m.goto(`${APP}/review`);
+      }
+      await card.getByTestId("presentation-advisory").getByText(/^Hermes advisory \(from \d+ stills, does not decide\): 60\/100/).waitFor();
+      if (fakeStats.advisoryImages < 1) throw new Error("the advisory was asked without the sampled stills");
+      await assertNoOverflow(m, "/review (Hermes render)");
+      await scoreVideo(card, { hook: 4, pacing: 4, legibility: 5, polish: 4, audio: 3 }, "75/100 by the owner");
+      await shot("24c-review-hermes-render-mobile", m);
+      const approve = card.getByRole("button", { name: "Approve", exact: true });
+      if (await approve.isVisible().catch(() => false)) await approve.click();
+      else await card.getByRole("button", { name: "Reject", exact: true }).click();
+      await m.waitForLoadState("networkidle");
+      let logged = null;
+      for (let i = 0; i < 20; i++) {
+        logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') || ' ' || coalesce(owner_decision, 'none') || ' ' || coalesce(hermes_advisory->>'score', 'none') FROM style_trial_outcomes WHERE run_id = '${hermesRunId}'`);
+        if (logged && / (approved|rejected) /.test(logged)) break;
+        await m.waitForTimeout(1000);
+      }
+      if (!/^hermes-research-explainer@0\.1\.0 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
+        await dumpPipeline(m, hermesHref, "the Hermes render's trial outcome was not recorded");
+        throw new Error(`the Hermes render's curation entry is "${logged}"`);
+      }
+      await page.goto(`${APP}${hermesHref}`);
+      await page.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
+      await page.goto(`${APP}/studio/styles`);
+      const hermesPack = page.getByTestId("style-pack-hermes-research-explainer");
+      await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
+      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.1\.0: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
+      await shot("15c-styles-hermes-desktop");
+    }
   }
 
   step("production: the render mixed the tagged music track as its bed, never the narration");

@@ -159,9 +159,17 @@ export async function checkStyles(target = STYLES_DIR) {
 export function runtimeDrift(from) {
   const ours = path.join(ROOT, "apps", "render-remotion");
   const theirs = path.join(from, "runtime", "remotion");
-  if (!existsSync(theirs)) return [];
-  const files = ["package.json", "tsconfig.json", "scripts/probe.mjs", "src/index.ts", "src/Root.tsx", "src/compositions.ts", "src/props.ts"];
-  return files.filter((f) => !existsSync(path.join(theirs, f)) || sha256(readFileSync(path.join(ours, f))) !== sha256(readFileSync(path.join(theirs, f))));
+  const out = [];
+  if (existsSync(theirs)) {
+    const files = ["package.json", "tsconfig.json", "scripts/probe.mjs", "src/index.ts", "src/Root.tsx", "src/compositions.ts", "src/props.ts"];
+    out.push(...files.filter((f) => !existsSync(path.join(theirs, f)) || sha256(readFileSync(path.join(ours, f))) !== sha256(readFileSync(path.join(theirs, f)))).map((f) => `runtime/remotion/${f}`));
+  }
+  // The styles repo renders its html-capture fixtures with a copy of this worker (runtime/html-capture).
+  const worker = path.join(from, "runtime", "html-capture", "venstudio-worker.ts");
+  if (existsSync(path.join(from, "runtime")) && (!existsSync(worker) || sha256(readFileSync(worker)) !== sha256(readFileSync(path.join(ROOT, "apps", "worker", "venstudio-worker.ts"))))) {
+    out.push("runtime/html-capture/venstudio-worker.ts");
+  }
+  return out;
 }
 
 function arg(name) {
@@ -185,7 +193,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log(`vendored ${SOURCE_REPO}@${lock.source.commit} into styles/:`);
       for (const p of lock.packs) console.log(`  ${p.id}@${p.version} ${p.status} ${p.engine} ${p.sha256.slice(0, 12)}`);
       const drift = runtimeDrift(from);
-      if (drift.length > 0) console.warn(`warning: the styles repo's runtime/remotion differs from apps/render-remotion in ${drift.join(", ")}; refresh it there`);
+      if (drift.length > 0) console.warn(`warning: the styles repo's runtime copy differs from apps/render-remotion and apps/worker in ${drift.join(", ")}; refresh it there`);
       console.log(`commit it as: bump styles to ${lock.source.commit.slice(0, 12)}`);
     }
   } catch (err) {

@@ -12,7 +12,7 @@ import { isEngineStage, isProductionStage, stageSummary } from "@/lib/studio/eng
 import { productionSummary } from "@/lib/studio/production.ts";
 import { waitingText } from "@/lib/studio/pacing.ts";
 import { isTrialRun, parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
-import { TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, TRIAL_BADGE, isResearchEngine } from "@/lib/studio/style-registry.ts";
 import { cancelRunAction } from "../actions.ts";
 import { RunStateBadge, StageStateBadge } from "../run-status.tsx";
 
@@ -86,6 +86,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         {isTrialRun(parseRunConfig(run.config)) && (
           <span data-testid="trial-badge" title="Research only, not for publishing">
             <Badge tone="warn">{TRIAL_BADGE}: research only, not for publishing</Badge>
+          </span>
+        )}
+        {isResearchEngine(parseRunConfig(run.config).stylePack?.engine) && (
+          <span data-testid="hermes-render-badge" title="Hermes renders this video with its own tools; it is never published">
+            <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
           </span>
         )}
         <span className="text-xs text-muted" data-testid="run-attempts">

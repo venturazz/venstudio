@@ -2,7 +2,8 @@
 /**
  * Writes the Remotion project a worker gets from /install/render-remotion.json into a directory, without a portal:
  * the runtime (apps/render-remotion) plus the render project of every vendored remotion-2d style pack
- * (styles/packs/<id>/render/, checked against styles/lock.json), built by the same projectBundle the portal uses and
+ * (styles/packs/<id>/render/, checked against styles/lock.json) and the pages of every html-capture pack (html/<id>/),
+ * built by the same projectBundle the portal uses and
  * unpacked by the worker's own writeProjectBundle. CI renders the golden fixture from this project, so the
  * composition it renders is the one in the vendored pack.
  *
@@ -38,8 +39,30 @@ export function vendoredRemotionPacks(stylesDir = STYLES) {
     }));
 }
 
+/** The vendored html-capture packs' pages (installed as html/<id>/), each checked against lock.json. */
+export function vendoredHtmlPacks(stylesDir = STYLES) {
+  const lock = JSON.parse(readFileSync(path.join(stylesDir, "lock.json"), "utf8"));
+  return lock.packs
+    .filter((p) => p.engine === "html-capture")
+    .map((p) => {
+      const style = JSON.parse(readFileSync(path.join(stylesDir, "packs", p.id, "style.json"), "utf8"));
+      return {
+        id: p.id,
+        version: p.version,
+        drawsCaptions: style.renderer?.drawsCaptions === true,
+        files: Object.entries(p.files)
+          .filter(([rel]) => rel.startsWith("render/"))
+          .map(([rel, want]) => {
+            const body = readFileSync(path.join(stylesDir, "packs", p.id, rel));
+            if (createHash("sha256").update(body).digest("hex") !== want) throw new Error(`styles/packs/${p.id}/${rel} differs from styles/lock.json`);
+            return { path: rel.slice("render/".length), content: body.toString("utf8") };
+          }),
+      };
+    });
+}
+
 export function remotionBundle() {
-  return projectBundle((rel) => readFileSync(path.join(RUNTIME, rel), "utf8"), vendoredRemotionPacks());
+  return projectBundle((rel) => readFileSync(path.join(RUNTIME, rel), "utf8"), vendoredRemotionPacks(), vendoredHtmlPacks());
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

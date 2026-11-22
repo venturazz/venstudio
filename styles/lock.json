@@ -2,14 +2,16 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "b10ef12a7f96a190e2c103209c2fa92bb4640d9f"
+    "commit": "357b2087ec1f200f30aa50ba94eae992a58c2123"
   },
   "files": {
-    "FORMAT.md": "a7a50b4eaa12ea3c69edd356be63f1cedb82b966e026fec2e015ff1c9281d64f",
-    "schema/style.schema.json": "0c77a8d6c682ac1ca441cd3da912333088aedc756821f0514a6a88ad2cbbf76a",
-    "tools/assemble-remotion.mjs": "1b187bd2a02832486a4024cb01c08432916455d4e24cbef2dcc85dbdff861be8",
-    "tools/validate.mjs": "8db7514a524abcafdcf255cce0f05fe947a9065d8e92e18d76d73b8bb20062ef",
-    "tools/validate.test.mjs": "f679dbed45e2cb23fa696e67bb829c31bdeae3fae7f69e5886f0b1b4a7f78bf4"
+    "FORMAT.md": "55d58327efd19683f16a9921260166115ec32128c4964f7c1b539b7e73cba21b",
+    "schema/style.schema.json": "1a57113e080c1c0ab83665c2f8a0b7ca3b451173dc3b5be9fec6487dbb6175a3",
+    "tools/assemble-remotion.mjs": "b545f2b2163fdcf9ecdfeeb30610ac3868c53a2d589a31994da615db5b706c39",
+    "tools/check-video.mjs": "1e1bac7a4e8310488930b12ae4637f97dadb8b78a57b4b8a598749af509a1c3f",
+    "tools/check-video.test.mjs": "52e176204378a6f8bac5aa965e83960281fc7d5648f9ae9794d0ac1e267947cc",
+    "tools/validate.mjs": "7e88e432ab8358eb4c3d77373080a64a707295cf2b934b4e2b3e8c6f91e6b4a5",
+    "tools/validate.test.mjs": "074e57e83c84ef98d26a5b4d6046945971d76635055ed69cb9ca2f3945b54b6c"
   },
   "packs": [
     {
@@ -59,6 +61,20 @@
       }
     },
     {
+      "id": "hermes-research-explainer",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "4787bbfb0e316b408c9d4344da0082d5074c4e2e40c728dcffd0345817fdc767",
+      "files": {
+        "README.md": "ca90ce1e36cf06ff971222f4e0628130d88681fb0c80cdcb103697ee391322b0",
+        "fixtures/expect.json": "720f9e08b61531c7a268a66a77f4398eb920713c264a81902a1bdd6ddddf7bb4",
+        "fixtures/payload.json": "4ba5a8bd75cda0199a87cea58821fe88efa920be5dfc796eba8ef277ba17b21f",
+        "style.json": "496e574e3d646ef6e0aaf65669b4ba10ccc9eaf7e9f8d80cdb8672b2c020b8f4"
+      }
+    },
+    {
       "id": "horror-story",
       "version": "1.0.0",
       "status": "trial",
@@ -84,6 +100,23 @@
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "3037dd61e5a3c279bb5c68004845560b7261841d590e6195d61d796a10b309c0",
         "style.json": "3386b76ef622d4f9c8c9e14c4cd3840acd0aeffd5888b45c7041f3b491d6826d"
+      }
+    },
+    {
+      "id": "probe-line-graph",
+      "version": "0.1.0",
+      "status": "lab",
+      "engine": "html-capture",
+      "composition": null,
+      "sha256": "1d2f54f9544601d3411bbf9f157b799888041b8d5126b838b57669842f4a4969",
+      "files": {
+        "README.md": "b1aae955f747ccf4986f5932f307bf658c94b919358511bd1ef821e0734bfd88",
+        "fixtures/expect.json": "6890ba69ed1bb760c4c85a07c1388f6fc5b2ac06d6574dae5dc4b429a50bbb8c",
+        "fixtures/payload.json": "87235b34f8639e15bd60523fe72b7550540394247bc157b20f27b7c518dc699c",
+        "render/graph.css": "f002afab219d93a2d16d2990deed12451db41ab55e95b1fe4ef1852615a0e97e",
+        "render/graph.js": "88ddc6187adc6beba6c424d65f4541e0bd188397d4419631cdfdf435e0a64bbc",
+        "render/index.html": "140d19db538cc5b7c2f9428b0699cbe8a9239a520c50e1f9e7a5d6ea1af776ce",
+        "style.json": "9cd2408e4c1dacc304b7b85283ba7f2bedebfd54ae49e50dd724df8a0afc2eb0"
       }
     },
     {

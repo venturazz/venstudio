@@ -125,6 +125,22 @@ export const ENGINES: Record<string, Engine> = {
     muse: "muse-ok",
     note: "Renders frames in headless Chrome on the CPU. Chrome Headless Shell is the faster CPU option, per Remotion's docs.",
   },
+  "html-capture": {
+    id: "html-capture",
+    label: "HTML templates (GSAP, CSS, three.js) captured in headless Chrome",
+    capability: "html-capture",
+    tier: "light",
+    muse: "muse-ok",
+    note: "Each frame is captured from a page in the Chromium the Remotion renderer installs, offline, then encoded by ffmpeg. Worker 0.10.0+.",
+  },
+  hermes: {
+    id: "hermes",
+    label: "Hermes renders with its own tools (research only)",
+    capability: "hermes",
+    tier: "light",
+    muse: "external",
+    note: "The portal asks Hermes, which renders with its own tools and returns a clip. Owner decision: trials and research only, never published.",
+  },
   "sprite-rig": {
     id: "sprite-rig",
     label: "Sprite characters with lip sync (Remotion + Rhubarb)",
@@ -683,6 +699,24 @@ export const STYLES: Style[] = [
     assetKinds: ["video"],
     cautions: ["Trend copies get removed. Build original characters.", "The provider's terms set what you may publish; check each output."],
     sources: ["https://www.opus.pro/blog/viral-ai-video-styles-2026"],
+  },
+  {
+    // Research only (owner decision): Hermes renders the whole video with its own tools. Its pack can never go above
+    // Trial and every run of it is a trial (style-registry.ts), so the planner's keywords stay deliberately narrow.
+    id: "hermes-research-explainer",
+    label: "Hermes render (research only)",
+    family: "explainer",
+    description: "Hermes renders the whole video with its own tools from the storyboard, scene plan and pictures. For trials and research, never for publishing.",
+    formats: ["short"],
+    engine: "hermes",
+    narration: true,
+    shotSeconds: [2, 4],
+    naturalFrame: "portrait",
+    themes: [],
+    keywords: ["hermes render research", "hermes research render", "research render trial"],
+    assetKinds: ["image"],
+    cautions: ["Research only: a Hermes render is never published.", "Hermes's tools have their own terms; record what it used."],
+    sources: [],
   },
 ];
 

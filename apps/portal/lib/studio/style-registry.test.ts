@@ -11,7 +11,9 @@ import { PUBLISH_GATES } from "./qc.ts";
 import { MOTION_TOKENS } from "./render-engine.ts";
 import { parseRunConfig, isTrialRun, runSettings } from "./run-config.ts";
 import { packWaitNote, renderJobCapability } from "./render-gate.ts";
+import { ownerPresentationGate, parseRubric, presentationRefusal } from "./presentation.ts";
 import {
+  HERMES_RENDER_LABEL,
   PACK_CAPABILITY_RE,
   availabilityOf,
   curationRecord,
@@ -21,7 +23,9 @@ import {
   packCapability,
   packPromotionIssues,
   parsePack,
+  guardFinalDecision,
   parseRunStylePack,
+  publishRefusal,
   qcPartOf,
   runStylePack,
   startRefusal,
@@ -44,9 +48,13 @@ function pack(id: string, over: Partial<StylePack> = {}): StylePack {
   return { ...base, ...over };
 }
 
-test("the vendored packs are exactly the explainer and the six stills styles, all Trial at 1.0.0", () => {
-  assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS].sort());
-  for (const p of vendored) {
+test("the vendored packs: the explainer and the six stills styles (Trial 1.0.0), the html-capture probe (Lab) and the Hermes research pack (Trial)", () => {
+  assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS, "hermes-research-explainer", "probe-line-graph"].sort());
+  const probe = pack("probe-line-graph");
+  assert.deepEqual([probe.status, probe.engine, probe.minWorkerVersion, probe.composition, probe.drawsCaptions], ["lab", "html-capture", "0.10.0", null, false]);
+  const hermes = pack("hermes-research-explainer");
+  assert.deepEqual([hermes.status, hermes.engine, hermes.composition, hermes.drawsCaptions], ["trial", "hermes", null, null]);
+  for (const p of vendored.filter((x) => PACK_IDS.includes(x.id))) {
     assert.equal(p.status, "trial", p.id);
     assert.equal(p.version, "1.0.0", p.id);
     assert.equal(p.minWorkerVersion, "0.9.0", p.id);
@@ -59,7 +67,8 @@ test("the vendored packs are exactly the explainer and the six stills styles, al
 
 test("each pack carries the parameters the portal used before packs, so migrating changed no behaviour", () => {
   const templates = seedTemplates();
-  for (const id of PACK_IDS) {
+  // The Hermes research pack (Phase 2) has its catalogue entry and seed template too, so the same check holds.
+  for (const id of [...PACK_IDS, "hermes-research-explainer"]) {
     const raw = rawStyle(id);
     const s = STYLE_BY_ID[id];
     const t = templates.find((x) => x.styleId === id)!;
@@ -105,10 +114,11 @@ test("the validator's vocabularies are the portal's", async () => {
 test("mergeRegistry: packs override their catalogue entry; the other catalogue styles are planned; unknown packs follow", () => {
   const extra = pack("documentary-stills", { id: "brand-new-look", name: "Brand new look" });
   const reg = mergeRegistry(STYLES, [...vendored, extra]);
-  assert.equal(reg.length, STYLES.length + 1);
+  assert.equal(reg.length, STYLES.length + 2);
   assert.deepEqual(reg.slice(0, STYLES.length).map((e) => e.id), STYLES.map((s) => s.id), "catalogue order is kept");
-  assert.equal(reg[reg.length - 1].id, "brand-new-look");
-  assert.equal(reg[reg.length - 1].style, null);
+  // Packs the catalogue does not know follow, by id: the html-capture probe is one of them.
+  assert.deepEqual(reg.slice(STYLES.length).map((e) => e.id), ["brand-new-look", "probe-line-graph"]);
+  assert.equal(reg[STYLES.length].style, null);
   const planned = reg.filter((e) => e.status === "planned").map((e) => e.id);
   assert.equal(planned.length, 13);
   assert.ok(planned.includes("kinetic-facts") && planned.includes("blender-3d") && planned.includes("ai-character-sketch"));
@@ -143,7 +153,9 @@ test("New Video: Listed packs a worker reports; Trial packs in their own list; p
   // No worker at all: nothing is selectable, the Trial packs wait.
   const none = newVideoStyles(mergeRegistry(STYLES, vendored), []);
   assert.equal(none.listed.length + none.trial.length, 0);
-  assert.equal(none.waiting.length, 7);
+  // Seven worker packs plus the Hermes research pack, which waits for Hermes (not a worker). The Lab probe never shows.
+  assert.equal(none.waiting.length, 8);
+  assert.ok(!none.waiting.some((e) => e.id === "probe-line-graph"));
   const avail = availabilityOf(mergeRegistry(STYLES, vendored).find((e) => e.id === "travel-documentary")!, ["ffmpeg"]);
   assert.deepEqual(avail, { renderer: true, pack: false, capability: "pack:travel-documentary@1.0.0" });
 });
@@ -160,7 +172,7 @@ test("startRefusal: only Listed and Trial packs start a run", () => {
 
 test("a run started with a Trial pack is marked trial in its config, additively, and old configs read as before", () => {
   const sp = runStylePack(pack("explainer-flat-vector"));
-  assert.deepEqual(sp, { id: "explainer-flat-vector", version: "1.0.0", status: "trial", trial: true });
+  assert.deepEqual(sp, { id: "explainer-flat-vector", version: "1.0.0", status: "trial", trial: true, engine: "remotion-2d" });
   assert.equal(runStylePack(pack("documentary-stills", { status: "listed" })).trial, false);
   const stored = JSON.parse(JSON.stringify({ format: "short", styleId: "explainer-flat-vector", stylePack: sp }));
   const cfg = parseRunConfig(stored);
@@ -279,4 +291,107 @@ test("parsePack refuses what the portal cannot use instead of half-showing it", 
   assert.equal(parsePack({ ...raw, renderer: { ...raw.renderer, engine: "after-effects" } }, "x"), null);
   assert.equal(parsePack({ ...raw, version: "1.0" }, "x"), null);
   assert.equal(parsePack(null, "x"), null);
+});
+
+test("Hermes render is research only: never above Trial, always a trial run, only in the Trial section once Hermes is set up, never published", () => {
+  const raw = rawStyle("hermes-research-explainer");
+  assert.ok(parsePack(raw, "x"));
+  for (const status of ["proven", "listed"]) assert.equal(parsePack({ ...raw, status }, "x"), null, `a hermes pack at ${status} is left out, not shown`);
+  const hermes = pack("hermes-research-explainer");
+  const caps = ["ffmpeg", "xfade", packCapability("explainer-flat-vector", "1.0.0")];
+  const reg = mergeRegistry(STYLES, [pack("explainer-flat-vector"), hermes]);
+  // Without Hermes configured it waits; with Hermes it is offered in the Trial section only. No worker report needed.
+  assert.deepEqual(newVideoStyles(reg, caps).waiting.map((e) => e.id), ["hermes-research-explainer"]);
+  const offer = newVideoStyles(reg, caps, { hermes: true });
+  assert.deepEqual(offer.trial.map((e) => e.id), ["explainer-flat-vector", "hermes-research-explainer"]);
+  assert.deepEqual(offer.listed, []);
+  // Even a registry entry that claims Listed (only possible by bypassing parsePack) stays out of the main list.
+  const forced = newVideoStyles(mergeRegistry(STYLES, [{ ...hermes, status: "listed" }]), [], { hermes: true });
+  assert.deepEqual([forced.listed.length, forced.trial.map((e) => e.id)], [0, ["hermes-research-explainer"]]);
+  assert.equal(HERMES_RENDER_LABEL, "Hermes render (research only)");
+  // A run of it is a trial whatever the pack or a stored config says.
+  assert.equal(runStylePack({ ...hermes, status: "listed" }).trial, true);
+  assert.equal(parseRunStylePack({ id: hermes.id, version: hermes.version, status: "listed", trial: false, engine: "hermes" })?.trial, true);
+  // Publishing refuses trials and anything Hermes rendered; a normal Listed run is not refused.
+  assert.match(publishRefusal(runStylePack(hermes)) ?? "", /Hermes render \(research only\): a video Hermes rendered is never published/);
+  assert.match(publishRefusal(null, "hermes") ?? "", /never published/);
+  assert.match(publishRefusal(runStylePack(pack("explainer-flat-vector"))) ?? "", /research only, not for publishing/);
+  assert.equal(publishRefusal(runStylePack(pack("documentary-stills", { status: "listed" })), "ffmpeg-stills"), null);
+  assert.equal(publishRefusal(null, null), null);
+  assert.equal(startRefusal(reg.find((e) => e.id === "hermes-research-explainer")), null, "a Trial hermes pack starts a run");
+  assert.deepEqual(availabilityOf(reg.find((e) => e.id === "hermes-research-explainer")!, ["hermes"]), { renderer: false, pack: false, capability: null }, "a worker can never make it available");
+});
+
+test("promotion becomes reachable: five owner-scored trials at 80+ with technical passes and a signed checklist are Ready to promote", async () => {
+  const p = pack("explainer-flat-vector");
+  const rubric = (stars: number[]) => {
+    const r = parseRubric((id) => stars[["hook", "pacing", "legibility", "polish", "audio"].indexOf(id)]);
+    assert.ok(r.ok);
+    return r.value;
+  };
+  // What the Review card stores (G-presentation from the owner's stars) is what the curation log reads back.
+  const ratings = [[5, 4, 5, 4, 5], [4, 4, 5, 5, 4], [5, 5, 4, 4, 4], [4, 5, 5, 4, 5], [5, 4, 4, 5, 5]];
+  const outcomes: TrialOutcome[] = ratings.map((stars, i) => {
+    const g = ownerPresentationGate(rubric(stars));
+    assert.ok(g.passed && (g.score ?? 0) >= 80, `rating ${i}: ${g.score}`);
+    const gates = [
+      { gate: "G-technical" as const, passed: true, score: 100 },
+      { gate: "G-assets" as const, passed: true, score: 100 },
+      { gate: "G-presentation" as const, passed: g.passed, score: g.score ?? null },
+    ];
+    return {
+      runId: `00000000-0000-4000-8000-00000000000${i}`,
+      packId: p.id,
+      packVersion: p.version,
+      ...qcPartOf(gates),
+      gates,
+      ownerDecision: "approved",
+      videoAssetId: null,
+      decidedAt: `2026-11-2${i}T10:00:00.000Z`,
+      createdAt: `2026-11-2${i}T09:00:00.000Z`,
+      ownerRubric: rubric(stars),
+      hermesAdvisory: { score: 40, rubric: {}, notes: "advisory", frames: 6, at: "" },
+      renderer: "remotion-2d",
+    };
+  });
+  const counts = trialCounts(outcomes, p.version);
+  assert.equal(counts.presentationScored, 5);
+  assert.ok(counts.meanPresentationScore >= 80, String(counts.meanPresentationScore));
+  assert.deepEqual(packPromotionIssues(p, signedTemplate(), counts), [], "Ready to promote");
+  // Hermes's advisory (40 here) never counts: the mean is the owner's.
+  assert.equal(Math.round(counts.meanPresentationScore), Math.round(outcomes.reduce((a, o) => a + (o.presentationScore ?? 0), 0) / 5));
+  const record = curationRecord(p, outcomes, counts);
+  assert.equal(record.filter((e) => e.kind === "trial-run").length, 5);
+  assert.match(record[0].notes, /presentation \d+ \(owner: hook 5, pacing 4, legibility 5, visual polish 4, audio 5\)/);
+  assert.match(record[0].notes, /Hermes advisory 40 \(not counted\)/);
+  // The record pastes into a valid pack (the validator accepts every entry).
+  const v = (await import(pathToFileURL(path.join(STYLES_DIR, "tools/validate.mjs")).href)) as { validateStyle: (s: unknown, o?: unknown) => string[] };
+  const raw = rawStyle(p.id);
+  assert.deepEqual(v.validateStyle({ ...raw, curation: [...raw.curation, ...record] }, { dirName: p.id }), []);
+  // One unscored trial blocks it again, and is not averaged in as 0.
+  const unscored = [...outcomes.slice(0, 4), { ...outcomes[4], gates: outcomes[4].gates.filter((g) => g.gate !== "G-presentation"), presentationScore: null }];
+  const c2 = trialCounts(unscored, p.version);
+  assert.ok(c2.meanPresentationScore >= 80);
+  assert.match(packPromotionIssues(p, signedTemplate(), c2).join("\n"), /1 of 5 trial run\(s\) have no presentation score yet/);
+  // On the Review card a trial cannot be decided before the score; other runs may skip it.
+  assert.match(presentationRefusal({ stage: "qc", trial: true, decision: "approve", scored: false }) ?? "", /trial run: the owner scores the video/);
+  assert.equal(presentationRefusal({ stage: "qc", trial: true, decision: "approve", scored: true }), null);
+  assert.equal(presentationRefusal({ stage: "qc", trial: false, decision: "approve", scored: false }), null);
+  assert.equal(presentationRefusal({ stage: "qc", trial: true, decision: "retry", scored: false }), null);
+  assert.equal(presentationRefusal({ stage: "render", trial: true, decision: "approve", scored: false }), null);
+});
+
+test("the publishing guard: the autonomy policy never approves or publishes a trial or a Hermes render by itself", () => {
+  const trial = runStylePack(pack("explainer-flat-vector"));
+  const hermes = runStylePack(pack("hermes-research-explainer"));
+  const listed = runStylePack(pack("documentary-stills", { status: "listed" }));
+  for (const action of ["auto-approve", "auto-publish"]) {
+    const d = { action, reason: "Policy allows it" };
+    assert.equal(guardFinalDecision(d, trial).action, "ask-owner", action);
+    assert.match(guardFinalDecision(d, hermes).reason, /Hermes rendered is never published\. The owner scores the video and decides/);
+    assert.equal(guardFinalDecision(d, null, "hermes").action, "ask-owner");
+    assert.equal(guardFinalDecision(d, listed).action, action, "a Listed run keeps the policy's decision");
+    assert.equal(guardFinalDecision(d, null).action, action);
+  }
+  for (const action of ["ask-owner", "revise", "block"]) assert.equal(guardFinalDecision({ action, reason: "r" }, hermes).action, action);
 });

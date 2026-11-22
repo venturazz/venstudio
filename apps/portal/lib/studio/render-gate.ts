@@ -6,7 +6,7 @@
  * Review card. Kept out of production.ts so it can be tested without a database.
  */
 import type { Capability } from "@venstudio/protocol";
-import { capabilityForEngine, XFADE_CAPABILITY } from "./render-engine.ts";
+import { capabilityForEngine, isPortalEngine, XFADE_CAPABILITY } from "./render-engine.ts";
 import { packCapability } from "./style-registry.ts";
 
 /**
@@ -22,16 +22,33 @@ export function gateCapabilities(reported: readonly string[] | null | undefined)
 }
 
 /**
+ * Who renders a run's video: a worker plugin, reached through the capability the render-video job is queued under,
+ * or the portal itself (hermes, research only). Routed by pack plus renderer: a pack's job goes to a worker that
+ * reports pack:<id>@<version> (its probe implies the renderer), a job without a pack to one that reports the
+ * renderer's capability under the names workers have always reported (ffmpeg, xfade, remotion-2d, html-capture).
+ */
+export type RenderRoute = { by: "worker"; renderer: string; capability: Capability } | { by: "portal"; renderer: string };
+
+export function renderRoute(engine: string, transitionSec: number = 0, pack?: { id: string; version: string } | null): RenderRoute {
+  if (isPortalEngine(engine)) return { by: "portal", renderer: engine };
+  return { by: "worker", renderer: engine, capability: renderJobCapability(engine, transitionSec, pack) };
+}
+
+/**
  * Capability the render-video job is queued under, so only a worker that can run the engine claims it.
- * The stills engine keeps "ffmpeg", which is what every render-video job used before engines existed.
+ * The stills engine keeps "ffmpeg", which is what every render-video job used before engines existed. An engine the
+ * portal does not know, or one the portal renders itself, is refused by name: it is never queued as stills.
  */
 export function renderJobCapability(engine: string, transitionSec: number = 0, pack?: { id: string; version: string } | null): Capability {
+  if (isPortalEngine(engine)) throw new Error(`Engine "${engine}" is rendered by the portal through Hermes, never queued for a worker`);
+  const known = capabilityForEngine(engine);
+  if (known === null) throw new Error(`Unknown render engine "${engine}": nothing was queued, and it is not rendered as stills instead`);
   // A run started with a style pack renders only on a worker that installed and probed exactly that pack version
   // (0.9.0+). Its probe needs the engine (and xfade for stills), so the pack capability implies both.
   if (pack) return packCapability(pack.id, pack.version) as Capability;
   // An engine whose capability is not a worker one (provider, blender) never gets here: the gate refused it, or no
   // worker is enrolled and nothing will claim the job anyway.
-  const need = (capabilityForEngine(engine) ?? "ffmpeg") as Capability;
+  const need = known as Capability;
   // A faded stills timeline is longer than the narration, and a worker without xfade (0.4) refuses it. So with more
   // than one worker, only one that reports xfade may claim it.
   if (need === "ffmpeg" && transitionSec > 0) return XFADE_CAPABILITY as Capability;
@@ -71,6 +88,7 @@ export function packWaitNote(pack: { id: string; version: string } | null, gate:
 
 /** Where the owner finds the Remotion install steps. */
 export const REMOTION_DOC = "docs/remotion-worker.md";
+export const HTML_CAPTURE_DOC = "docs/html-capture.md";
 
 /**
  * The stage error for a render that could not be planned: each problem once, plus what to do when the cause is an
@@ -85,7 +103,9 @@ export function renderStageError(issues: readonly string[], engine: string): str
   const how =
     engine === "remotion-2d"
       ? `Update the worker to 0.5.0 or later and install the Remotion renderer on it (install.sh --with-remotion, see ${REMOTION_DOC}). `
-      : `Enable "${need}" on a worker. `;
+      : engine === "html-capture"
+        ? `Update the worker to 0.10.0 or later and install the Remotion renderer on it, whose headless Chromium html-capture uses (install.sh --with-remotion, see ${HTML_CAPTURE_DOC}). `
+        : `Enable "${need}" on a worker. `;
   return `${text} This style renders with "${engine}", and it is not rendered as a slideshow instead. ${how}Then press Retry.`;
 }
 

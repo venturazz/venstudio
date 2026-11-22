@@ -7,6 +7,7 @@ import { blockingRows, providersFromPayload, termsHeld } from "@/lib/studio/term
 import { reapStuckStages } from "@/lib/server/director.ts";
 import { narrationTempoReady } from "@/lib/server/production.ts";
 import { listOpenReviews } from "@/lib/server/reviews.ts";
+import { advisoryFor, presentationFor } from "@/lib/server/presentation.ts";
 import { listWaitingRuns, type WaitingRun } from "@/lib/server/runs.ts";
 import { waitingText } from "@/lib/studio/pacing.ts";
 import { AutoRefresh } from "@/components/auto-refresh.tsx";
@@ -49,6 +50,20 @@ export default async function ReviewPage() {
     if (items.some((r) => r.kind === "gate-failure" && r.stage === "voice" && r.payload.voice?.fitTempo)) {
       tempoReady = await narrationTempoReady().catch(() => false);
     }
+    // The final video's presentation score and Hermes's advisory, read only for quality-check cards.
+    const scores = new Map<string, Pick<ReviewCardView, "presentation" | "advisory">>();
+    for (const r of items) {
+      if (r.stage !== "qc") continue;
+      const video = r.payload.media?.videoAssetId ?? null;
+      const [pres, adv] = await Promise.all([
+        presentationFor(r.runId, video).catch(() => null),
+        advisoryFor(r.runId, video).catch(() => null),
+      ]);
+      scores.set(r.id, {
+        presentation: pres ? { score: pres.score, passed: pres.passed, rubric: pres.rubric, byOwner: pres.by === "owner" } : null,
+        advisory: adv ? { score: adv.score, notes: adv.notes, frames: adv.frames } : null,
+      });
+    }
     views = items.map(
       (r): ReviewCardView => ({
         id: r.id,
@@ -59,6 +74,8 @@ export default async function ReviewPage() {
         topic: r.topic,
         channelName: r.channelName,
         trial: r.trial,
+        hermesRender: r.hermesRender,
+        ...(scores.get(r.id) ?? {}),
         gateLines: r.kind === "gate-failure" ? describeGateIssues(r.gates.filter((g) => !g.passed)) : [],
         age: timeAgo(r.createdAt),
         blocking: terms && termsHeld(r.kind, r.stage, r.payload.issues) ? blockingRows(providersFromPayload(r.stage, r.payload), terms) : null,

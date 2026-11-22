@@ -6,7 +6,7 @@
  */
 import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, type Format, type MusePlacement } from "./catalog.ts";
 import { DEFAULT_DURATION_SEC } from "./engine.ts";
-import { NON_WORKER_CAPABILITIES } from "./render-engine.ts";
+import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
 import { parseRunStylePack, type RunStylePack } from "./style-registry.ts";
 
 /** The brief the owner may type. Empty means Hermes picks ideas from the channel plan. */
@@ -157,7 +157,7 @@ export function engineView(styleId: string, reported: readonly string[]): Engine
   const style = STYLE_BY_ID[styleId];
   const engine = style ? ENGINES[style.engine] : undefined;
   if (!engine) return null;
-  const worker = NON_WORKER_CAPABILITIES.includes(engine.capability) ? "external" : reported.includes(engine.capability) ? "yes" : "no";
+  const worker = NON_WORKER_CAPABILITIES.includes(engine.capability) || isPortalEngine(engine.id) ? "external" : reported.includes(engine.capability) ? "yes" : "no";
   return { engineId: engine.id, label: engine.label, muse: engine.muse, capability: engine.capability, worker };
 }
 
