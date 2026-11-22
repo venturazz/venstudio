@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "76993a909478004fcaddd762fcc878b6f9e7946c"
+    "commit": "ab2e90f22a905a3d72b4715e6940ee979faeaf46"
   },
   "files": {
     "FORMAT.md": "55d58327efd19683f16a9921260166115ec32128c4964f7c1b539b7e73cba21b",
@@ -10,8 +10,9 @@
     "tools/assemble-remotion.mjs": "b545f2b2163fdcf9ecdfeeb30610ac3868c53a2d589a31994da615db5b706c39",
     "tools/check-video.mjs": "1e1bac7a4e8310488930b12ae4637f97dadb8b78a57b4b8a598749af509a1c3f",
     "tools/check-video.test.mjs": "52e176204378a6f8bac5aa965e83960281fc7d5648f9ae9794d0ac1e267947cc",
+    "tools/html-pages.test.mjs": "dc8d5748afe1ad3ad4cf4139d8dd9cb1ad8514cf2270dc4a15dd977b09723776",
     "tools/validate.mjs": "7e88e432ab8358eb4c3d77373080a64a707295cf2b934b4e2b3e8c6f91e6b4a5",
-    "tools/validate.test.mjs": "074e57e83c84ef98d26a5b4d6046945971d76635055ed69cb9ca2f3945b54b6c"
+    "tools/validate.test.mjs": "59e99b7fa40ab9b1012d7b80e2e495a6f0d04c7db71d2317ab87ad6586469ed0"
   },
   "packs": [
     {
@@ -26,6 +27,28 @@
         "fixtures/expect.json": "b5fdd7238028c7e7c053bb53d2f5433fa1cfa2f3ae0ba7093969a49093e782ad",
         "fixtures/payload.json": "e449b156fa5c85111daa68ce4b6951dcdfae56918f649ac67e0fd090fa1c77cb",
         "style.json": "1a73d279301ae25fa1e06efffa7dfc2d17258dc8d52aed2a7a30ad5cdd194a8d"
+      }
+    },
+    {
+      "id": "animated-line-graph",
+      "version": "0.1.0",
+      "status": "draft",
+      "engine": "html-capture",
+      "composition": null,
+      "sha256": "1b4e9d5010243f44e39d8977333ec94270536ce82efd926160f79a7c5677d0ff",
+      "files": {
+        "README.md": "1fb58949e01fd7d4727bf33a503866b188034e3fe563f0f19ab9ee092a533b85",
+        "fixtures/expect.json": "5e6d188555030db3ed34da1cf57ae7c9073b9331bd7955d844d95d5891006ac1",
+        "fixtures/payload.json": "917adc198a6f4b813c654c9eb1afeb519f49219a2e7fce555114a3b125b50b4b",
+        "render/LICENSE": "87111395ddb9252e4a9eb039a1bea0439571e069cdf497fd519737b4d3168d66",
+        "render/fonts/OFL-inter.txt": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+        "render/fonts/OFL-intertight.txt": "4fde1e56a50d4632cffcee7df85585274c60765ff893abe6f49da0ca9ab675b8",
+        "render/fonts/fonts.css": "1123716fe9cc7b51aa0d2c1b26f5d42c2835e628830f5a569fe3d6dcf03d6d5a",
+        "render/graph.css": "35854415bea5b40b4af6ecfe3ed9f6bdfff10f441f9a04cd3211163851799e6f",
+        "render/graph.js": "6ec6bb2d966aa0b19bfd48e773afb474bf4fdf3bfc9aca09b31dd68266e6a816",
+        "render/index.html": "a3ad169bc9928858af5305df1d5814d175053db38f5ec70e369392d492028a96",
+        "render/motion.js": "6bde8ed432c522a99ac892f50eb0738e36a682400734ccc9e0151191b8e4149a",
+        "style.json": "d6ea03d6b4dc66e38caa92538ebf1185b5b61492a466a6d4fbedf573a7bc9def"
       }
     },
     {
@@ -86,6 +109,27 @@
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "6cc31822a2b6d3fd1b5024940c5a98174544f0f1447268efccffc451f24c4def",
         "style.json": "25d4ecd78941ece3b22203d83e0e3d668503435d0e50e59fa7d6b0560c07f821"
+      }
+    },
+    {
+      "id": "minimal-line-art",
+      "version": "0.1.0",
+      "status": "draft",
+      "engine": "html-capture",
+      "composition": null,
+      "sha256": "7123fd4d3aa30c5aa36760526b18b400c37e64297a2aaf0666e6467131574333",
+      "files": {
+        "README.md": "bb9f6fd89da1acca1c650e1ef4c0dc9fa793ad7585095396802e6f4b14391e22",
+        "fixtures/expect.json": "28607432ca17172627774ccf01f5ab63971a4391461f06b1afa6a92c7679bd7f",
+        "fixtures/payload.json": "7da4703cfdd764a27952305c78dce88ef0a0c74153bc46741d16e92c0720e379",
+        "render/LICENSE": "87111395ddb9252e4a9eb039a1bea0439571e069cdf497fd519737b4d3168d66",
+        "render/fonts/OFL-poppins.txt": "5fafaf2b67f00b5c30e6ee2382d99c68d287f1debc2d17440f517b3b78ad524c",
+        "render/fonts/fonts.css": "e0422ada16e15a75ddb69c81c6fcf2b7f5213f1e7dec79be3bb1c4bacd13eeb5",
+        "render/index.html": "3b90c758e54ab60e0de61b95d18e7fa2320b7c64930d5a2863c298782dc7a98b",
+        "render/motion.js": "6bde8ed432c522a99ac892f50eb0738e36a682400734ccc9e0151191b8e4149a",
+        "render/steps.css": "d35e39a0447d0580a5b1d32b70887778a583e8ac3a457165a7400761ce1a3175",
+        "render/steps.js": "4432e61f0bee548aacc521c79e87b246df9a7c278eacdeae56ab109299b311d9",
+        "style.json": "be6f0f53b6553637d27d77f2f829739903d766f55aa8e2e83945bbaf62063794"
       }
     },
     {

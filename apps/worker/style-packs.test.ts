@@ -118,10 +118,10 @@ test("installPacksIndex writes the index atomically, and nothing when it does no
   await assert.rejects(installPacksIndex(home, Buffer.from('{"format":2,"packs":[]}')), /unknown format/);
   assert.equal(await installedPacksSha(home), null, "a refused index is not written");
   const idx = await installPacksIndex(home, Buffer.from(served));
-  assert.equal(idx.packs.length, 9);
+  assert.equal(idx.packs.length, 11);
   assert.equal(await readFile(stylePacksPath(home), "utf8"), served);
   assert.equal(await installedPacksSha(home), sha(served));
-  assert.equal((await readInstalledPacks(home))?.packs.length, 9);
+  assert.equal((await readInstalledPacks(home))?.packs.length, 11);
   await writeFile(stylePacksPath(home), "not json");
   assert.equal(await readInstalledPacks(home), null, "a damaged file reports no packs");
 });

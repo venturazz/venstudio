@@ -1,5 +1,5 @@
 /**
- * html-capture for real (CI): the probe, the probe-line-graph pack rendered through the real render-video path (the
+ * html-capture for real (CI): the probe, every vendored html-capture pack rendered through the real render-video path (the
  * installed html/ pack, the Remotion project's Chrome Headless Shell, the shared caption burn and mux, then qc-video
  * with sampled frames), and pages that try the network, which must fail.
  *
@@ -36,8 +36,6 @@ const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 const why = !DIR ? "VENSTUDIO_REMOTION_DIR is not set" : !hasFfmpeg ? "ffmpeg is not installed" : await htmlCaptureUnavailableReason(DIR);
 if (why && process.env.VENSTUDIO_REMOTION_REQUIRED === "1") throw new Error(`html-capture-render: ${why}`);
 
-const PACK = new URL("../../styles/packs/probe-line-graph/", import.meta.url);
-
 function sine(seconds: number, rate = 24000): Uint8Array {
   const n = Math.round(seconds * rate);
   const pcm = new Uint8Array(n * 2);
@@ -56,9 +54,9 @@ function systemFont(): string | null {
   return known.find((f) => existsSync(f)) ?? null;
 }
 
-function ctxFor(workDir: string, home: string, type: string, payload: Record<string, unknown>, files: Map<string, string>, kept: Map<string, string>): JobContext {
+function ctxFor(workDir: string, home: string, type: string, payload: Record<string, unknown>, files: Map<string, string>, kept: Map<string, string>, capability: string): JobContext {
   return {
-    job: { id: `eeeeeeee-4444-4444-8444-${type === "qc-video" ? "000000000002" : "000000000001"}`, type: type as JobContext["job"]["type"], payload, capability: "pack:probe-line-graph@0.1.0", attempt: 1, leaseExpiresAt: "", heartbeatIntervalSeconds: 30 },
+    job: { id: `eeeeeeee-4444-4444-8444-${type === "qc-video" ? "000000000002" : "000000000001"}`, type: type as JobContext["job"]["type"], payload, capability, attempt: 1, leaseExpiresAt: "", heartbeatIntervalSeconds: 30 },
     workDir,
     home,
     signal: new AbortController().signal,
@@ -89,63 +87,73 @@ test("the html-capture probe passed on this machine (1 s page rendered, its netw
   assert.equal(why, null);
 });
 
-test("probe-line-graph renders through render-video: 1080x1920, 30 fps, 6 s, 180 frames, H.264 yuv420p with the narration; qc-video samples 6 frames", { skip: why ?? false, timeout: 15 * 60_000 }, async (t) => {
-  const installed = await installedHtmlPacks(DIR as string);
-  assert.deepEqual(installed.problems, []);
-  assert.ok(installed.packs.some((p) => p.id === "probe-line-graph"), "the assembled project carries html/probe-line-graph");
+/** Every html-capture pack in the vendored lock, with what its fixture must measure (fixtures/expect.json). */
+const STYLES = new URL("../../styles/", import.meta.url);
+const HTML_PACKS = (JSON.parse(readFileSync(new URL("lock.json", STYLES), "utf8")) as { packs: Array<{ id: string; version: string; engine: string }> }).packs.filter((p) => p.engine === "html-capture");
 
-  const home = await mkdtemp(path.join(os.tmpdir(), "vs-html-render-"));
-  t.after(() => rm(home, { recursive: true, force: true }));
-  const raw = JSON.parse(readFileSync(new URL("fixtures/payload.json", PACK), "utf8")) as Record<string, unknown>;
-  const payload = withPlaceholderUuids(raw) as Record<string, unknown> & { shots: Array<{ assetId: string }>; narrationAssetId: string; durationSec: number };
-  const files = new Map<string, string>();
-  for (const [i, s] of payload.shots.entries()) {
-    const f = path.join(home, `shot-${i}.png`);
-    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=0x${["1d3557", "2a9d8f", "6d597a"][i % 3]}:s=540x960`, "-frames:v", "1", f]);
-    files.set(s.assetId, f);
-  }
-  const narration = path.join(home, "narration.wav");
-  await writeFile(narration, sine(payload.durationSec));
-  files.set(payload.narrationAssetId, narration);
-  const font = systemFont();
-  assert.ok(font, "no TrueType font on this machine for the fixture's asset-font");
-  files.set(placeholderUuid("asset-font"), font);
+for (const lockPack of HTML_PACKS) {
+  const PACK = new URL(`packs/${lockPack.id}/`, STYLES);
+  const expect = JSON.parse(readFileSync(new URL("fixtures/expect.json", PACK), "utf8")) as { width: number; height: number; fps: number; durationSec: number };
+  const drawsCaptions = (JSON.parse(readFileSync(new URL("style.json", PACK), "utf8")) as { renderer: { drawsCaptions?: boolean } }).renderer.drawsCaptions === true;
+  const frames = Math.round(expect.durationSec * expect.fps);
+  test(`${lockPack.id} renders through render-video: ${expect.width}x${expect.height}, ${expect.fps} fps, ${expect.durationSec} s, ${frames} frames, H.264 yuv420p with the narration; qc-video samples 6 frames`, { skip: why ?? false, timeout: 15 * 60_000 }, async (t) => {
+    const installed = await installedHtmlPacks(DIR as string);
+    assert.deepEqual(installed.problems, []);
+    assert.ok(installed.packs.some((p) => p.id === lockPack.id), `the assembled project carries html/${lockPack.id}`);
 
-  const kept = new Map<string, string>();
-  const work = path.join(home, "work", "render");
-  await mkdir(work, { recursive: true });
-  const started = Date.now();
-  const result = await handlers["render-video"](ctxFor(work, home, "render-video", payload, files, kept));
-  console.log(`html-capture render of ${payload.durationSec} s took ${((Date.now() - started) / 1000).toFixed(1)} s: ${JSON.stringify(result)}`);
-  assert.equal(result.engine, "html-capture");
-  assert.equal(result.renderer, "html-capture");
-  assert.deepEqual(result.htmlPack, { id: "probe-line-graph", version: installed.packs.find((p) => p.id === "probe-line-graph")?.version });
-  assert.equal(result.frames, 180);
-  assert.equal(result.captionsBurned, true, "the pack does not draw captions, so the shared burn drew them");
-  const video = kept.get("video.mp4") as string;
-  const p = probeVideo(video);
-  assert.equal(p.video?.codec_name, "h264");
-  assert.equal(p.video?.pix_fmt, "yuv420p");
-  assert.equal(`${p.video?.width}x${p.video?.height}`, "1080x1920");
-  assert.equal(Number(p.video?.nb_read_frames), 180);
-  assert.ok(Math.abs(p.duration - 6) < 0.15, `duration ${p.duration}`);
-  assert.equal(p.audio?.codec_name, "aac", "the shared mux added the narration");
+    const home = await mkdtemp(path.join(os.tmpdir(), "vs-html-render-"));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const raw = JSON.parse(readFileSync(new URL("fixtures/payload.json", PACK), "utf8")) as Record<string, unknown>;
+    const payload = withPlaceholderUuids(raw) as Record<string, unknown> & { shots: Array<{ assetId: string }>; narrationAssetId: string; durationSec: number };
+    const files = new Map<string, string>();
+    for (const [i, s] of payload.shots.entries()) {
+      const f = path.join(home, `shot-${i}.png`);
+      execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=0x${["1d3557", "2a9d8f", "6d597a"][i % 3]}:s=540x960`, "-frames:v", "1", f]);
+      files.set(s.assetId, f);
+    }
+    const narration = path.join(home, "narration.wav");
+    await writeFile(narration, sine(payload.durationSec));
+    files.set(payload.narrationAssetId, narration);
+    const font = systemFont();
+    assert.ok(font, "no TrueType font on this machine for the fixture's asset-font");
+    files.set(placeholderUuid("asset-font"), font);
 
-  const qcFiles = new Map([["dddddddd-5555-4555-8555-000000000009", video]]);
-  const qcWork = path.join(home, "work", "qc");
-  await mkdir(qcWork, { recursive: true });
-  const qc = await handlers["qc-video"](ctxFor(qcWork, home, "qc-video", { inputs: ["dddddddd-5555-4555-8555-000000000009"], sampleFrames: 6 }, qcFiles, kept));
-  assert.equal(qc.width, 1080);
-  assert.equal(qc.hasAudio, true);
-  assert.equal((qc.sampledFrames as unknown[]).length, 6);
-  assert.ok(kept.has("frame-06.jpg"));
+    const kept = new Map<string, string>();
+    const work = path.join(home, "work", "render");
+    await mkdir(work, { recursive: true });
+    const started = Date.now();
+    const result = await handlers["render-video"](ctxFor(work, home, "render-video", payload, files, kept, `pack:${lockPack.id}@${lockPack.version}`));
+    console.log(`html-capture render of ${lockPack.id} (${payload.durationSec} s) took ${((Date.now() - started) / 1000).toFixed(1)} s: ${JSON.stringify(result)}`);
+    assert.equal(result.engine, "html-capture");
+    assert.equal(result.renderer, "html-capture");
+    assert.deepEqual(result.htmlPack, { id: lockPack.id, version: installed.packs.find((p) => p.id === lockPack.id)?.version });
+    assert.equal(result.frames, frames);
+    assert.equal(result.captionsBurned, !drawsCaptions, drawsCaptions ? "the page draws the captions, so nothing is burned" : "the pack does not draw captions, so the shared burn drew them");
+    const video = kept.get("video.mp4") as string;
+    const p = probeVideo(video);
+    assert.equal(p.video?.codec_name, "h264");
+    assert.equal(p.video?.pix_fmt, "yuv420p");
+    assert.equal(`${p.video?.width}x${p.video?.height}`, `${expect.width}x${expect.height}`);
+    assert.equal(Number(p.video?.nb_read_frames), frames);
+    assert.ok(Math.abs(p.duration - expect.durationSec) < 0.15, `duration ${p.duration}`);
+    assert.equal(p.audio?.codec_name, "aac", "the shared mux added the narration");
 
-  const out = process.env.VENSTUDIO_REMOTION_OUT;
-  if (out) {
-    await mkdir(out, { recursive: true });
-    await copyFile(video, path.join(out, "probe-line-graph.mp4"));
-  }
-});
+    const qcFiles = new Map([["dddddddd-5555-4555-8555-000000000009", video]]);
+    const qcWork = path.join(home, "work", "qc");
+    await mkdir(qcWork, { recursive: true });
+    const qc = await handlers["qc-video"](ctxFor(qcWork, home, "qc-video", { inputs: ["dddddddd-5555-4555-8555-000000000009"], sampleFrames: 6 }, qcFiles, kept, `pack:${lockPack.id}@${lockPack.version}`));
+    assert.equal(qc.width, expect.width);
+    assert.equal(qc.hasAudio, true);
+    assert.equal((qc.sampledFrames as unknown[]).length, 6);
+    assert.ok(kept.has("frame-06.jpg"));
+
+    const out = process.env.VENSTUDIO_REMOTION_OUT;
+    if (out) {
+      await mkdir(out, { recursive: true });
+      await copyFile(video, path.join(out, `${lockPack.id}.mp4`));
+    }
+  });
+}
 
 /** A one-file page that does `body` in init (or at load when `atLoad`), then renders a plain frame. */
 async function networkPage(dir: string, body: string, atLoad = false): Promise<string> {
