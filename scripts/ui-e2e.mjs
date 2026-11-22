@@ -1616,6 +1616,8 @@ try {
       await explainerCard.getByTestId("promotion-issues").getByText("Needs at least 5 trial runs (has 1)", { exact: true }).waitFor();
     }
     await checkEnvironmentPack(page);
+    // checkEnvironmentPack ends on New Video; the planned-style checks are on Styles.
+    await page.goto(`${APP}/studio/styles`);
     const plannedCard = page.getByTestId("planned-style-kinetic-facts");
     await plannedCard.getByText("Planned", { exact: true }).waitFor();
     await plannedCard.getByText("Not selectable for a run", { exact: true }).waitFor();
