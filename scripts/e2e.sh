@@ -570,7 +570,9 @@ curl -fsS "$APP_URL/install/env-packs.json" -o "$WORK/env-packs.json" || fail "e
 node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(b.kind!=="venstudio-env-packs"||!b.packs.some((p)=>p.id===process.argv[2]&&p.version===process.argv[3]))process.exit(1)' "$WORK/env-packs.json" "$EP" "$EPV" \
   || fail "env-packs.json does not carry $EP@$EPV"
 CAPS=$(wq "array_to_string(capabilities, ',')")
-if grep -qF "pack:$EP@" <<<"$CAPS"; then fail "the worker reports $EP before its environment is installed (capabilities: $CAPS)"; fi
+# An earlier signed update may already have delivered and installed it. What must hold is that the pack is never
+# reported without its environment.
+if grep -qF "pack:$EP@" <<<"$CAPS" && ! grep -qF "env:$ENVKEY" <<<"$CAPS"; then fail "the worker reports $EP without its environment (capabilities: $CAPS)"; fi
 rm -rf "$WORK/worker/packs" "$WORK/worker/envs"
 # One tick: the update check installs env-packs.json (verified against the signed manifest), the environment installs
 # in the background, and a tick waits for it and claims once more with what it then reports.
