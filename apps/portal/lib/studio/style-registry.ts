@@ -420,7 +420,16 @@ export interface WorkerEnvironment {
 }
 
 /** Reads a stored workers.environments value; anything malformed is dropped. Pure. */
-export function parseWorkerEnvironments(raw: unknown): WorkerEnvironment[] {
+export function parseWorkerEnvironments(input: unknown): WorkerEnvironment[] {
+  // Early 0.12.0 claims stored the list as a JSON string inside jsonb; read those rows too.
+  let raw = input;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
   if (!Array.isArray(raw)) return [];
   return raw
     .filter(isRecord)

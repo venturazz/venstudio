@@ -52,7 +52,7 @@ export async function POST(req: Request) {
     const sql = db();
     await sql`
       UPDATE workers SET capabilities = ${capabilities}::text[], mode = ${input.mode}, version = ${input.version},
-        job_types = ${jobTypes}::text[], environments = ${environments}::jsonb, last_claim_at = now()
+        job_types = ${jobTypes}::text[], environments = ${environments}::text::jsonb, last_claim_at = now()
       WHERE id = ${worker.id}
     `;
     // Workers in hold mode call here every ~25 s, so this is the studio's heartbeat when no page is open: it resumes

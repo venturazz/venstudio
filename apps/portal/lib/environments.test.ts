@@ -148,3 +148,10 @@ test("env-packs.json travels in the signed manifest only for workers that report
   const forNew = buildManifest({ keyId: "k", workerId: "w", served: s, pinnedVersion: null, now: new Date(0), worker: v12 });
   assert.deepEqual(forNew.files.map((f) => f.name), [...UPDATE_FILE_NAMES]);
 });
+
+test("worker environments stored as a JSON string (early 0.12.0 claims) read the same as an array", () => {
+  const list = [{ id: "three-svg", version: "1.0.0", status: "ready", detail: "probe passed", packs: ["three-low-poly@0.1.0"], at: "2026-11-22T19:14:46.705Z" }];
+  assert.deepEqual(parseWorkerEnvironments(JSON.stringify(list)), parseWorkerEnvironments(list));
+  assert.equal(parseWorkerEnvironments(list).length, 1);
+  assert.deepEqual(parseWorkerEnvironments("not json"), []);
+});
