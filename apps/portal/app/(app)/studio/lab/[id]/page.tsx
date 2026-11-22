@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { recipeVerdict } from "@/lib/studio/recipes.ts";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/lib/server/auth.ts";
@@ -153,6 +154,10 @@ export default async function StudyPage({ params, searchParams }: { params: Prom
                       <dt className="text-muted">Renderer</dt>
                       <dd className="break-words">
                         {draft.renderer}: <span data-testid="renderer-verdict">{trial.verdict?.text}</span>
+                      </dd>
+                      <dt className="text-muted">Workflow</dt>
+                      <dd className="break-words">
+                        {draft.workflow}: <span data-testid="workflow-verdict">{recipeVerdict(draft.workflow).text}</span>
                       </dd>
                       <dt className="text-muted">Pacing</dt>
                       <dd>

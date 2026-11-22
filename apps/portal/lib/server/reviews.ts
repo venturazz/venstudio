@@ -1,4 +1,5 @@
 import "server-only";
+import { parsePlanPayload } from "../studio/plan-review.ts";
 import { db } from "./db.ts";
 import type { GateId, GateResult } from "../studio/qc.ts";
 import type { ReviewKind, ReviewMedia, ReviewPayload, ReviewState } from "../studio/review.ts";
@@ -74,6 +75,8 @@ function toPayload(raw: unknown): ReviewPayload {
   }
   const voice = parseVoiceFix(p.voice);
   if (voice) payload.voice = voice;
+  const plan = parsePlanPayload(p.plan);
+  if (plan) payload.plan = plan;
   return payload;
 }
 

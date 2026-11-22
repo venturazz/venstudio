@@ -43,7 +43,7 @@ test("the worker reads the index the portal serves, and the names agree", () => 
   assert.deepEqual(idx.packs.map((p) => p.id), [...lock.packs.map((p) => p.id)].sort());
   assert.deepEqual(idx.packs.find((p) => p.id === "explainer-flat-vector"), {
     id: "explainer-flat-vector",
-    version: "1.0.0",
+    version: "1.0.1",
     status: "trial",
     engine: "remotion-2d",
     minWorkerVersion: "0.9.0",
@@ -73,14 +73,14 @@ test("parsePacksIndex refuses anything but format 1 with well-formed entries", (
 
 test("pack capabilities: reported only for packs whose probe passes here, at their exact version", () => {
   const idx = parsePacksIndex(JSON.parse(served));
-  const stills = ["ambient-loop", "documentary-stills", "horror-story", "mystery-narration", "story-read-aloud", "travel-documentary"].map((id) => `pack:${id}@1.0.0`);
-  const probed = [{ id: "explainer-flat-vector", version: "1.0.0", composition: "flat-vector-explainer" }];
+  const stills = ["ambient-loop", "documentary-stills", "horror-story", "mystery-narration", "story-read-aloud", "travel-documentary"].map((id) => `pack:${id}@1.0.1`);
+  const probed = [{ id: "explainer-flat-vector", version: "1.0.1", composition: "flat-vector-explainer" }];
   assert.deepEqual(packCapabilitiesFor(idx, ["echo", "ffmpeg", "xfade"], []), stills, "stills need ffmpeg with xfade");
   assert.deepEqual(packCapabilitiesFor(idx, ["echo", "ffmpeg"], []), [], "no xfade, no stills pack");
-  assert.deepEqual(packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], probed).sort(), ["pack:explainer-flat-vector@1.0.0", ...stills].sort());
-  assert.ok(!packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], []).includes("pack:explainer-flat-vector@1.0.0"), "remotion-2d alone is not the pack: its probe must have rendered it");
-  assert.ok(!packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], [{ ...probed[0], version: "0.9.9" }]).includes("pack:explainer-flat-vector@1.0.0"), "another version was probed");
-  assert.ok(!packCapabilitiesFor(idx, ["ffmpeg", "xfade"], probed).includes("pack:explainer-flat-vector@1.0.0"), "the probe passed earlier, but remotion-2d is not reported now");
+  assert.deepEqual(packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], probed).sort(), ["pack:explainer-flat-vector@1.0.1", ...stills].sort());
+  assert.ok(!packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], []).includes("pack:explainer-flat-vector@1.0.1"), "remotion-2d alone is not the pack: its probe must have rendered it");
+  assert.ok(!packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], [{ ...probed[0], version: "0.9.9" }]).includes("pack:explainer-flat-vector@1.0.1"), "another version was probed");
+  assert.ok(!packCapabilitiesFor(idx, ["ffmpeg", "xfade"], probed).includes("pack:explainer-flat-vector@1.0.1"), "the probe passed earlier, but remotion-2d is not reported now");
   // A pack for a newer worker, or an engine this worker does not run, is not reported.
   const future: PacksIndex = { ...idx, packs: [{ ...idx.packs[1], id: "future-look", minWorkerVersion: "9.0.0" }, { ...idx.packs[1], id: "manim-look", engine: "manim" }] };
   assert.deepEqual(packCapabilitiesFor(future, ["ffmpeg", "xfade"], []), []);
@@ -91,7 +91,7 @@ test("pack capabilities: reported only for packs whose probe passes here, at the
 
 test("what the worker reports is what the portal's New Video counts as available", () => {
   const idx = parsePacksIndex(JSON.parse(served));
-  const caps = ["echo", "ffmpeg", "xfade", "remotion-2d", ...packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], [{ id: "explainer-flat-vector", version: "1.0.0", composition: "flat-vector-explainer" }])];
+  const caps = ["echo", "ffmpeg", "xfade", "remotion-2d", ...packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], [{ id: "explainer-flat-vector", version: "1.0.1", composition: "flat-vector-explainer" }])];
   const offer = newVideoStyles(mergeRegistry(STYLES, packs), caps);
   assert.equal(offer.trial.length, 7);
   // The Hermes research packs (the generic one and one per claude-animation-skills skill) are never reported by a
@@ -102,8 +102,8 @@ test("what the worker reports is what the portal's New Video counts as available
   assert.deepEqual(offer.waiting.map((e) => e.id).sort(), [...hermesIds, "animated-line-graph", "minimal-line-art"].sort());
   assert.equal(newVideoStyles(mergeRegistry(STYLES, packs), caps, { hermes: true }).trial.length, 7 + 11);
   // The html-capture probe is reported once installed and probed, but it is Lab: never offered.
-  const html = packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], "0.10.0", [{ id: "probe-line-graph", version: "0.1.0", drawsCaptions: false, sha256: "0".repeat(64) }]);
-  assert.ok(html.includes("pack:probe-line-graph@0.1.0"));
+  const html = packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], "0.10.0", [{ id: "probe-line-graph", version: "0.1.1", drawsCaptions: false, sha256: "0".repeat(64) }]);
+  assert.ok(html.includes("pack:probe-line-graph@0.1.1"));
   assert.ok(!html.some((c) => c.startsWith("pack:hermes-research-explainer")), "no worker reports the hermes pack");
   const withProbe = newVideoStyles(mergeRegistry(STYLES, packs), [...caps, ...html]);
   assert.ok(![...withProbe.listed, ...withProbe.trial, ...withProbe.waiting].some((e) => e.id === "probe-line-graph"));
@@ -172,6 +172,6 @@ test("detectCapabilities reports the installed stills packs on a machine with ff
   assert.ok(!before.some((c) => c.startsWith("pack:")), "no index, no pack capability");
   await installPacksIndex(home, Buffer.from(served));
   const caps = await detectCapabilities(home);
-  if (caps.includes("xfade")) assert.ok(caps.includes("pack:documentary-stills@1.0.0" as never), caps.join(","));
-  assert.ok(!caps.includes("pack:explainer-flat-vector@1.0.0" as never) || caps.includes("remotion-2d"), "the Remotion pack only with its renderer");
+  if (caps.includes("xfade")) assert.ok(caps.includes("pack:documentary-stills@1.0.1" as never), caps.join(","));
+  assert.ok(!caps.includes("pack:explainer-flat-vector@1.0.1" as never) || caps.includes("remotion-2d"), "the Remotion pack only with its renderer");
 });

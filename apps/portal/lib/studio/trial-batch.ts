@@ -49,6 +49,8 @@ export interface OfferedTemplate {
   credit?: string;
   /** A lab trial of a Draft or Lab pack (from Styles or a study): research only, never published. */
   lab?: boolean;
+  /** The workflow its runs follow, for the owner (recipes.ts workflowText), e.g. "Scene spec (...): Idea → ...". */
+  workflow?: string;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

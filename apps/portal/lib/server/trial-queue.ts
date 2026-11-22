@@ -1,4 +1,5 @@
 import "server-only";
+import { workflowForPack, workflowText } from "../studio/recipes.ts";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
 import { ensureSeedTemplates, listTemplates } from "./templates.ts";
@@ -29,6 +30,7 @@ export function offeredTemplate(e: RegistryEntry, templates: readonly Template[]
   const research = isResearchEngine(e.pack.engine);
   const source = researchSourceOf(e.pack);
   const group = researchGroupOf(e.pack);
+  const flow = workflowForPack(e.pack);
   return {
     id: t.id,
     label: e.label,
@@ -42,6 +44,7 @@ export function offeredTemplate(e: RegistryEntry, templates: readonly Template[]
     ...(group ? { group } : {}),
     ...(research && e.pack.hermes ? { skill: e.pack.hermes.skill } : {}),
     ...(source && e.pack.provenance.some((p) => p.type === "skill" || p.type === "repo") ? { credit: creditOf(e) } : {}),
+    ...(flow.ok ? { workflow: workflowText(flow.workflow) } : {}),
   };
 }
 

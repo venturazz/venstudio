@@ -160,7 +160,8 @@ New Video shows them in the Trial section under "Hermes research styles (from cl
 They are selectable whenever `HERMES_BASE_URL` is set; no worker is needed. The render request
 (`hermesRenderMessages`) names the skill in its instruction and in its data (`skill.name`, `skill.input`,
 `skill.output`); a `project` skill is told to use the run's narration and captions where it can, and that the result
-is a reel the studio checks. Hermes's reply is handled exactly as before: a `/clip/` URL, parsed, downloaded from a
+is a reel the studio checks. With the `hermes-skill` workflow (below) the request carries the run's skill brief instead
+of a storyboard and pictures. Hermes's reply is handled exactly as before: a `/clip/` URL, parsed, downloaded from a
 trusted media origin, sniffed, then qc-video. The video asset's metadata records `executor: hermes-render`, the
 backend, the plugin and `hermesSkill`; the render stage's result carries `hermesSkill` too.
 
@@ -212,6 +213,99 @@ Styles groups the packs (`styleGroup`): Research styles (every hermes pack), Tri
 Retired, then Planned. Each Trial pack shows its trial count, technical pass rate, mean presentation score and the
 owner's decisions for its current version; a pack with lab trials shows those apart.
 
+## Workflows (recipes)
+
+Every run used to go idea → research → script → storyboard (an image prompt per shot) → assets (a picture per shot) →
+voice → render → qc, whatever the style, so data-driven pages and the Hermes research styles generated pictures they
+never used. Now a pack names the **workflow** its runs follow (style.json `workflow`, `styles/FORMAT.md` "Workflows"):
+a recipe, the stage kinds in order, plus `review`, the stages where the owner always reviews whatever the autonomy level.
+
+| Recipe | Stages | Packs |
+| --- | --- | --- |
+| `image-sequence` | idea, research, script, storyboard, assets, voice, render, qc | the six stills packs, `explainer-flat-vector`. Today's pipeline, byte for byte. |
+| `scene-spec` | idea, research, script, **scene-spec**, voice, render, qc | `animated-line-graph`, `minimal-line-art`, `probe-line-graph` (all with `review: ["scene-spec"]`) |
+| `hermes-skill` | idea, research, script, **skill-brief**, voice, render, qc (no voice when `hermes.voice` is `skill`) | the ten `hermes-*` skill packs and `hermes-research-explainer` (all with `review: ["skill-brief"]`) |
+| `html-design`, `engine-project`, `clip-sequence` | reserved | none: refused by the validator and by `startRun`. `html-design` (Hermes writes the page per video) needs the owner's explicit approval before it is built. |
+
+### How a run's list is chosen and stored
+
+- `startRun` asks `workflowForPack` (`lib/studio/recipes.ts`): the pack's `workflow.recipe`, or the one its engine and
+  asset model imply when it names none (hermes → hermes-skill; html-capture with plates → scene-spec; otherwise
+  image-sequence; the styles validator infers the same). The stage list (without the voice when a hermes skill voices
+  itself) and the review points are stored in `pipeline_runs.config.workflow` (additive). A recipe that is not built
+  refuses the start: "This style needs a workflow that isn't built yet: <name>".
+- The engine reads the run's own list (`runStagesOf`) for the next stage (`approveStage`), revision targets
+  (`revisionTarget(..., stages)`: a note about pictures or the storyboard in a scene-spec run restarts the scene spec;
+  a voice note in a run whose skill voices itself restarts the brief), the run page and the Review titles. A stage
+  missing from the list is refused instead of finishing the run.
+- A run without `config.workflow` (started before workflows, or a damaged one) keeps `RUN_STAGES`, which is also the
+  image-sequence list. `fixtures/prompts/image-sequence-prompts.json`, written by the code before workflows, pins the
+  image-sequence prompts, work orders and the storyboard Hermes render request; `fixtures/render/explainer-payload.json`
+  still pins the payload.
+- Migration 0019 widens the `pipeline_stages.stage` CHECK with `scene-spec` and `skill-brief`. The stuck and orphan
+  reapers and the stage claim know both kinds. The final decision waits for G-assets only in a workflow with an assets
+  stage (`finalGatesFor`).
+
+### scene-spec
+
+- Research gets two more lines (`SCENE_SPEC_RESEARCH_LINES`): find the real numbers the scenes need, each with its
+  source, written exactly as the source gives them. Image-sequence and hermes-skill research prompts are unchanged.
+- The scene-spec stage asks Hermes, through the gate, for JSON: per scene `seconds`, `beat`, `elements` (`kind`, `text`,
+  `value`, `series`, `labels`, `source`), `tokens` and `caption` (`lib/studio/scene-spec.ts`). The validator checks it
+  against the pack's contract: only the pack's elements and motion tokens, a token per scene, series of 1 to 6 numbers,
+  one label per value, values in range, `source` naming a research note. The gate checks pacing and narration coverage
+  with the storyboard's shared limits, and that every number (value, series, any digit in a text) is in the research
+  note it cites and that note has a source link. A spec with an unsourced number fails, by name: "Scene 3 counter
+  shows 1200 but cites no research note. Numbers must come from the research notes; never invent data." The script of
+  a scene-spec run is burned in as captions, so its script gate also fails a number written in digits that no sourced
+  note contains (numbers spelled out in words are not read).
+- The spec becomes the scene plan and the render payload directly (`sceneSpecShots` → `buildScenePlan` →
+  `buildRenderPayload`): the worker contract is unchanged, so no worker bump. The render contract carries a picture per
+  shot, so the portal draws one plain-colour plate per run (`lib/studio/plate.ts`, source `generated`, executor
+  `portal-plate`, no model) and every shot points at it. Labels and sources stay in the spec for Review.
+- Review: the scene-spec card lists the scenes as text (elements, numbers with the note each cites, motion, caption).
+  There is no still preview before the render: the worker has no stills mode for html-capture pages (it captures the
+  whole video), so the card says so; the final video's card shows the real render.
+
+### hermes-skill
+
+- The skill-brief stage has Hermes turn the approved script into the input the pack's skill expects
+  (`lib/studio/skill-brief.ts`): one JSON spec per shot for a `spec` skill (plain data, no links, at most 2000
+  characters), a text project brief for a `project` skill or the generic Hermes render. The gate checks pacing and
+  coverage. The Hermes render request carries the brief (`data.brief`) and says no pictures were made.
+- `hermes.voice` decides the voice. The eight quick skills (`run`) use the run's narration. `stick-figure` and
+  `zach-d-films` (`skill`) record their own voice with the skill's Kokoro tool and time every shot to it, so the run
+  has no voice stage: the script goes to Hermes as `narration.script`, the reply must name the voice backend
+  (`voice`), the video's licence and metadata (`narration`) record it, the backend is registered as a provider, and its
+  terms gate the narration like any voice (a G-voice result on the render). Research-only rules are unchanged.
+
+### What the owner sees
+
+| | image-sequence | scene-spec | hermes-skill |
+| --- | --- | --- | --- |
+| New Video | "Workflow: Image sequence: Idea → … → Quality check" under the engine line | "Workflow: Scene spec (data-driven, no pictures): …" | "Workflow: Hermes skill (research only, no pictures): …" |
+| Run page | the run's own steps with their state (`run-workflow`); "Workflow" in Video settings | the same; "This workflow makes no pictures, so it has no work orders." | the same |
+| Review | storyboard card as before; the image grid on the assets card | the scene-spec card (scene list as text, the preview note) | the skill brief card (a line per shot with its spec, the project text) |
+
+### Known limits
+
+- No still preview of the page before the render (no stills mode in the worker); the scene-spec card says so.
+- A skill that voices itself is checked only by its voice backend's provider terms on the render card, and by qc-video
+  on the finished reel (loudness, silence, length); there is no separate narration file to check for language or
+  clipping. When those terms block, the owner confirms them and presses Try again, which asks Hermes to render again
+  (the render card has no "Check the terms again").
+- Some voice-card labels still say "keep the pictures" in runs without pictures.
+- The skill brief's own numbers are not checked against the research notes (research-only rules are as before).
+- Rolling the portal back after 0019 leaves runs with scene-spec or skill-brief stages unclaimed (the old code does
+  not know those kinds); cancel them first.
+
+### Template Lab
+
+A study's synthesized draft recommends a workflow as well as a renderer (`DraftSpec.workflow`): a known recipe that
+fits the renderer (an unknown or misfitting one is fed back to Hermes). A recipe that is not built is kept and said
+plainly ("needs a workflow that isn't built yet: html-design"); the exported style.json carries `workflow` only for a
+built recipe, so the draft still validates, and its README names the recommendation.
+
 ## Curation log and promotion
 
 A Trial run's outcome is written to `style_trial_outcomes` (migration 0015, additive) after its quality check and
@@ -247,3 +341,6 @@ missing it shows **Ready to promote** with a JSON block of curation entries and 
 trials: `lib/studio/trial-batch.ts`, `lib/server/trial-queue.ts`, `app/(app)/studio/trial-queue.tsx`,
 `lib/studio/research-trials.test.ts`, `db/migrations/0018_lab_trials.sql`, and in `style-registry.ts` `styleFromPack`,
 `packSeedTemplate`, `styleGroup`, `researchGroupOf`, `labTrialOption`, `researchVariantFor`, `labTrialCounts`.
+Workflows: `lib/studio/recipes.ts`, `lib/studio/scene-spec.ts`, `lib/studio/skill-brief.ts`, `lib/studio/plan-review.ts`,
+`lib/studio/plate.ts`, `lib/server/plate.ts`, `db/migrations/0019_workflow_stages.sql`, `fixtures/prompts/`, and the
+tests `recipes.test.ts`, `scene-spec.test.ts`, `skill-brief.test.ts`, `image-sequence-golden.test.ts`.

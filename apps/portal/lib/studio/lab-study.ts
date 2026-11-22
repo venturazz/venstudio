@@ -17,6 +17,7 @@ import { dataBlock, type ChatMessage, type Validated } from "./director.ts";
 import { blockedAddressReason } from "../net-address.ts";
 import { MAX_BRIEF_CHARS } from "./run-config.ts";
 import { blendFingerprints, HOOK_MS_RANGE, MAX_LAB_REVISIONS, type StructureFingerprint } from "./template-lab.ts";
+import { RECIPES, RECIPE_IDS, inferRecipe, isRecipeId, recipeFitIssue, recipeVerdict, type RecipeId, type RecipeVerdict } from "./recipes.ts";
 
 export { MAX_LAB_REVISIONS };
 
@@ -339,6 +340,11 @@ export interface DraftSpec {
   renderer: string;
   /** html-capture only: the page draws the captions. */
   drawsCaptions: boolean;
+  /**
+   * The recommended workflow (recipes.ts): what a run of the pack goes through. Validated against the known recipes and
+   * the renderer; a recipe that is not built yet is kept and said plainly (recipeVerdict), never exported as built.
+   */
+  workflow: RecipeId;
   contract: DraftContract;
   themes: string[];
   keywords: string[];
@@ -426,6 +432,14 @@ export function parseDraftSpec(raw: unknown, ctx: SynthesisContext): Validated<D
   const kinds = list(as.kinds, PACK_ASSET_KINDS, "contract.assets.kinds", issues);
   const allowedSources = list(as.allowedSources, PACK_ASSET_SOURCES, "contract.assets.allowedSources", issues);
   const forbidKinds = list(as.forbidKinds ?? [], PACK_ASSET_KINDS, "contract.assets.forbidKinds", issues, 0);
+  // The workflow: a known recipe that fits the renderer. A draft stored before workflows gets the inferred one.
+  const askedFlow = clean(raw.workflow, 40);
+  const workflow: RecipeId | null = askedFlow ? (isRecipeId(askedFlow) ? askedFlow : null) : inferRecipe(renderer, model);
+  if (!workflow) issues.push(`workflow must be one of the recipes VenStudio knows: ${RECIPE_IDS.join(", ")} (name the closest; the owner is told when it is not built yet)`);
+  else {
+    const misfit = recipeFitIssue(workflow, renderer, o.elementAnimation === true, model ?? "");
+    if (misfit) issues.push(`workflow ${workflow} does not fit this draft: ${misfit}`);
+  }
 
   const keywords = texts(raw.keywords, 60, 12);
   if (keywords.length === 0) issues.push("keywords needs at least one entry");
@@ -456,6 +470,7 @@ export function parseDraftSpec(raw: unknown, ctx: SynthesisContext): Validated<D
       formats: { supported, naturalFrame: naturalFrame! },
       renderer,
       drawsCaptions: renderer === "html-capture" && raw.drawsCaptions === true,
+      workflow: workflow!,
       contract: {
         pacing: { shotSeconds: shotSeconds!, hookWithinMs: hook, cutsPerMinute: cpm!, transitionSec: Math.round(transitionSec * 100) / 100 },
         onScreen: { elements, motionTokens, elementAnimation: o.elementAnimation === true },
@@ -546,10 +561,13 @@ export function synthesisMessages(i: {
     "Choose the renderer by what was learned, from these engines (reported = a worker can render it now):",
     ...i.engines.map((e) => `- ${e.id}: ${e.label}${e.reported ? " (reported)" : " (no worker reports it)"}`),
     "If the look needs a renderer no worker reports, name it anyway; the owner is told plainly. hermes is research only and is never published.",
+    "Recommend the workflow its runs follow (workflow), from these recipes:",
+    ...RECIPE_IDS.map((id) => `- ${id}: ${RECIPES[id].summary}${RECIPES[id].implemented ? "" : " (not built yet)"}`),
+    "Pick the one the look needs, even when it is not built yet; the owner is told plainly. scene-spec needs html-capture (or remotion-2d with element animation), hermes-skill needs hermes, image-sequence needs a picture per shot.",
     "Name the closest existing pack (closestPack) from this list, or null:",
     ...i.packs.map((p) => `- ${p.id}: ${p.name} (${p.engine}, ${p.status})`),
     "Patterns only: no script, no captions, no titles and no names from any source.",
-    'Answer with: {"packId":"lowercase-dashes","name":"","description":"","family":"","formats":{"supported":["short"],"naturalFrame":"portrait"},"renderer":"","drawsCaptions":false,' +
+    'Answer with: {"packId":"lowercase-dashes","name":"","description":"","family":"","formats":{"supported":["short"],"naturalFrame":"portrait"},"renderer":"","drawsCaptions":false,"workflow":"",' +
       '"contract":{"pacing":{"shotSeconds":[min,max],"hookWithinMs":0,"cutsPerMinute":[min,max],"transitionSec":0},"onScreen":{"elements":[],"motionTokens":[],"elementAnimation":true},' +
       '"captions":{"required":true,"safeAreaPct":8},"audio":{"narrated":true,"targetLufs":-14,"maxTruePeakDb":-1,"musicPolicy":"self-or-licensed"},' +
       '"assets":{"model":"plates-and-diagrams","kinds":["image"],"allowedSources":["upload","hermes","worker","generated"],"forbidKinds":["reference-video"]}},' +
@@ -715,6 +733,8 @@ export function draftStyleJson(draft: DraftSpec, provenance: readonly Provenance
     fixture: { payload: "fixtures/payload.json", expect: "fixtures/expect.json" },
     provenance: provenance.map((p) => ({ type: p.type, ref: p.ref.slice(0, 400), licence: p.licence.slice(0, 200) || UNKNOWN_LICENCE, notes: p.notes.slice(0, 2000) })),
     curation: [],
+    // A recipe that is not built yet is left out (the validator refuses it); the README says which one was recommended.
+    ...(RECIPES[draft.workflow].implemented ? { workflow: { recipe: draft.workflow } } : {}),
   };
 }
 
@@ -732,6 +752,7 @@ function draftReadme(draft: DraftSpec, provenance: readonly ProvenanceEntry[], v
     "| | |",
     "| --- | --- |",
     `| Renderer | \`${draft.renderer}\`: ${verdict.text} |`,
+    `| Workflow | \`${draft.workflow}\`: ${recipeVerdict(draft.workflow).text}${RECIPES[draft.workflow].implemented ? "" : `. style.json leaves \`workflow\` out until it is built, so runs would follow ${inferRecipe(draft.renderer, c.assets.model)}`} |`,
     `| Formats | ${draft.formats.supported.join(", ")}; natural frame ${draft.formats.naturalFrame} |`,
     `| Shot length | ${c.pacing.shotSeconds[0]} to ${c.pacing.shotSeconds[1]} s, first cut within ${c.pacing.hookWithinMs} ms, ${c.pacing.cutsPerMinute[0]} to ${c.pacing.cutsPerMinute[1]} cuts a minute, transition ${c.pacing.transitionSec} s |`,
     `| On screen | ${c.onScreen.elements.join(", ")}; motion ${c.onScreen.motionTokens.join(", ") || "none"} |`,
@@ -760,6 +781,8 @@ export interface DraftExport {
   study: { id: string; title: string };
   packId: string;
   renderer: RendererVerdict;
+  /** The recommended workflow, said plainly (built or not). */
+  workflow: RecipeVerdict;
   files: Record<string, string>;
   provenance: ProvenanceEntry[];
   steps: string[];
@@ -788,6 +811,7 @@ export function draftExport(study: { id: string; title: string }, draft: DraftSp
     study: { id: study.id, title: clean(study.title, MAX_TITLE_CHARS) },
     packId: draft.packId,
     renderer: verdict,
+    workflow: recipeVerdict(draft.workflow),
     files: {
       [`${dir}/style.json`]: `${JSON.stringify(style, null, 2)}\n`,
       [`${dir}/README.md`]: draftReadme(draft, provenance, verdict, study),

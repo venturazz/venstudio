@@ -119,15 +119,15 @@ test("lab trials: only Draft and Lab packs, research only, never published, and 
   assert.match(startRefusal(entry("explainer-flat-vector"), { labTrial: true }) ?? "", /is Trial; a lab trial is for Draft and Lab packs/);
   assert.match(startRefusal(entry("kinetic-facts"), { labTrial: true }) ?? "", /planned/);
   const sp = runStylePack(pack("probe-line-graph"), { lab: true });
-  assert.deepEqual(sp, { id: "probe-line-graph", version: "0.1.0", status: "lab", trial: true, engine: "html-capture", lab: true });
+  assert.deepEqual(sp, { id: "probe-line-graph", version: "0.1.1", status: "lab", trial: true, engine: "html-capture", lab: true });
   const cfg = parseRunConfig(JSON.parse(JSON.stringify({ format: "short", stylePack: sp })));
   assert.equal(cfg.stylePack?.lab, true);
   assert.ok(isTrialRun(cfg));
-  assert.ok(runSettings(cfg).some((r) => r.value === `probe-line-graph 0.1.0, ${LAB_TRIAL_BADGE}: research only, never published`));
-  assert.equal(parseRunStylePack({ id: "probe-line-graph", version: "0.1.0", status: "lab", trial: false, lab: true })?.trial, true, "a lab trial is a trial whatever a stored config says");
+  assert.ok(runSettings(cfg).some((r) => r.value === `probe-line-graph 0.1.1, ${LAB_TRIAL_BADGE}: research only, never published`));
+  assert.equal(parseRunStylePack({ id: "probe-line-graph", version: "0.1.1", status: "lab", trial: false, lab: true })?.trial, true, "a lab trial is a trial whatever a stored config says");
   assert.equal("lab" in runStylePack(pack("explainer-flat-vector")), false, "normal runs gain no key");
   // publishRefusal: lab trials and research (hermes) runs are refused by name; a Listed run is not.
-  assert.equal(publishRefusal(sp), `${LAB_TRIAL_BADGE} probe-line-graph 0.1.0: research only, never published.`);
+  assert.equal(publishRefusal(sp), `${LAB_TRIAL_BADGE} probe-line-graph 0.1.1: research only, never published.`);
   assert.match(publishRefusal(runStylePack(pack("hermes-graph"))) ?? "", /^Hermes render \(research only\): a video Hermes rendered is never published\./);
   assert.match(publishRefusal(runStylePack(pack("hermes-graph", { status: "draft" }), { lab: true })) ?? "", /Hermes rendered is never published/, "a lab trial of a hermes pack is refused as a Hermes render");
   assert.match(publishRefusal(null, "hermes") ?? "", /never published/);
@@ -139,7 +139,7 @@ function outcome(n: number, over: Partial<TrialOutcome> = {}): TrialOutcome {
   return {
     runId: `00000000-0000-4000-8000-00000000000${n}`,
     packId: "probe-line-graph",
-    packVersion: "0.1.0",
+    packVersion: "0.1.1",
     qcPassed: true,
     gates: [{ gate: "G-technical", passed: true, score: null }, { gate: "G-presentation", passed: true, score: 80 }],
     presentationScore: 80,
@@ -153,7 +153,7 @@ function outcome(n: number, over: Partial<TrialOutcome> = {}): TrialOutcome {
 
 test("lab-trial outcomes are recorded but never counted toward promotion; they are counted apart", () => {
   const outcomes = [outcome(1, { labTrial: true, presentationScore: 60 }), outcome(2, { labTrial: true, presentationScore: null, ownerDecision: "rejected" }), outcome(3), outcome(4, { labTrial: false, presentationScore: 90 })];
-  const counts = trialCounts(outcomes, "0.1.0");
+  const counts = trialCounts(outcomes, "0.1.1");
   assert.deepEqual([counts.trials, counts.presentationScored, counts.meanPresentationScore, counts.approved, counts.rejected], [2, 2, 85, 2, 0]);
   const lab = labTrialCounts(outcomes);
   assert.deepEqual(lab, { runs: 2, measured: 2, scored: 1, meanPresentationScore: 60, approved: 1, rejected: 1 });
@@ -163,12 +163,12 @@ test("lab-trial outcomes are recorded but never counted toward promotion; they a
   assert.deepEqual(record.filter((e) => e.kind === "trial-run").map((e) => e.ref), [`venstudio run ${outcome(3).runId}`, `venstudio run ${outcome(4).runId}`]);
   // Five lab trials alone never make a pack Ready to promote: none of them counts.
   const onlyLab = [1, 2, 3, 4, 5].map((n) => outcome(n, { labTrial: true, presentationScore: 95 }));
-  assert.equal(trialCounts(onlyLab, "0.1.0").trials, 0);
+  assert.equal(trialCounts(onlyLab, "0.1.1").trials, 0);
 });
 
 test("lab trials say exactly why they cannot start and what fixes it", () => {
   const probe = entry("probe-line-graph");
-  const cap = packCapability("probe-line-graph", "0.1.0");
+  const cap = packCapability("probe-line-graph", "0.1.1");
   assert.deepEqual(labTrialOption(probe, ["ffmpeg", "html-capture", cap]), { ok: true, via: "worker", capability: cap });
   // No worker has html-capture (a worker below 0.10.0, or without the Remotion renderer).
   const old = labTrialOption(probe, ["ffmpeg", "xfade", "remotion-2d"]);
@@ -225,7 +225,7 @@ test("the Hermes render request carries the skill name, its mapping and, for a f
   assert.equal(data.pack.skill, "/graph");
   assert.equal(data.skill.name, "/graph");
   assert.equal(data.skill.mode, "spec");
-  assert.match(data.skill.input, /One clip per storyboard shot/);
+  assert.match(data.skill.input, /one shot per clip, in order, each with its seconds and the skill.s JSON spec \(brief\.shots\[i\]\.spec\)/);
   // Still a /clip/ URL, as before.
   assert.match(m.content, /Publish the finished MP4 on your media host under http:\/\/hermes-files:8000\/clip\//);
   assert.doesNotMatch(m.content, /full project with its own voice/);

@@ -404,6 +404,11 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             {engine.worker === "external" && <Badge>Not run by a worker</Badge>}
           </div>
         )}
+        {template?.workflow && (
+          <p className="break-words text-xs text-muted" data-testid="workflow-info">
+            Workflow: {template.workflow}
+          </p>
+        )}
       </div>
 
       <fieldset className="space-y-2">

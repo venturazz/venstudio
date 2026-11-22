@@ -20,6 +20,8 @@ import {
   type Template,
   type TemplateEvidence,
 } from "./templates.ts";
+import { parsePackWorkflow, type PackWorkflow } from "./recipes.ts";
+import { ELEMENT_KINDS, type ElementKind } from "./director.ts";
 
 export const PACK_STATUSES = ["draft", "lab", "trial", "proven", "listed", "retired"] as const;
 export type PackStatus = (typeof PACK_STATUSES)[number];
@@ -82,6 +84,8 @@ export interface PackHermesSkill {
   aliases: string[];
   /** spec: a quick skill from a small JSON spec; project: a full reel with its own voice and caption timing. */
   mode: "spec" | "project";
+  /** hermes-skill workflow: "run" when the run's voice stage records the narration, "skill" when the skill voices itself. */
+  voice: "run" | "skill";
   input: string;
   output: string;
   /** Packs this one is the Hermes research variant of. */
@@ -98,6 +102,9 @@ export interface PackPlan {
   cutsPerMinute: [number, number];
   transitionSec: number;
   elementAnimation: boolean;
+  /** contract.onScreen: what the page may draw and the motion it interprets (a scene spec is checked against them). */
+  elements?: ElementKind[];
+  motionTokens?: string[];
   captionsRequired: boolean;
   safeAreaPct: number;
   narrated: boolean;
@@ -139,6 +146,8 @@ export interface StylePack {
   plan?: PackPlan;
   /** Engine hermes: the Hermes skill the render request names, or null (the generic Hermes render). */
   hermes?: PackHermesSkill | null;
+  /** style.json `workflow`, or null when the pack names none (the recipe is then inferred, recipes.ts). */
+  workflow?: PackWorkflow | null;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -168,6 +177,8 @@ function planOf(raw: Record<string, unknown>): PackPlan {
     cutsPerMinute: pair(pacing.cutsPerMinute, [Math.max(1, Math.floor(60 / shot[1])), Math.max(1, Math.ceil(60 / shot[0]))]),
     transitionSec: num(pacing.transitionSec, 0),
     elementAnimation: on.elementAnimation === true,
+    elements: strs(on.elements).filter((k): k is ElementKind => (ELEMENT_KINDS as readonly string[]).includes(k)),
+    motionTokens: strs(on.motionTokens),
     captionsRequired: cap.required !== false,
     safeAreaPct: num(cap.safeAreaPct, 8),
     narrated: au.narrated !== false,
@@ -193,6 +204,7 @@ function hermesOf(raw: unknown): PackHermesSkill | null {
     skill: raw.skill,
     aliases: strs(raw.aliases, 8).filter((a) => SKILL_RE.test(a)),
     mode: raw.mode === "project" ? "project" : "spec",
+    voice: raw.voice === "skill" && raw.mode === "project" ? "skill" : "run",
     input: str(raw.input).slice(0, 2000),
     output: str(raw.output).slice(0, 2000),
     variantOf: strs(raw.variantOf, 8).filter((v) => ID_RE.test(v)),
@@ -238,6 +250,7 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
     plan: planOf(raw),
     // The skill block is only honoured for a research engine (the styles validator refuses it elsewhere).
     hermes: isResearchEngine(engine) ? hermesOf(raw.hermes) : null,
+    workflow: parsePackWorkflow(raw.workflow),
   };
 }
 

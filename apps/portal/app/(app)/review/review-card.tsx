@@ -157,6 +157,36 @@ function NotesBlock({ notes }: { notes: string[] | undefined }) {
   );
 }
 
+/**
+ * Scene spec and skill brief cards (workflows without pictures): the plan as text, one line per scene or shot. There
+ * is no image grid here; only an image-sequence assets card has one.
+ */
+function PlanBlock({ payload }: { payload: ReviewPayload }) {
+  const plan = payload.plan;
+  if (!plan) return null;
+  return (
+    <div className="space-y-2" data-testid={plan.kind === "scene-spec" ? "scene-spec-card" : "skill-brief-card"}>
+      <ol className="space-y-1 rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid={plan.kind === "scene-spec" ? "scene-spec-list" : "skill-brief-list"}>
+        {plan.lines.map((line, i) => (
+          <li key={`${i}-${line}`} className="break-words" data-testid="plan-line">
+            {line}
+          </li>
+        ))}
+      </ol>
+      {plan.text && (
+        <p className="whitespace-pre-wrap break-words rounded-lg border border-border p-3 text-sm" data-testid="skill-brief-text">
+          {plan.text}
+        </p>
+      )}
+      {plan.note && (
+        <p className="break-words text-xs text-muted" data-testid="plan-note">
+          {plan.note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function MediaBlock({ stage, payload, termsShown }: { stage: string; payload: ReviewPayload; termsShown: boolean }) {
   const media = payload.media;
   const checks = payload.checks ?? [];
@@ -298,6 +328,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
               </p>
             )}
             <NotesBlock notes={p.notes} />
+            <PlanBlock payload={p} />
             <MediaBlock stage={item.stage} payload={p} termsShown={false} />
             {item.stage === "qc" && <PresentationBlock reviewId={item.id} isOwner={item.isOwner} trial={item.trial === true} presentation={item.presentation ?? null} advisory={item.advisory ?? null} />}
             <form action={formAction}>
@@ -323,6 +354,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
               ))}
             </ul>
             <NotesBlock notes={p.notes} />
+            <PlanBlock payload={p} />
             <MediaBlock stage={item.stage} payload={p} termsShown={item.blocking !== null} />
             {item.stage === "qc" && p.media?.videoAssetId && (
               <PresentationBlock reviewId={item.id} isOwner={item.isOwner} trial={item.trial === true} presentation={item.presentation ?? null} advisory={item.advisory ?? null} />

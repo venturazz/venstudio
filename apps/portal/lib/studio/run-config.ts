@@ -9,6 +9,7 @@ import { DEFAULT_DURATION_SEC } from "./engine.ts";
 import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
 import { LAB_TRIAL_BADGE, parseRunStylePack, type RunStylePack } from "./style-registry.ts";
 import { parseTrialBatch, type TrialBatch } from "./trial-batch.ts";
+import { parseRunWorkflow, workflowText, type RunWorkflow } from "./recipes.ts";
 
 /** The brief the owner may type. Empty means Hermes picks ideas from the channel plan. */
 export const MAX_BRIEF_CHARS = 2000;
@@ -46,6 +47,11 @@ export interface RunConfig {
   labStudyId?: string;
   /** One run of a batch trial (several styles from one brief, trial-batch.ts). Additive. */
   trialBatch?: TrialBatch;
+  /**
+   * The run's workflow, fixed at start from its style pack (recipes.ts; additive). Absent on runs from before
+   * workflows, which keep RUN_STAGES (the image-sequence list).
+   */
+  workflow?: RunWorkflow;
 }
 
 const STUDY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -77,7 +83,13 @@ export function parseRunConfig(raw: unknown): RunConfig {
     ...stylePackOf(c.stylePack),
     ...(typeof c.labStudyId === "string" && STUDY_ID_RE.test(c.labStudyId) ? { labStudyId: c.labStudyId } : {}),
     ...trialBatchOf(c.trialBatch),
+    ...workflowOf(c.workflow),
   };
+}
+
+function workflowOf(raw: unknown): { workflow?: RunWorkflow } {
+  const w = parseRunWorkflow(raw);
+  return w ? { workflow: w } : {};
 }
 
 function trialBatchOf(raw: unknown): { trialBatch?: TrialBatch } {
@@ -274,5 +286,6 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
       : []),
     ...(config.labStudyId ? [{ label: "Lab study", value: config.labStudyId }] : []),
     ...(config.trialBatch ? [{ label: "Batch trial", value: `${config.trialBatch.index} of ${config.trialBatch.total}` }] : []),
+    ...(config.workflow ? [{ label: "Workflow", value: workflowText(config.workflow) }] : []),
   ];
 }

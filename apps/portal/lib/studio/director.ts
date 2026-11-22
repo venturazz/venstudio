@@ -440,7 +440,7 @@ export function wordsPerMinuteFor(_template?: Template | null, learned?: number 
 }
 
 /** The pace a prompt plans with: the run's learned pace when the context carries one. */
-function paceOf(ctx: DirectorContext): number {
+export function paceOf(ctx: DirectorContext): number {
   return wordsPerMinuteFor(ctx.template, ctx.wordsPerMinute);
 }
 
@@ -463,7 +463,18 @@ export interface DirectorContext {
   subtitles?: string[];
   /** Measured pace of the run's voice (words per minute). Absent: the default pace. */
   wordsPerMinute?: number;
+  /**
+   * The run's workflow when it is not the original image sequence (recipes.ts). A scene-spec run's research asks for
+   * the numbers its spec will draw, with sources. Absent for image-sequence runs, whose prompts stay as they were.
+   */
+  recipe?: "scene-spec" | "hermes-skill";
 }
+
+/** Research lines for a scene-spec run: the page draws real numbers, so research must find them, with sources. */
+export const SCENE_SPEC_RESEARCH_LINES: readonly string[] = [
+  "This video is drawn from data: its scenes show real numbers (counters, bars, line graphs). Find the real numbers and facts the scenes need, each with the source it comes from.",
+  "Write every number exactly as the source gives it, with its unit and its date or period, in the claim or the summary (for a series, every value in order, oldest first, with the label of each). Only numbers in these notes may appear on screen; never invent data.",
+];
 
 /** Longest owner brief passed to Hermes (matches run-config.ts MAX_BRIEF_CHARS). */
 export const MAX_BRIEF_PROMPT_CHARS = 2000;
@@ -482,7 +493,7 @@ export function dataBlock(label: string, content: string, max: number): string {
   return `<<<DATA ${label}\n${safe || "(none)"}\nDATA ${label}>>>`;
 }
 
-function templateLines(ctx: DirectorContext): string[] {
+export function templateLines(ctx: DirectorContext): string[] {
   const t = ctx.template;
   if (!t) return [`Maximum shot length: 6 seconds. Narration pace: ${paceOf(ctx)} words per minute.`];
   return [
@@ -498,7 +509,7 @@ export const MAX_SKILL_HINTS = 5;
 const MAX_SKILL_HINT_CHARS = 80;
 
 /** A DATA block naming skills the owner has, or nothing. Names only, at most 5, each cut short. */
-function skillBlock(hints: readonly string[] | undefined): string {
+export function skillBlock(hints: readonly string[] | undefined): string {
   const names = (hints ?? [])
     .map((h) => h.replace(/\s+/g, " ").trim().slice(0, MAX_SKILL_HINT_CHARS))
     .filter(Boolean)
@@ -507,7 +518,7 @@ function skillBlock(hints: readonly string[] | undefined): string {
   return dataBlock("skills the owner has, use them when they fit", names.join(", "), MAX_SKILL_HINTS * (MAX_SKILL_HINT_CHARS + 2));
 }
 
-function channelLines(ctx: DirectorContext): string[] {
+export function channelLines(ctx: DirectorContext): string[] {
   return [
     `Format: ${ctx.format}, about ${ctx.durationSec} seconds, language code ${ctx.language}.`,
     ctx.category ? `Channel category: ${ctx.category}` : "",
@@ -554,7 +565,7 @@ const PURPOSE_STAGE_NOTES: Record<string, Partial<Record<DirectorStage, string>>
 };
 
 /** The run's purposes, theme, subtitles and brief, for one stage. Empty when the run set none of them. */
-function runLines(ctx: DirectorContext, stage: DirectorStage): string[] {
+export function runLines(ctx: DirectorContext, stage: DirectorStage): string[] {
   const purposes = (ctx.purposes ?? []).map((id) => PURPOSE_BY_ID[id]).filter((p) => p !== undefined);
   const theme = ctx.themeId ? THEME_BY_ID[ctx.themeId] : undefined;
   const subtitles = (ctx.subtitles ?? []).map((c) => LANGUAGE_BY_CODE[c]).filter((l) => l !== undefined);
@@ -597,12 +608,12 @@ function runLines(ctx: DirectorContext, stage: DirectorStage): string[] {
 }
 
 /** First line of every user prompt. Lets a fake or logging gateway tell the stages apart. */
-export type PromptStage = DirectorStage | "classify" | "selftest" | "script-fit";
+export type PromptStage = DirectorStage | "classify" | "selftest" | "script-fit" | "scene-spec" | "skill-brief";
 export function stageMarker(stage: PromptStage): string {
   return `VENSTUDIO_STAGE: ${stage}`;
 }
 
-function system(task: string): ChatMessage {
+export function system(task: string): ChatMessage {
   return { role: "system", content: `You are the director of a YouTube channel studio. ${task} ${JSON_RULE} ${DATA_RULE}` };
 }
 
@@ -641,6 +652,7 @@ export function researchPrompt(ctx: DirectorContext, idea: Pick<Idea, "title" | 
         `Collect up to ${MAX_NOTES} short research notes for this idea. Each note is one claim with its source.`,
         needs ? "This theme needs sources: give a real http or https sourceUrl for every claim you can." : "Give a source link where you have one.",
         "Set sourced to true only when sourceUrl is a real link you are confident exists. Never invent links; use sourced false and an empty sourceUrl instead.",
+        ...(ctx.recipe === "scene-spec" ? SCENE_SPEC_RESEARCH_LINES : []),
         ...channelLines(ctx),
         'Schema: {"notes":[{"claim":string,"sourceUrl":string,"sourced":boolean,"summary":string}]}',
         dataBlock("chosen idea", `Title: ${idea.title}\nHook: ${idea.hook}\nAngle: ${idea.angle}`, 1500),

@@ -87,7 +87,7 @@ the above; the styles repo's CI runs `capture-html` with its vendored copy of th
 
 ## The packs
 
-`animated-line-graph` and `minimal-line-art` (status `trial` 0.1.1, on venstudio CI run 44981421800 and styles CI run 44980615532) adapt the `graph` and
+`animated-line-graph` and `minimal-line-art` (status `trial` 0.1.2, rendered on venstudio CI run 44981421800 and styles CI run 44980615532 at 0.1.0 with the same render/; 0.1.2 adds the scene-spec workflow) adapt the `graph` and
 `minimalistic-graphics` skills of github.com/artemnovitckii/claude-animation-skills (MIT, fonts OFL; commit
 `86f70106c9ae`) to this contract: data from the render payload, plain JavaScript and SVG with a small frame-driven
 timeline instead of GSAP, fonts embedded as `data:` URLs. CI renders every vendored html-capture pack the same way
@@ -100,3 +100,10 @@ itself with its points popping in, and a counter. Its page is plain JavaScript a
 GSAP is not vendored in it, because the sandbox it was written in had no network to fetch GSAP from. A pack that
 uses GSAP or three.js vendors the library under `render/vendor/<name>/` with its licence file (the validator checks)
 and seeks a paused timeline to `frame / fps` in `renderFrame`.
+
+### Runs of an html-capture pack (scene-spec workflow)
+
+A run of `animated-line-graph`, `minimal-line-art` or `probe-line-graph` follows the `scene-spec` workflow
+(`docs/style-packs.md` "Workflows"): Hermes writes a scene spec from sourced research numbers, and the spec is the
+scene plan this page draws. No picture is generated: every shot of the payload points at one plain-colour plate the
+portal draws, because the render contract carries a picture per shot. The worker contract is unchanged.

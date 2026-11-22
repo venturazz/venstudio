@@ -38,17 +38,21 @@ import {
   type ResearchNote,
 } from "../studio/director.ts";
 import {
+  isPlanStage,
   isProductionStage,
   isRunStage,
   nextRunStage,
-  nextStage,
   revisionTarget,
   stageSummary,
   STUCK_MINUTES,
   type RunStage,
 } from "../studio/engine.ts";
+import { alwaysReviewed, runRecipeOf, runStagesOf, workflowForPack } from "../studio/recipes.ts";
+import { planReview } from "../studio/plan-review.ts";
+import { sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, validateSceneSpec } from "../studio/scene-spec.ts";
+import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill } from "../studio/skill-brief.ts";
 import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
-import { finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
+import { addGateIssues, finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
 import { cancelRunWork, narrationTempoReady, planScriptFit, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
 import { paceForRun } from "./speech-rate.ts";
 import { parseVoiceFix, voiceRevisionRoute, type LengthDirection, type VoiceFix } from "../studio/voice-fit.ts";
@@ -276,11 +280,15 @@ export async function startRun(
       labStudyId = input.labStudyId;
     }
     const pack = runStylePack(entry.pack, { lab: input.labTrial === true });
+    // The run's stage list is fixed here, from the pack's workflow (recipes.ts), and stored with the run.
+    const flow = workflowForPack(entry.pack);
+    if (!flow.ok) return { ok: false, error: flow.error };
     const config: RunConfig = {
       ...built.config,
       stylePack: labStudyId ? { ...pack, trial: true } : pack,
       ...(labStudyId ? { labStudyId } : {}),
       ...(input.trialBatch ? { trialBatch: input.trialBatch } : {}),
+      workflow: flow.workflow,
     };
     const topic = topicFromBrief(config.topicHint);
     let productionId: string | null = null;
@@ -299,7 +307,7 @@ export async function startRun(
       await insertPending(tx, id, "idea", "", 0);
       return id;
     });
-    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack, ...(config.labStudyId ? { labStudyId: config.labStudyId } : {}), ...(config.trialBatch ? { trialBatch: config.trialBatch } : {}) } });
+    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack, recipe: flow.workflow.recipe, ...(config.labStudyId ? { labStudyId: config.labStudyId } : {}), ...(config.trialBatch ? { trialBatch: config.trialBatch } : {}) } });
     return { ok: true, runId };
   } catch (err) {
     console.error("startRun failed", err);
@@ -315,7 +323,7 @@ async function claimNext(runId: string): Promise<StageRow | null> {
     UPDATE pipeline_stages s SET state = 'running', started_at = now(), error = NULL, not_before = NULL, output = s.output - 'hermesWait'
     WHERE s.id = (
       SELECT p.id FROM pipeline_stages p JOIN pipeline_runs r ON r.id = p.run_id
-      WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc')
+      WHERE p.run_id = ${runId} AND p.state = 'pending' AND r.state = 'running' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'assets', 'voice', 'render', 'qc')
         AND (p.not_before IS NULL OR p.not_before <= now())
       ORDER BY p.attempt, p.id LIMIT 1 FOR UPDATE OF p SKIP LOCKED
     ) AND s.state = 'pending'
@@ -352,9 +360,12 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     purposes: run.config.purposes,
     subtitles: run.config.subtitles,
   };
+  // A workflow without pictures tells the prompts that need to know (image-sequence prompts stay as they were).
+  const recipe = runRecipeOf(run.config);
+  if (recipe !== "image-sequence") ctx.recipe = recipe;
   // The script and storyboard plan with the measured pace of the voice this run will most likely get (the one that
   // spoke last for its language), so the script, the storyboard and the voice check agree on the narration length.
-  if (st.stage === "script" || st.stage === "storyboard") {
+  if (st.stage === "script" || st.stage === "storyboard" || isPlanStage(st.stage)) {
     const pace = await paceForRun(run.config.language);
     if (pace.learned) ctx.wordsPerMinute = pace.wpm;
   }
@@ -396,12 +407,35 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       sources,
       requiresSources: needs,
     });
+    // A scene-spec run's captions are its script, on screen like the spec: digits in it must be sourced numbers too.
+    if (recipe === "scene-spec") return { ok: true, result: r.value, gate: addGateIssues(gate, scriptNumberIssues(r.value.script, notes)) };
     return { ok: true, result: r.value, gate };
   }
 
   const scriptOut = await latestPassedOutput(sql, run.id, "script");
   const checkedScript = validateScript(scriptOut?.result);
   if (!checkedScript.ok) return { ok: false, error: "The approved script is missing" };
+  const narrationSec = estimateNarrationSec(checkedScript.value.script, wpm);
+
+  if (st.stage === "scene-spec") {
+    // The page draws the spec: its contract decides the elements and motion tokens Hermes may use.
+    const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
+    const contract = { name: pack?.name ?? template.label, elements: pack?.plan?.elements ?? [], motionTokens: pack?.plan?.motionTokens ?? [] };
+    if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
+    const r = fromHermes(await hermesJson(sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length })));
+    if (!r.ok) return r;
+    return { ok: true, result: r.value, gate: sceneSpecGate(template, r.value, notes, narrationSec) };
+  }
+  if (st.stage === "skill-brief") {
+    const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
+    // Without the pack the brief could not follow its skill's mapping: stop instead of writing a generic brief.
+    if (!pack) return { ok: false, error: "This run's style pack could not be read, so the skill brief cannot follow its skill" };
+    const h = pack.hermes ?? null;
+    const skill: BriefSkill | null = h ? { name: h.skill, mode: h.mode, voice: h.voice, input: h.input } : null;
+    const r = fromHermes(await hermesJson(skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill)));
+    if (!r.ok) return r;
+    return { ok: true, result: r.value, gate: skillBriefGate(template, r.value, narrationSec) };
+  }
   // Backends Hermes has reported (its scan and its own image chain): the storyboard may pick one per shot, and any
   // other name is dropped with a note instead of failing the storyboard.
   const health = await listEndpointHealth("image");
@@ -415,7 +449,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     ),
   );
   if (!r.ok) return r;
-  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, estimateNarrationSec(checkedScript.value.script, wpm)) };
+  return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, narrationSec) };
 }
 
 /**
@@ -430,31 +464,29 @@ async function approveStage(tx: Q, runId: string, stageId: string, stage: RunSta
   await tx`UPDATE pipeline_stages SET state = 'passed', output = ${json(output)}::text::jsonb, finished_at = now() WHERE id = ${stageId}`;
   const chosen = asIdea(output.chosenIdea);
   if (stage === "idea" && chosen) await tx`UPDATE pipeline_runs SET topic = ${chosen.title.slice(0, 300)} WHERE id = ${runId}`;
-  if (isProductionStage(stage)) {
-    const following = nextRunStage(stage);
-    if (!following) {
-      await tx`UPDATE pipeline_runs SET state = 'done', finished_at = now() WHERE id = ${runId}`;
-      return;
-    }
-    await insertPending(tx, runId, following, "", 0);
-  } else {
-    const next = nextStage(stage);
-    if (next) {
-      await insertPending(tx, runId, next, "", 0);
-    } else {
-      const board = validateStoryboard(output.result);
-      if (!board.ok) throw new DecisionError("The storyboard could not be read back");
-      // A new storyboard replaces every earlier work order, including finished ones from a revised run.
-      await tx`DELETE FROM work_orders WHERE run_id = ${runId}`;
-      for (const w of workOrdersFromStoryboard(board.value.shots)) {
-        await tx`
-          INSERT INTO work_orders (run_id, stage, shot_ref, executor, spec)
-          VALUES (${runId}, 'assets', ${w.shotRef}, ${w.executor}, ${json(w.spec)}::text::jsonb)
-        `;
-      }
-      await insertPending(tx, runId, "assets", "", 0);
+  // The run's own stage list (fixed at start); RUN_STAGES for a run from before workflows.
+  const [cfg] = await tx`SELECT config FROM pipeline_runs WHERE id = ${runId}`;
+  const stages = runStagesOf(parseRunConfig(cfg?.config));
+  // Never finish a run because a stage is missing from its list: that is a bug to report, not the last stage.
+  if (!stages.includes(stage)) throw new DecisionError(`The ${stageLabel(stage).toLowerCase()} is not a stage of this run's workflow`);
+  const following = nextRunStage(stage, stages);
+  if (stage === "storyboard" && following === "assets") {
+    const board = validateStoryboard(output.result);
+    if (!board.ok) throw new DecisionError("The storyboard could not be read back");
+    // A new storyboard replaces every earlier work order, including finished ones from a revised run.
+    await tx`DELETE FROM work_orders WHERE run_id = ${runId}`;
+    for (const w of workOrdersFromStoryboard(board.value.shots)) {
+      await tx`
+        INSERT INTO work_orders (run_id, stage, shot_ref, executor, spec)
+        VALUES (${runId}, 'assets', ${w.shotRef}, ${w.executor}, ${json(w.spec)}::text::jsonb)
+      `;
     }
   }
+  if (!following) {
+    await tx`UPDATE pipeline_runs SET state = 'done', finished_at = now() WHERE id = ${runId}`;
+    return;
+  }
+  await insertPending(tx, runId, following, "", 0);
   await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId} AND state = 'waiting-human'`;
 }
 
@@ -573,7 +605,12 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
   // A revision cannot fix a provider terms or render problem, so production stages ask the owner instead.
   const staged = isProductionStage(stage) ? productionDecision(raw) : raw;
   // A trial (and every Hermes render) is never approved or published by the policy: the owner scores and decides.
-  const decision = outcome.final ? guardFinalDecision(staged, run.config.stylePack ?? null) : staged;
+  const guarded = outcome.final ? guardFinalDecision(staged, run.config.stylePack ?? null) : staged;
+  // A review point of the pack's workflow (style.json workflow.review): the owner looks at it whatever the level.
+  const decision =
+    !outcome.final && alwaysReviewed(run.config, stage) && (guarded.action === "auto-approve" || guarded.action === "auto-publish")
+      ? { action: "ask-owner" as const, reason: `This style's workflow has the owner check the ${stageLabel(stage).toLowerCase()} every time` }
+      : guarded;
   const base = { result: outcome.result, feedback, autoRevisions, ...(gate ? { gate } : {}), ...(outcome.extra ?? {}) };
   const summary = isProductionStage(stage) ? productionSummary(stage, outcome.result) : stageSummary(stage, outcome.result);
   const issues = outcome.issues ?? (gate && !gate.passed ? gate.issues : []);
@@ -585,6 +622,7 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
     ...(outcome.recheckedAt ? { recheckedAt: outcome.recheckedAt } : {}),
     ...(outcome.notes && outcome.notes.length > 0 ? { notes: outcome.notes } : {}),
     ...(outcome.voice ? { voice: outcome.voice } : {}),
+    ...(isPlanStage(stage) ? planReview(stage, outcome.result) : {}),
   };
   return { decision, base, summary, issues, reason, detail, autoRevisions, result: outcome.result };
 }
@@ -728,7 +766,7 @@ export async function reapStuckStages(): Promise<string[]> {
     const sql = db();
     const stuck = await sql`
       SELECT id FROM pipeline_stages
-      WHERE state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int) AND stage IN ('idea', 'research', 'script', 'storyboard')
+      WHERE state = 'running' AND started_at < now() - make_interval(mins => ${STUCK_MINUTES}::int) AND stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief')
     `;
     for (const row of stuck) {
       try {
@@ -756,7 +794,7 @@ export async function reapStuckStages(): Promise<string[]> {
     const orphaned = await sql`
       SELECT r.id FROM pipeline_runs r
       WHERE r.state = 'running'
-        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'assets', 'voice', 'render', 'qc')
+        AND EXISTS (SELECT 1 FROM pipeline_stages p WHERE p.run_id = r.id AND p.state = 'pending' AND p.stage IN ('idea', 'research', 'script', 'storyboard', 'scene-spec', 'skill-brief', 'assets', 'voice', 'render', 'qc')
           AND (p.not_before IS NULL OR p.not_before <= now()))
         AND NOT EXISTS (SELECT 1 FROM pipeline_stages q WHERE q.run_id = r.id AND q.state = 'running')
     `;
@@ -802,7 +840,11 @@ export type DecideResult = { ok: true; runId: string; message: string } | { ok: 
 
 const CLOSED = "This run is already finished or cancelled";
 
-function approveMessage(stage: RunStage): string {
+function approveMessage(stage: RunStage, next: RunStage | null = null): string {
+  if (isPlanStage(stage)) {
+    const what = stage === "scene-spec" ? "scene spec" : "skill brief";
+    return next === "voice" ? `Approved. The ${what} is ready and the studio records the narration next.` : `Approved. The ${what} is ready and Hermes renders the video next.`;
+  }
   switch (stage) {
     case "storyboard":
       return "Approved. The storyboard is ready and asset sourcing comes next.";
@@ -858,6 +900,9 @@ export async function decideReview(input: {
       if (refusal) return { ok: false, error: refusal };
     }
     const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
+    // The run's own stage list: revisions land on a stage this run has (a scene-spec run has no storyboard).
+    const [runCfg] = await sql`SELECT config FROM pipeline_runs WHERE id = ${runId}`;
+    const stages = runStagesOf(parseRunConfig(runCfg?.config));
 
     let target: RunStage = stage;
     // A script fit: Hermes rewrites the script to a length that fits and only the voice is made again. Asked for with
@@ -880,10 +925,11 @@ export async function decideReview(input: {
         target = "voice";
       } else if (isProductionStage(stage)) {
         // The Hermes classifier only knows the four director stages, so production notes are sorted by keywords.
-        target = revisionTarget(null, note, stage);
+        target = revisionTarget(null, note, stage, stages);
       } else {
-        const c = await hermesJson(classifyPrompt(note, stage), validateClassification, { retries: 1, timeoutMs: 45_000, queueTimeoutMs: 5_000 });
-        target = revisionTarget(c.ok ? c.value.stage : null, note, stage);
+        // A scene spec or skill brief is asked about as the storyboard it stands for; the answer maps back to the run's list.
+        const c = await hermesJson(classifyPrompt(note, isPlanStage(stage) ? "storyboard" : stage), validateClassification, { retries: 1, timeoutMs: 45_000, queueTimeoutMs: 5_000 });
+        target = revisionTarget(c.ok ? c.value.stage : null, note, stage, stages);
       }
     }
     let chosen: Idea | null = null;
@@ -910,14 +956,14 @@ export async function decideReview(input: {
       if (decision === "approve") {
         if (latest.state !== "waiting-human") throw new DecisionError("This stage is no longer waiting for you");
         await approveStage(tx, runId, latest.id as string, stage, chosen ? { chosenIdea: chosen, auto: false } : { auto: false });
-        message = approveMessage(stage);
+        message = approveMessage(stage, nextRunStage(stage, stages));
         return;
       }
       if (decision === "override") {
         // Only offered for soft voice problems (decisionOptions); never for terms, clipping or language.
         if (latest.state !== "waiting-human") throw new DecisionError("This stage is no longer waiting for you");
         await approveStage(tx, runId, latest.id as string, stage, { auto: false, override: { by: input.userId, at: new Date().toISOString(), issues: storedIssues } });
-        message = `Approved anyway. ${approveMessage(stage).replace(/^Approved\. /, "")}`;
+        message = `Approved anyway. ${approveMessage(stage, nextRunStage(stage, stages)).replace(/^Approved\. /, "")}`;
         return;
       }
       if (fitRequest) {
@@ -927,7 +973,8 @@ export async function decideReview(input: {
         await insertPending(tx, runId, "voice", note, 0, { tighten: fitRequest });
         await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
         const secs = typeof fitRequest.targetSec === "number" ? Math.round(fitRequest.targetSec) : 0;
-        message = `Hermes is fitting the script to about ${secs} seconds. The storyboard and every image are kept; only the voice is recorded again.`;
+        const kept = stages.includes("assets") ? "The storyboard and every image are kept" : stages.includes("scene-spec") ? "The scene spec is kept" : "The plan is kept";
+        message = `Hermes is fitting the script to about ${secs} seconds. ${kept}; only the voice is recorded again.`;
         return;
       }
       if (decision === "reject") {
