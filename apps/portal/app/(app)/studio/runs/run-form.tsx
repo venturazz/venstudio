@@ -244,8 +244,13 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
               {trialTemplates.map((t) => (
                 <li key={t.id} className="flex flex-wrap items-center gap-2 text-sm" data-testid={`trial-style-${t.styleId}`}>
                   <Badge tone="warn">{TRIAL_BADGE}</Badge>
-                  <span className="min-w-0 break-words" data-testid={t.research ? "hermes-render-label" : undefined}>
-                    {researchLabel(t)}
+                  {t.research && (
+                    <Badge tone="warn">
+                      <span data-testid="hermes-render-label">{HERMES_RENDER_LABEL}</span>
+                    </Badge>
+                  )}
+                  <span className="min-w-0 break-words">
+                    {t.label}
                     {t.version ? <span className="text-xs text-muted"> v{t.version}</span> : null}
                   </span>
                   <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${researchLabel(t)}`}>
