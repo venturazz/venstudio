@@ -25,7 +25,7 @@ import {
   type StageRow,
 } from "./director.ts";
 import { giveUpMessage, orderFailureCause, pauseMessage, systemicPause, waitExpired, type FailureClass } from "../studio/pacing.ts";
-import { assetsGate, combineGates, PUBLISH_GATES, qcSummary, voiceAssessment, type GateId, type GateResult } from "../studio/qc.ts";
+import { assetsGate, combineGates, qcSummary, voiceAssessment, type GateId, type GateResult } from "../studio/qc.ts";
 import { aiDisclosureRequired, type ProvenanceRecord } from "../studio/provenance.ts";
 import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind, type ProviderTerms } from "../studio/asset-plan.ts";
 import { providerRowsUsed } from "../studio/terms-review.ts";
@@ -78,6 +78,10 @@ import {
   type OrderSpec,
 } from "../studio/production.ts";
 import type { ProductionStage } from "../studio/engine.ts";
+import { finalGatesFor, runRecipeOf, runStagesOf } from "../studio/recipes.ts";
+import { readSceneSpec, sceneSpecShots } from "../studio/scene-spec.ts";
+import { readSkillBrief, skillBriefShots, type SkillBrief } from "../studio/skill-brief.ts";
+import { ensureRunPlate } from "./plate.ts";
 
 /**
  * Phase 4 stage drivers. Each work order is claimed on its own (FOR UPDATE SKIP LOCKED), so a crash loses at most
@@ -509,12 +513,25 @@ async function assetsConclusion(sql: Q, runId: string, template: Template, provi
   return { result, gate, media, providers: providerRowsUsed(uses) };
 }
 
-/** The approved storyboard's shots and planned length (sum of the shots), or null when it cannot be read. */
+/**
+ * The approved plan's shots and planned length (sum of the shots), or null when it cannot be read: the storyboard, or
+ * in a workflow without pictures the scene spec or the skill brief that stands in its place (recipes.ts).
+ */
 async function storyboardShape(q: Q, runId: string): Promise<{ shots: Shot[]; plannedSec: number } | null> {
   const out = await latestPassedOutput(q, runId, "storyboard");
-  const board = validateStoryboard(out?.result);
-  if (!board.ok) return null;
-  return { shots: board.value.shots, plannedSec: board.value.shots.reduce((n, s) => n + s.seconds, 0) };
+  let shots: Shot[] | null = null;
+  if (out) {
+    const board = validateStoryboard(out.result);
+    shots = board.ok ? board.value.shots : null;
+  } else {
+    const spec = await latestPassedOutput(q, runId, "scene-spec");
+    const brief = spec ? null : await latestPassedOutput(q, runId, "skill-brief");
+    const s = spec ? readSceneSpec(spec.result) : null;
+    const b = brief ? readSkillBrief(brief.result) : null;
+    shots = s ? sceneSpecShots(s) : b ? skillBriefShots(b) : null;
+  }
+  if (!shots) return null;
+  return { shots, plannedSec: shots.reduce((n, s) => n + s.seconds, 0) };
 }
 
 /** The approved script (the newest passed attempt, which a script fit replaces), with its attempt number. */
@@ -841,24 +858,37 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
       return;
     }
   }
-  const boardOut = await latestPassedOutput(sql, run.id, "storyboard");
-  const board = validateStoryboard(boardOut?.result);
+  // The run's plan: the storyboard (image-sequence, and every run from before workflows), the scene spec or the brief.
+  const recipe = runRecipeOf(run.config);
+  const planStage = recipe === "scene-spec" ? "scene-spec" : recipe === "hermes-skill" ? "skill-brief" : "storyboard";
+  const boardOut = await latestPassedOutput(sql, run.id, planStage);
+  const board = recipe === "image-sequence" ? validateStoryboard(boardOut?.result) : null;
+  const spec = recipe === "scene-spec" ? readSceneSpec(boardOut?.result) : null;
+  const brief: SkillBrief | null = recipe === "hermes-skill" ? readSkillBrief(boardOut?.result) : null;
+  const planShots: Shot[] | null = board ? (board.ok ? board.value.shots : null) : spec ? sceneSpecShots(spec) : brief ? skillBriefShots(brief) : null;
   const scriptOut = await latestPassedOutput(sql, run.id, "script");
   const script = validateScript(scriptOut?.result);
   const voiceOut = await latestPassedOutput(sql, run.id, "voice");
   const voiceResult = toObject(voiceOut?.result);
-  if (!board.ok || !script.ok) {
-    await recordStageError(run.id, st.id, "render", "The approved storyboard or script is missing");
+  if (!planShots || !script.ok) {
+    const what = recipe === "scene-spec" ? "scene spec" : recipe === "hermes-skill" ? "skill brief" : "storyboard";
+    await recordStageError(run.id, st.id, "render", `The approved ${what} or script is missing`);
     return;
   }
   const done = await sql`SELECT shot_ref, asset_id FROM work_orders WHERE run_id = ${run.id} AND stage = 'assets' AND state = 'done' AND asset_id IS NOT NULL`;
   const shotAssets: Record<string, string> = {};
   for (const d of done) shotAssets[(d.shot_ref as string | null) ?? ""] = d.asset_id as string;
+  if (recipe === "scene-spec") {
+    // No picture is generated: every shot gets the run's plain plate, because the render contract carries one per shot.
+    const f = VIDEO_FORMATS[run.config.format];
+    const plate = await ensureRunPlate(run, { width: f.width, height: f.height });
+    workOrdersFromStoryboard(planShots).forEach((w) => (shotAssets[w.shotRef] = plate));
+  }
   // Same pick as the preview render: the newest font in the library. Without one the render runs without captions.
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
-  const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
+  const shotSpecs = workOrdersFromStoryboard(planShots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
   // A pack the catalogue does not know (an html-capture adaptation, a research pack) plans and renders from its own
   // contract (styleFromPack), never as stills by default.
   const packStyle = await packStyleFor(template.styleId);
@@ -867,12 +897,14 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   if (renderParams && isPortalEngine(renderParams.engine)) {
     await runHermesRenderStage(run, st, template, {
       style: packStyle,
-      shots: board.value.shots,
+      shots: planShots,
       shotRefs: shotSpecs.map((x) => x.shotRef),
       captions: captionLines(script.value.script),
       voiceResult,
       shotAssets,
       transitionSec: renderParams.transitionSec,
+      brief,
+      script: script.value.script,
     });
     return;
   }
@@ -893,7 +925,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const gate = gateCapabilities(workerCapabilities);
   const engine = renderParams?.engine ?? DEFAULT_RENDER_ENGINE;
   // Read once, outside the closure, so the narrowing above holds.
-  const boardShots = board.value.shots;
+  const boardShots = planShots;
   const captions = captionLines(script.value.script);
   // A fitted narration plays at its tempo: the shots, captions and video length are planned for the played length,
   // and the worker (0.6.0+) applies the tempo. Without a fit the payload is exactly what it was before.
@@ -1017,6 +1049,9 @@ async function runHermesRenderStage(
     voiceResult: Record<string, unknown>;
     shotAssets: Record<string, string>;
     transitionSec: number;
+    /** hermes-skill workflow: the approved skill brief the skill renders from. Null: the storyboard and pictures. */
+    brief?: SkillBrief | null;
+    script?: string;
   },
 ): Promise<void> {
   const sql = db();
@@ -1051,6 +1086,9 @@ async function runHermesRenderStage(
     };
   });
   const durationSec = narrationSec > 0 ? narrationSec : shots.reduce((a, s) => a + s.seconds, 0);
+  // A skill that voices itself (hermes.voice skill): the run has no voice stage, the skill records from the script.
+  const brief = i.brief ?? null;
+  const skillVoice = brief !== null && !runStagesOf(run.config).includes("voice");
   // Marks the stage as a portal render, so the reaper waits for Hermes instead of looking for a worker job.
   await mergeStageOutput(st.id, { renderer: "hermes" });
   const rendered = await renderWithHermes({
@@ -1068,6 +1106,8 @@ async function runHermesRenderStage(
     packVersion: pack.version,
     contract: await packContract(pack.id),
     skill,
+    ...(brief ? { brief: { skill: brief.skill, format: brief.format, shots: brief.shots, ...(brief.text ? { text: brief.text } : {}) } } : {}),
+    ...(skillVoice ? { voice: "skill" as const, script: i.script ?? "" } : {}),
   });
   if (!rendered.ok) {
     if (rendered.cause === "busy" && rendered.busyUntil) await deferStage(run.id, st.id, rendered.busyUntil, rendered.error);
@@ -1090,6 +1130,14 @@ async function runHermesRenderStage(
     runId: run.id,
     channelId: run.channelId,
     hermesSkill: skill?.name ?? null,
+    ...(brief
+      ? {
+          basis: v.voice
+            ? `this run's skill brief and script, voiced by the skill with ${v.voice.backend}${v.voice.model ? ` (${v.voice.model})` : ""}`
+            : "this run's skill brief and narration",
+          narration: v.voice ? { by: "hermes-skill" as const, provider: v.voice.provider, backend: v.voice.backend, model: v.voice.model } : null,
+        }
+      : {}),
   });
   await sql`
     INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
@@ -1114,7 +1162,24 @@ async function runHermesRenderStage(
     stylePack: pack,
     researchOnly: true,
     sceneStarts: [] as number[],
+    ...(brief ? { workflow: "hermes-skill", brief: true } : {}),
+    ...(v.voice ? { narrationBy: { by: "hermes-skill", provider: v.voice.provider, backend: v.voice.backend, model: v.voice.model } } : {}),
   };
+  if (v.voice) {
+    // The skill's own voice is a voice like any other: its backend is a provider row, and its terms gate the narration.
+    const name = normalizeProvider(v.voice.backend || v.voice.provider);
+    await ensureProvider(name, "tts");
+    const base: GateResult = { gate: "G-voice", passed: true, issues: [], executor: "hermes-skill" };
+    const gate = addGateIssues(base, providerTermsIssues([{ title: "Narration (recorded by the skill)", provider: name, kind: "tts" }], await listProviderTerms()));
+    await concludeStage(run, st, template, {
+      result,
+      gate,
+      extra: { renderer: "hermes" },
+      media: { videoAssetId: saved.assetId, voiceProvider: name },
+      providers: [{ name, kind: "tts", count: 1 }],
+    });
+    return;
+  }
   await concludeStage(run, st, template, { result, gate: null, extra: { renderer: "hermes" }, media: { videoAssetId: saved.assetId } });
 }
 
@@ -1435,7 +1500,8 @@ async function completeQc(jobId: string): Promise<boolean> {
     return true;
   }
   const gates = await latestRunGates(db(), runId);
-  const qc = combineGates(gates, template, PUBLISH_GATES);
+  // A workflow without an assets stage never stores G-assets, so the final decision does not wait for it.
+  const qc = combineGates(gates, template, finalGatesFor(runStagesOf(run.config)));
   const issues = gates.filter((g) => !g.passed).flatMap((g) => g.issues);
   const renderOut = await latestPassedOutput(db(), runId, "render");
   const videoAssetId = asUuid(toObject(renderOut?.result).assetId);

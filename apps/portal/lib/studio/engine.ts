@@ -9,9 +9,22 @@ export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "scr
 /** Phase 4 stages. They are not model calls: assets runs work orders, voice runs TTS, render and qc wait for a worker job. */
 export type ProductionStage = "assets" | "voice" | "render" | "qc";
 export const PRODUCTION_STAGES: readonly ProductionStage[] = ["assets", "voice", "render", "qc"];
-export type RunStage = DirectorStage | ProductionStage;
-/** Every stage the run engine executes, in order. */
+/**
+ * Hermes stages that stand where the storyboard stands in a workflow without pictures (recipes.ts): the scene spec of a
+ * data-driven page, and the brief a Hermes skill renders from. Model calls, like the storyboard.
+ */
+export type PlanStage = "scene-spec" | "skill-brief";
+export const PLAN_STAGES: readonly PlanStage[] = ["scene-spec", "skill-brief"];
+export type RunStage = DirectorStage | PlanStage | ProductionStage;
+/**
+ * The stages of a run started before workflows, and of every image-sequence run (recipes.ts): the original pipeline,
+ * in order. A run's own list is in its config (runStagesOf); this stays the list for runs that have none.
+ */
 export const RUN_STAGES: readonly RunStage[] = [...ENGINE_STAGES, ...PRODUCTION_STAGES];
+/** Every stage kind the engine runs, in canonical order (the plan stages share the storyboard's place). */
+export const STAGE_KINDS: readonly RunStage[] = ["idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "assets", "voice", "render", "qc"];
+/** Where a kind sits in a run: the storyboard and the plan stages share a place, so a note about one finds the other. */
+const SLOT: Record<RunStage, number> = { idea: 0, research: 1, script: 2, storyboard: 3, "scene-spec": 3, "skill-brief": 3, assets: 4, voice: 5, render: 6, qc: 7 };
 /** Worst case for one stage: hermesJson makes up to 3 asks, each up to 180 s plus its wait for a gate slot. */
 export const HERMES_WORST_CASE_SEC = 3 * HERMES_ASK_WORST_SEC;
 /** A stage that has been running this long is treated as lost (restart, crash) and failed: worst case plus 6 minutes for the gate and DB work. */
@@ -27,17 +40,41 @@ export function isProductionStage(s: string): s is ProductionStage {
   return PRODUCTION_STAGES.some((e) => e === s);
 }
 
+export function isPlanStage(s: string): s is PlanStage {
+  return PLAN_STAGES.some((e) => e === s);
+}
+
+/** A stage Hermes answers (idea, research, script, storyboard, scene spec, skill brief), as opposed to a production stage. */
+export function isModelStage(s: string): s is DirectorStage | PlanStage {
+  return isEngineStage(s) || isPlanStage(s);
+}
+
+/** A stage kind the engine runs, in any workflow. */
 export function isRunStage(s: string): s is RunStage {
-  return RUN_STAGES.some((e) => e === s);
+  return STAGE_KINDS.some((e) => e === s);
 }
 
-export function stageIndex(stage: RunStage): number {
-  return RUN_STAGES.indexOf(stage);
+/** Position of `stage` in a run's list (RUN_STAGES for runs without one), -1 when the run has no such stage. */
+export function stageIndex(stage: RunStage, stages: readonly RunStage[] = RUN_STAGES): number {
+  return stages.indexOf(stage);
 }
 
-/** The stage after `stage` across the whole run, or null after the last one (qc), where the owner gives the final approval. */
-export function nextRunStage(stage: RunStage): RunStage | null {
-  return RUN_STAGES[stageIndex(stage) + 1] ?? null;
+/** The stage after `stage` in the run's list, or null after the last one (qc), where the owner gives the final approval. */
+export function nextRunStage(stage: RunStage, stages: readonly RunStage[] = RUN_STAGES): RunStage | null {
+  const i = stageIndex(stage, stages);
+  return i < 0 ? null : (stages[i + 1] ?? null);
+}
+
+/**
+ * The stage of this run's list that stands for `kind`: the kind itself when the run has it, else the latest stage of
+ * the list at or before its place (a note about the pictures in a scene-spec run restarts the scene spec; a note about
+ * the voice of a skill that voices itself restarts the skill brief).
+ */
+export function stageInRun(kind: RunStage, stages: readonly RunStage[] = RUN_STAGES): RunStage {
+  if (stages.includes(kind)) return kind;
+  let best: RunStage = stages[0] ?? "idea";
+  for (const s of stages) if (SLOT[s] <= SLOT[kind]) best = s;
+  return best;
 }
 
 /** The stage after `stage`, or null after the storyboard (work orders and assets come next, in Phase 4). */
@@ -49,7 +86,7 @@ export function nextStage(stage: DirectorStage): DirectorStage | null {
  * Which stage an owner's revision note restarts. The classifier's answer wins; without one, keywords decide; a
  * note with no keyword restarts the stage the owner was looking at. The result is never later than that stage.
  */
-export function revisionTarget(classified: RunStage | null, note: string, own: RunStage): RunStage {
+export function revisionTarget(classified: RunStage | null, note: string, own: RunStage, stages: readonly RunStage[] = RUN_STAGES): RunStage {
   let target: RunStage;
   if (classified) target = classified;
   else {
@@ -58,7 +95,9 @@ export function revisionTarget(classified: RunStage | null, note: string, own: R
     // The two fallbacks differ only when no keyword matched.
     target = a === b ? a : own;
   }
-  return stageIndex(target) > stageIndex(own) ? own : target;
+  // A kind this run does not have (a storyboard or pictures in a scene-spec run) is the run's stage in its place.
+  target = stageInRun(target, stages);
+  return stageIndex(target, stages) > stageIndex(own, stages) ? own : target;
 }
 
 export function isStuck(startedAt: Date | null, now: Date, minutes: number = STUCK_MINUTES): boolean {
@@ -77,8 +116,14 @@ export function isOrphaned(runState: string, stages: readonly { stage: string; s
 }
 
 /** One short line for the review card and the run timeline. */
-export function stageSummary(stage: DirectorStage, result: unknown): string {
+export function stageSummary(stage: DirectorStage | PlanStage, result: unknown): string {
   const r = (typeof result === "object" && result !== null ? result : {}) as Record<string, unknown>;
+  if (stage === "scene-spec" || stage === "skill-brief") {
+    const list = Array.isArray(r.scenes) ? r.scenes : Array.isArray(r.shots) ? r.shots : [];
+    const secs = list.reduce((sum: number, s) => sum + (typeof s === "object" && s !== null && typeof (s as Record<string, unknown>).seconds === "number" ? ((s as Record<string, unknown>).seconds as number) : 0), 0);
+    const what = stage === "scene-spec" ? "scene" : "shot";
+    return `${list.length} ${what}${list.length === 1 ? "" : "s"}, about ${Math.round(secs)} seconds${stage === "skill-brief" && typeof r.skill === "string" && r.skill ? `, for ${r.skill}` : ""}`;
+  }
   if (stage === "idea") {
     const n = Array.isArray(r.ideas) ? (r.ideas as Idea[]).length : 0;
     return `${n} idea${n === 1 ? "" : "s"}`;

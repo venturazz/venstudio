@@ -8,7 +8,8 @@ import { AutoRefresh } from "@/components/auto-refresh.tsx";
 import { SubmitButton } from "@/components/client.tsx";
 import { Alert, Badge, Card, CardBody, CardHeader, LinkButton, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { stageLabel } from "@/lib/studio/review.ts";
-import { isEngineStage, isProductionStage, stageSummary } from "@/lib/studio/engine.ts";
+import { isModelStage, isProductionStage, isRunStage, stageSummary } from "@/lib/studio/engine.ts";
+import { RECIPES, runRecipeOf, runStagesOf } from "@/lib/studio/recipes.ts";
 import { productionSummary } from "@/lib/studio/production.ts";
 import { waitingText } from "@/lib/studio/pacing.ts";
 import { isTrialRun, parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
@@ -20,7 +21,7 @@ export const metadata = { title: "Hermes run" };
 export const dynamic = "force-dynamic";
 
 function outputText(stage: string, output: Record<string, unknown>): string {
-  if (!isEngineStage(stage) && !isProductionStage(stage)) return "";
+  if (!isRunStage(stage)) return "";
   const result = output.result;
   if (result === undefined || result === null) return "";
   let text = "";
@@ -61,6 +62,12 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const storyboardReady = Boolean(board) && assetsPending && run.state === "running";
   // A storyboard that is ready but not yet approved has nothing running, so there is nothing to poll for.
   const live = run.state === "running" && !storyboardReady;
+  // The run's own stage list, fixed when it started (a run from before workflows has the original list).
+  const runConfig = parseRunConfig(run.config);
+  const flowStages = runStagesOf(runConfig);
+  const recipe = RECIPES[runRecipeOf(runConfig)];
+  const stateOf = new Map(stages.map((s) => [s.stage, s.state] as const));
+  const makesPictures = flowStages.includes("assets");
 
   return (
     <>
@@ -134,6 +141,19 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card>
           <CardHeader title="Stages" description="The newest attempt of each stage." />
+          <div className="space-y-1 border-b border-border px-4 pb-3 text-xs sm:px-5" data-testid="run-workflow" data-recipe={recipe.id}>
+            <p className="text-muted">
+              Workflow: {runConfig.workflow ? recipe.label : `${recipe.label} (started before workflows)`}
+            </p>
+            <ol className="flex flex-wrap items-center gap-1">
+              {flowStages.map((k, i) => (
+                <li key={k} className="flex items-center gap-1" data-testid={`workflow-step-${k}`} data-state={stateOf.get(k) ?? "not-started"}>
+                  {i > 0 && <span aria-hidden="true" className="text-muted">→</span>}
+                  <Badge tone={stateOf.get(k) === "passed" ? "ok" : stateOf.get(k) === "failed" ? "danger" : stateOf.get(k) ? "info" : "neutral"}>{stageLabel(k)}</Badge>
+                </li>
+              ))}
+            </ol>
+          </div>
           <ul className="divide-y divide-border">
             {stages.map((s) => {
               const text = outputText(s.stage, s.output);
@@ -142,7 +162,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                 ? ""
                 : isProductionStage(s.stage)
                   ? productionSummary(s.stage, s.output.result)
-                  : isEngineStage(s.stage)
+                  : isModelStage(s.stage)
                     ? stageSummary(s.stage, s.output.result)
                     : "";
               const jobId = typeof s.output.jobId === "string" ? s.output.jobId : "";
@@ -184,9 +204,13 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           <Card>
             <CardHeader title="Work orders" />
             <CardBody className="space-y-2 text-sm">
-              <p>
-                {workOrders.length} work order{workOrders.length === 1 ? "" : "s"} from the storyboard.
-              </p>
+              {makesPictures || workOrders.length > 0 ? (
+                <p>
+                  {workOrders.length} work order{workOrders.length === 1 ? "" : "s"} from the storyboard.
+                </p>
+              ) : (
+                <p data-testid="no-work-orders">This workflow makes no pictures, so it has no work orders.</p>
+              )}
             </CardBody>
             {workOrders.length > 0 && (
               <ul className="divide-y divide-border border-t border-border" data-testid="work-orders">

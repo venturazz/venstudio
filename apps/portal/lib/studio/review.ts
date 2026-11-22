@@ -23,6 +23,8 @@ export const STAGE_LABELS: Record<string, string> = {
   research: "Research",
   script: "Script",
   storyboard: "Storyboard",
+  "scene-spec": "Scene spec",
+  "skill-brief": "Skill brief",
   assets: "Assets",
   voice: "Voice",
   render: "Video",
@@ -222,6 +224,11 @@ export interface ReviewPayload {
   notes?: string[];
   /** Voice cards: what the voice gate found and which fixes would work. Read with parseVoiceFix. */
   voice?: VoiceFix;
+  /**
+   * Scene spec and skill brief cards (workflows without pictures, plan-review.ts): the plan as one line per scene or
+   * shot, the brief's project text, and a note on what the card shows.
+   */
+  plan?: { kind: "scene-spec" | "skill-brief"; lines: string[]; text?: string; note?: string };
 }
 
 export interface ReviewMedia {

@@ -39,6 +39,10 @@ export interface GeneratedAssetInput {
   createdBy?: string | null;
   /** Hermes render of a research pack: the Hermes skill it was asked to render with (e.g. "/graph"). Kept in metadata. */
   hermesSkill?: string | null;
+  /** hermes-render: what the video was made from, named in its licence (buildProvenance basis). */
+  basis?: string;
+  /** hermes-render with hermes.voice skill: who recorded the narration (the voice backend Hermes named). Kept in metadata. */
+  narration?: { by: "hermes-skill"; provider: string; backend: string; model: string } | null;
 }
 
 export interface SavedAsset {
@@ -117,6 +121,7 @@ export async function saveGeneratedAsset(input: GeneratedAssetInput): Promise<Sa
     originUrl: input.originUrl,
     licence: input.licence,
     shotRef: input.shotRef,
+    ...(input.basis ? { basis: input.basis } : {}),
   });
   const promptSha256 = input.prompt ? createHash("sha256").update(input.prompt).digest("hex") : null;
   const metadata: Record<string, unknown> = {
@@ -126,6 +131,7 @@ export async function saveGeneratedAsset(input: GeneratedAssetInput): Promise<Sa
     promptSha256,
     generatedAt: new Date().toISOString(),
     ...(input.hermesSkill ? { hermesSkill: input.hermesSkill.slice(0, 64) } : {}),
+    ...(input.narration ? { narration: input.narration } : {}),
   };
   delete metadata.prompt;
 

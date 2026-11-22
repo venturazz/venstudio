@@ -215,6 +215,11 @@ export interface ProvenanceInput {
   /** Required for worker-fetch: the CC0 or public-domain statement. */
   licence?: string;
   shotRef?: string;
+  /**
+   * hermes-render: what the video was made from, for the licence ("this run's skill brief and narration"). Absent: the
+   * storyboard, pictures and narration, as before workflows.
+   */
+  basis?: string;
 }
 
 export interface BuiltProvenance {
@@ -269,7 +274,7 @@ export function buildProvenance(i: ProvenanceInput): BuiltProvenance {
       break;
     case "hermes-render":
       providerKind = "video";
-      license = `Video rendered by ${maker}${model ? ` (${model})` : ""} through Hermes (renderer hermes)${viaPlugin}, from this run's storyboard, pictures and narration. Research only: never published.${backend ? "" : " Hermes did not say which tool rendered it."} Commercial terms are tracked in Settings.`;
+      license = `Video rendered by ${maker}${model ? ` (${model})` : ""} through Hermes (renderer hermes)${viaPlugin}, from ${(i.basis ?? "").trim() || "this run's storyboard, pictures and narration"}. Research only: never published.${backend ? "" : " Hermes did not say which tool rendered it."} Commercial terms are tracked in Settings.`;
       break;
     case "kokoro":
       providerKind = "tts";

@@ -59,6 +59,11 @@ The page says plainly whether the recommended renderer can render here (`rendere
 capabilities only): "A worker reports html-capture", or "needs a renderer that isn't installed: manim (VenStudio has
 no manim renderer yet, so a pack for it stays a draft)". Hermes renders stay research only.
 
+The draft also recommends a workflow (`DraftSpec.workflow`, `lib/studio/recipes.ts`): image-sequence, scene-spec or
+hermes-skill, checked against the renderer the same way the styles validator checks a pack; a draft that names none
+gets the inferred one. A recipe that is not built is kept and said plainly on the page and in the README ("needs a
+workflow that isn't built yet: html-design"), and the exported style.json carries `workflow` only for a built recipe.
+
 "Revise the draft" sends the owner's note with the current draft; at most 5 revisions (`MAX_LAB_REVISIONS`), then
 the page says to edit the exported draft in the styles repository.
 
@@ -101,7 +106,7 @@ columns and constraints.
 
 ## The first packs from claude-animation-skills
 
-`animated-line-graph` and `minimal-line-art` (styles repo, `trial` 0.1.1 since CI run 44981421800 rendered them) adapt the `graph` and
+`animated-line-graph` and `minimal-line-art` (styles repo, `trial` since CI run 44981421800 rendered them; 0.1.2 adds the scene-spec workflow) adapt the `graph` and
 `minimalistic-graphics` skills of github.com/artemnovitckii/claude-animation-skills at `86f70106c9ae` (MIT; fonts
 OFL) to html-capture. Their READMEs say what was adapted and what changed; CI here renders every html-capture pack
 through render-video (`apps/worker/html-capture-render.test.ts`) and with `capture-html` + `check-video.mjs`.

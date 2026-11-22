@@ -344,3 +344,41 @@ test("edge cases: mixed-case schemes are normalised, the study name stays in a D
   const kept = readDraft(d, PACK_IDS.filter((id) => id !== "animated-line-graph"));
   assert.ok(kept && kept.closestPack === null);
 });
+
+test("the draft recommends a workflow: a known recipe that fits the renderer, exported in style.json, honest when it is not built", () => {
+  // Inferred when Hermes names none (and for drafts stored before workflows): html-capture with plates is scene-spec.
+  assert.equal(draft().workflow, "scene-spec");
+  assert.equal(draft({ renderer: "remotion-2d" }).workflow, "image-sequence");
+  const one: ExportSource[] = [{ id: "f", type: "owner-note", ref: "Bigger numbers", refPath: null, licence: "owner", status: "analyzed", findings: null }];
+  const d = draft({ workflow: "scene-spec" });
+  const ex = draftExport({ id: "study-1", title: "Graph study" }, d, one, rendererVerdict("html-capture", ["html-capture"]));
+  const style = JSON.parse(ex.files["packs/calm-growth-graph/style.json"]);
+  assert.deepEqual(style.workflow, { recipe: "scene-spec" });
+  assert.deepEqual(V.validateStyle(style, { dirName: "calm-growth-graph" }), []);
+  assert.deepEqual([ex.workflow.recipe, ex.workflow.implemented], ["scene-spec", true]);
+  assert.match(ex.files["packs/calm-growth-graph/README.md"], /\| Workflow \| `scene-spec`: Scene spec \(data-driven, no pictures\): Idea → Research → Script → Scene spec → Voice → Video → Quality check \|/);
+  // A recipe that is not built yet is kept and said plainly; style.json leaves it out so the validator accepts the draft.
+  const reserved = draft({ workflow: "html-design" });
+  assert.equal(reserved.workflow, "html-design");
+  const rx = draftExport({ id: "s", title: "t" }, reserved, one, rendererVerdict("html-capture", ["html-capture"]));
+  const rs = JSON.parse(rx.files["packs/calm-growth-graph/style.json"]);
+  assert.equal(rs.workflow, undefined);
+  assert.deepEqual(V.validateStyle(rs, { dirName: "calm-growth-graph" }), []);
+  assert.equal(rx.workflow.implemented, false);
+  assert.match(rx.workflow.text, /^needs a workflow that isn't built yet: html-design/);
+  assert.match(rx.files["packs/calm-growth-graph/README.md"], /needs a workflow that isn't built yet: html-design .*style\.json leaves `workflow` out until it is built, so runs would follow scene-spec/);
+  // Unknown or misfitting recipes are fed back to Hermes.
+  const unknown = parseDraftSpec(hermesDraft({ workflow: "slideshow" }), { packIds: PACK_IDS });
+  assert.ok(!unknown.ok && unknown.issues.some((i) => /^workflow must be one of the recipes VenStudio knows: image-sequence, scene-spec, hermes-skill, html-design, engine-project, clip-sequence/.test(i)));
+  const misfit = parseDraftSpec(hermesDraft({ renderer: "ffmpeg-stills", workflow: "scene-spec" }), { packIds: PACK_IDS });
+  assert.ok(!misfit.ok && misfit.issues.some((i) => /^workflow scene-spec does not fit this draft: scene-spec needs html-capture/.test(i)));
+  const hermesFit = parseDraftSpec(hermesDraft({ renderer: "remotion-2d", workflow: "hermes-skill" }), { packIds: PACK_IDS });
+  assert.ok(!hermesFit.ok && hermesFit.issues.some((i) => /hermes-skill needs the hermes renderer/.test(i)));
+  // A stored draft keeps its workflow through readDraft.
+  assert.equal(readDraft(JSON.parse(JSON.stringify(reserved)), PACK_IDS)?.workflow, "html-design");
+  // The synthesis prompt lists every recipe and says which are not built.
+  const [m] = synthesisMessages({ study: { title: "t", goal: "new", basePack: null, notes: "" }, sources: [], engines: [], packs: [], measured: null });
+  assert.match(m.content, /- html-design: Reserved, not built: .* \(not built yet\)/);
+  assert.match(m.content, /- scene-spec: Data-driven/);
+  assert.match(m.content, /"workflow":""/);
+});

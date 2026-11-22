@@ -11,7 +11,9 @@ import {
   HERMES_RENDER_TIMEOUT_MS,
   clipUrlIssues,
   hermesRenderMessages,
+  skillVoiceOf,
   type HermesRenderRequest,
+  type SkillVoice,
 } from "../../studio/hermes-render.ts";
 import { hermesMediaUrlBase, hermesTrustedOrigins, providerOrderHint } from "./hermes-image.ts";
 
@@ -29,6 +31,8 @@ export interface HermesRender {
   model: string;
   /** The /clip/ URL Hermes published the video at. */
   originUrl: string;
+  /** hermes.voice skill: the voice backend the skill recorded the narration with (from the reply), else null. */
+  voice: SkillVoice | null;
 }
 
 export type HermesRenderResult =
@@ -48,6 +52,11 @@ export async function renderWithHermes(request: Omit<HermesRenderRequest, "clipB
     async (reply): Promise<Validated<HermesRender>> => {
       const parsed = parseVideoReply(reply);
       if (!parsed.ok) return { ok: false, issues: parsed.issues };
+      // A skill that records its own voice must say with what, so the narration's provenance and terms are known.
+      const voice = request.voice === "skill" ? skillVoiceOf(reply) : null;
+      if (request.voice === "skill" && !voice) {
+        return { ok: false, issues: ['Name the voice backend you recorded the voiceover with: "voice":{"provider":"<the voice tool>","source":"<the backend that spoke it>","model":"<model>"}'] };
+      }
       const urlIssues = clipUrlIssues(parsed.source, clipBase);
       if (urlIssues.length > 0) return { ok: false, issues: urlIssues };
       let bytes: Uint8Array;
@@ -63,7 +72,7 @@ export async function renderWithHermes(request: Omit<HermesRenderRequest, "clipB
       const maker = resolveHermesMaker({ provider: parsed.provider, backend: parsed.backend }, providerOrderHint());
       return {
         ok: true,
-        value: { bytes, info, provider: maker.provider, backend: maker.backend, plugin: maker.plugin, model: parsed.model, originUrl: parsed.source.value },
+        value: { bytes, info, provider: maker.provider, backend: maker.backend, plugin: maker.plugin, model: parsed.model, originUrl: parsed.source.value, voice },
       };
     },
     // Hermes is one agent: while it renders, the gate's slot is held, so other Hermes asks wait (research only, rare).
