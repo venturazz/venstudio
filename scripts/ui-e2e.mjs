@@ -1760,6 +1760,8 @@ try {
   step("production: the render mixed the tagged music track as its bed, never the narration");
   {
     const musicId = dbValue(`SELECT id FROM assets WHERE title = 'Test music bed' AND 'music' = ANY(tags) ORDER BY created_at DESC LIMIT 1`);
+    const productionRunIdForBed = (productionRunHref ?? "").match(/[0-9a-f-]{36}/)?.[0] ?? "";
+    if (musicId !== null && !productionRunIdForBed) throw new Error(`no production run id to check the bed against (${productionRunHref})`);
     if (musicId === null) {
       console.log("   no database access (UI_DB unset): the bed check is skipped");
     } else {
@@ -1767,7 +1769,8 @@ try {
       const row = dbValue(
         `SELECT coalesce(payload->'audio'->'bed'->>'assetId', 'none') || ' ' || coalesce(payload->>'narrationAssetId', '') || ' ' || ` +
           `coalesce(payload->'audio'->'ambient'->>'color', 'none') || ' ' || (payload->'inputs' ? '${musicId}')::text || ' ' || (payload ? 'captionStyle')::text ` +
-          `FROM jobs WHERE type = 'render-video' AND payload ? 'runId' ORDER BY created_at DESC LIMIT 1`,
+          // The production run's own render: later trial runs (batch, lab) queue newer render jobs of their own.
+          `FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${productionRunIdForBed}' ORDER BY created_at DESC LIMIT 1`,
       );
       const [bedId, narrationId, ambient, listed, styled] = (row ?? "").split(" ");
       if (bedId !== musicId) {
