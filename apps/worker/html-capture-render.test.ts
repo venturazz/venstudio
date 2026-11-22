@@ -19,6 +19,8 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  RENDERERS,
+  parseRenderSpec,
   captureHtml,
   clearHtmlCaptureCache,
   findChromium,
@@ -128,7 +130,10 @@ for (const lockPack of HTML_PACKS) {
     assert.equal(result.renderer, "html-capture");
     assert.deepEqual(result.htmlPack, { id: lockPack.id, version: installed.packs.find((p) => p.id === lockPack.id)?.version });
     assert.equal(result.frames, frames);
-    assert.equal(result.captionsBurned, !drawsCaptions, drawsCaptions ? "the page draws the captions, so nothing is burned" : "the pack does not draw captions, so the shared burn drew them");
+    // captionsBurned means "the captions are in the video", as on the Remotion path: drawn by the page when the pack
+    // declares drawsCaptions, burned by ffmpeg otherwise. Which one did it is the renderer's caption mode.
+    assert.equal(result.captionsBurned, true, "the captions are in the video");
+    assert.equal(RENDERERS["html-capture"].captions(parseRenderSpec(payload), { drawsCaptions } as never), drawsCaptions ? "renderer" : "shared-burn", "the page draws them only when the pack says so; otherwise the shared burn does, never both");
     const video = kept.get("video.mp4") as string;
     const p = probeVideo(video);
     assert.equal(p.video?.codec_name, "h264");
