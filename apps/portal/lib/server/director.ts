@@ -49,10 +49,10 @@ import {
 } from "../studio/engine.ts";
 import { alwaysReviewed, runRecipeOf, runStagesOf, workflowForPack } from "../studio/recipes.ts";
 import { planReview } from "../studio/plan-review.ts";
-import { sceneSpecGate, sceneSpecPrompt, validateSceneSpec } from "../studio/scene-spec.ts";
+import { sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, validateSceneSpec } from "../studio/scene-spec.ts";
 import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill } from "../studio/skill-brief.ts";
 import { decisionOptions, reviewTitle, stageLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
-import { finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
+import { addGateIssues, finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
 import { cancelRunWork, narrationTempoReady, planScriptFit, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
 import { paceForRun } from "./speech-rate.ts";
 import { parseVoiceFix, voiceRevisionRoute, type LengthDirection, type VoiceFix } from "../studio/voice-fit.ts";
@@ -407,6 +407,8 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       sources,
       requiresSources: needs,
     });
+    // A scene-spec run's captions are its script, on screen like the spec: digits in it must be sourced numbers too.
+    if (recipe === "scene-spec") return { ok: true, result: r.value, gate: addGateIssues(gate, scriptNumberIssues(r.value.script, notes)) };
     return { ok: true, result: r.value, gate };
   }
 
@@ -426,9 +428,11 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   }
   if (st.stage === "skill-brief") {
     const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
-    const h = pack?.hermes ?? null;
+    // Without the pack the brief could not follow its skill's mapping: stop instead of writing a generic brief.
+    if (!pack) return { ok: false, error: "This run's style pack could not be read, so the skill brief cannot follow its skill" };
+    const h = pack.hermes ?? null;
     const skill: BriefSkill | null = h ? { name: h.skill, mode: h.mode, voice: h.voice, input: h.input } : null;
-    const r = fromHermes(await hermesJson(skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack?.name ?? template.label, hint), (v) => validateSkillBrief(v, skill)));
+    const r = fromHermes(await hermesJson(skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill)));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: skillBriefGate(template, r.value, narrationSec) };
   }
@@ -969,7 +973,8 @@ export async function decideReview(input: {
         await insertPending(tx, runId, "voice", note, 0, { tighten: fitRequest });
         await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
         const secs = typeof fitRequest.targetSec === "number" ? Math.round(fitRequest.targetSec) : 0;
-        message = `Hermes is fitting the script to about ${secs} seconds. The storyboard and every image are kept; only the voice is recorded again.`;
+        const kept = stages.includes("assets") ? "The storyboard and every image are kept" : stages.includes("scene-spec") ? "The scene spec is kept" : "The plan is kept";
+        message = `Hermes is fitting the script to about ${secs} seconds. ${kept}; only the voice is recorded again.`;
         return;
       }
       if (decision === "reject") {

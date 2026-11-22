@@ -347,3 +347,15 @@ export function readSceneSpec(raw: unknown): SceneSpec | null {
   const r = validateSceneSpec(raw, { contract: { name: "the page", elements: ELEMENT_KINDS, motionTokens: MOTION_TOKENS }, noteCount: 1000, readBack: true });
   return r.ok ? r.value : null;
 }
+
+/**
+ * A scene-spec run burns its script in as captions, so a number written in digits in the script is on screen too: it
+ * must be in a research note that has a source. Numbers spelled out in words are not read. Plain issues, or [].
+ */
+export function scriptNumberIssues(script: string, notes: readonly ResearchNote[]): string[] {
+  const pool = notes.filter((n) => n.sourced && n.sourceUrl).flatMap((n) => numbersInText(`${n.claim} ${n.summary}`));
+  const missing = [...new Set(digitsIn(script))].filter((v) => !pool.some((h) => sameNumber(h, v)));
+  return missing.length > 0
+    ? [`The script says ${missing.slice(0, 8).map(shortNum).join(", ")}, which no sourced research note contains. Its captions are on screen, so numbers must come from the research notes; never invent data.`]
+    : [];
+}

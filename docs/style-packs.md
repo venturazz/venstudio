@@ -224,7 +224,7 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
 | --- | --- | --- |
 | `image-sequence` | idea, research, script, storyboard, assets, voice, render, qc | the six stills packs, `explainer-flat-vector`. Today's pipeline, byte for byte. |
 | `scene-spec` | idea, research, script, **scene-spec**, voice, render, qc | `animated-line-graph`, `minimal-line-art`, `probe-line-graph` (all with `review: ["scene-spec"]`) |
-| `hermes-skill` | idea, research, script, **skill-brief**, voice, render, qc (no voice when `hermes.voice` is `skill`) | the ten `hermes-*` skill packs and `hermes-research-explainer` |
+| `hermes-skill` | idea, research, script, **skill-brief**, voice, render, qc (no voice when `hermes.voice` is `skill`) | the ten `hermes-*` skill packs and `hermes-research-explainer` (all with `review: ["skill-brief"]`) |
 | `html-design`, `engine-project`, `clip-sequence` | reserved | none: refused by the validator and by `startRun`. `html-design` (Hermes writes the page per video) needs the owner's explicit approval before it is built. |
 
 ### How a run's list is chosen and stored
@@ -256,7 +256,9 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   one label per value, values in range, `source` naming a research note. The gate checks pacing and narration coverage
   with the storyboard's shared limits, and that every number (value, series, any digit in a text) is in the research
   note it cites and that note has a source link. A spec with an unsourced number fails, by name: "Scene 3 counter
-  shows 1200 but cites no research note. Numbers must come from the research notes; never invent data."
+  shows 1200 but cites no research note. Numbers must come from the research notes; never invent data." The script of
+  a scene-spec run is burned in as captions, so its script gate also fails a number written in digits that no sourced
+  note contains (numbers spelled out in words are not read).
 - The spec becomes the scene plan and the render payload directly (`sceneSpecShots` → `buildScenePlan` →
   `buildRenderPayload`): the worker contract is unchanged, so no worker bump. The render contract carries a picture per
   shot, so the portal draws one plain-colour plate per run (`lib/studio/plate.ts`, source `generated`, executor
@@ -284,6 +286,18 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
 | New Video | "Workflow: Image sequence: Idea → … → Quality check" under the engine line | "Workflow: Scene spec (data-driven, no pictures): …" | "Workflow: Hermes skill (research only, no pictures): …" |
 | Run page | the run's own steps with their state (`run-workflow`); "Workflow" in Video settings | the same; "This workflow makes no pictures, so it has no work orders." | the same |
 | Review | storyboard card as before; the image grid on the assets card | the scene-spec card (scene list as text, the preview note) | the skill brief card (a line per shot with its spec, the project text) |
+
+### Known limits
+
+- No still preview of the page before the render (no stills mode in the worker); the scene-spec card says so.
+- A skill that voices itself is checked only by its voice backend's provider terms on the render card, and by qc-video
+  on the finished reel (loudness, silence, length); there is no separate narration file to check for language or
+  clipping. When those terms block, the owner confirms them and presses Try again, which asks Hermes to render again
+  (the render card has no "Check the terms again").
+- Some voice-card labels still say "keep the pictures" in runs without pictures.
+- The skill brief's own numbers are not checked against the research notes (research-only rules are as before).
+- Rolling the portal back after 0019 leaves runs with scene-spec or skill-brief stages unclaimed (the old code does
+  not know those kinds); cancel them first.
 
 ### Template Lab
 

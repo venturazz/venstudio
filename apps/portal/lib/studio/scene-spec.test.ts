@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { researchPrompt, SCENE_SPEC_RESEARCH_LINES, type DirectorContext, type ResearchNote } from "./director.ts";
-import { numbersInText, readSceneSpec, sceneSpecGate, sceneSpecLines, sceneSpecPrompt, sceneSpecShots, sourcingIssues, validateSceneSpec, type SpecContract } from "./scene-spec.ts";
+import { numbersInText, readSceneSpec, scriptNumberIssues, sceneSpecGate, sceneSpecLines, sceneSpecPrompt, sceneSpecShots, sourcingIssues, validateSceneSpec, type SpecContract } from "./scene-spec.ts";
 import { buildScenePlan } from "./scene-plan.ts";
 import { buildRenderPayload } from "./render.ts";
 import { packSeedTemplate, parsePack, styleFromPack } from "./style-registry.ts";
@@ -158,4 +158,12 @@ test("the Review card shows the scene list as text and says there is no still pr
   assert.deepEqual(planReview("storyboard", spec.value), {}, "a storyboard card is unchanged");
   assert.deepEqual(readSceneSpec(JSON.parse(JSON.stringify(spec.value))), spec.value, "a stored spec reads back");
   assert.equal(readSceneSpec({ scenes: "x" }), null);
+});
+
+test("a scene-spec script is on screen as captions: digits in it must be sourced numbers too", () => {
+  assert.deepEqual(scriptNumberIssues("Solar grew from 40 gigawatts in 2010 to 1,200 in 2023.", NOTES), []);
+  assert.deepEqual(scriptNumberIssues("Costs fell by 90 percent.", NOTES), [
+    "The script says 90, which no sourced research note contains. Its captions are on screen, so numbers must come from the research notes; never invent data.",
+  ], "note 2 says 90 percent but has no source link");
+  assert.deepEqual(scriptNumberIssues("It grew thirty times.", NOTES), [], "numbers in words are not read");
 });
