@@ -171,6 +171,14 @@ q "UPDATE lab_studies SET draft_state = 'maybe' WHERE id = '$LSTUDY'" >/dev/null
 q "DELETE FROM lab_studies WHERE id = '$LSTUDY'" >/dev/null
 [ "$(q "SELECT count(*) FROM lab_sources")" = "0" ] || fail "a study's sources must go with the study"
 
+echo "== migration 0018: lab trials on the curation log, additive only"
+[ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'style_trial_outcomes' AND column_name = 'lab_trial' AND is_nullable = 'NO' AND column_default = 'false'")" = "1" ] || fail "column style_trial_outcomes.lab_trial missing (or not 'not null default false') after migration 0018"
+LRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e lab trial 0018', '{\"styleId\":\"probe-line-graph\",\"stylePack\":{\"id\":\"probe-line-graph\",\"version\":\"0.1.0\",\"status\":\"lab\",\"trial\":true,\"lab\":true}}') RETURNING id")
+q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed) VALUES ('$LRUN', 'probe-line-graph', '0.1.0', true)" >/dev/null || fail "a 0016-shaped outcome is refused after migration 0018"
+[ "$(q "SELECT lab_trial::text FROM style_trial_outcomes WHERE run_id = '$LRUN'")" = "false" ] || fail "an outcome written without lab_trial is not a normal trial"
+q "UPDATE style_trial_outcomes SET lab_trial = true WHERE run_id = '$LRUN'" >/dev/null || fail "style_trial_outcomes refused lab_trial"
+q "DELETE FROM pipeline_runs WHERE id = '$LRUN'" >/dev/null
+
 echo "== migration 0007 created the template and pipeline tables"
 for T in templates template_versions template_trials pipeline_runs pipeline_stages work_orders qc_reports; do
   [ "$(q "SELECT to_regclass('public.$T') IS NOT NULL")" = "t" ] || fail "table $T missing after migration 0007"

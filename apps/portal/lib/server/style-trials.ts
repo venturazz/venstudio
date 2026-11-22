@@ -14,7 +14,8 @@ const RENDERER_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
  * Records (or refreshes) what a Trial-pack run showed: the pack version it rendered with, the QC gates, the
  * presentation score, the finished video and the owner's final decision. Idempotent: it re-reads the run and upserts
  * one row per run, so it can be called after the quality check, after the owner's score, after Hermes's advisory and
- * again after every decision on it. Runs started without a Trial pack are left alone. The presentation score counts
+ * again after every decision on it. Runs started without a Trial pack are left alone. A lab trial is recorded with
+ * lab_trial = true (migration 0018), which keeps it out of the pack's promotion counts. The presentation score counts
  * only when it was given for the video the run has now (a re-render needs a new score). Never throws: a failed record is logged and the pipeline goes on.
  */
 export async function recordTrialOutcome(runId: string): Promise<void> {
@@ -62,16 +63,20 @@ export async function recordTrialOutcome(runId: string): Promise<void> {
     const decision = ownerDecisionOf(typeof review?.state === "string" ? review.state : null, auto);
     const decidedBy = asUuid(review?.decided_by);
     const decidedAt = review?.decided_at instanceof Date ? review.decided_at : null;
+    // A lab trial (a Draft or Lab pack run from Styles or a study) is recorded, never counted toward promotion.
+    const labTrial = pack.lab === true;
     await sql`
       INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision, decided_by, decided_at, video_asset_id,
-                                        owner_rubric, presentation_by, hermes_advisory, renderer)
+                                        owner_rubric, presentation_by, hermes_advisory, renderer, lab_trial)
       VALUES (${runId}, ${pack.id}, ${version}, ${qc.qcPassed}, ${JSON.stringify(gates)}::text::jsonb, ${qc.presentationScore},
               ${decision}, ${decidedBy}, ${decidedAt}, ${videoAssetId},
-              ${rubric ? JSON.stringify(rubric) : null}::text::jsonb, ${presentationBy}, ${advisory ? JSON.stringify(advisory) : null}::text::jsonb, ${renderer})
+              ${rubric ? JSON.stringify(rubric) : null}::text::jsonb, ${presentationBy}, ${advisory ? JSON.stringify(advisory) : null}::text::jsonb, ${renderer},
+              ${labTrial})
       ON CONFLICT (run_id) DO UPDATE SET pack_version = EXCLUDED.pack_version, qc_passed = EXCLUDED.qc_passed, qc_gates = EXCLUDED.qc_gates,
         presentation_score = EXCLUDED.presentation_score, owner_decision = EXCLUDED.owner_decision, decided_by = EXCLUDED.decided_by,
         decided_at = EXCLUDED.decided_at, video_asset_id = EXCLUDED.video_asset_id, owner_rubric = EXCLUDED.owner_rubric,
-        presentation_by = EXCLUDED.presentation_by, hermes_advisory = EXCLUDED.hermes_advisory, renderer = EXCLUDED.renderer, updated_at = now()
+        presentation_by = EXCLUDED.presentation_by, hermes_advisory = EXCLUDED.hermes_advisory, renderer = EXCLUDED.renderer,
+        lab_trial = EXCLUDED.lab_trial, updated_at = now()
     `;
   } catch (err) {
     console.error("could not record the trial outcome", runId, err);

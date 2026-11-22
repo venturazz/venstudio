@@ -7,6 +7,7 @@ import { Alert, Badge, Card, CardBody, CardHeader, Field, Input, LinkButton, Pag
 import { AutoRefresh, SubmitButton } from "@/components/client.tsx";
 import { EXPORT_STEPS, isYouTubeUrl, LAB_SOURCE_LABEL, MAX_LAB_REVISIONS, MAX_NOTE_CHARS, MAX_URL_CHARS, NOTE_FIELDS, NOTE_LABEL } from "@/lib/studio/lab-study.ts";
 import { StudioNav } from "../../studio-nav.tsx";
+import { LAB_TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { addSourceAction, retryPendingAction, retrySourceAction, synthesizeAction } from "../actions.ts";
 
 export const metadata = { title: "Lab study" };
@@ -230,6 +231,30 @@ export default async function StudyPage({ params, searchParams }: { params: Prom
                 <p className="break-words text-sm text-muted" data-testid="trial-unavailable">
                   No trial yet: {trial.option.reason}.
                 </p>
+              )}
+              {trial.labTrials.length > 0 && (
+                <div className="space-y-1.5 rounded-lg border border-dashed border-warn/60 p-3" data-testid="study-lab-trials">
+                  <p className="text-sm font-medium">{LAB_TRIAL_BADGE}</p>
+                  <p className="text-xs text-muted">Run a Draft or Lab pack for this study. Research only, never published, and counted apart from the pack&apos;s promotion.</p>
+                  <ul className="space-y-1.5">
+                    {trial.labTrials.map((l) => (
+                      <li key={l.packId} className="flex flex-wrap items-center gap-2 text-sm" data-testid={`study-lab-trial-${l.packId}`}>
+                        <span className="min-w-0 break-words">
+                          {l.label} <span className="text-xs text-muted">v{l.version}, {l.status}{l.closest ? ", the closest pack" : ""}</span>
+                        </span>
+                        {l.option.ok ? (
+                          <LinkButton href={`/studio/new?lab=${l.packId}&study=${study.id}`} variant="secondary" className="min-h-11">
+                            Lab trial
+                          </LinkButton>
+                        ) : (
+                          <span className="break-words text-xs text-muted" data-testid="lab-trial-unavailable">
+                            {l.option.reason}. {l.option.fix}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
               {trials.length === 0 ? (
                 <p className="text-xs text-muted">No trial video yet.</p>

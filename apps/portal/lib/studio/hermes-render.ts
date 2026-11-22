@@ -30,6 +30,19 @@ export interface HermesRenderShot {
   imageUrl: string | null;
 }
 
+/** The Hermes skill a research pack names (style.json `hermes`), as the render request carries it. */
+export interface HermesRenderSkill {
+  /** As invoked in Hermes, e.g. "/graph". */
+  name: string;
+  aliases: string[];
+  /** spec: a quick skill from a small JSON spec; project: a full reel with its own voice and caption timing. */
+  mode: "spec" | "project";
+  /** How the storyboard, brief, narration and captions map to the skill's input (from the pack). */
+  input: string;
+  /** What Hermes hands back (from the pack). */
+  output: string;
+}
+
 export interface HermesRenderRequest {
   topic: string;
   format: string;
@@ -46,6 +59,8 @@ export interface HermesRenderRequest {
   packId: string;
   packVersion: string;
   contract: unknown;
+  /** The Hermes skill to render with, or null/absent for the generic Hermes render (its own tools). */
+  skill?: HermesRenderSkill | null;
   /** Where Hermes must publish the clip (HERMES_VIDEO_MEDIA_ORIGIN or <HERMES_MEDIA_ORIGINS>/clip), or null. */
   clipBase: string | null;
 }
@@ -58,7 +73,8 @@ export function hermesRenderMessages(r: HermesRenderRequest): ChatMessage[] {
     format: r.format,
     frame: { width: r.width, height: r.height, fps: r.fps },
     durationSec: Math.round(r.durationSec * 100) / 100,
-    pack: { id: r.packId, version: r.packVersion, contract: r.contract },
+    pack: { id: r.packId, version: r.packVersion, contract: r.contract, ...(r.skill ? { skill: r.skill.name, skillAliases: r.skill.aliases, skillMode: r.skill.mode } : {}) },
+    ...(r.skill ? { skill: { name: r.skill.name, aliases: r.skill.aliases, mode: r.skill.mode, input: r.skill.input.slice(0, 2000), output: r.skill.output.slice(0, 2000) } } : {}),
     narration: r.narration,
     captions: r.captions.slice(0, 400),
     shots: r.shots.map((s) => ({
@@ -73,7 +89,12 @@ export function hermesRenderMessages(r: HermesRenderRequest): ChatMessage[] {
   };
   const lines = [
     `VENSTUDIO_STAGE: ${HERMES_RENDER_STAGE}`,
-    "Render this whole video yourself, with your own tools (your CapCut workflow, video_gen, or what you have). It is a research trial: it is never published.",
+    r.skill
+      ? `Render this whole video yourself with your ${r.skill.name} skill${r.skill.aliases.length ? ` (also installed as ${r.skill.aliases.join(", ")})` : ""}, following the skill's own steps and taste rules and the mapping in "skill.input" below. It is a research trial: it is never published.`
+      : "Render this whole video yourself, with your own tools (your CapCut workflow, video_gen, or what you have). It is a research trial: it is never published.",
+    ...(r.skill?.mode === "project"
+      ? [`${r.skill.name} is a full project with its own voice and caption timing: use the narration below as the voiceover and the captions below as the text, timed to it word by word where possible. Do not make a new voice unless the narration is missing. The result is a reel the studio checks before anyone sees it.`]
+      : []),
     `Make one ${r.width}x${r.height} H.264 MP4 at ${r.fps} fps, about ${Math.round(r.durationSec)} s long, with the captions burned in, following the pack's contract (pacing, on-screen elements, captions, audio).`,
     r.narration.url
       ? `Use the narration at ${r.narration.url} as the audio${r.narration.tempo !== 1 ? `, played at ${r.narration.tempo}x speed (it then lasts ${Math.round(r.narration.seconds)} s)` : ""}.`

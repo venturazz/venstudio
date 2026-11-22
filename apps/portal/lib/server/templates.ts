@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "./db.ts";
 import { seedTemplates, type Template } from "../studio/templates.ts";
+import { packSeedTemplates } from "./style-packs.ts";
 import type { TrialScore } from "../studio/template-lab.ts";
 
 /**
@@ -9,7 +10,8 @@ import type { TrialScore } from "../studio/template-lab.ts";
  */
 export async function ensureSeedTemplates(): Promise<void> {
   const sql = db();
-  const seeds = seedTemplates();
+  // The catalogue's styles, then every vendored pack the catalogue does not know (from its own contract).
+  const seeds = [...seedTemplates(), ...(await packSeedTemplates().catch(() => [] as Template[]))];
   // One cheap read decides whether any seed is missing; the inserts only run on first use or after a new seed ships.
   const [have] = await sql`SELECT count(*)::int AS n FROM templates WHERE id = ANY(${seeds.map((t) => t.id)}::text[])`;
   if ((have?.n as number) >= seeds.length) return;

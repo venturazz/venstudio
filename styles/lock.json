@@ -2,17 +2,17 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "ab2e90f22a905a3d72b4715e6940ee979faeaf46"
+    "commit": "77020d5cc7eb9f079ccde45380d2c75df2e280ff"
   },
   "files": {
-    "FORMAT.md": "55d58327efd19683f16a9921260166115ec32128c4964f7c1b539b7e73cba21b",
-    "schema/style.schema.json": "1a57113e080c1c0ab83665c2f8a0b7ca3b451173dc3b5be9fec6487dbb6175a3",
+    "FORMAT.md": "30a3a3fcefc4005ab1cba4f68ab932951a45559f392b0244284a2357043f96f1",
+    "schema/style.schema.json": "51d17ffacfa7986ac0b20aabca5ce1adb1547d4e48a154429407292002c2738f",
     "tools/assemble-remotion.mjs": "b545f2b2163fdcf9ecdfeeb30610ac3868c53a2d589a31994da615db5b706c39",
     "tools/check-video.mjs": "1e1bac7a4e8310488930b12ae4637f97dadb8b78a57b4b8a598749af509a1c3f",
     "tools/check-video.test.mjs": "52e176204378a6f8bac5aa965e83960281fc7d5648f9ae9794d0ac1e267947cc",
     "tools/html-pages.test.mjs": "dc8d5748afe1ad3ad4cf4139d8dd9cb1ad8514cf2270dc4a15dd977b09723776",
-    "tools/validate.mjs": "7e88e432ab8358eb4c3d77373080a64a707295cf2b934b4e2b3e8c6f91e6b4a5",
-    "tools/validate.test.mjs": "59e99b7fa40ab9b1012d7b80e2e495a6f0d04c7db71d2317ab87ad6586469ed0"
+    "tools/validate.mjs": "f8fc8b18d18a1767c5a9cd00bc22a67064df21110a69d7df33c9eee4b3725a21",
+    "tools/validate.test.mjs": "75c86b3dd45e247de8dcaf0394c66584b2a8f0cc79612543ffa0764168fa622b"
   },
   "packs": [
     {
@@ -31,13 +31,13 @@
     },
     {
       "id": "animated-line-graph",
-      "version": "0.1.0",
-      "status": "draft",
+      "version": "0.1.1",
+      "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "1b4e9d5010243f44e39d8977333ec94270536ce82efd926160f79a7c5677d0ff",
+      "sha256": "10730cbb0fba920a6430c92d46812fb1aad9ef8690e8cf6c87047d17d4f80017",
       "files": {
-        "README.md": "1fb58949e01fd7d4727bf33a503866b188034e3fe563f0f19ab9ee092a533b85",
+        "README.md": "2978c1b6361c847d62444e5d0f4823d19a24a4513c722f59683d10b77c89d68e",
         "fixtures/expect.json": "5e6d188555030db3ed34da1cf57ae7c9073b9331bd7955d844d95d5891006ac1",
         "fixtures/payload.json": "917adc198a6f4b813c654c9eb1afeb519f49219a2e7fce555114a3b125b50b4b",
         "render/LICENSE": "87111395ddb9252e4a9eb039a1bea0439571e069cdf497fd519737b4d3168d66",
@@ -48,7 +48,7 @@
         "render/graph.js": "6ec6bb2d966aa0b19bfd48e773afb474bf4fdf3bfc9aca09b31dd68266e6a816",
         "render/index.html": "a3ad169bc9928858af5305df1d5814d175053db38f5ec70e369392d492028a96",
         "render/motion.js": "6bde8ed432c522a99ac892f50eb0738e36a682400734ccc9e0151191b8e4149a",
-        "style.json": "d6ea03d6b4dc66e38caa92538ebf1185b5b61492a466a6d4fbedf573a7bc9def"
+        "style.json": "589417ede14d18f6636980c454a87b6c2b9e407de7ede54007fd4190db2de3ed"
       }
     },
     {
@@ -84,17 +84,157 @@
       }
     },
     {
-      "id": "hermes-research-explainer",
+      "id": "hermes-breakdown",
       "version": "0.1.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "4787bbfb0e316b408c9d4344da0082d5074c4e2e40c728dcffd0345817fdc767",
+      "sha256": "72b113686901653611e89c8719d24fd7e87cd5d9c0559cc2dcb926a8f7d17a17",
       "files": {
-        "README.md": "ca90ce1e36cf06ff971222f4e0628130d88681fb0c80cdcb103697ee391322b0",
+        "README.md": "313239aa05962a8801c9259589a94487798bcc16da6ea7e9626e18dcf7009ef8",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "7472a3b365a7e6ab17095fa7e698603067d4691b45593b1a34941e188fbb82d8",
+        "style.json": "fd44c1a166237ea846465d7dce9a3673654d79e5adfd4a032f0aa7529c02e028"
+      }
+    },
+    {
+      "id": "hermes-dan-koe",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "24005a309b21d6b5c5d86be501e32930ce719ece47822fa7cfb59d24dcee13a5",
+      "files": {
+        "README.md": "dc4be3d5572d136afd653b0352b3f8030ff1488e5d0cea18971a4571d3c6f4b6",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "a950080fbba16c266b7b59943d144bb357ba1d181a4fc7ec23b4d2385f5660e7",
+        "style.json": "2aaed7987b19804a2ab5e0be3d36c0025acf7f21bb0a69bbfca216aed3fc1366"
+      }
+    },
+    {
+      "id": "hermes-graph",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "f7a1ab61af49807dbcb72249c03d053e6052c14e8747ecfbeeef257557cf09fd",
+      "files": {
+        "README.md": "e4748115dea66c1e7ece61592833b4eaa22d32e6907a4f22810c43da38fb71e4",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "3bacf57228b2de0f3609350bc04cb845d9f62488e9f03e67033b8298f828bcf5",
+        "style.json": "c8b13a9dca35c0554add41846149e3e4aeee7259182bb1f8ae4858040bf1b072"
+      }
+    },
+    {
+      "id": "hermes-kurzgesagt",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "7ffc08c35a0dc3814d26c906942ef8d9a50a2bd3e5e00408bac8c49d49b3d428",
+      "files": {
+        "README.md": "8ac858d44fe8232f425528e219200c081b6458eb8e6c225abf77522bdc06ff94",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "5713e15ed30bfca9181da5b6ed77f9173b99a14e13d25b810cb053a780c2f10f",
+        "style.json": "0b3d96de67a759c5717b6bfa8c0608f8525ed74623e6edac342e32a4df565ca3"
+      }
+    },
+    {
+      "id": "hermes-low-poly",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "275fa72a8ef5ee57377fd688e4db0846360a14738671c239c95c7006d5125d77",
+      "files": {
+        "README.md": "2f894d9e399718ae02161db0d3dd991c5342566727d38a8291c8121f6e8c2e7b",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "120000b71e6234db9adc76e3c1e3cee6396241f9d213e64b0b7037f694172374",
+        "style.json": "e5fb977929eb7ac2a864665ca9891366b637c538849f64d07d09dfc907a8615c"
+      }
+    },
+    {
+      "id": "hermes-map-route",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "fa9749652572eb508100025cc01e4b8c6a6f04f9f4dece5ebcefaf16ac94c2a4",
+      "files": {
+        "README.md": "7ffa10b84168cb26efcbc7830ca235b85d299d9bebd4cdc249a6bc6f8ba35347",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "4de02f7bfb915aeb8ea1ddf058539c382182dc4c4b7647467384a64e61c323e6",
+        "style.json": "6728ff26da2368e24bd6d5c076f6675ab9f3e97953ff0cddb9deddd98302669b"
+      }
+    },
+    {
+      "id": "hermes-minecraft",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "f6280f55dc969177e4c466e2310d86dedcaf981789becba868ae42feefc68dec",
+      "files": {
+        "README.md": "08a19972c974499f88fbc471c4016bc416b593f679c64ca294760771dfff811d",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "6fe950c0992fdc64af7c9d4d1f954db19e91e9859032014844cea55636866896",
+        "style.json": "5be2077edfc126123aa8d34b12664b4919072e6b5ca3539e80d9463041be23a5"
+      }
+    },
+    {
+      "id": "hermes-minimalistic-graphics",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "40d690bc572da188558d64b8d2d608ca25919e77851826564ce1c2cfb864df6f",
+      "files": {
+        "README.md": "d3c207c8104c4f9b3006797e31c41d73684fc7986fb223716666bb331302371a",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "c225d476e276de2774866b356153fae77bb95c66725ff17c87efbb02eaf7aebb",
+        "style.json": "e31ce40a78e913fb512ce1134fdd09c58ab380ae3eee1a5869f9eb9dd8b0220b"
+      }
+    },
+    {
+      "id": "hermes-research-explainer",
+      "version": "0.1.1",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "0369f0eb0dcd3684a44566471203fabb17aeba50036bd3d6a30af5c8be76b894",
+      "files": {
+        "README.md": "04d82fbdfcd7d89f83511d127eea63375ecdd24aa6724e679d29bec9209573cb",
         "fixtures/expect.json": "720f9e08b61531c7a268a66a77f4398eb920713c264a81902a1bdd6ddddf7bb4",
         "fixtures/payload.json": "4ba5a8bd75cda0199a87cea58821fe88efa920be5dfc796eba8ef277ba17b21f",
-        "style.json": "496e574e3d646ef6e0aaf65669b4ba10ccc9eaf7e9f8d80cdb8672b2c020b8f4"
+        "style.json": "f7bea8616d300fb3f00b9251211af4597169b2bf55a31791444ea6de3fffe57e"
+      }
+    },
+    {
+      "id": "hermes-stick-figure",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "46c9dd09e1e21da65f3ab59fcc99c3a9a81a82540deec9f5319388c125c236dc",
+      "files": {
+        "README.md": "5ad283fc7edccf9063040f6f23f0585623b550e9943518816388dadd0b60d36b",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "96f79d1e6c55ab86dfd4f8aa38a73a7aafab2346b962fde9ce78abbfd2f540a5",
+        "style.json": "66f541b01385d98710f86a524f2438b8e608358ed933960031fb70f632923d0a"
+      }
+    },
+    {
+      "id": "hermes-zach-d-films",
+      "version": "0.1.0",
+      "status": "trial",
+      "engine": "hermes",
+      "composition": null,
+      "sha256": "4588ecf4f957ab95c2ab23e8a5f498bcd43297287400018ffe1e31f9a0e649cb",
+      "files": {
+        "README.md": "d1473d1e7f422c6fdd0182a1be62fb62736ef61516843043d19f273c28be450d",
+        "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
+        "fixtures/payload.json": "0e6c37f1529517b8f96f689060b846821a53317724bcb6aa33cc5db3ef7a1466",
+        "style.json": "68b656e746aa3c53a590d757e4af31bbf49fbeb1562c48a476924af3ae6ad368"
       }
     },
     {
@@ -113,13 +253,13 @@
     },
     {
       "id": "minimal-line-art",
-      "version": "0.1.0",
-      "status": "draft",
+      "version": "0.1.1",
+      "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "7123fd4d3aa30c5aa36760526b18b400c37e64297a2aaf0666e6467131574333",
+      "sha256": "e334d997fe01c0790daef44a7d1076dfcb20bebb172630ba644d479cc1cc9312",
       "files": {
-        "README.md": "bb9f6fd89da1acca1c650e1ef4c0dc9fa793ad7585095396802e6f4b14391e22",
+        "README.md": "55ea6a5803c5bc8aa139a5f1a1b0671fb74670d90113782a215fbb4784e29757",
         "fixtures/expect.json": "28607432ca17172627774ccf01f5ab63971a4391461f06b1afa6a92c7679bd7f",
         "fixtures/payload.json": "7da4703cfdd764a27952305c78dce88ef0a0c74153bc46741d16e92c0720e379",
         "render/LICENSE": "87111395ddb9252e4a9eb039a1bea0439571e069cdf497fd519737b4d3168d66",
@@ -129,7 +269,7 @@
         "render/motion.js": "6bde8ed432c522a99ac892f50eb0738e36a682400734ccc9e0151191b8e4149a",
         "render/steps.css": "d35e39a0447d0580a5b1d32b70887778a583e8ac3a457165a7400761ce1a3175",
         "render/steps.js": "4432e61f0bee548aacc521c79e87b246df9a7c278eacdeae56ab109299b311d9",
-        "style.json": "be6f0f53b6553637d27d77f2f829739903d766f55aa8e2e83945bbaf62063794"
+        "style.json": "35605673240d0dfd4a00a8efbf04ac84c579fbc39e68cd00492a62fb502c25d9"
       }
     },
     {

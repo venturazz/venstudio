@@ -114,7 +114,7 @@ test("html-capture packs travel in the same bundle as html/<id>/ with html/packs
   await worker.writeProjectBundle(JSON.parse(JSON.stringify(b)), dir);
   const got = await worker.installedHtmlPacks(dir);
   assert.deepEqual(got.problems, []);
-  assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), ["animated-line-graph@0.1.0", "minimal-line-art@0.1.0", `probe-line-graph@${lp.version}`]);
+  assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), ["animated-line-graph@0.1.1", "minimal-line-art@0.1.1", `probe-line-graph@${lp.version}`]);
 });
 
 test("the portal's html list and digest are the styles assembler's, byte for byte", async () => {

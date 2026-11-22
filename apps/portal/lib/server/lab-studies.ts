@@ -8,7 +8,7 @@ import { styleRegistry } from "./style-packs.ts";
 import { reportedCapabilities } from "./workers.ts";
 import { ensureSeedTemplates, listTemplates } from "./templates.ts";
 import { ENGINES } from "../studio/catalog.ts";
-import { availabilityOf, newVideoStyles } from "../studio/style-registry.ts";
+import { LAB_TRIAL_STATUSES, availabilityOf, labTrialOption, newVideoStyles, type LabTrialOption } from "../studio/style-registry.ts";
 import { blendFingerprints, type StructureFingerprint } from "../studio/template-lab.ts";
 import {
   analystFor,
@@ -453,10 +453,22 @@ export async function synthesize(studyId: string, note: string): Promise<void> {
   }
 }
 
+export interface StudyLabTrial {
+  packId: string;
+  label: string;
+  status: string;
+  version: string;
+  /** The study's closest pack. */
+  closest: boolean;
+  option: LabTrialOption;
+}
+
 export interface StudyTrialState {
   verdict: RendererVerdict | null;
   option: TrialOption;
   brief: string;
+  /** Lab trials the study can start: the closest pack when it is Draft or Lab, then every other Draft or Lab pack. */
+  labTrials: StudyLabTrial[];
 }
 
 /**
@@ -485,7 +497,18 @@ export async function studyTrialState(study: Study): Promise<StudyTrialState> {
     closest: entry?.pack ? { id: entry.id, status: entry.pack.status, packReported: availabilityOf(entry, caps, { hermes }).pack } : null,
     templateId,
   });
-  return { verdict, option, brief: studyBrief(study, draft) };
+  const labTrials: StudyLabTrial[] = registry
+    .filter((e) => e.pack && LAB_TRIAL_STATUSES.includes(e.pack.status))
+    .map((e) => ({
+      packId: e.id,
+      label: e.label,
+      status: e.pack?.status ?? "",
+      version: e.pack?.version ?? "",
+      closest: e.id === draft?.closestPack,
+      option: labTrialOption(e, caps, { hermes }),
+    }))
+    .sort((a, b) => Number(b.closest) - Number(a.closest) || (a.packId < b.packId ? -1 : 1));
+  return { verdict, option, brief: studyBrief(study, draft), labTrials };
 }
 
 /** The one-file draft pack for "Download draft pack", or null without a draft. */

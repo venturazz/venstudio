@@ -66,8 +66,11 @@ import {
 } from "../studio/terms-review.ts";
 import type { ProviderKind } from "../studio/asset-plan.ts";
 import { buildRunConfig, parseRunConfig, topicFromBrief, type RunConfig, type RunRequest } from "../studio/run-config.ts";
-import { guardFinalDecision, runStylePack, startRefusal } from "../studio/style-registry.ts";
+import { guardFinalDecision, labTrialOption, runStylePack, startRefusal } from "../studio/style-registry.ts";
+import type { TrialBatch } from "../studio/trial-batch.ts";
 import { registryEntry } from "./style-packs.ts";
+import { reportedCapabilities } from "./workers.ts";
+import { env } from "./env.ts";
 import { recordTrialOutcome } from "./style-trials.ts";
 import { scoreRefusal } from "./presentation.ts";
 
@@ -228,6 +231,13 @@ export async function startRun(
     productionId?: string;
     /** A Template Lab study this run is a trial for, or empty. Such a run is always a trial. */
     labStudyId?: string;
+    /**
+     * A lab trial: the style is a Draft or Lab pack, run research only from Styles or a study (never published, kept
+     * out of the promotion counts). Refused for any other status, and when no worker (or Hermes) can render it.
+     */
+    labTrial?: boolean;
+    /** One run of a batch trial (trial-batch.ts), recorded on the run. */
+    trialBatch?: TrialBatch;
     userId: string;
   },
 ): Promise<StartResult> {
@@ -246,8 +256,13 @@ export async function startRun(
     if (!template.formats.includes(input.format)) return { ok: false, error: `This template does not make ${input.format} videos` };
     // Only a Listed or Trial style pack starts a run; planned styles, drafts and retired packs never do.
     const entry = await registryEntry(template.styleId);
-    const refusal = startRefusal(entry);
+    const refusal = startRefusal(entry, { labTrial: input.labTrial === true });
     if (refusal || !entry?.pack) return { ok: false, error: refusal ?? "Unknown style" };
+    if (input.labTrial) {
+      // Said up front, from stored worker rows (no call to a worker): a lab trial nothing can render does not start.
+      const option = labTrialOption(entry, await reportedCapabilities().catch(() => [] as string[]), { hermes: Boolean(env().HERMES_BASE_URL) });
+      if (!option.ok) return { ok: false, error: `${option.reason}. ${option.fix}` };
+    }
     if (!entry.pack.formats.includes(input.format)) return { ok: false, error: `This style does not make ${input.format} videos` };
 
     // The theme defaults to the channel category; an override lives on this run only and never on the channel.
@@ -260,8 +275,13 @@ export async function startRun(
       if (!(await studyExists(input.labStudyId))) return { ok: false, error: "Unknown lab study" };
       labStudyId = input.labStudyId;
     }
-    const pack = runStylePack(entry.pack);
-    const config: RunConfig = { ...built.config, stylePack: labStudyId ? { ...pack, trial: true } : pack, ...(labStudyId ? { labStudyId } : {}) };
+    const pack = runStylePack(entry.pack, { lab: input.labTrial === true });
+    const config: RunConfig = {
+      ...built.config,
+      stylePack: labStudyId ? { ...pack, trial: true } : pack,
+      ...(labStudyId ? { labStudyId } : {}),
+      ...(input.trialBatch ? { trialBatch: input.trialBatch } : {}),
+    };
     const topic = topicFromBrief(config.topicHint);
     let productionId: string | null = null;
     if (input.productionId) {
@@ -279,7 +299,7 @@ export async function startRun(
       await insertPending(tx, id, "idea", "", 0);
       return id;
     });
-    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack, ...(config.labStudyId ? { labStudyId: config.labStudyId } : {}) } });
+    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack, ...(config.labStudyId ? { labStudyId: config.labStudyId } : {}), ...(config.trialBatch ? { trialBatch: config.trialBatch } : {}) } });
     return { ok: true, runId };
   } catch (err) {
     console.error("startRun failed", err);

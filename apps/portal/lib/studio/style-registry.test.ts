@@ -48,18 +48,28 @@ function pack(id: string, over: Partial<StylePack> = {}): StylePack {
   return { ...base, ...over };
 }
 
-test("the vendored packs: the explainer and the six stills styles (Trial 1.0.0), the html-capture probe (Lab), the two claude-animation-skills adaptations (Draft) and the Hermes research pack (Trial)", () => {
-  assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS, "hermes-research-explainer", "probe-line-graph", "animated-line-graph", "minimal-line-art"].sort());
+const RESEARCH_SKILLS = ["breakdown", "dan-koe", "graph", "kurzgesagt", "low-poly", "map-route", "minecraft", "minimalistic-graphics", "stick-figure", "zach-d-films"];
+const RESEARCH_IDS = RESEARCH_SKILLS.map((s) => `hermes-${s}`);
+
+test("the vendored packs: the explainer and the six stills styles (Trial 1.0.0), the html-capture probe (Lab), the two claude-animation-skills adaptations (Trial 0.1.1), the Hermes research pack and one Hermes research pack per claude-animation-skills skill (Trial)", () => {
+  assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS, "hermes-research-explainer", "probe-line-graph", "animated-line-graph", "minimal-line-art", ...RESEARCH_IDS].sort());
   for (const id of ["animated-line-graph", "minimal-line-art"]) {
     const a = pack(id);
-    assert.deepEqual([a.status, a.engine, a.minWorkerVersion, a.composition], ["draft", "html-capture", "0.10.0", null], id);
+    assert.deepEqual([a.status, a.version, a.engine, a.minWorkerVersion, a.composition], ["trial", "0.1.1", "html-capture", "0.10.0", null], id);
+    assert.ok(a.curation.some((c) => c.kind === "ci-render" && c.result === "pass" && c.ref.includes("actions/runs/44981421800")), `${id} cites the venstudio CI render`);
     assert.ok(a.provenance.some((s) => s.type === "repo" && s.ref.includes("artemnovitckii/claude-animation-skills@86f70106c9ae") && s.licence.startsWith("MIT")), id);
   }
   assert.deepEqual([pack("animated-line-graph").drawsCaptions, pack("minimal-line-art").drawsCaptions], [false, true]);
   const probe = pack("probe-line-graph");
   assert.deepEqual([probe.status, probe.engine, probe.minWorkerVersion, probe.composition, probe.drawsCaptions], ["lab", "html-capture", "0.10.0", null, false]);
   const hermes = pack("hermes-research-explainer");
-  assert.deepEqual([hermes.status, hermes.engine, hermes.composition, hermes.drawsCaptions], ["trial", "hermes", null, null]);
+  assert.deepEqual([hermes.status, hermes.engine, hermes.composition, hermes.drawsCaptions, hermes.hermes], ["trial", "hermes", null, null, null]);
+  for (const skill of RESEARCH_SKILLS) {
+    const r = pack(`hermes-${skill}`);
+    assert.deepEqual([r.status, r.engine, r.hermes?.skill, r.hermes?.mode], ["trial", "hermes", `/${skill}`, skill === "stick-figure" || skill === "zach-d-films" ? "project" : "spec"], skill);
+    assert.ok(r.provenance.some((s) => s.type === "skill" && s.ref.includes("artemnovitckii/claude-animation-skills@86f70106c9ae") && s.licence.startsWith("MIT")), skill);
+  }
+  assert.deepEqual(pack("hermes-zach-d-films").hermes?.aliases, ["/zach-3d-films"]);
   for (const p of vendored.filter((x) => PACK_IDS.includes(x.id))) {
     assert.equal(p.status, "trial", p.id);
     assert.equal(p.version, "1.0.0", p.id);
@@ -120,11 +130,15 @@ test("the validator's vocabularies are the portal's", async () => {
 test("mergeRegistry: packs override their catalogue entry; the other catalogue styles are planned; unknown packs follow", () => {
   const extra = pack("documentary-stills", { id: "brand-new-look", name: "Brand new look" });
   const reg = mergeRegistry(STYLES, [...vendored, extra]);
-  assert.equal(reg.length, STYLES.length + 4);
+  assert.equal(reg.length, STYLES.length + 4 + RESEARCH_IDS.length);
   assert.deepEqual(reg.slice(0, STYLES.length).map((e) => e.id), STYLES.map((s) => s.id), "catalogue order is kept");
   // Packs the catalogue does not know follow, by id: the html-capture probe is one of them.
-  assert.deepEqual(reg.slice(STYLES.length).map((e) => e.id), ["animated-line-graph", "brand-new-look", "minimal-line-art", "probe-line-graph"]);
-  assert.equal(reg[STYLES.length].style, null);
+  assert.deepEqual(reg.slice(STYLES.length).map((e) => e.id), ["animated-line-graph", "brand-new-look", ...RESEARCH_IDS, "minimal-line-art", "probe-line-graph"].sort());
+  // Their style comes from the pack's own contract, so they plan and render like a catalogue style (never as stills).
+  const graph = reg.find((e) => e.id === "animated-line-graph")!;
+  assert.equal(graph.catalogued, false);
+  assert.deepEqual([graph.style?.engine, graph.style?.shotSeconds, graph.style?.assetModel, graph.style?.naturalFrame], ["html-capture", [3, 6], "plates-and-diagrams", "portrait"]);
+  assert.equal(reg.find((e) => e.id === "explainer-flat-vector")?.catalogued, true);
   const planned = reg.filter((e) => e.status === "planned").map((e) => e.id);
   assert.equal(planned.length, 13);
   assert.ok(planned.includes("kinetic-facts") && planned.includes("blender-3d") && planned.includes("ai-character-sketch"));
@@ -159,8 +173,9 @@ test("New Video: Listed packs a worker reports; Trial packs in their own list; p
   // No worker at all: nothing is selectable, the Trial packs wait.
   const none = newVideoStyles(mergeRegistry(STYLES, vendored), []);
   assert.equal(none.listed.length + none.trial.length, 0);
-  // Seven worker packs plus the Hermes research pack, which waits for Hermes (not a worker). The Lab probe never shows.
-  assert.equal(none.waiting.length, 8);
+  // Nine worker packs (the explainer, six stills, the two html-capture adaptations) plus the eleven Hermes research
+  // packs, which wait for Hermes (not a worker). The Lab probe never shows.
+  assert.equal(none.waiting.length, 9 + 1 + RESEARCH_IDS.length);
   assert.ok(!none.waiting.some((e) => e.id === "probe-line-graph"));
   const avail = availabilityOf(mergeRegistry(STYLES, vendored).find((e) => e.id === "travel-documentary")!, ["ffmpeg"]);
   assert.deepEqual(avail, { renderer: true, pack: false, capability: "pack:travel-documentary@1.0.0" });

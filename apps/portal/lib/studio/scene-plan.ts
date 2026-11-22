@@ -92,6 +92,8 @@ export interface ScenePlanInput {
   transitionSec?: number;
   /** Every Nth scene moves the camera. Default 2. */
   cameraEvery?: number;
+  /** The style of a pack the catalogue does not know (styleFromPack); used only when its id is `styleId`. */
+  style?: Style;
 }
 
 export type ScenePlanResult = { ok: true; plan: ScenePlan; warnings: string[] } | { ok: false; issues: string[] };
@@ -237,7 +239,8 @@ export function scenePlanIssues(plan: ScenePlan, check: ScenePlanCheck = {}): st
 
 /** Builds the scene plan for one production from its storyboard and its style. */
 export function buildScenePlan(i: ScenePlanInput): ScenePlanResult {
-  const style = STYLE_BY_ID[i.styleId];
+  // A pack the catalogue does not know passes the style derived from its contract (style-registry.ts styleFromPack).
+  const style = STYLE_BY_ID[i.styleId] ?? (i.style?.id === i.styleId ? i.style : undefined);
   const f = VIDEO_FORMATS[i.format];
   const issues: string[] = [];
   if (!style) issues.push(`Unknown style "${i.styleId}"`);
@@ -279,8 +282,8 @@ export interface StyleRenderParams {
  * What the renderer needs to know about a style. Returns null for an unknown style, so a caller can
  * fall back to the stills engine rather than guessing.
  */
-export function renderParamsForStyle(styleId: string): StyleRenderParams | null {
-  const style = STYLE_BY_ID[styleId];
+export function renderParamsForStyle(styleId: string, packStyle?: Style): StyleRenderParams | null {
+  const style = STYLE_BY_ID[styleId] ?? (packStyle?.id === styleId ? packStyle : undefined);
   if (!style) return null;
   return {
     engine: style.engine,

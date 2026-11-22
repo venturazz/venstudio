@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useActionState } from "react";
 import { Alert, Badge, Card, CardBody, Input, Textarea } from "@/components/ui.tsx";
-import { HERMES_RENDER_LABEL, TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
+import { HERMES_RENDER_LABEL, LAB_TRIAL_BADGE, TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { SubmitButton } from "@/components/client.tsx";
 import { decisionHint, decisionLabel, decisionOptions, reviewTitle, stageLabel, type ReviewKind, type ReviewPayload } from "@/lib/studio/review.ts";
 import type { BlockingRow } from "@/lib/studio/terms-review.ts";
@@ -22,6 +22,8 @@ export interface ReviewCardView {
   trial?: boolean;
   /** Hermes renders the run's video (research only, never published). */
   hermesRender?: boolean;
+  /** A lab trial of a Draft or Lab pack: research only, never published, counted apart. */
+  labTrial?: boolean;
   /** The final video's presentation score (qc cards). */
   presentation?: PresentationView | null;
   /** Hermes's advisory rating of the final video (qc cards); never decides. */
@@ -238,6 +240,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             {item.hermesRender && (
               <span data-testid="hermes-render-badge" title="Hermes renders this video with its own tools; it is never published">
                 <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
+              </span>
+            )}
+            {item.labTrial && (
+              <span data-testid="lab-trial-badge" title="A Draft or Lab pack, run for testing: never published, not counted toward promotion">
+                <Badge tone="warn">{LAB_TRIAL_BADGE}</Badge>
               </span>
             )}
             {item.channelName && <span className="text-xs text-muted">{item.channelName}</span>}

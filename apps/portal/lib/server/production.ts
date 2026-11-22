@@ -46,7 +46,7 @@ import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
-import { VIDEO_FORMATS } from "../studio/catalog.ts";
+import { STYLE_BY_ID, VIDEO_FORMATS, type Style } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, isPortalEngine, transitionForWorker } from "../studio/render-engine.ts";
 import { gateCapabilities, mixFeaturesFor, packWaitNote, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
 import { runStylePack, type RunStylePack } from "../studio/style-registry.ts";
@@ -859,10 +859,14 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
   const shotSpecs = workOrdersFromStoryboard(board.value.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
-  const renderParams = renderParamsForStyle(template.styleId);
+  // A pack the catalogue does not know (an html-capture adaptation, a research pack) plans and renders from its own
+  // contract (styleFromPack), never as stills by default.
+  const packStyle = await packStyleFor(template.styleId);
+  const renderParams = renderParamsForStyle(template.styleId, packStyle);
   // The hermes renderer (research only) is run by the portal: Hermes renders the video, no worker job is queued.
   if (renderParams && isPortalEngine(renderParams.engine)) {
     await runHermesRenderStage(run, st, template, {
+      style: packStyle,
       shots: board.value.shots,
       shotRefs: shotSpecs.map((x) => x.shotRef),
       captions: captionLines(script.value.script),
@@ -936,7 +940,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     return;
   }
   const planFor = (transitionSec: number): RenderPlan => {
-    const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: boardShots, transitionSec }) : null;
+    const scenes = renderParams?.elementAnimation ? buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: boardShots, transitionSec, style: packStyle }) : null;
     if (scenes && !scenes.ok) return { ok: false, issues: scenes.issues };
     return buildRenderPayload({
       fontAssetId,
@@ -1006,6 +1010,7 @@ async function runHermesRenderStage(
   st: StageRow,
   template: Template,
   i: {
+    style: Style | undefined;
     shots: readonly Shot[];
     shotRefs: readonly string[];
     captions: string[];
@@ -1021,7 +1026,10 @@ async function runHermesRenderStage(
     return;
   }
   const frame = VIDEO_FORMATS[run.config.format];
-  const scenes = buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: [...i.shots], transitionSec: i.transitionSec });
+  const scenes = buildScenePlan({ styleId: template.styleId, format: run.config.format, shots: [...i.shots], transitionSec: i.transitionSec, style: i.style });
+  // A research pack that names a Hermes skill (style.json hermes): the request names it, and the provenance records it.
+  const skillOf = (await registryEntry(pack.id).catch(() => undefined))?.pack?.hermes ?? null;
+  const skill = skillOf ? { name: skillOf.skill, aliases: [...skillOf.aliases], mode: skillOf.mode, input: skillOf.input, output: skillOf.output } : null;
   const narrationId = asUuid(i.voiceResult.assetId);
   // A fitted narration plays at its tempo, as on the worker path: the video is planned for the played length.
   const tempo = tempoOf(i.voiceResult.tempo);
@@ -1059,6 +1067,7 @@ async function runHermesRenderStage(
     packId: pack.id,
     packVersion: pack.version,
     contract: await packContract(pack.id),
+    skill,
   });
   if (!rendered.ok) {
     if (rendered.cause === "busy" && rendered.busyUntil) await deferStage(run.id, st.id, rendered.busyUntil, rendered.error);
@@ -1080,6 +1089,7 @@ async function runHermesRenderStage(
     originUrl: v.originUrl,
     runId: run.id,
     channelId: run.channelId,
+    hermesSkill: skill?.name ?? null,
   });
   await sql`
     INSERT INTO pipeline_stages (run_id, stage, state, attempt, output, finished_at)
@@ -1096,6 +1106,7 @@ async function runHermesRenderStage(
     provider: saved.provider,
     backend: v.backend,
     plugin: v.plugin,
+    hermesSkill: skill?.name ?? null,
     originUrl: v.originUrl,
     captionsBurned: true,
     captionNote: "Hermes drew the captions with its own tools",
@@ -1111,7 +1122,17 @@ async function runHermesRenderStage(
 async function renderPackFor(started: RunStylePack | null): Promise<RunStylePack | null> {
   if (!started) return null;
   const entry = await registryEntry(started.id).catch(() => undefined);
-  return entry?.pack ? runStylePack(entry.pack) : started;
+  if (!entry?.pack) return started;
+  // The run stays what it was started as: a trial (a lab study's run) and a lab trial keep their marks.
+  const fresh = runStylePack(entry.pack, { lab: started.lab === true });
+  return { ...fresh, trial: fresh.trial || started.trial };
+}
+
+/** The style of a pack the catalogue does not know (derived from its contract), or undefined for a catalogue style. */
+async function packStyleFor(styleId: string): Promise<Style | undefined> {
+  if (STYLE_BY_ID[styleId]) return undefined;
+  const entry = await registryEntry(styleId).catch(() => undefined);
+  return entry?.pack && entry.style ? entry.style : undefined;
 }
 
 /** Every narration this run recorded: the current voice result and every earlier voice attempt. */
