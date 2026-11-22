@@ -200,11 +200,12 @@ test("frames are encoded to muted H.264 yuv420p with faststart; a shared burn ru
   const plain = htmlCaptureFfmpegArgs({ fps: 30, frames: 720, output: "html.part.mp4", burn: null });
   assert.deepEqual(plain.slice(plain.indexOf("-f"), plain.indexOf("-i") + 2), ["-f", "image2pipe", "-framerate", "30", "-c:v", "mjpeg", "-i", "pipe:0"]);
   assert.equal(plain[plain.indexOf("-frames:v") + 1], "720");
-  assert.equal(plain[plain.indexOf("-vf") + 1], "format=yuv420p");
+  assert.equal(plain[plain.indexOf("-vf") + 1], "scale=in_range=full:out_range=tv,format=yuv420p");
+  assert.equal(plain[plain.indexOf("-color_range") + 1], "tv");
   for (const f of ["libx264", "yuv420p", "+faststart", "-an"]) assert.ok(plain.includes(f), f);
   assert.equal(plain.at(-1), "html.part.mp4");
   const burned = htmlCaptureFfmpegArgs({ fps: 30, frames: 720, output: "html.part.mp4", burn: "drawtext=a,drawtext=b" });
-  assert.equal(burned[burned.indexOf("-vf") + 1], "drawtext=a,drawtext=b,format=yuv420p");
+  assert.equal(burned[burned.indexOf("-vf") + 1], "drawtext=a,drawtext=b,scale=in_range=full:out_range=tv,format=yuv420p");
 });
 
 test("init's reply must match the job; one frame of rounding is allowed", () => {
