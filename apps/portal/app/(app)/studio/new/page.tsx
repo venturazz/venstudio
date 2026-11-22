@@ -4,7 +4,8 @@ import { requireUser, hasRole } from "@/lib/server/auth.ts";
 import { db } from "@/lib/server/db.ts";
 import { getSavedPlan, listSavedPlans, type SavedPlanRow } from "@/lib/server/productions.ts";
 import { newVideoOffer, offeredTemplate, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
-import { LAB_TRIAL_BADGE, LIFECYCLE_TEXT, labTrialOption } from "@/lib/studio/style-registry.ts";
+import { LAB_TRIAL_BADGE, LIFECYCLE_TEXT, environmentLine, labTrialOption } from "@/lib/studio/style-registry.ts";
+import { workerEnvironmentRows } from "@/lib/server/workers.ts";
 import { Alert, Card, CardBody, CardHeader, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { THEME_BY_ID } from "@/lib/studio/catalog.ts";
 import { autonomyText, EMPTY_PREFILL, prefillFromProduction, type RunFormPrefill } from "@/lib/studio/run-config.ts";
@@ -36,7 +37,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
   let studyNote: { tone: "warn" | "info"; title: string; text: string } | null = null;
   let labNote: { tone: "warn" | "info"; text: string } | null = null;
   try {
-    const [channelRows, offer, plans, batches] = await Promise.all([
+    const [channelRows, offer, plans, batches, envWorkers] = await Promise.all([
       db()`SELECT id, name, category, plan, autonomy_level, autonomy_paused FROM channels ORDER BY name`,
       // Listed and Trial styles from the vendored packs and stored worker rows: no call to a worker while the page renders.
       // Research-only packs (engine hermes) are rendered by the portal through Hermes: offered, in the Trial section only,
@@ -44,7 +45,13 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       newVideoOffer(),
       listSavedPlans().catch(() => [] as SavedPlanRow[]),
       trialQueue(),
+      workerEnvironmentRows().catch(() => []),
     ]);
+    // A pack with an environment: the engine line also says whether a worker has it (stored rows only).
+    const withEnv = (t: RunFormTemplate): RunFormTemplate => {
+      const line = environmentLine(offer.registry.find((e) => e.id === t.styleId)?.pack, envWorkers);
+      return line ? { ...t, environment: line } : t;
+    };
     channels = channelRows.map((c) => {
       const category = (c.category as string | null) ?? "";
       return {
@@ -56,8 +63,8 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
         autonomy: autonomyText(Number(c.autonomy_level), c.autonomy_paused === true),
       };
     });
-    templates = offer.listed;
-    trialTemplates = offer.trial;
+    templates = offer.listed.map(withEnv);
+    trialTemplates = offer.trial.map(withEnv);
     waiting = offer.waiting;
     capabilities = offer.capabilities;
     saved = plans;
@@ -78,7 +85,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       const option = labTrialOption(entry, offer.capabilities, { hermes: offer.hermes });
       const t = entry && option.ok ? offeredTemplate(entry, offer.templates, true) : null;
       if (entry && option.ok && t) {
-        labTemplates = [{ ...t, lab: true }];
+        labTemplates = [withEnv({ ...t, lab: true })];
         prefill = { ...EMPTY_PREFILL, templateId: t.id, labTrialPackId: entry.id, brief: `Lab trial of the ${entry.label} pack (${entry.pack?.version ?? "?"}).` };
         labNote = { tone: "info", text: `${LAB_TRIAL_BADGE}: ${entry.label} ${entry.pack?.version ?? ""} is ${entry.pack?.status ?? "?"}. The run is research only, never published, and its result is counted apart from the pack's promotion.` };
       } else {

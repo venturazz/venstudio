@@ -143,6 +143,14 @@ export const ENGINES: Record<string, Engine> = {
     muse: "external",
     note: "The portal asks Hermes, which renders with its own tools and returns a clip. Owner decision: trials and research only, never published.",
   },
+  command: {
+    id: "command",
+    label: "A pack's own renderer, with the tools its environment installs (handed over from Hermes)",
+    capability: "command",
+    tier: "medium",
+    muse: "muse-test",
+    note: "The worker installs the pack's environment recipe (pinned downloads, npm or pip with hashes) between jobs, probes it, then runs the pack's fixed render argv offline and finishes it like any render. Worker 0.12.0+. docs/style-packs.md \"Environments\".",
+  },
   "sprite-rig": {
     id: "sprite-rig",
     label: "Sprite characters with lip sync (Remotion + Rhubarb)",

@@ -24,9 +24,9 @@ const has = (issues: string[], re: RegExp) => issues.some((i) => re.test(i));
 test("the vendored packs are valid", () => {
   const { packs, issues } = V.validateRepo(STYLES);
   assert.deepEqual(issues, []);
-  // 12 packs (the html-design pack among them), plus one Hermes research pack per claude-animation-skills skill (ten;
-  // zach-3d-films is an alias).
-  assert.equal(packs.length, 22);
+  // 13 packs (the html-design pack and the first engine command pack among them), plus one Hermes research pack per
+  // claude-animation-skills skill (ten; zach-3d-films is an alias).
+  assert.equal(packs.length, 23);
   assert.equal(packs.filter((p: { id: string }) => p.id.startsWith("hermes-") && !["hermes-research-explainer", "hermes-designed-explainer"].includes(p.id)).length, 10);
 });
 

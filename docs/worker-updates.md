@@ -159,6 +159,17 @@ itself.
 workers on 0.8.0 or later update themselves (versions compare numerically, so 0.10.0 is newer than 0.9.0). The
 html-capture packs ride in the signed `render-remotion.json`; no new file is added to the manifest.
 
+## Worker 0.12.0
+
+0.12.0 (environments and engine command, `docs/style-packs.md` "Environments") is delivered by this mechanism like any
+release. It adds a fourth manifest file, `env-packs.json`: the packs with an environment and their files. The portal
+lists it only for a worker that reports it in its update check (0.12.0 reports it, as null before the first install),
+because 0.11.0 refuses a manifest that names a file it does not know. Like the packs index it is data, installed
+whenever it differs once no worker file is about to replace the running one, and a bundle that does not parse is
+remembered and not tried again. Nothing in it runs on arrival; environments install later, between jobs, and are
+reported only after their probe. `install.sh` does not fetch it: a new worker gets it with its first signed update
+check, so a worker with automatic updates off has no environments.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,
@@ -172,3 +183,5 @@ html-capture packs ride in the signed `render-remotion.json`; no new file is add
   0.7.99 worker updating itself, Approve and Off modes, tampering / bad signature / expiry through
   `scripts/e2e-update-proxy.mjs`, downgrade and pin, both rollbacks, and `run.sh`'s rollback after a crash.
 - `scripts/ui-e2e.mjs` (CI): the owner switches the update mode on the Workers page.
+- `scripts/e2e.sh` (CI): `env-packs.json` reaches a worker through the signed update, its environment installs from
+  the recipe, and the worker reports `env:` and `pack:` for the proof pack only after the probe.

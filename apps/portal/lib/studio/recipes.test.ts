@@ -74,6 +74,7 @@ test("stage list per vendored pack: stills and the explainer image-sequence, dat
     "mystery-narration": IMAGE,
     "story-read-aloud": IMAGE,
     "travel-documentary": IMAGE,
+    "three-low-poly": IMAGE,
     "animated-line-graph": SCENE,
     "minimal-line-art": SCENE,
     "probe-line-graph": SCENE,

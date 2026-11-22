@@ -49,6 +49,7 @@ test("the worker reads the index the portal serves, and the names agree", () => 
     minWorkerVersion: "0.9.0",
     composition: "flat-vector-explainer",
     sha256: lock.packs.find((p) => p.id === "explainer-flat-vector")!.sha256,
+    environment: null,
   });
   assert.equal(packsIndexText(packsIndex({ commit: lock.source.commit, packs: [...packs].reverse() })), served, "stable bytes, whatever the order");
 });
@@ -133,10 +134,10 @@ test("installPacksIndex writes the index atomically, and nothing when it does no
   await assert.rejects(installPacksIndex(home, Buffer.from('{"format":2,"packs":[]}')), /unknown format/);
   assert.equal(await installedPacksSha(home), null, "a refused index is not written");
   const idx = await installPacksIndex(home, Buffer.from(served));
-  assert.equal(idx.packs.length, 22);
+  assert.equal(idx.packs.length, 23);
   assert.equal(await readFile(stylePacksPath(home), "utf8"), served);
   assert.equal(await installedPacksSha(home), sha(served));
-  assert.equal((await readInstalledPacks(home))?.packs.length, 22);
+  assert.equal((await readInstalledPacks(home))?.packs.length, 23);
   await writeFile(stylePacksPath(home), "not json");
   assert.equal(await readInstalledPacks(home), null, "a damaged file reports no packs");
 });

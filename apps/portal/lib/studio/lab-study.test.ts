@@ -250,11 +250,15 @@ test("renderer honesty: a renderer no worker reports, or one VenStudio has no pl
   for (const e of ["manim", "godot-2d", "blender-cycles", "remotion-3d"]) {
     const v = rendererVerdict(e, ["ffmpeg", "remotion-2d", "html-capture", "manim", "godot", "blender", "remotion-3d"]);
     assert.equal(v.available, false, `${e}: no VenStudio plugin, whatever a worker claims`);
-    assert.ok(v.text.startsWith(`needs a renderer that isn't installed: ${e}`), v.text);
+    assert.ok(v.text.startsWith("needs an environment: hand it over from Hermes (docs/hermes-handover.md)"), v.text);
+    assert.ok(v.text.includes(e) && !/Kiro|plugin first|Phase 4/.test(v.text), v.text);
   }
+  assert.match(rendererVerdict("provider-video", []).text, /^needs a renderer that isn't installed: provider-video/);
+  assert.equal(rendererVerdict("command", ["ffmpeg", "command"]).text, "A worker reports command");
+  assert.equal(rendererVerdict("command", ["ffmpeg"]).text, "needs a renderer that isn't installed: command (no worker reports command)");
   assert.equal(rendererVerdict("hermes", [], { hermes: true }).researchOnly, true);
   assert.equal(rendererVerdict("hermes", [], { hermes: false }).available, false);
-  assert.match(rendererVerdict("nope", []).text, /^needs a renderer that isn't installed: nope/);
+  assert.match(rendererVerdict("nope", []).text, /^needs an environment: hand it over from Hermes \(docs\/hermes-handover\.md\); VenStudio has no nope renderer/);
 });
 
 test("the draft export: one JSON file whose style.json, README and expect.json the vendored validator accepts, with every source's licence", () => {
@@ -294,7 +298,7 @@ test("the draft export: one JSON file whose style.json, README and expect.json t
     assert.ok(ex.steps.some((s) => s.includes("node tools/validate.mjs")));
   }
   const manim = draftExport({ id: "s", title: "t" }, draft({ renderer: "manim" }), [], rendererVerdict("manim", []));
-  assert.match(manim.files["packs/calm-growth-graph/README.md"], /needs a renderer that isn't installed: manim/);
+  assert.match(manim.files["packs/calm-growth-graph/README.md"], /needs an environment: hand it over from Hermes \(docs\/hermes-handover\.md\)/);
   assert.deepEqual(draftStyleJson(draft({ renderer: "remotion-2d" }), []).renderer, { engine: "remotion-2d", minWorkerVersion: "0.9.0", composition: "calm-growth-graph" });
 });
 
@@ -304,7 +308,7 @@ test("the trial from a study: offered only when the recommended renderer and the
   const closest = { id: "explainer-flat-vector", status: "trial", packReported: true };
   assert.deepEqual(trialOption({ draft: d, verdict: ok, closest, templateId: "tpl-explainer-flat-vector" }), { ok: true, packId: "explainer-flat-vector", templateId: "tpl-explainer-flat-vector" });
   assert.match((trialOption({ draft: null, verdict: ok, closest, templateId: "t" }) as { reason: string }).reason, /Synthesize/);
-  assert.match((trialOption({ draft: d, verdict: rendererVerdict("manim", []), closest, templateId: "t" }) as { reason: string }).reason, /needs a renderer that isn't installed: manim/);
+  assert.match((trialOption({ draft: d, verdict: rendererVerdict("manim", []), closest, templateId: "t" }) as { reason: string }).reason, /needs an environment: hand it over from Hermes/);
   assert.match((trialOption({ draft: d, verdict: ok, closest: { ...closest, status: "draft" }, templateId: "t" }) as { reason: string }).reason, /only Listed and Trial/);
   assert.match((trialOption({ draft: d, verdict: ok, closest: { ...closest, packReported: false }, templateId: "t" }) as { reason: string }).reason, /No worker reports/);
   assert.match((trialOption({ draft: d, verdict: ok, closest, templateId: null }) as { reason: string }).reason, /does not offer/);

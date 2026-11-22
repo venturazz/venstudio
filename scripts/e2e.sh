@@ -561,6 +561,32 @@ expect_live "$(fsha "$PRISTINE")" "installing packs changed the worker file"
 run_tick "after the packs update"
 grep -qF "pack:documentary-stills@$(pack_version documentary-stills)" <<<"$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")" || fail "the worker does not report its packs after the update"
 
+echo "== env packs travel through the signed update; the worker installs the proof pack's environment and reports env: and pack: only after its probe"
+# Read from the vendored copy, so this follows pack and environment bumps (the proof pack: docs/hermes-handover.md).
+EP=three-low-poly
+EPV=$(pack_version "$EP") || fail "styles/lock.json has no version for $EP"
+ENVKEY=$(node -e 'const e=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).environment; console.log(`${e.id}@${e.version}`)' "$ROOT/styles/packs/$EP/style.json") || fail "no environment in $EP"
+curl -fsS "$APP_URL/install/env-packs.json" -o "$WORK/env-packs.json" || fail "env-packs.json not served"
+node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(b.kind!=="venstudio-env-packs"||!b.packs.some((p)=>p.id===process.argv[2]&&p.version===process.argv[3]))process.exit(1)' "$WORK/env-packs.json" "$EP" "$EPV" \
+  || fail "env-packs.json does not carry $EP@$EPV"
+CAPS=$(wq "array_to_string(capabilities, ',')")
+if grep -qF "pack:$EP@" <<<"$CAPS"; then fail "the worker reports $EP before its environment is installed (capabilities: $CAPS)"; fi
+rm -rf "$WORK/worker/packs" "$WORK/worker/envs"
+# One tick: the update check installs env-packs.json (verified against the signed manifest), the environment installs
+# in the background, and a tick waits for it and claims once more with what it then reports.
+timeout 900 "$WORK/worker/run.sh" tick || { tail -n 60 "$LOGF"; fail "env packs update: tick exited non-zero"; }
+cmp -s "$WORK/worker/packs/env-packs.json" "$WORK/env-packs.json" || { tail -n 40 "$LOGF"; fail "the signed update did not install env-packs.json"; }
+grep -q "env packs [0-9a-f]\{12\}: signature and checksum verified" "$LOGF" || fail "the log does not show the env packs verification"
+grep -qF "environment $ENVKEY installed and probed" "$LOGF" || { tail -n 60 "$LOGF"; fail "the environment $ENVKEY did not install and pass its probe (state: $(cat "$WORK/worker/envs/state.json" 2>/dev/null))"; }
+[ -f "$WORK/worker/envs/$ENVKEY/.venstudio-env.json" ] || fail "no manifest of installed files for $ENVKEY"
+[ "$(wq version)" = "$CURRENT" ] || fail "installing env packs changed the worker version"
+CAPS=$(wq "array_to_string(capabilities, ',')")
+grep -qF "env:$ENVKEY" <<<"$CAPS" || fail "the worker does not report env:$ENVKEY after its probe passed (capabilities: $CAPS)"
+grep -qF "pack:$EP@$EPV" <<<"$CAPS" || fail "the worker does not report pack:$EP@$EPV with its environment ready (capabilities: $CAPS)"
+grep -qF "command" <<<"$CAPS" || fail "the worker does not report the command renderer"
+[ "$(q "SELECT count(*) FROM workers w, jsonb_array_elements(w.environments) e WHERE w.id = '$WORKER' AND e->>'id' || '@' || (e->>'version') = '$ENVKEY' AND e->>'status' = 'ready'")" = "1" ] \
+  || fail "the worker's claim does not report $ENVKEY as ready: $(wq "environments::text")"
+
 echo "== drained worker gets no new jobs; revoked worker is rejected"
 q "UPDATE workers SET status = 'draining' WHERE id = '$WORKER'" >/dev/null
 DRAIN_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','echo') RETURNING id")

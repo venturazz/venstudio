@@ -72,6 +72,12 @@ jobs:
       - name: Worker tests
         run: npm run test:worker
 
+      - name: Environments (the proof pack's recipe installs as this non-root user with the worker's installer, its probe passes, its fixture renders through the command renderer)
+        env:
+          VENSTUDIO_ENV_E2E: required
+        timeout-minutes: 15
+        run: node --test --test-name-pattern "installs from its recipe" apps/worker/environments.test.ts
+
       - name: Typecheck worker
         run: npm run typecheck:worker
 

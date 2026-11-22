@@ -182,7 +182,8 @@ test("lab trials say exactly why they cannot start and what fixes it", () => {
   assert.ok(!stale.ok && stale.reason === `No worker reports ${cap} yet` && /^Update the worker: it installs this pack version/.test(stale.fix));
   // A 3D template: no worker can run the engine at all.
   const threeD = labTrialOption(entry("probe-line-graph", mergeRegistry(STYLES, [pack("probe-line-graph", { engine: "remotion-3d", status: "draft" })])), ["remotion-2d", "html-capture"]);
-  assert.ok(!threeD.ok && threeD.reason === "Needs a renderer that isn't installed: remotion-3d", JSON.stringify(threeD));
+  assert.ok(!threeD.ok && threeD.reason === "Needs an environment: hand it over from Hermes (docs/hermes-handover.md)", JSON.stringify(threeD));
+  assert.ok(!threeD.ok && /Hermes opens a pull request to venstudio-styles/.test(threeD.fix) && !/Kiro|plugin first/.test(threeD.fix), JSON.stringify(threeD));
   // A hermes pack needs Hermes, not a worker.
   const hermesDraft = entry("hermes-graph", mergeRegistry(STYLES, [pack("hermes-graph", { status: "draft" })]));
   assert.deepEqual(labTrialOption(hermesDraft, [], { hermes: true }), { ok: true, via: "hermes", capability: null });

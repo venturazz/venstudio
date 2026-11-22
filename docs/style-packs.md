@@ -72,6 +72,57 @@ Listed or Trial packs no worker reports yet are named under the Trial section as
   Review card (Phase 2, below); runs without one are listed as not scored, never averaged in as 0, and block
   promotion until measured.
 
+## Environments and engine command (worker 0.12.0): the handover from Hermes
+
+Owner decision: tools are not pre-built by guess. When a style works in Hermes with its own tools (three.js, Godot,
+Manim, Blender, Python libraries) and the owner liked a trial, Hermes opens a PR to venstudio-styles with the pack as
+engine `command` and an `environment`: the exact recipe it used (pinned https downloads with sha256 and size, `npm ci
+--ignore-scripts` from a lockfile in the pack, `pip --require-hashes` wheels, PATH-like variables), a probe and a fixed
+render argv. The guide written for Hermes is [docs/hermes-handover.md in venstudio-styles](https://github.com/venturazz/venstudio-styles/blob/main/docs/hermes-handover.md)
+(with a checklist and an Indonesian summary); the format is `styles/FORMAT.md` "Environments".
+
+1. venstudio-styles CI installs the recipe on a clean runner as a non-root user with the vendored worker's own
+   installer (`env-install`), runs the probe, renders the fixture with the worker's command renderer
+   (`render-command`) and checks it with `check-video`. A failing recipe cannot pass.
+2. The owner merges (the one control point). A venstudio PR vendors the commit; this repo's CI (`e2e.sh`) delivers the
+   pack to a real worker through the signed update and checks it reports `env:` and `pack:`.
+3. The portal serves `/install/env-packs.json` (`lib/env-packs.ts`): every pack with an environment and all its files.
+   It is the fourth file of the signed update manifest, listed only for workers that report it (0.12.0+), so older
+   workers keep getting the files they accept. The packs index names each pack's environment (`environment:
+   "<id>@<version>"`, only on such packs).
+4. Worker 0.12.0 checks each pack's files against its digest and writes them to `<home>/packs/<id>@<version>/`. Between
+   jobs, in the background, it installs each environment into `<home>/envs/<id>@<version>/` (never as root; a disk
+   check first; downloads verified; archives checked against traversal and symlinks; a manifest of installed files),
+   runs the probe, and only then reports `env:<id>@<version>` and the pack's `pack:<id>@<version>`. A failure is
+   recorded with its reason and tried again after 5 min, doubling up to 6 h; it never blocks other jobs. An older
+   version of an environment is removed once a newer one passed and no installed pack uses it. Each claim carries the
+   environments' statuses (`environments`, stored in `workers.environments`, migration 0021).
+5. A render of a command pack runs the pack's argv with substitutions from a closed set, cwd its scratch folder, a
+   minimal environment (no worker token or portal URL), a time limit from `secondsPerVideoSecond`, and its output
+   captured into `command.log` (64 KB). Network: inside a user and network namespace where the machine allows it
+   unprivileged (then it has none); otherwise every proxy variable points at a loopback listener that refuses and
+   records requests, and any recorded request fails the job. The job result's `network` says which applied. Then the
+   shared steps: PNG frames are checked (count and size) and encoded, captions burned, narration and audio mixed,
+   probed, uploaded. The result records the pack, the environment and its licences.
+
+What the portal shows, from stored rows only:
+
+- Styles and New Video: the pack and a line "A worker has env:<id>@<v>", "env:<id>@<v>: installing… on <worker>",
+  "env:<id>@<v>: failed on <worker>: <reason>" or "No worker has env:<id>@<v> yet" (`environmentLine`). A lab trial
+  waits for `command`, then the environment, then the pack, saying which.
+- Workers: each worker's environments with their status and reason (`workerEnvironmentLabel`).
+- Template Lab: a look that needs a renderer no worker has reads "Needs an environment: hand it over from Hermes
+  (docs/hermes-handover.md)", never that Kiro must build a renderer (`rendererVerdict`, `labTrialOption`). A video
+  provider (`provider-video`) keeps its own wording.
+
+The first pack through the channel is `three-low-poly` (Draft until its first real CI run): three.js 0.183.2 from npm
+projects flat-shaded low-poly shapes on the CPU and resvg 0.44.0 from its GitHub release rasterises the frames.
+
+What is enforced and what is trusted is listed in `styles/FORMAT.md` ("What a worker enforces, and what it trusts"):
+the recipe's shape, hashes, hosts, archive safety, no root, the probe before any capability, the minimal render
+environment and its limits are enforced; the code of the pack and of the tools it installs is trusted after review, the
+styles CI and the owner's merge.
+
 ## Phase 2: renderers, html-capture, the Hermes research renderer, the presentation score
 
 ### Renderers
@@ -413,3 +464,9 @@ tests `recipes.test.ts`, `scene-spec.test.ts`, `skill-brief.test.ts`, `image-seq
 the preview: `lib/studio/html-design.ts`, `lib/studio/frame-preview.ts`, `lib/server/html-page.ts`, the preview stage in
 `lib/server/production.ts`, `db/migrations/0020_html_design.sql`, `lib/studio/html-design.test.ts`, and worker
 `preview-frames`, `parsePageBundle`, `HTML_PAGE_CSP`, `HTML_PAGE_GUARD_SOURCE` (`apps/worker/html-design.test.ts`).
+Environments and engine command: `lib/env-packs.ts`, `servedEnvPacks` in `lib/server/style-packs.ts`,
+`workerEnvironmentRows` in `lib/server/workers.ts`, `environmentLine`, `workerEnvironmentLabel` and `HANDOVER_REASON` in
+`style-registry.ts`, `HANDOVER_TEXT` in `lab-study.ts`, `app/api/worker/claim/route.ts` (`environments`),
+`db/migrations/0021_environments.sql`, `lib/environments.test.ts`, and worker `parseEnvironment`, `installEnvironment`,
+`planExtraction`, `downloadPinned`, `runCommandRender`, `env-install`, `render-command`, `install-env-packs`
+(`apps/worker/environments.test.ts`).

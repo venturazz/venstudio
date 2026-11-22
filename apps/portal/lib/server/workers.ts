@@ -1,6 +1,6 @@
 import "server-only";
 import { CAPABILITIES, type Capability } from "@venstudio/protocol";
-import { PACK_CAPABILITY_RE } from "../studio/style-registry.ts";
+import { ENV_CAPABILITY_RE, PACK_CAPABILITY_RE, parseWorkerEnvironments, type WorkerEnvironment } from "../studio/style-registry.ts";
 import { db } from "./db.ts";
 import { enrollmentCode, normalizeCode, randomToken, sha256Hex } from "../crypto/tokens.ts";
 
@@ -31,7 +31,7 @@ export const MAX_REPORTED_CAPABILITIES = 100;
 /** Known capabilities, plus pack:<id>@<version> for installed style packs (worker 0.9.0+); anything else is dropped. */
 export function sanitizeCapabilities(input: unknown): Capability[] {
   if (!Array.isArray(input)) return [];
-  const ok = (c: unknown): c is Capability => typeof c === "string" && (CAPABILITIES.includes(c as Capability) || PACK_CAPABILITY_RE.test(c));
+  const ok = (c: unknown): c is Capability => typeof c === "string" && (CAPABILITIES.includes(c as Capability) || PACK_CAPABILITY_RE.test(c) || ENV_CAPABILITY_RE.test(c));
   return [...new Set(input.filter(ok))].slice(0, MAX_REPORTED_CAPABILITIES);
 }
 
@@ -118,4 +118,17 @@ export function needsAttention(w: { host: string; status: string }, p: Presence,
 export async function reportedCapabilities(): Promise<string[]> {
   const rows = await db()`SELECT DISTINCT unnest(capabilities) AS cap FROM workers WHERE status <> 'revoked'`;
   return rows.map((r) => String(r.cap)).filter(Boolean);
+}
+
+/**
+ * Every non-revoked worker's name, capabilities and reported environments (workers.environments, worker 0.12.0+), for
+ * the availability lines on Styles and New Video. Read from stored rows only; no worker is called.
+ */
+export async function workerEnvironmentRows(): Promise<Array<{ name: string; capabilities: string[]; environments: WorkerEnvironment[] }>> {
+  const rows = await db()`SELECT name, capabilities, environments FROM workers WHERE status <> 'revoked' ORDER BY name`;
+  return rows.map((r) => ({
+    name: String(r.name),
+    capabilities: Array.isArray(r.capabilities) ? (r.capabilities as unknown[]).map(String) : [],
+    environments: parseWorkerEnvironments(r.environments),
+  }));
 }

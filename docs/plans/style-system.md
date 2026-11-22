@@ -10,7 +10,12 @@ Draft and Lab packs, batch trials) on `feat/research-trials`, described in `docs
 names the recipe its runs follow: image-sequence, scene-spec, hermes-skill) on `feat/recipes`, described in
 `docs/style-packs.md` "Workflows"; the html-design workflow (Hermes writes the page per video, research only, owner
 decision) and the still-frame preview shared with scene-spec (worker 0.11.0 `preview-frames`) on `feat/html-design`,
-described in `docs/style-packs.md` and `docs/html-capture.md`; phases 4 and 5 are the plan.
+described in `docs/style-packs.md` and `docs/html-capture.md`; environments and engine command (the handover channel
+from Hermes to Muse: a pack carries the exact tools it renders with, proven by the styles CI, installed by workers
+themselves, worker 0.12.0) on `feat/hermes-handover`, described in `docs/style-packs.md` "Environments" and, for Hermes,
+in [venstudio-styles docs/hermes-handover.md](https://github.com/venturazz/venstudio-styles/blob/main/docs/hermes-handover.md);
+phases 4 and 5 are the plan, and phase 4 now runs through that channel: a renderer reaches workers when Hermes hands
+over a style that needs it, never built by guess.
 
 Phase 1 changes one thing in section 2 below, by owner decision (no new secrets): the portal has no GitHub token, so it
 does not read signed releases from the styles repo. venstudio vendors a pinned copy (`styles/`, `styles/lock.json`)
@@ -35,6 +40,10 @@ through a normal PR that its CI must pass, and the portal signs what it serves t
   menonton dan mencatat pola, tidak mengunduh apa pun), repo publik (diadaptasi lewat PR + CI, lisensi
   dicatat), skill Hermes, artikel, catatan Review owner. Sumber uji pertama:
   `artemnovitckii/claude-animation-skills` (MIT).
+- **Serah terima dari Hermes** (worker 0.12.0): gaya yang sudah jalan di Hermes dengan alatnya sendiri dikirim lewat
+  PR ke `venstudio-styles` sebagai pack engine `command` + resep lingkungan (versi dan sha256 persis); CI memasang dan
+  me-render-nya tanpa Hermes; owner merge; worker Muse memasang sendiri dan baru melaporkan `env:`/`pack:` setelah
+  probe lolos. Tidak ada alat yang dibangun berdasarkan tebakan.
 - **Fase**: 0 update worker otomatis bertanda tangan (sudah dikerjakan); 1 repo gaya + format pack +
   registry + New Video hanya Listed; 2 kerangka renderer + html-capture + renderer Hermes (riset);
   3 Template Lab dengan semua sumber dan loop kurasi; 4 renderer lain sesuai kebutuhan; 5 perbaikan terus.

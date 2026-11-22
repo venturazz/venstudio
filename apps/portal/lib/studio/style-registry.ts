@@ -153,6 +153,19 @@ export interface StylePack {
   workflow?: PackWorkflow | null;
   /** html-design packs: the brief Hermes designs each page from (style.json `design`), or null. */
   design?: PackDesign | null;
+  /** style.json `environment` (required for engine command, worker 0.12.0+), or null. */
+  environment?: PackEnvironment | null;
+}
+
+/** What the portal shows of a pack's environment recipe (the styles validator and the worker check the rest). */
+export interface PackEnvironment {
+  id: string;
+  version: string;
+  platforms: string[];
+  /** The render's output (engine command only) and who draws the captions. */
+  output: string | null;
+  captions: string | null;
+  licences: Array<{ tool: string; version: string; licence: string; source: string }>;
 }
 
 /** style.json `design` of an html-design pack, as the portal reads it (the styles validator already checked it). */
@@ -252,6 +265,9 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
   // The same for a research-only recipe (html-design: Hermes writes the page), and only on html-capture.
   const flow = parsePackWorkflow(raw.workflow);
   if (flow && isResearchRecipe(flow.recipe) && (!RESEARCH_MAX_STATUSES.includes(status) || engine !== "html-capture")) return null;
+  // Engine command renders only with its environment; a pack that names neither is left out.
+  const environment = environmentOf(raw.environment);
+  if (engine === "command" && !environment) return null;
   const formats = (Array.isArray(f.supported) ? f.supported : []).filter((x): x is Format => x === "short" || x === "long");
   const frame: Frame = f.naturalFrame === "landscape" || f.naturalFrame === "portrait" ? f.naturalFrame : "both";
   const list = <T,>(v: unknown, pick: (x: Record<string, unknown>) => T): T[] => (Array.isArray(v) ? v.filter(isRecord).map(pick) : []);
@@ -276,6 +292,25 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
     hermes: isResearchEngine(engine) ? hermesOf(raw.hermes) : null,
     workflow: flow,
     design: flow && isResearchRecipe(flow.recipe) ? designOf(raw.design) : null,
+    environment: isResearchEngine(engine) ? null : environment,
+  };
+}
+
+function environmentOf(raw: unknown): PackEnvironment | null {
+  if (!isRecord(raw)) return null;
+  const id = str(raw.id);
+  const version = str(raw.version);
+  if (!ID_RE.test(id) || !SEMVER_RE.test(version)) return null;
+  const render = isRecord(raw.render) ? raw.render : null;
+  return {
+    id,
+    version,
+    platforms: Array.isArray(raw.platforms) ? raw.platforms.filter((x): x is string => typeof x === "string").slice(0, 4) : [],
+    output: render ? str(render.output) || null : null,
+    captions: render ? str(render.captions) || null : null,
+    licences: Array.isArray(raw.licences)
+      ? raw.licences.filter(isRecord).slice(0, 32).map((l) => ({ tool: str(l.tool), version: str(l.version), licence: str(l.licence), source: str(l.source) }))
+      : [],
   };
 }
 
@@ -367,6 +402,73 @@ export function packCapability(id: string, version: string): string {
 
 export const PACK_CAPABILITY_RE = /^pack:[a-z0-9][a-z0-9-]{1,62}@\d{1,6}\.\d{1,6}\.\d{1,6}$/;
 
+/** env:<id>@<version>: a worker (0.12.0+) installed that environment and its probe passed there. */
+export function envCapability(env: Pick<PackEnvironment, "id" | "version">): string {
+  return `env:${env.id}@${env.version}`;
+}
+
+export const ENV_CAPABILITY_RE = /^env:[a-z0-9][a-z0-9-]{1,62}@\d{1,6}\.\d{1,6}\.\d{1,6}$/;
+
+/** One environment as a worker reported it in its last claim (workers.environments). */
+export interface WorkerEnvironment {
+  id: string;
+  version: string;
+  status: "installing" | "ready" | "failed";
+  detail: string;
+  packs: string[];
+  at: string;
+}
+
+/** Reads a stored workers.environments value; anything malformed is dropped. Pure. */
+export function parseWorkerEnvironments(raw: unknown): WorkerEnvironment[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isRecord)
+    .filter((e) => ID_RE.test(str(e.id)) && SEMVER_RE.test(str(e.version)) && ["installing", "ready", "failed"].includes(str(e.status)))
+    .slice(0, 50)
+    .map((e) => ({
+      id: str(e.id),
+      version: str(e.version),
+      status: str(e.status) as WorkerEnvironment["status"],
+      detail: str(e.detail).slice(0, 300),
+      packs: Array.isArray(e.packs) ? e.packs.filter((p): p is string => typeof p === "string").slice(0, 20) : [],
+      at: str(e.at),
+    }));
+}
+
+/** One line per environment on the Workers page: its capability, its status and why, and the packs that use it. Pure. */
+export function workerEnvironmentLabel(e: WorkerEnvironment): { tone: "ok" | "warn" | "danger"; text: string } {
+  const cap = `env:${e.id}@${e.version}`;
+  const packs = e.packs.length > 0 ? ` (for ${e.packs.join(", ")})` : "";
+  if (e.status === "ready") return { tone: "ok", text: `${cap}: ready, probe passed${packs}` };
+  if (e.status === "installing") return { tone: "warn", text: `${cap}: installing…${packs}` };
+  return { tone: "danger", text: `${cap}: failed: ${e.detail || "no reason given"}${packs}` };
+}
+
+/**
+ * The worker-availability line of a pack with an environment, from stored worker rows only (never a call to a worker):
+ * a worker that reports env:<id>@<v> has it; otherwise the most advanced install status any worker reported (installing,
+ * then failed with its reason); otherwise none has it yet. Null for a pack without an environment. Pure.
+ */
+export function environmentLine(pack: Pick<StylePack, "environment"> | null | undefined, workers: ReadonlyArray<{ name: string; capabilities: readonly string[]; environments: readonly WorkerEnvironment[] }>): { state: "ready" | "installing" | "failed" | "none"; text: string } | null {
+  const env = pack?.environment;
+  if (!env) return null;
+  const cap = envCapability(env);
+  if (workers.some((w) => w.capabilities.includes(cap))) return { state: "ready", text: `A worker has ${cap}` };
+  const of = (status: WorkerEnvironment["status"]) => {
+    for (const w of workers) {
+      const e = w.environments.find((x) => x.id === env.id && x.version === env.version && x.status === status);
+      if (e) return { w, e };
+    }
+    return null;
+  };
+  const installing = of("installing");
+  if (installing) return { state: "installing", text: `${cap}: installing… on ${installing.w.name}` };
+  const failed = of("failed");
+  if (failed) return { state: "failed", text: `${cap}: failed on ${failed.w.name}: ${failed.e.detail || "no reason given"}` };
+  return { state: "none", text: `No worker has ${cap} yet (workers 0.12.0+ install it after their next signed update)` };
+}
+
 export interface RegistryEntry {
   id: string;
   label: string;
@@ -435,7 +537,10 @@ export function startRefusal(entry: RegistryEntry | undefined, opts: { labTrial?
 }
 
 /** Engines a worker runs today (the rest of ENGINES needs a renderer no worker has). */
-export const WORKER_ENGINES: readonly string[] = ["ffmpeg-stills", "remotion-2d", "html-capture"];
+export const WORKER_ENGINES: readonly string[] = ["ffmpeg-stills", "remotion-2d", "html-capture", "command"];
+
+/** The reason a style needs tools no worker has, and what the owner does about it (docs/hermes-handover.md). */
+export const HANDOVER_REASON = "Needs an environment: hand it over from Hermes (docs/hermes-handover.md)";
 
 export type LabTrialOption =
   | { ok: true; via: "worker" | "hermes"; capability: string | null }
@@ -454,11 +559,20 @@ export function labTrialOption(entry: RegistryEntry | undefined, reported: reado
     return opts.hermes ? { ok: true, via: "hermes", capability: null } : { ok: false, reason: "Hermes is not set up, and it renders this pack", fix: "Set HERMES_BASE_URL in the portal's environment and restart the portal." };
   }
   if (!WORKER_ENGINES.includes(p.engine)) {
-    return { ok: false, reason: `Needs a renderer that isn't installed: ${p.engine}`, fix: `No worker can run ${p.engine} yet; it needs a renderer plugin first (Phase 4 of the style system).` };
+    if (p.engine === "provider-video") return { ok: false, reason: `Needs a renderer that isn't installed: ${p.engine}`, fix: "No worker runs a video provider." };
+    return {
+      ok: false,
+      reason: HANDOVER_REASON,
+      fix: `No worker has a ${p.engine} renderer. When the look works in Hermes and you liked a trial, Hermes opens a pull request to venstudio-styles with the pack as engine command and the exact environment it used; CI installs and renders it without Hermes, you merge, and workers install it themselves.`,
+    };
   }
   const engineCap = ENGINES[p.engine]?.capability ?? p.engine;
   const packCap = packCapability(p.id, p.version);
   if (reported.includes(packCap)) return { ok: true, via: "worker", capability: packCap };
+  if (p.environment && !reported.includes(envCapability(p.environment))) {
+    if (!reported.includes(engineCap)) return { ok: false, reason: `No worker reports ${engineCap}`, fix: `Update the worker to ${p.minWorkerVersion} or later; it installs ${envCapability(p.environment)} by itself after the next signed update.` };
+    return { ok: false, reason: `No worker has ${envCapability(p.environment)} yet`, fix: "Workers install the environment between jobs after their next signed update; the Workers page shows how each install stands." };
+  }
   if (!reported.includes(engineCap)) {
     return p.engine === "html-capture"
       ? { ok: false, reason: "No worker reports html-capture", fix: `Update the worker to ${p.minWorkerVersion} or later with the Remotion renderer (install.sh --with-remotion); it reports html-capture once its probe passes.` }

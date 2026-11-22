@@ -407,6 +407,11 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             {engine.worker === "yes" && <Badge tone="ok">A worker reports {engine.capability}</Badge>}
             {engine.worker === "no" && <Badge tone="warn">No worker reports {engine.capability} yet</Badge>}
             {engine.worker === "external" && <Badge>Not run by a worker</Badge>}
+            {template?.environment && (
+              <span data-testid="engine-environment">
+                <Badge tone={template.environment.state === "ready" ? "ok" : template.environment.state === "failed" ? "danger" : "warn"}>{template.environment.text}</Badge>
+              </span>
+            )}
           </div>
         )}
         {template?.workflow && (
