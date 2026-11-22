@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:17-alpine
@@ -90,8 +90,8 @@ jobs:
       # After Playwright: its --with-deps installed the system libraries Remotion's headless Chromium needs too.
       # The project is assembled exactly as the portal serves it to workers: the runtime plus the vendored packs'
       # render projects (the flat-vector-explainer composition loads from styles/packs/explainer-flat-vector/render).
-      - name: Remotion renderer and html-capture (assemble from the vendored packs, install, typecheck, probe, render the golden fixture and probe-line-graph)
-        timeout-minutes: 20
+      - name: Remotion renderer and html-capture (assemble from the vendored packs, install, typecheck, probe, render the golden fixture and every html-capture pack)
+        timeout-minutes: 35
         env:
           VENSTUDIO_REMOTION_DIR: ${{ github.workspace }}/.e2e-remotion-project
           VENSTUDIO_REMOTION_OUT: ${{ github.workspace }}/.e2e-remotion
@@ -106,13 +106,17 @@ jobs:
           node scripts/probe.mjs
           cd "$GITHUB_WORKSPACE"
           node --test apps/worker/remotion-render.test.ts
-          # html-capture (worker 0.10.0): the probe, probe-line-graph through the real render-video path (size,
-          # duration, frame count, the shared mix and caption burn, qc-video's sampled frames), and pages that try the
-          # network, which must fail. Then the pack's fixture as the styles repo's CI renders it, checked the same way.
+          # html-capture (worker 0.10.0): the probe, every vendored html-capture pack through the real render-video
+          # path (size, duration, frame count, the shared mix and caption burn, qc-video's sampled frames), and pages
+          # that try the network, which must fail. Then each pack's fixture as the styles repo's CI renders it.
           node --test apps/worker/html-capture-render.test.ts
           mkdir -p "$VENSTUDIO_REMOTION_OUT"
-          node apps/worker/venstudio-worker.ts capture-html --pack styles/packs/probe-line-graph --out "$VENSTUDIO_REMOTION_OUT/probe-line-graph-fixture.mp4" --remotion "$VENSTUDIO_REMOTION_DIR" --font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
-          node styles/tools/check-video.mjs "$VENSTUDIO_REMOTION_OUT/probe-line-graph-fixture.mp4" styles/packs/probe-line-graph/fixtures/expect.json
+          ids=$(node -e 'for (const p of JSON.parse(require("fs").readFileSync("styles/lock.json","utf8")).packs) if (p.engine === "html-capture") console.log(p.id)')
+          [ -n "$ids" ] || { echo "styles/lock.json lists no html-capture pack"; exit 1; }
+          for id in $ids; do
+            node apps/worker/venstudio-worker.ts capture-html --pack "styles/packs/$id" --out "$VENSTUDIO_REMOTION_OUT/$id-fixture.mp4" --remotion "$VENSTUDIO_REMOTION_DIR" --font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+            node styles/tools/check-video.mjs "$VENSTUDIO_REMOTION_OUT/$id-fixture.mp4" "styles/packs/$id/fixtures/expect.json"
+          done
 
       - name: Browser end-to-end (UI flows + screenshots)
         env:
@@ -129,7 +133,11 @@ jobs:
           # Fake Hermes started by scripts/ui-e2e.mjs.
           export HERMES_BASE_URL=http://127.0.0.1:3299 HERMES_API_KEY=test-hermes-key HERMES_IMAGE_PROVIDER_ORDER=cloudflare,agnes,canva
           DATABASE_URL="$UI_DB" node apps/portal/scripts/migrate.mjs
-          (cd apps/portal && DATABASE_URL="$UI_DB" npx next start -p 3200 > ../../ui-portal.log 2>&1) &
+          # The Template Lab must never fetch a study's links itself (Hermes looks at them): any request from the portal
+          # process to YouTube or GitHub is written to the canary file and fails; ui-e2e.mjs asserts it stays empty.
+          export E2E_FETCH_CANARY="$PWD/.e2e-ui-canary.log"
+          rm -f "$E2E_FETCH_CANARY"
+          (cd apps/portal && DATABASE_URL="$UI_DB" NODE_OPTIONS="--import=$GITHUB_WORKSPACE/scripts/e2e-fetch-canary.mjs" npx next start -p 3200 > ../../ui-portal.log 2>&1) &
           for i in $(seq 1 60); do curl -fsS $APP_URL/api/health >/dev/null 2>&1 && break; sleep 1; done
           node scripts/ui-e2e.mjs || { tail -n 80 ui-portal.log; exit 1; }
 

@@ -1,4 +1,5 @@
 import "server-only";
+import { studyExists } from "./lab-studies.ts";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { audit } from "./audit.ts";
@@ -225,6 +226,8 @@ export async function startRun(
     templateId: string;
     /** A saved plan the run was started from, or empty. */
     productionId?: string;
+    /** A Template Lab study this run is a trial for, or empty. Such a run is always a trial. */
+    labStudyId?: string;
     userId: string;
   },
 ): Promise<StartResult> {
@@ -250,8 +253,15 @@ export async function startRun(
     // The theme defaults to the channel category; an override lives on this run only and never on the channel.
     const built = buildRunConfig(input, { category: (c.category as string | null) ?? "" }, template);
     if (!built.ok) return { ok: false, error: built.error };
-    // The pack version and status go with the run (additive): a Trial pack marks it research only.
-    const config: RunConfig = { ...built.config, stylePack: runStylePack(entry.pack) };
+    // The pack version and status go with the run (additive): a Trial pack marks it research only. A run started
+    // from a Template Lab study is a trial whatever the pack's status, and keeps the link to its study.
+    let labStudyId: string | undefined;
+    if (input.labStudyId) {
+      if (!(await studyExists(input.labStudyId))) return { ok: false, error: "Unknown lab study" };
+      labStudyId = input.labStudyId;
+    }
+    const pack = runStylePack(entry.pack);
+    const config: RunConfig = { ...built.config, stylePack: labStudyId ? { ...pack, trial: true } : pack, ...(labStudyId ? { labStudyId } : {}) };
     const topic = topicFromBrief(config.topicHint);
     let productionId: string | null = null;
     if (input.productionId) {
@@ -269,7 +279,7 @@ export async function startRun(
       await insertPending(tx, id, "idea", "", 0);
       return id;
     });
-    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack } });
+    await safeAudit({ userId: input.userId, action: "run.start", target: runId, detail: { channelId: input.channelId, templateId: template.id, format: input.format, language: config.language, purposes: config.purposes, themeSource: config.themeSource, stylePack: config.stylePack, ...(config.labStudyId ? { labStudyId: config.labStudyId } : {}) } });
     return { ok: true, runId };
   } catch (err) {
     console.error("startRun failed", err);

@@ -13,14 +13,15 @@ import { THEME_BY_ID } from "@/lib/studio/catalog.ts";
 import { autonomyText, EMPTY_PREFILL, prefillFromProduction, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { RunForm, type RunFormChannel, type RunFormTemplate } from "../runs/run-form.tsx";
 import { StudioNav } from "../studio-nav.tsx";
+import { getStudy, studyTrialState } from "@/lib/server/lab-studies.ts";
 
 export const metadata = { title: "New video" };
 export const dynamic = "force-dynamic";
 
-export default async function NewVideoPage({ searchParams }: { searchParams: Promise<{ from?: string }> }) {
+export default async function NewVideoPage({ searchParams }: { searchParams: Promise<{ from?: string; study?: string }> }) {
   const user = await requireUser();
   const canEdit = hasRole(user.role, "editor");
-  const { from } = await searchParams;
+  const { from, study: studyParam } = await searchParams;
 
   let channels: RunFormChannel[] = [];
   let templates: RunFormTemplate[] = [];
@@ -30,6 +31,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
   let saved: SavedPlanRow[] = [];
   let prefill: RunFormPrefill = EMPTY_PREFILL;
   let loadError = "";
+  let studyNote: { tone: "warn" | "info"; title: string; text: string } | null = null;
   try {
     await ensureSeedTemplates();
     const [channelRows, templateList, caps, plans, registry] = await Promise.all([
@@ -80,6 +82,20 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       const p = await getSavedPlan(from);
       if (p) prefill = prefillFromProduction(p);
     }
+    // "Start a trial video with the closest pack" on a Template Lab study: the closest pack and the study's notes as
+    // the brief. The run is a trial linked to the study (startRun checks the study and marks the pack trial).
+    if (studyParam && z.uuid().safeParse(studyParam).success) {
+      const study = await getStudy(studyParam);
+      if (study) {
+        const t = await studyTrialState(study);
+        if (t.option.ok && [...templates, ...trialTemplates].some((x) => x.id === (t.option.ok ? t.option.templateId : ""))) {
+          prefill = { ...EMPTY_PREFILL, templateId: t.option.templateId, brief: t.brief, labStudyId: study.id };
+          studyNote = { tone: "info", title: study.title, text: `Trial for the lab study "${study.title}" with the closest pack, ${t.option.packId}. The run is marked as a trial linked to the study; its result shows on the study page.` };
+        } else {
+          studyNote = { tone: "warn", title: study.title, text: `A trial for the lab study "${study.title}" cannot start: ${t.option.ok ? "New Video does not offer its closest pack" : t.option.reason}.` };
+        }
+      }
+    }
   } catch (err) {
     console.error("new video page: could not load", err);
     loadError = "The form could not be loaded. The latest database update may not be applied yet.";
@@ -91,6 +107,13 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       {loadError && (
         <div className="mb-4">
           <Alert tone="warn">{loadError}</Alert>
+        </div>
+      )}
+      {studyNote && (
+        <div className="mb-4" data-testid="lab-study-trial-note">
+          <Alert tone={studyNote.tone}>
+            <span className="break-words">{studyNote.text}</span>
+          </Alert>
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -109,7 +132,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
               </p>
             ) : (
               <RunForm
-                key={prefill.productionId || "blank"}
+                key={prefill.productionId || prefill.labStudyId || "blank"}
                 channels={channels}
                 templates={templates}
                 trialTemplates={trialTemplates}

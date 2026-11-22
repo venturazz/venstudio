@@ -95,14 +95,15 @@ test("html-capture packs travel in the same bundle as html/<id>/ with html/packs
     assert.equal(b.files.find((f) => f.path === `html/probe-line-graph/${rel}`)?.content, readFileSync(path.join(STYLES, "packs/probe-line-graph/render", rel), "utf8"), rel);
   }
   const list = JSON.parse(b.files.find((f) => f.path === HTML_PACK_LIST_FILE)!.content) as Array<{ id: string; version: string; drawsCaptions: boolean; sha256: string }>;
-  assert.deepEqual(list.map((p) => p.id), ["probe-line-graph"]);
-  assert.equal(list[0].drawsCaptions, false);
+  assert.deepEqual(list.map((p) => p.id), ["animated-line-graph", "minimal-line-art", "probe-line-graph"]);
+  assert.deepEqual(list.map((p) => p.drawsCaptions), [false, true, false]);
   // The digest is the styles validator's renderDigest over the lock's hashes, so a worker can check what it installed.
   const lock = JSON.parse(readFileSync(path.join(STYLES, "lock.json"), "utf8")) as { packs: Array<{ id: string; version: string; files: Record<string, string> }> };
   const lp = lock.packs.find((p) => p.id === "probe-line-graph")!;
   const validator = (await import(pathToFileURL(path.join(STYLES, "tools/validate.mjs")).href)) as { renderDigest: (f: Record<string, string>) => string };
-  assert.equal(list[0].sha256, validator.renderDigest(lp.files));
-  assert.equal(list[0].version, lp.version);
+  const listed = list.find((p) => p.id === "probe-line-graph")!;
+  assert.equal(listed.sha256, validator.renderDigest(lp.files));
+  assert.equal(listed.version, lp.version);
   // Unpacked by the worker's own code, the pack is installed and usable.
   const worker = (await import(pathToFileURL(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../worker/venstudio-worker.ts")).href)) as {
     writeProjectBundle: (raw: unknown, dir: string) => Promise<number>;
@@ -113,7 +114,7 @@ test("html-capture packs travel in the same bundle as html/<id>/ with html/packs
   await worker.writeProjectBundle(JSON.parse(JSON.stringify(b)), dir);
   const got = await worker.installedHtmlPacks(dir);
   assert.deepEqual(got.problems, []);
-  assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), [`probe-line-graph@${lp.version}`]);
+  assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), ["animated-line-graph@0.1.0", "minimal-line-art@0.1.0", `probe-line-graph@${lp.version}`]);
 });
 
 test("the portal's html list and digest are the styles assembler's, byte for byte", async () => {

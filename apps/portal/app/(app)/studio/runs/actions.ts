@@ -22,6 +22,7 @@ const startSchema = z.object({
   purposes: z.array(z.string().max(40)).max(MAX_PURPOSES, "Choose fewer purposes"),
   subtitles: z.array(z.string().max(10)).max(MAX_SUBTITLES + 1, "Choose fewer subtitle languages"),
   productionId: z.union([z.uuid(), z.literal("")]),
+  labStudyId: z.union([z.uuid(), z.literal("")]),
 });
 
 function all(fd: FormData, key: string): string[] {
@@ -42,6 +43,7 @@ export async function startRunAction(_prev: RunFormState, fd: FormData): Promise
     purposes: all(fd, "purposes"),
     subtitles: all(fd, "subtitles"),
     productionId: str(fd, "productionId", 40),
+    labStudyId: str(fd, "labStudyId", 40),
   });
   if (!parsed.success) return fail(fd, parsed.error.issues[0]?.message ?? "Check the form and try again.");
   const result = await startRun({ ...parsed.data, userId: user.id });
@@ -49,6 +51,7 @@ export async function startRunAction(_prev: RunFormState, fd: FormData): Promise
   const runId = result.runId;
   after(() => advanceRun(runId));
   revalidatePath("/studio");
+  if (parsed.data.labStudyId) revalidatePath(`/studio/lab/${parsed.data.labStudyId}`);
   return { ok: "Run started. Hermes is working on ideas.", runId };
 }
 

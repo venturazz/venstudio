@@ -114,6 +114,12 @@ export async function blendDraft(jobIds: string[], baseStyleId: string): Promise
   return { ok: true, template: draft, samples: samples.length, readyForTrials: candidate.issues.length === 0, notes };
 }
 
+/** The numbers-only fingerprint of one succeeded analyze-video job (Template Lab studies), or null without one. */
+export async function fingerprintOfJob(jobId: string): Promise<StructureFingerprint | null> {
+  const s = await loadSample(jobId);
+  return s ? s.fp : null;
+}
+
 export function createDraftFromAnalysisJob(jobId: string, baseStyleId: string): Promise<LabDraftResult> {
   return blendDraft([jobId], baseStyleId);
 }

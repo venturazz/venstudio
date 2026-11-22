@@ -23,7 +23,7 @@ const has = (issues: string[], re: RegExp) => issues.some((i) => re.test(i));
 test("the vendored packs are valid", () => {
   const { packs, issues } = V.validateRepo(STYLES);
   assert.deepEqual(issues, []);
-  assert.equal(packs.length, 9);
+  assert.equal(packs.length, 11);
 });
 
 test("every required field is required", () => {
