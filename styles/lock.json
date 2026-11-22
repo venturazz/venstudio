@@ -2,42 +2,42 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "77020d5cc7eb9f079ccde45380d2c75df2e280ff"
+    "commit": "e625644df894511e64ef3386c93d29167f347fb4"
   },
   "files": {
-    "FORMAT.md": "30a3a3fcefc4005ab1cba4f68ab932951a45559f392b0244284a2357043f96f1",
-    "schema/style.schema.json": "51d17ffacfa7986ac0b20aabca5ce1adb1547d4e48a154429407292002c2738f",
+    "FORMAT.md": "a11bb4f22f9b49a5dac8ca65cae0db10df4c9ce1fd816d812116b34f0d968fe5",
+    "schema/style.schema.json": "8414ed9fcae0892b4d9aaf7dc731e54866ccbc0459e0b11d8d8edc3c442fc67d",
     "tools/assemble-remotion.mjs": "b545f2b2163fdcf9ecdfeeb30610ac3868c53a2d589a31994da615db5b706c39",
     "tools/check-video.mjs": "1e1bac7a4e8310488930b12ae4637f97dadb8b78a57b4b8a598749af509a1c3f",
     "tools/check-video.test.mjs": "52e176204378a6f8bac5aa965e83960281fc7d5648f9ae9794d0ac1e267947cc",
     "tools/html-pages.test.mjs": "dc8d5748afe1ad3ad4cf4139d8dd9cb1ad8514cf2270dc4a15dd977b09723776",
-    "tools/validate.mjs": "f8fc8b18d18a1767c5a9cd00bc22a67064df21110a69d7df33c9eee4b3725a21",
-    "tools/validate.test.mjs": "75c86b3dd45e247de8dcaf0394c66584b2a8f0cc79612543ffa0764168fa622b"
+    "tools/validate.mjs": "bbabb94f34cf24b60790ac4e10fe76df12dbff93629f19c6bc7c8d6ed68f7e63",
+    "tools/validate.test.mjs": "86aca34fd580936e0ee19b96213ad28aa3de2ff1fd413ea4efbe9568b3cad826"
   },
   "packs": [
     {
       "id": "ambient-loop",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "ffmpeg-stills",
       "composition": null,
-      "sha256": "63c0f1a2cff22ebde655006efc8d7415229589a8f2177c0ad267b04c45de2971",
+      "sha256": "c79cfa273e268570b183159a8a2f38027b5a4cc7c2a931e74fb64c6c3e7b864d",
       "files": {
-        "README.md": "4cce525af57f2e3b17fb13710137055569b133f977de3b389dc20fa72ebcd93a",
+        "README.md": "2462f8130c1f086df1414d696bddc4f0385d904bdf4fd0a8fbb6cb135b60ff29",
         "fixtures/expect.json": "b5fdd7238028c7e7c053bb53d2f5433fa1cfa2f3ae0ba7093969a49093e782ad",
         "fixtures/payload.json": "e449b156fa5c85111daa68ce4b6951dcdfae56918f649ac67e0fd090fa1c77cb",
-        "style.json": "1a73d279301ae25fa1e06efffa7dfc2d17258dc8d52aed2a7a30ad5cdd194a8d"
+        "style.json": "48bb942289e21d9922f2ad54f31651bb71fcfce4c5900b260de22038fc50d543"
       }
     },
     {
       "id": "animated-line-graph",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "10730cbb0fba920a6430c92d46812fb1aad9ef8690e8cf6c87047d17d4f80017",
+      "sha256": "a80eb9226f06bb59dbbbbfa6c67bd073706821bab36ccbb197ec9aac80a3658d",
       "files": {
-        "README.md": "2978c1b6361c847d62444e5d0f4823d19a24a4513c722f59683d10b77c89d68e",
+        "README.md": "f70cf0b3879050e977b82aa5e43cd44af26ca3f6214ff2d8d082915b5c3ddbd7",
         "fixtures/expect.json": "5e6d188555030db3ed34da1cf57ae7c9073b9331bd7955d844d95d5891006ac1",
         "fixtures/payload.json": "917adc198a6f4b813c654c9eb1afeb519f49219a2e7fce555114a3b125b50b4b",
         "render/LICENSE": "87111395ddb9252e4a9eb039a1bea0439571e069cdf497fd519737b4d3168d66",
@@ -48,218 +48,218 @@
         "render/graph.js": "6ec6bb2d966aa0b19bfd48e773afb474bf4fdf3bfc9aca09b31dd68266e6a816",
         "render/index.html": "a3ad169bc9928858af5305df1d5814d175053db38f5ec70e369392d492028a96",
         "render/motion.js": "6bde8ed432c522a99ac892f50eb0738e36a682400734ccc9e0151191b8e4149a",
-        "style.json": "589417ede14d18f6636980c454a87b6c2b9e407de7ede54007fd4190db2de3ed"
+        "style.json": "e6f3cc57251272e8d75081c6627904da6ed34ecd6d986be3a91a40dfcb70a846"
       }
     },
     {
       "id": "documentary-stills",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "ffmpeg-stills",
       "composition": null,
-      "sha256": "f5486f096d4b406d99224ccda6931bb37a5318fb879e08b5b3a1fed2bba81bbc",
+      "sha256": "946e0b784f6a079be2a3d3bfbfca5bed66c97cb6caf0742d15ff2118f763aaef",
       "files": {
-        "README.md": "80a3083813ad04df130ac5c7935c4acc1d6b544ea463398659fe3eadc5ecfabe",
+        "README.md": "deda2c79e5115185290371b569d51e55617496d29854b1d3e3cd357f4133b9b6",
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "671124567208e126f8ddb34dd4fe53a137330aebdbc2a77aac3525b0effc91b4",
-        "style.json": "ac4ff5571d03eee4ff038aabee00459dd34208bd1801a0f9e60dced2be4f834f"
+        "style.json": "728b1b8566021d35e0d45b656c853e32b55112e6330fd297bb596d6e9f1c5853"
       }
     },
     {
       "id": "explainer-flat-vector",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "remotion-2d",
       "composition": "flat-vector-explainer",
-      "sha256": "749c1e858e44e8124a7f38d4eec4888ac1fe293fc3360a50f7195d33db5a1171",
+      "sha256": "b74228dc039e3bd313ef8bc979679e05cf8f456de19b77a1e600bbad84f9d0de",
       "files": {
-        "README.md": "6ab71b2f1e20710dff6a2626170ebad8c367a4c8e0d7e0b91149ae8b8718291d",
+        "README.md": "c94c455b7a22fff74a1f0d5a370701a21a85ae5c12c9fd31f136aff52d267abe",
         "fixtures/expect.json": "ca7efb3fbadd6733503691eecbf2e9a409eb1b2b1666af93225be6ebe843d39b",
         "fixtures/payload.json": "2bd76a9c55aeec07c34503dddbf513b84f37a39a74935237752272bc2e3ed9b0",
         "render/FlatVectorExplainer.tsx": "3b6590262ebf711a0a41b21094e0a98b36e29a121cd0b2cbb533e818672be519",
         "render/elements.tsx": "7cd28f631a392f882f356b9810c03b2f208d2512ef14abde9d67727679664395",
         "render/index.tsx": "a4a7372baa2a09b950ddc85d2027983e5e5e8e2c790c2b59aa9a6a7175b9913e",
         "render/theme.ts": "ce5e1b9304f7a90b0d0ae6de83fea381337f22febbea6899537c4e23b1e87a32",
-        "style.json": "d926397d6d06f0d413239be9de20a887f92b1c83570e123ab953e858afb05381"
+        "style.json": "729af5c1af090737b0ed5718d20a22c8b28c4df014424fb56a845360722aec50"
       }
     },
     {
       "id": "hermes-breakdown",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "72b113686901653611e89c8719d24fd7e87cd5d9c0559cc2dcb926a8f7d17a17",
+      "sha256": "6dd911804631da34059948d0681692cc1301ccc9c5f8faabc05799b9c0aabd06",
       "files": {
-        "README.md": "313239aa05962a8801c9259589a94487798bcc16da6ea7e9626e18dcf7009ef8",
+        "README.md": "b14d0408a903ceb8844860d6acd0038e7ae6bd60e7e314158b744b8055f9e937",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "7472a3b365a7e6ab17095fa7e698603067d4691b45593b1a34941e188fbb82d8",
-        "style.json": "fd44c1a166237ea846465d7dce9a3673654d79e5adfd4a032f0aa7529c02e028"
+        "style.json": "f24606d9b3ae737122b7f446049aadcb6ce0f6cff130346237aed4b72636022d"
       }
     },
     {
       "id": "hermes-dan-koe",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "24005a309b21d6b5c5d86be501e32930ce719ece47822fa7cfb59d24dcee13a5",
+      "sha256": "9aefcd65e6bfe5247e4d88a46a76f2250bc9b28a16de343f9a41b0affc303ac3",
       "files": {
-        "README.md": "dc4be3d5572d136afd653b0352b3f8030ff1488e5d0cea18971a4571d3c6f4b6",
+        "README.md": "5b8642a9c40b87133a45179df325806b00005bbfe90c4534920efbcdb7191753",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "a950080fbba16c266b7b59943d144bb357ba1d181a4fc7ec23b4d2385f5660e7",
-        "style.json": "2aaed7987b19804a2ab5e0be3d36c0025acf7f21bb0a69bbfca216aed3fc1366"
+        "style.json": "be481e4f7f3d6b42b19c93b63a5b929269ba42b312f9dbee4f88af77515da41b"
       }
     },
     {
       "id": "hermes-graph",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "f7a1ab61af49807dbcb72249c03d053e6052c14e8747ecfbeeef257557cf09fd",
+      "sha256": "2ea3a12cb1aca1ffba593e51fee783c5ea1d6b6f200c68e3a1bf87981001ca94",
       "files": {
-        "README.md": "e4748115dea66c1e7ece61592833b4eaa22d32e6907a4f22810c43da38fb71e4",
+        "README.md": "1d83fc9bad70fb0eb1f4ff01d56d430fa659fc4655343f62ad109bc8f6c1ff6d",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "3bacf57228b2de0f3609350bc04cb845d9f62488e9f03e67033b8298f828bcf5",
-        "style.json": "c8b13a9dca35c0554add41846149e3e4aeee7259182bb1f8ae4858040bf1b072"
+        "style.json": "e284568199a9120829a5c9bca7f8c8b0efa670847ad89a642344f5323a219c3d"
       }
     },
     {
       "id": "hermes-kurzgesagt",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "7ffc08c35a0dc3814d26c906942ef8d9a50a2bd3e5e00408bac8c49d49b3d428",
+      "sha256": "2d3f2b696f69665fda9d5812d8ca3bed157db44d4b39e7a44562867d5d27715a",
       "files": {
-        "README.md": "8ac858d44fe8232f425528e219200c081b6458eb8e6c225abf77522bdc06ff94",
+        "README.md": "3f54f9ddcc6fe957fef3703a9dd67e40daadb1cdd68319850c6778daf2b42c00",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "5713e15ed30bfca9181da5b6ed77f9173b99a14e13d25b810cb053a780c2f10f",
-        "style.json": "0b3d96de67a759c5717b6bfa8c0608f8525ed74623e6edac342e32a4df565ca3"
+        "style.json": "dc5a2c19f832d6f1cd14a778f8f6b0dcf5018b16256031844eef4b3144a0ac3c"
       }
     },
     {
       "id": "hermes-low-poly",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "275fa72a8ef5ee57377fd688e4db0846360a14738671c239c95c7006d5125d77",
+      "sha256": "60a2c040c4207a458211fb8f48e42f2425f7631fdc8a2505d13c5b9b53cbed14",
       "files": {
-        "README.md": "2f894d9e399718ae02161db0d3dd991c5342566727d38a8291c8121f6e8c2e7b",
+        "README.md": "0be4776418007c53640a875fed122ec4e7cfb7b13d4505b999f1cd92d08fef66",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "120000b71e6234db9adc76e3c1e3cee6396241f9d213e64b0b7037f694172374",
-        "style.json": "e5fb977929eb7ac2a864665ca9891366b637c538849f64d07d09dfc907a8615c"
+        "style.json": "3dc81468e0fad83cc387a636deb57d8ec36f9772368783c5d8d54a4242a83624"
       }
     },
     {
       "id": "hermes-map-route",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "fa9749652572eb508100025cc01e4b8c6a6f04f9f4dece5ebcefaf16ac94c2a4",
+      "sha256": "a29fcd50ab57262ed5e90736535305e4ca2f9acba5581071dc9f989f072e1e50",
       "files": {
-        "README.md": "7ffa10b84168cb26efcbc7830ca235b85d299d9bebd4cdc249a6bc6f8ba35347",
+        "README.md": "bd797a3ed6f3c7ba598765a1269eb1c18286874064f0f071e14fd34a47924642",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "4de02f7bfb915aeb8ea1ddf058539c382182dc4c4b7647467384a64e61c323e6",
-        "style.json": "6728ff26da2368e24bd6d5c076f6675ab9f3e97953ff0cddb9deddd98302669b"
+        "style.json": "3794fe32e8550aee3008e9813ab3eaa024733301e2cb2140d7af3a845da6b5c4"
       }
     },
     {
       "id": "hermes-minecraft",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "f6280f55dc969177e4c466e2310d86dedcaf981789becba868ae42feefc68dec",
+      "sha256": "86cef6959a2b37b79b1ad37ae5e12d7a8eef11ab0cb768096f0ff0ccd2f29772",
       "files": {
-        "README.md": "08a19972c974499f88fbc471c4016bc416b593f679c64ca294760771dfff811d",
+        "README.md": "a633c813628b4f0a0c3be0b9b9c0d7f3d21e5144fc4127286d5e2baf9604af98",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "6fe950c0992fdc64af7c9d4d1f954db19e91e9859032014844cea55636866896",
-        "style.json": "5be2077edfc126123aa8d34b12664b4919072e6b5ca3539e80d9463041be23a5"
+        "style.json": "d9d030d80cbc06ab5997df527f005d6d3a92ed24746bde9f2ce453da5a20b2f6"
       }
     },
     {
       "id": "hermes-minimalistic-graphics",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "40d690bc572da188558d64b8d2d608ca25919e77851826564ce1c2cfb864df6f",
+      "sha256": "29f6ac9da89107f9e7c544243b3e366054c88829a6240d180eb1bd897eafc4f0",
       "files": {
-        "README.md": "d3c207c8104c4f9b3006797e31c41d73684fc7986fb223716666bb331302371a",
+        "README.md": "11faedbf791a3bf3e45486f9587fbb815937c913cdd449c0ad9b8868ed0968b5",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "c225d476e276de2774866b356153fae77bb95c66725ff17c87efbb02eaf7aebb",
-        "style.json": "e31ce40a78e913fb512ce1134fdd09c58ab380ae3eee1a5869f9eb9dd8b0220b"
+        "style.json": "25bca35fa8be669e454c565b9a9f4d5e33f255af6a9ab65ac755d0e6d61254be"
       }
     },
     {
       "id": "hermes-research-explainer",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "0369f0eb0dcd3684a44566471203fabb17aeba50036bd3d6a30af5c8be76b894",
+      "sha256": "b96bd81f9392c2f7dcbbb6576307df53760e3ba2cfbc6e6a15b6f67c675640fa",
       "files": {
-        "README.md": "04d82fbdfcd7d89f83511d127eea63375ecdd24aa6724e679d29bec9209573cb",
+        "README.md": "7a2cc9f53a51c6f83932d8802d8c8770e6f186780174beb8608af849baf48f40",
         "fixtures/expect.json": "720f9e08b61531c7a268a66a77f4398eb920713c264a81902a1bdd6ddddf7bb4",
         "fixtures/payload.json": "4ba5a8bd75cda0199a87cea58821fe88efa920be5dfc796eba8ef277ba17b21f",
-        "style.json": "f7bea8616d300fb3f00b9251211af4597169b2bf55a31791444ea6de3fffe57e"
+        "style.json": "6be90c5570fa2e842afca8017d2d5751c9913de3103b583bdbc075a08bacc1fa"
       }
     },
     {
       "id": "hermes-stick-figure",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "46c9dd09e1e21da65f3ab59fcc99c3a9a81a82540deec9f5319388c125c236dc",
+      "sha256": "864fac551fbd19cade9de28c31d3ab081785d9ab8cf4ccc035d6834d80731aab",
       "files": {
-        "README.md": "5ad283fc7edccf9063040f6f23f0585623b550e9943518816388dadd0b60d36b",
+        "README.md": "e73aff1267f111757650c88b17fb277213735abf358e568fb8279696b4e30fc8",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "96f79d1e6c55ab86dfd4f8aa38a73a7aafab2346b962fde9ce78abbfd2f540a5",
-        "style.json": "66f541b01385d98710f86a524f2438b8e608358ed933960031fb70f632923d0a"
+        "style.json": "cf5dc54aebe8026cb61acac0e7e4c54b8ecfdceaa4c2238f113637c6fffc6737"
       }
     },
     {
       "id": "hermes-zach-d-films",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "4588ecf4f957ab95c2ab23e8a5f498bcd43297287400018ffe1e31f9a0e649cb",
+      "sha256": "5102dd6f4805da868879818116482045079d94de1ebd8b6975e96db8e3b50b34",
       "files": {
-        "README.md": "d1473d1e7f422c6fdd0182a1be62fb62736ef61516843043d19f273c28be450d",
+        "README.md": "8c963351b3140df53bbbcd156d9fc3edfa1abf78bea5e76e3f40e71254e58745",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "0e6c37f1529517b8f96f689060b846821a53317724bcb6aa33cc5db3ef7a1466",
-        "style.json": "68b656e746aa3c53a590d757e4af31bbf49fbeb1562c48a476924af3ae6ad368"
+        "style.json": "87384226fbfbef0ed13424bbd45b3b3074b277adbc6ebc9d22cfbec86424c564"
       }
     },
     {
       "id": "horror-story",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "ffmpeg-stills",
       "composition": null,
-      "sha256": "ad41b53764f0bb2ad9f43ed1403d38b924685806c6c671c378ae1e9e57db038f",
+      "sha256": "0b9d4681d599b40bbf256c3e6dd79a52cebd050c8b532c8c7337352c84bd6a14",
       "files": {
-        "README.md": "64f63c025665a498b7e1591e4af2bab833d8d5f075ffe21ff52f93f043da7641",
+        "README.md": "b2e9fcba4f7cfa2b7ff626b20ae1f095db32d4379c655519823994a060f12b48",
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "6cc31822a2b6d3fd1b5024940c5a98174544f0f1447268efccffc451f24c4def",
-        "style.json": "25d4ecd78941ece3b22203d83e0e3d668503435d0e50e59fa7d6b0560c07f821"
+        "style.json": "d2ae0b543c7845a7cbf8b25e629b4e8562fb9e872cb7b4fa5163d4b61e5ca14a"
       }
     },
     {
       "id": "minimal-line-art",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "e334d997fe01c0790daef44a7d1076dfcb20bebb172630ba644d479cc1cc9312",
+      "sha256": "6815c98610d9c382ae21fe4d80598b72b9cf95ddd5851c554bd84eb921c4f47e",
       "files": {
-        "README.md": "55ea6a5803c5bc8aa139a5f1a1b0671fb74670d90113782a215fbb4784e29757",
+        "README.md": "73352e8c6a19fca2b7b1ae155d7b6145696feebc8eae80a2cff888c3e5e488ac",
         "fixtures/expect.json": "28607432ca17172627774ccf01f5ab63971a4391461f06b1afa6a92c7679bd7f",
         "fixtures/payload.json": "7da4703cfdd764a27952305c78dce88ef0a0c74153bc46741d16e92c0720e379",
         "render/LICENSE": "87111395ddb9252e4a9eb039a1bea0439571e069cdf497fd519737b4d3168d66",
@@ -269,66 +269,66 @@
         "render/motion.js": "6bde8ed432c522a99ac892f50eb0738e36a682400734ccc9e0151191b8e4149a",
         "render/steps.css": "d35e39a0447d0580a5b1d32b70887778a583e8ac3a457165a7400761ce1a3175",
         "render/steps.js": "4432e61f0bee548aacc521c79e87b246df9a7c278eacdeae56ab109299b311d9",
-        "style.json": "35605673240d0dfd4a00a8efbf04ac84c579fbc39e68cd00492a62fb502c25d9"
+        "style.json": "fdb2550429dd8a8aaccad6092017e2737612add26583519284b7557802f6083d"
       }
     },
     {
       "id": "mystery-narration",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "ffmpeg-stills",
       "composition": null,
-      "sha256": "094e76fb6b92d17fe6942437016c97ca51b8a5feeff4371993a6f26421b46dbb",
+      "sha256": "f3dbeb174c19e95ee5f794ded14c779e43ada258f3a2f06892584de61c111064",
       "files": {
-        "README.md": "7e9960034476fa376438e1ed70e94f7c1849428f6d101c54ae96a3f84c56d446",
+        "README.md": "086038083824235a4a6a3eea8660453543eae1bafbcb335877c72966a0f47bed",
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "3037dd61e5a3c279bb5c68004845560b7261841d590e6195d61d796a10b309c0",
-        "style.json": "3386b76ef622d4f9c8c9e14c4cd3840acd0aeffd5888b45c7041f3b491d6826d"
+        "style.json": "0ea3b50e5462f4ae51202ca4c36cc8ec21a4080997d304d29b06810a6c103ecc"
       }
     },
     {
       "id": "probe-line-graph",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "status": "lab",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "1d2f54f9544601d3411bbf9f157b799888041b8d5126b838b57669842f4a4969",
+      "sha256": "07712108ee05a4f53dcfbf3ffe5d1975b6a9b8f75b4d35c98385a3c37c24c65a",
       "files": {
-        "README.md": "b1aae955f747ccf4986f5932f307bf658c94b919358511bd1ef821e0734bfd88",
+        "README.md": "634002f7327b4a0c3e43986650d041409fd5f758ed4d3783c53218528a880305",
         "fixtures/expect.json": "6890ba69ed1bb760c4c85a07c1388f6fc5b2ac06d6574dae5dc4b429a50bbb8c",
         "fixtures/payload.json": "87235b34f8639e15bd60523fe72b7550540394247bc157b20f27b7c518dc699c",
         "render/graph.css": "f002afab219d93a2d16d2990deed12451db41ab55e95b1fe4ef1852615a0e97e",
         "render/graph.js": "88ddc6187adc6beba6c424d65f4541e0bd188397d4419631cdfdf435e0a64bbc",
         "render/index.html": "140d19db538cc5b7c2f9428b0699cbe8a9239a520c50e1f9e7a5d6ea1af776ce",
-        "style.json": "9cd2408e4c1dacc304b7b85283ba7f2bedebfd54ae49e50dd724df8a0afc2eb0"
+        "style.json": "3d05d68a28e0d6844b05a65edcde115567e49d22e6d11cf68b44a1e2e3930de0"
       }
     },
     {
       "id": "story-read-aloud",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "ffmpeg-stills",
       "composition": null,
-      "sha256": "cf9ca96725f364171932e31ffb172a97cc773c3cf5bc122eb1930136a7a6c3ad",
+      "sha256": "14fb8743b81394742acc993ecc61c7d7944adbe31145ddb544b708dfb8c4c0d1",
       "files": {
-        "README.md": "c1d80bac7caa3998d30eba258cb35238317c71436bf89e769e28210feeb4569b",
+        "README.md": "83397fc8cf21c19ffcd4f2d3a794299f0cb2acb1b1ff68d6579272d57c86a7d2",
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "6fa48175230657a206baaaf80db82e5ea9ab2af6c34726928edf0078ae09ce71",
-        "style.json": "1bd56d25c22a78db7b71d4e4e5061da3eabb5f892a85acb6539be4986925368d"
+        "style.json": "d765a1e550b4f3224853ce77724378f3a95c5e57549af7171cb87ff3d29e1666"
       }
     },
     {
       "id": "travel-documentary",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "trial",
       "engine": "ffmpeg-stills",
       "composition": null,
-      "sha256": "10d77dcba64fe1e43726400b18e19512cf48267b0a645366f83fb4db51b2db51",
+      "sha256": "84a846f74d27d55e4027ece7b21ff1f35c4fc04b456dfe02cbc18e4ac6e9babe",
       "files": {
-        "README.md": "24f4f368cdff1a7e673b2641f42937242656b33879e61e3609b7aaebe1aab5fa",
+        "README.md": "2cf095549d242d4ed54b5bae4b35ceccba186e4f1f61cddbbd3fd5b7f349970a",
         "fixtures/expect.json": "a368c004aaaec80fa1cc6cb166b5efda4d21be5e9a3ecf7b842dd95cebd30436",
         "fixtures/payload.json": "e58ce96a7c8cf44397cff927c74aa7dd8528f37dced1b9b37f2915cb094d0fd2",
-        "style.json": "280944ac98fc3a7ffc6d00e43add06464877cc60f50f9666f384e07301bf32af"
+        "style.json": "cc68b5d7cee14ba2dcd07c01382a65a51385331b83f1ac93c658846cab1ac2dc"
       }
     }
   ]

@@ -64,7 +64,7 @@ test("the served bundle loads the flat-vector-explainer composition from the ven
     assert.equal(served?.content, readFileSync(path.join(STYLES, "packs/explainer-flat-vector/render", rel), "utf8"), rel);
   }
   assert.ok(!paths.includes("src/FlatVectorExplainer.tsx"), "the composition no longer lives in the runtime");
-  assert.deepEqual(JSON.parse(b.files.find((f) => f.path === PACK_LIST_FILE)!.content), [{ id: "explainer-flat-vector", version: "1.0.0", composition: "flat-vector-explainer" }]);
+  assert.deepEqual(JSON.parse(b.files.find((f) => f.path === PACK_LIST_FILE)!.content), [{ id: "explainer-flat-vector", version: "1.0.1", composition: "flat-vector-explainer" }]);
   const index = b.files.find((f) => f.path === PACK_INDEX_FILE)!.content;
   assert.match(index, /import \{ composition as pack0 \} from "\.\/explainer-flat-vector\/index\.tsx";/);
   assert.match(b.files.find((f) => f.path === "src/packs/explainer-flat-vector/index.tsx")!.content, /id: "flat-vector-explainer"/);
@@ -78,7 +78,7 @@ test("the portal's bundle builder and the styles repo's assembler write the same
   };
   const packs = [
     { id: "zeta-pack", version: "2.1.0", composition: "zeta" },
-    { id: "explainer-flat-vector", version: "1.0.0", composition: "flat-vector-explainer" },
+    { id: "explainer-flat-vector", version: "1.0.1", composition: "flat-vector-explainer" },
   ];
   assert.equal(packIndexSource(packs), styles.packIndexSource(packs));
   assert.equal(packListJson(packs), styles.packListJson(packs));
@@ -114,7 +114,7 @@ test("html-capture packs travel in the same bundle as html/<id>/ with html/packs
   await worker.writeProjectBundle(JSON.parse(JSON.stringify(b)), dir);
   const got = await worker.installedHtmlPacks(dir);
   assert.deepEqual(got.problems, []);
-  assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), ["animated-line-graph@0.1.1", "minimal-line-art@0.1.1", `probe-line-graph@${lp.version}`]);
+  assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), ["animated-line-graph@0.1.2", "minimal-line-art@0.1.2", `probe-line-graph@${lp.version}`]);
 });
 
 test("the portal's html list and digest are the styles assembler's, byte for byte", async () => {

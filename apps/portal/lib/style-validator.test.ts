@@ -14,6 +14,7 @@ interface Validator {
   validateStyle: (s: unknown, o?: { dirName?: string }) => string[];
   validateRepo: (root: string) => { packs: Array<{ id: string }>; issues: string[] };
   findDuplicates: (e: Array<{ id: string; composition?: string | null }>) => string[];
+  OPTIONAL_TOP_KEYS: string[];
 }
 const V = (await import(pathToFileURL(path.join(STYLES, "tools/validate.mjs")).href)) as Validator;
 const load = (id: string) => JSON.parse(readFileSync(path.join(STYLES, "packs", id, "style.json"), "utf8")) as Record<string, any>;
@@ -31,7 +32,7 @@ test("the vendored packs are valid", () => {
 test("every required field is required", () => {
   const good = load("explainer-flat-vector");
   assert.deepEqual(V.validateStyle(good, { dirName: "explainer-flat-vector" }), []);
-  for (const k of Object.keys(good)) {
+  for (const k of Object.keys(good).filter((k) => !V.OPTIONAL_TOP_KEYS.includes(k))) {
     const s = clone(good);
     delete s[k];
     assert.ok(V.validateStyle(s).length > 0, `missing ${k} accepted`);

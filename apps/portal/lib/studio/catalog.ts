@@ -708,7 +708,7 @@ export const STYLES: Style[] = [
     id: "hermes-research-explainer",
     label: "Hermes render (research only)",
     family: "explainer",
-    description: "Hermes renders the whole video with its own tools from the storyboard, scene plan and pictures. For trials and research, never for publishing.",
+    description: "Hermes renders the whole video with its own tools from a skill brief it writes from the approved script. For trials and research, never for publishing.",
     formats: ["short"],
     engine: "hermes",
     narration: true,

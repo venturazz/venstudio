@@ -51,11 +51,11 @@ function pack(id: string, over: Partial<StylePack> = {}): StylePack {
 const RESEARCH_SKILLS = ["breakdown", "dan-koe", "graph", "kurzgesagt", "low-poly", "map-route", "minecraft", "minimalistic-graphics", "stick-figure", "zach-d-films"];
 const RESEARCH_IDS = RESEARCH_SKILLS.map((s) => `hermes-${s}`);
 
-test("the vendored packs: the explainer and the six stills styles (Trial 1.0.0), the html-capture probe (Lab), the two claude-animation-skills adaptations (Trial 0.1.1), the Hermes research pack and one Hermes research pack per claude-animation-skills skill (Trial)", () => {
+test("the vendored packs: the explainer and the six stills styles (Trial 1.0.1), the html-capture probe (Lab), the two claude-animation-skills adaptations (Trial 0.1.2), the Hermes research pack and one Hermes research pack per claude-animation-skills skill (Trial)", () => {
   assert.deepEqual(vendored.map((p) => p.id).sort(), [...PACK_IDS, "hermes-research-explainer", "probe-line-graph", "animated-line-graph", "minimal-line-art", ...RESEARCH_IDS].sort());
   for (const id of ["animated-line-graph", "minimal-line-art"]) {
     const a = pack(id);
-    assert.deepEqual([a.status, a.version, a.engine, a.minWorkerVersion, a.composition], ["trial", "0.1.1", "html-capture", "0.10.0", null], id);
+    assert.deepEqual([a.status, a.version, a.engine, a.minWorkerVersion, a.composition], ["trial", "0.1.2", "html-capture", "0.10.0", null], id);
     assert.ok(a.curation.some((c) => c.kind === "ci-render" && c.result === "pass" && c.ref.includes("actions/runs/44981421800")), `${id} cites the venstudio CI render`);
     assert.ok(a.provenance.some((s) => s.type === "repo" && s.ref.includes("artemnovitckii/claude-animation-skills@86f70106c9ae") && s.licence.startsWith("MIT")), id);
   }
@@ -72,7 +72,7 @@ test("the vendored packs: the explainer and the six stills styles (Trial 1.0.0),
   assert.deepEqual(pack("hermes-zach-d-films").hermes?.aliases, ["/zach-3d-films"]);
   for (const p of vendored.filter((x) => PACK_IDS.includes(x.id))) {
     assert.equal(p.status, "trial", p.id);
-    assert.equal(p.version, "1.0.0", p.id);
+    assert.equal(p.version, "1.0.1", p.id);
     assert.equal(p.minWorkerVersion, "0.9.0", p.id);
   }
   assert.equal(pack("explainer-flat-vector").engine, "remotion-2d");
@@ -145,14 +145,14 @@ test("mergeRegistry: packs override their catalogue entry; the other catalogue s
   for (const e of reg.filter((x) => x.status === "planned")) assert.equal(e.pack, null);
   const explainer = reg.find((e) => e.id === "explainer-flat-vector")!;
   assert.equal(explainer.status, "trial");
-  assert.equal(explainer.pack?.version, "1.0.0");
+  assert.equal(explainer.pack?.version, "1.0.1");
   assert.equal(explainer.style?.id, "explainer-flat-vector", "the catalogue entry stays for keywords and cautions");
   const renamed = mergeRegistry(STYLES, [pack("horror-story", { name: "Horror, curated" })]).find((e) => e.id === "horror-story")!;
   assert.equal(renamed.label, "Horror, curated", "the pack's name wins");
 });
 
 test("New Video: Listed packs a worker reports; Trial packs in their own list; planned, draft, lab, proven and retired never", () => {
-  const caps = ["echo", "ffmpeg", "xfade", "remotion-2d", packCapability("explainer-flat-vector", "1.0.0"), packCapability("documentary-stills", "1.0.0"), packCapability("horror-story", "1.0.0"), packCapability("mystery-narration", "1.0.0")];
+  const caps = ["echo", "ffmpeg", "xfade", "remotion-2d", packCapability("explainer-flat-vector", "1.0.1"), packCapability("documentary-stills", "1.0.1"), packCapability("horror-story", "1.0.1"), packCapability("mystery-narration", "1.0.1")];
   const packs = [
     pack("explainer-flat-vector"),
     pack("documentary-stills", { status: "listed" }),
@@ -178,7 +178,7 @@ test("New Video: Listed packs a worker reports; Trial packs in their own list; p
   assert.equal(none.waiting.length, 9 + 1 + RESEARCH_IDS.length);
   assert.ok(!none.waiting.some((e) => e.id === "probe-line-graph"));
   const avail = availabilityOf(mergeRegistry(STYLES, vendored).find((e) => e.id === "travel-documentary")!, ["ffmpeg"]);
-  assert.deepEqual(avail, { renderer: true, pack: false, capability: "pack:travel-documentary@1.0.0" });
+  assert.deepEqual(avail, { renderer: true, pack: false, capability: "pack:travel-documentary@1.0.1" });
 });
 
 test("startRefusal: only Listed and Trial packs start a run", () => {
@@ -193,13 +193,13 @@ test("startRefusal: only Listed and Trial packs start a run", () => {
 
 test("a run started with a Trial pack is marked trial in its config, additively, and old configs read as before", () => {
   const sp = runStylePack(pack("explainer-flat-vector"));
-  assert.deepEqual(sp, { id: "explainer-flat-vector", version: "1.0.0", status: "trial", trial: true, engine: "remotion-2d" });
+  assert.deepEqual(sp, { id: "explainer-flat-vector", version: "1.0.1", status: "trial", trial: true, engine: "remotion-2d" });
   assert.equal(runStylePack(pack("documentary-stills", { status: "listed" })).trial, false);
   const stored = JSON.parse(JSON.stringify({ format: "short", styleId: "explainer-flat-vector", stylePack: sp }));
   const cfg = parseRunConfig(stored);
   assert.deepEqual(cfg.stylePack, sp);
   assert.ok(isTrialRun(cfg));
-  assert.ok(runSettings(cfg).some((r) => r.label === "Style pack" && r.value === "explainer-flat-vector 1.0.0, Trial: research only, not for publishing"));
+  assert.ok(runSettings(cfg).some((r) => r.label === "Style pack" && r.value === "explainer-flat-vector 1.0.1, Trial: research only, not for publishing"));
   const old = parseRunConfig({ format: "short", styleId: "kinetic-facts" });
   assert.equal("stylePack" in old, false, "configs from before packs gain no key");
   assert.equal(isTrialRun(old), false);
@@ -208,9 +208,9 @@ test("a run started with a Trial pack is marked trial in its config, additively,
 });
 
 test("renders of a pack are queued under its versioned capability, and wait with a note until a worker reports it", () => {
-  const sp = { id: "explainer-flat-vector", version: "1.0.0" };
-  assert.equal(renderJobCapability("remotion-2d", 0.5, sp), "pack:explainer-flat-vector@1.0.0");
-  assert.equal(renderJobCapability("ffmpeg-stills", 0.5, { id: "documentary-stills", version: "1.0.0" }), "pack:documentary-stills@1.0.0");
+  const sp = { id: "explainer-flat-vector", version: "1.0.1" };
+  assert.equal(renderJobCapability("remotion-2d", 0.5, sp), "pack:explainer-flat-vector@1.0.1");
+  assert.equal(renderJobCapability("ffmpeg-stills", 0.5, { id: "documentary-stills", version: "1.0.1" }), "pack:documentary-stills@1.0.1");
   // Without a pack (runs from before packs): the engine routing as before.
   assert.equal(renderJobCapability("ffmpeg-stills", 0.5), "xfade");
   assert.equal(renderJobCapability("remotion-2d", 0.5, null), "remotion-2d");
@@ -218,15 +218,15 @@ test("renders of a pack are queued under its versioned capability, and wait with
   assert.ok(!PACK_CAPABILITY_RE.test("pack:../x@1.0.0") && !PACK_CAPABILITY_RE.test("pack:abc@latest"));
   assert.equal(packWaitNote(sp, undefined), null, "no worker reports anything yet: the job waits like any render");
   assert.equal(packWaitNote(null, ["ffmpeg"]), null);
-  assert.equal(packWaitNote(sp, ["remotion-2d", "pack:explainer-flat-vector@1.0.0"]), null);
-  assert.match(packWaitNote(sp, ["remotion-2d", "pack:explainer-flat-vector@0.9.0"]) ?? "", /^Waiting for a worker with the style pack explainer-flat-vector 1\.0\.0 \("pack:explainer-flat-vector@1\.0\.0"\)\..*signed updates/);
+  assert.equal(packWaitNote(sp, ["remotion-2d", "pack:explainer-flat-vector@1.0.1"]), null);
+  assert.match(packWaitNote(sp, ["remotion-2d", "pack:explainer-flat-vector@0.9.0"]) ?? "", /^Waiting for a worker with the style pack explainer-flat-vector 1\.0\.1 \("pack:explainer-flat-vector@1\.0\.1"\)\..*signed updates/);
 });
 
 function outcome(n: number, over: Partial<TrialOutcome> = {}): TrialOutcome {
   return {
     runId: `00000000-0000-4000-8000-00000000000${n}`,
     packId: "explainer-flat-vector",
-    packVersion: "1.0.0",
+    packVersion: "1.0.1",
     qcPassed: true,
     gates: [{ gate: "G-technical", passed: true, score: null }, { gate: "G-presentation", passed: true, score: 85 }],
     presentationScore: 85,
@@ -257,7 +257,7 @@ test("trial outcomes: QC part and the owner's decision", () => {
 test("curation counts against the promotion rule: 5 trials, 100% technical pass, presentation 80, no failures, owner checklist", () => {
   const p = pack("explainer-flat-vector");
   const five = [1, 2, 3, 4, 5].map((n) => outcome(n));
-  const counts = trialCounts(five, "1.0.0");
+  const counts = trialCounts(five, "1.0.1");
   assert.equal(counts.trials, 5);
   assert.equal(counts.passRate, 1);
   assert.equal(counts.meanPresentationScore, 85);
@@ -265,24 +265,24 @@ test("curation counts against the promotion rule: 5 trials, 100% technical pass,
   assert.deepEqual(packPromotionIssues(p, signedTemplate(), counts), []);
 
   // Each part of the rule blocks on its own.
-  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(five.slice(0, 4), "1.0.0")).some((i) => /at least 5 trial runs \(has 4\)/.test(i)));
+  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(five.slice(0, 4), "1.0.1")).some((i) => /at least 5 trial runs \(has 4\)/.test(i)));
   const oneFail = [...five.slice(0, 4), outcome(5, { qcPassed: false, gates: [{ gate: "G-technical", passed: false, score: null }] })];
-  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(oneFail, "1.0.0")).some((i) => /pass rate is 80 percent/.test(i)));
+  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(oneFail, "1.0.1")).some((i) => /pass rate is 80 percent/.test(i)));
   const unscored = [...five.slice(0, 4), outcome(5, { presentationScore: null })];
-  const u = trialCounts(unscored, "1.0.0");
+  const u = trialCounts(unscored, "1.0.1");
   assert.equal(u.meanPresentationScore, 85, "a missing score is not averaged in as 0");
   assert.ok(packPromotionIssues(p, signedTemplate(), u).some((i) => /1 of 5 trial run\(s\) have no presentation score yet/.test(i)));
   const low = five.map((o) => ({ ...o, presentationScore: 70 }));
-  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(low, "1.0.0")).some((i) => /presentation score must be at least 80 \(is 70\)/.test(i)));
+  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(low, "1.0.1")).some((i) => /presentation score must be at least 80 \(is 70\)/.test(i)));
   const assetFail = [...five.slice(0, 4), outcome(5, { gates: [{ gate: "G-technical", passed: true, score: null }, { gate: "G-assets", passed: false, score: null }] })];
-  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(assetFail, "1.0.0")).some((i) => /failed the assets gate/.test(i)));
+  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(assetFail, "1.0.1")).some((i) => /failed the assets gate/.test(i)));
   const compliance = [...five.slice(0, 4), outcome(5, { gates: [{ gate: "G-technical", passed: true, score: null }, { gate: "G-compliance", passed: false, score: null }] })];
-  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(compliance, "1.0.0")).some((i) => /failed the compliance gate/.test(i)));
+  assert.ok(packPromotionIssues(p, signedTemplate(), trialCounts(compliance, "1.0.1")).some((i) => /failed the compliance gate/.test(i)));
   const unsigned = seedTemplates().find((x) => x.styleId === "explainer-flat-vector")!;
   assert.ok(packPromotionIssues(p, unsigned, counts).some((i) => /checklist not signed off/.test(i)));
   assert.ok(packPromotionIssues(p, null, counts).some((i) => /checklist is empty/.test(i)));
   // Only this version counts; runs whose QC has not run yet do not count.
-  assert.equal(trialCounts([...five, outcome(6, { packVersion: "0.9.0" }), outcome(7, { qcPassed: null })], "1.0.0").trials, 5);
+  assert.equal(trialCounts([...five, outcome(6, { packVersion: "0.9.0" }), outcome(7, { qcPassed: null })], "1.0.1").trials, 5);
   // A pack that is not in Trial is not promoted from the portal's record.
   assert.match(packPromotionIssues(pack("explainer-flat-vector", { status: "listed" }), signedTemplate(), counts)[0], /Only a Trial pack/);
 });
@@ -290,7 +290,7 @@ test("curation counts against the promotion rule: 5 trials, 100% technical pass,
 test("the curation record to copy: one trial-run entry per measured run and a qc summary, valid for the styles validator", async () => {
   const p = pack("explainer-flat-vector");
   const five = [3, 1, 2, 5, 4].map((n) => outcome(n));
-  const record = curationRecord(p, five, trialCounts(five, "1.0.0"));
+  const record = curationRecord(p, five, trialCounts(five, "1.0.1"));
   assert.equal(record.length, 6);
   assert.deepEqual(record.slice(0, 5).map((e) => e.date), ["2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04", "2026-12-05"]);
   assert.ok(record.slice(0, 5).every((e) => e.kind === "trial-run" && e.result === "pass" && /owner decision: approved/.test(e.notes)));
@@ -319,7 +319,7 @@ test("Hermes render is research only: never above Trial, always a trial run, onl
   assert.ok(parsePack(raw, "x"));
   for (const status of ["proven", "listed"]) assert.equal(parsePack({ ...raw, status }, "x"), null, `a hermes pack at ${status} is left out, not shown`);
   const hermes = pack("hermes-research-explainer");
-  const caps = ["ffmpeg", "xfade", packCapability("explainer-flat-vector", "1.0.0")];
+  const caps = ["ffmpeg", "xfade", packCapability("explainer-flat-vector", "1.0.1")];
   const reg = mergeRegistry(STYLES, [pack("explainer-flat-vector"), hermes]);
   // Without Hermes configured it waits; with Hermes it is offered in the Trial section only. No worker report needed.
   assert.deepEqual(newVideoStyles(reg, caps).waiting.map((e) => e.id), ["hermes-research-explainer"]);
