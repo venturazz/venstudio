@@ -169,7 +169,9 @@ backend, the plugin and `hermesSkill`; the render stage's result carries `hermes
 A pack without a catalogue entry (the html-capture adaptations, the research packs, a future learned pack) gets its
 style from its own contract (`styleFromPack`) and a seed template `tpl-<id>` from it (`packSeedTemplate`, seeded by
 `ensureSeedTemplates`). The scene plan and the render parameters read that style (`buildScenePlan({ style })`,
-`renderParamsForStyle(id, style)`), so such a pack renders with its own engine instead of falling back to stills.
+`renderParamsForStyle(id, style)`, including the pack's own cross-fade), so such a pack renders with its own engine
+instead of falling back to stills. When the vendored pack version changes, `ensureSeedTemplates` writes the template's
+next version from the new contract (`refreshedPackTemplate`: same status, the owner's checklist sign-offs kept).
 
 ### Batch trials ("Try these styles")
 

@@ -288,7 +288,7 @@ export function renderParamsForStyle(styleId: string, packStyle?: Style): StyleR
   return {
     engine: style.engine,
     template: style.id,
-    transitionSec: DEFAULT_TRANSITION_SEC,
+    transitionSec: style.transitionSec ?? DEFAULT_TRANSITION_SEC,
     elementAnimation: elementAnimationFor(style.engine),
     assetModel: assetModelOf(style),
     naturalFrame: frameOf(style),

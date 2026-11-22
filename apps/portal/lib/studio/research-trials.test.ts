@@ -22,6 +22,7 @@ import {
   packCapability,
   packSeedTemplate,
   parsePack,
+  refreshedPackTemplate,
   parseRunStylePack,
   publishRefusal,
   researchGroupOf,
@@ -91,6 +92,7 @@ test("pack-only styles plan and render from their own contract: style, seed temp
   const r = renderParamsForStyle(p.id, style);
   assert.deepEqual([r?.engine, r?.template, r?.elementAnimation], ["html-capture", "animated-line-graph", true]);
   assert.equal(renderParamsForStyle("other-id", style), null, "the style must be the one asked for");
+  assert.equal(r?.transitionSec, 0, "the pack's own cross-fade (hard cuts), not the default");
   const plan = buildScenePlan({ styleId: p.id, format: "short", style, shots: [{ seconds: 4, beatRole: "body", description: "A line rises", onScreenText: "Revenue" } as any] });
   assert.ok(plan.ok, JSON.stringify(plan));
   if (plan.ok) assert.deepEqual([plan.plan.engine, plan.plan.template], ["html-capture", "animated-line-graph"]);
@@ -99,6 +101,13 @@ test("pack-only styles plan and render from their own contract: style, seed temp
   assert.ok(t.copyrightChecklist.some((i) => i.label.startsWith("Never invent data")), "the pack's cautions are on the checklist");
   const z = packSeedTemplate(pack("hermes-zach-d-films"));
   assert.deepEqual([z.audio.musicPolicy, z.beats.map((b) => b.role).at(-1)], ["none", "outro"]);
+  // A new pack version gives the template a new version from its contract, keeping status and the owner's sign-offs.
+  const signed = { ...t, version: 3, copyrightChecklist: t.copyrightChecklist.map((i, n) => (n === 0 ? { ...i, signedOff: { userId: "owner", date: "2026-12-01" } } : i)) };
+  const bumped = packSeedTemplate({ ...p, version: "0.2.0", plan: { ...p.plan!, hookWithinMs: 2500 } });
+  const next = refreshedPackTemplate(signed, bumped)!;
+  assert.deepEqual([next.version, next.status, next.packVersion, next.pacing.hookByMs, next.copyrightChecklist[0].signedOff?.userId], [4, "candidate", "0.2.0", 2500, "owner"]);
+  assert.equal(refreshedPackTemplate(signed, packSeedTemplate(p)), null, "the same pack version changes nothing");
+  assert.equal(refreshedPackTemplate({ ...signed, status: "retired" }, bumped), null, "a retired template stays as it is");
   // The New Video engine line reads the pack's engine for a style the catalogue does not know.
   assert.equal(engineView("hermes-graph", [], "hermes")?.worker, "external");
   assert.equal(engineView("animated-line-graph", ["html-capture"], "html-capture")?.worker, "yes");
@@ -253,9 +262,16 @@ test("batch trial validation: two or more offered Trial or research styles, no r
   assert.equal("trialBatch" in parseRunConfig({ format: "short" }), false);
   const lines = queueLines([
     { runId: "b", batch: { id, index: 2, total: 2 }, label: "Line graph (Hermes /graph)", state: "running", stage: "idea", stageState: "pending", waitingUntil: null },
-    { runId: "a", batch: { id, index: 1, total: 2 }, label: "Branching line art (Hermes /dan-koe)", state: "running", stage: "render", stageState: "running", waitingUntil: null },
+    { runId: "a", batch: { id, index: 1, total: 2 }, label: "Branching line art (Hermes /dan-koe)", state: "running", stage: "render", stageState: "running", waitingUntil: null, research: true },
   ]);
   assert.deepEqual(lines.map((l) => [l.position, l.status]), [["1 of 2", "Hermes is rendering"], ["2 of 2", "Queued for Hermes (ideas)"]]);
   assert.equal(queueLines([{ runId: "c", batch: { id, index: 1, total: 1 }, label: "x", state: "waiting-human", stage: "idea", stageState: "waiting-human", waitingUntil: null }])[0].status, "Waiting for you in Review (ideas)");
   assert.equal(queueLines([{ runId: "c", batch: { id, index: 1, total: 1 }, label: "x", state: "done", stage: "qc", stageState: "passed", waitingUntil: null }])[0].status, "Finished");
+  // Only Hermes's own steps say Hermes: a worker render and the voice do not.
+  const one = (over: Record<string, unknown>) => queueLines([{ runId: "d", batch: { id, index: 1, total: 1 }, label: "x", state: "running", stage: "render", stageState: "running", waitingUntil: null, ...over }])[0].status;
+  assert.equal(one({ research: true }), "Hermes is rendering");
+  assert.equal(one({}), "A worker is rendering");
+  assert.equal(one({ stage: "voice" }), "Working on the voice");
+  assert.equal(one({ stage: "script" }), "Hermes is on the script");
+  assert.equal(one({ stage: "qc", stageState: "pending" }), "Queued (quality check)");
 });

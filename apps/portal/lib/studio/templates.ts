@@ -55,6 +55,8 @@ export interface Template {
   derivedFrom: { sampleSha256: string; analyzedAt: string; sampleCount: number } | null;
   /** Template Lab revisions used so far (hard cap in template-lab.ts). */
   labRevisions: number;
+  /** For a template seeded from a style pack the catalogue does not know: the pack version it was made from. */
+  packVersion?: string;
   promoted: { userId: string; date: string } | null;
   demotionReason: string | null;
 }

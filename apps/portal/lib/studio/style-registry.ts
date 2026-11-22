@@ -258,6 +258,7 @@ export function styleFromPack(p: StylePack): Style {
     shotSeconds: plan ? [plan.shotSeconds[0], plan.shotSeconds[1]] : [3, 6],
     naturalFrame: p.naturalFrame,
     assetModel: plan?.assetModel ?? "image-per-shot",
+    ...(plan ? { transitionSec: plan.transitionSec } : {}),
     themes: plan ? [...plan.themes] : [],
     keywords: plan ? [...plan.keywords] : [],
     assetKinds: plan && plan.assetKinds.length > 0 ? [...plan.assetKinds] : ["image"],
@@ -297,6 +298,27 @@ export function packSeedTemplate(p: StylePack): Template {
     labRevisions: 0,
     promoted: null,
     demotionReason: null,
+    packVersion: p.version,
+  };
+}
+
+/**
+ * The next version of a pack-seeded template after its pack changed: the new pack's contract, the same status, the
+ * owner's checklist sign-offs (by item id), evidence, promotion and demotion note kept. Null when nothing changed.
+ */
+export function refreshedPackTemplate(current: Template, seed: Template): Template | null {
+  if (!seed.packVersion || current.packVersion === seed.packVersion || current.status === "retired") return null;
+  const signed = new Map(current.copyrightChecklist.map((i) => [i.id, i.signedOff]));
+  return {
+    ...seed,
+    version: current.version + 1,
+    status: current.status,
+    copyrightChecklist: seed.copyrightChecklist.map((i) => ({ ...i, signedOff: signed.get(i.id) ?? null })),
+    evidence: current.evidence,
+    derivedFrom: current.derivedFrom,
+    labRevisions: current.labRevisions,
+    promoted: current.promoted,
+    demotionReason: current.demotionReason,
   };
 }
 
@@ -391,7 +413,7 @@ export function labTrialOption(entry: RegistryEntry | undefined, reported: reado
   if (refusal || !entry?.pack) return { ok: false, reason: refusal ?? "Unknown style", fix: "Pick a Draft or Lab pack." };
   const p = entry.pack;
   if (isResearchEngine(p.engine)) {
-    return opts.hermes ? { ok: true, via: "hermes", capability: null } : { ok: false, reason: "Hermes is not set up, and it renders this pack", fix: "Set HERMES_BASE_URL in Settings and restart the portal." };
+    return opts.hermes ? { ok: true, via: "hermes", capability: null } : { ok: false, reason: "Hermes is not set up, and it renders this pack", fix: "Set HERMES_BASE_URL in the portal's environment and restart the portal." };
   }
   if (!WORKER_ENGINES.includes(p.engine)) {
     return { ok: false, reason: `Needs a renderer that isn't installed: ${p.engine}`, fix: `No worker can run ${p.engine} yet; it needs a renderer plugin first (Phase 4 of the style system).` };
@@ -589,7 +611,7 @@ export interface TrialOutcome {
   hermesAdvisory?: PresentationAdvisory | null;
   /** The renderer that drew the video (migration 0016): ffmpeg-stills, remotion-2d, html-capture, hermes. */
   renderer?: string | null;
-  /** A lab trial of a Draft or Lab pack (migration 0017): recorded, never counted toward promotion. */
+  /** A lab trial of a Draft or Lab pack (migration 0018): recorded, never counted toward promotion. */
   labTrial?: boolean;
 }
 

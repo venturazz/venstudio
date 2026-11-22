@@ -93,6 +93,8 @@ export interface QueueRun {
   stageState: string;
   /** The stage waits for a busy Hermes until then. */
   waitingUntil: Date | null;
+  /** Rendered by Hermes (a research style): its render is Hermes's too. */
+  research?: boolean;
 }
 
 export interface QueueLine {
@@ -102,6 +104,9 @@ export interface QueueLine {
   status: string;
   tone: "ok" | "warn" | "info" | "neutral" | "danger";
 }
+
+/** Stages Hermes works on itself (the director's model turns); the render too for a research style. */
+const HERMES_STAGES = ["idea", "research", "script", "storyboard"];
 
 const STAGE_TEXT: Record<string, string> = {
   idea: "ideas",
@@ -123,10 +128,14 @@ export function queueLines(runs: readonly QueueRun[]): QueueLine[] {
       const position = `${r.batch.index} of ${r.batch.total}`;
       if (r.state === "done") return { runId: r.runId, position, label: r.label, status: "Finished", tone: "ok" };
       if (r.state === "cancelled" || r.state === "failed") return { runId: r.runId, position, label: r.label, status: r.state === "failed" ? "Stopped" : "Cancelled", tone: "danger" };
+      const byHermes = HERMES_STAGES.includes(r.stage) || (r.stage === "render" && r.research === true);
       if (r.waitingUntil) return { runId: r.runId, position, label: r.label, status: `Waiting for Hermes (${step})`, tone: "warn" };
-      if (r.stageState === "running") return { runId: r.runId, position, label: r.label, status: r.stage === "render" ? "Hermes is rendering" : `Hermes is on the ${step}`, tone: "info" };
+      if (r.stageState === "running") {
+        const status = r.stage === "render" ? (byHermes ? "Hermes is rendering" : "A worker is rendering") : byHermes ? `Hermes is on the ${step}` : `Working on the ${step}`;
+        return { runId: r.runId, position, label: r.label, status, tone: "info" };
+      }
       if (r.state === "waiting-human" || r.stageState === "waiting-human" || r.stageState === "failed") return { runId: r.runId, position, label: r.label, status: `Waiting for you in Review (${step})`, tone: "warn" };
-      if (r.stageState === "pending") return { runId: r.runId, position, label: r.label, status: `Queued for Hermes (${step})`, tone: "neutral" };
+      if (r.stageState === "pending") return { runId: r.runId, position, label: r.label, status: byHermes ? `Queued for Hermes (${step})` : `Queued (${step})`, tone: "neutral" };
       return { runId: r.runId, position, label: r.label, status: `${step}: ${r.stageState || "started"}`, tone: "neutral" };
     });
 }

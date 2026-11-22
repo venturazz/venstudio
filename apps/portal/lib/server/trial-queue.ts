@@ -97,10 +97,16 @@ export async function trialQueue(limit = 3): Promise<TrialQueueBatch[]> {
   try {
     const [rows, registry] = await Promise.all([
       db()`
-        SELECT r.id, r.state, r.created_at, r.config->'trialBatch' AS batch, r.config->'stylePack'->>'id' AS pack_id, s.stage, s.state AS stage_state, s.not_before
+        SELECT r.id, r.state, r.created_at, r.config->'trialBatch' AS batch, r.config->'stylePack'->>'id' AS pack_id,
+               coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS research, s.stage, s.state AS stage_state, s.not_before
         FROM pipeline_runs r
         LEFT JOIN LATERAL (
-          SELECT p.stage, p.state, p.not_before FROM pipeline_stages p WHERE p.run_id = r.id ORDER BY p.started_at DESC NULLS FIRST, p.attempt DESC LIMIT 1
+          -- The stage the run is at: one that runs, waits or needs the owner before any finished one; skipped rows
+          -- (the draft stage) never count.
+          SELECT p.stage, p.state, p.not_before FROM pipeline_stages p WHERE p.run_id = r.id AND p.state <> 'skipped'
+          ORDER BY CASE p.state WHEN 'running' THEN 0 WHEN 'pending' THEN 1 WHEN 'waiting-human' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END,
+                   p.started_at DESC NULLS LAST, p.finished_at DESC NULLS LAST, p.attempt DESC
+          LIMIT 1
         ) s ON true
         WHERE r.config ? 'trialBatch'
         ORDER BY r.created_at DESC
@@ -118,6 +124,7 @@ export async function trialQueue(limit = 3): Promise<TrialQueueBatch[]> {
         runId: String(r.id),
         batch,
         label: registry.find((e) => e.id === packId)?.label ?? packId,
+        research: r.research === true,
         state: String(r.state ?? ""),
         stage: typeof r.stage === "string" ? r.stage : "",
         stageState: typeof r.stage_state === "string" ? r.stage_state : "",

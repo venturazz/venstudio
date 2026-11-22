@@ -247,9 +247,14 @@ export default async function StudyPage({ params, searchParams }: { params: Prom
                             Lab trial
                           </LinkButton>
                         ) : (
-                          <span className="break-words text-xs text-muted" data-testid="lab-trial-unavailable">
-                            {l.option.reason}. {l.option.fix}
-                          </span>
+                          <>
+                            <button type="button" disabled className="min-h-11 cursor-not-allowed rounded-lg border border-border px-3 text-sm text-muted opacity-70" aria-describedby={`study-lab-why-${l.packId}`}>
+                              Lab trial
+                            </button>
+                            <span id={`study-lab-why-${l.packId}`} className="break-words text-xs text-muted" data-testid="lab-trial-unavailable">
+                              {l.option.reason}. {l.option.fix}
+                            </span>
+                          </>
                         )}
                       </li>
                     ))}

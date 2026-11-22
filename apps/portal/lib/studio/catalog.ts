@@ -383,6 +383,8 @@ export interface Style {
   naturalFrame?: Frame;
   /** Which asset shape the template expects. Defaults to the stills model. */
   assetModel?: AssetModel;
+  /** Cross-fade between scenes, from a style pack's contract (pack-only styles). Defaults to the scene plan's default. */
+  transitionSec?: number;
   /** Themes this style suits; used to rank suggestions. */
   themes: string[];
   /** Words and phrases that match a brief (matched as whole words). */

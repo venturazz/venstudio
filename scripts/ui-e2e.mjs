@@ -1548,11 +1548,16 @@ try {
   /** Points a freshly started run at the production's approved stages, with only the render left to do. */
   async function reuseProduction(runId, why) {
     // Wait until the run's first stage has settled (its idea card is open), so nothing is running while it is rewritten.
-    for (let i = 0; i < 40; i++) {
+    let settled = false;
+    for (let i = 0; i < 60 && !settled; i++) {
       const busy = dbValue(`SELECT count(*) FROM pipeline_stages WHERE run_id = '${runId}' AND state = 'running'`);
       const open = dbValue(`SELECT count(*) FROM review_items WHERE run_id = '${runId}' AND state = 'open'`);
-      if (busy === "0" && open !== "0") break;
-      await page.waitForTimeout(1000);
+      settled = busy === "0" && open !== "0";
+      if (!settled) await page.waitForTimeout(1000);
+    }
+    if (!settled) {
+      await dumpPipeline(page, `/studio/runs/${runId}`, `${why}: the run's first stage never settled on an open review card`);
+      throw new Error(`${why}: the run's first stage never settled on an open review card`);
     }
     dbExec(`UPDATE review_items SET state = 'superseded' WHERE run_id = '${runId}' AND state = 'open'`);
     dbExec(`DELETE FROM pipeline_stages WHERE run_id = '${runId}'`);
