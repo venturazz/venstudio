@@ -112,10 +112,10 @@ export async function scorePresentation(input: { reviewId: string; rubric: Rubri
 export async function scoreRefusal(reviewId: string, decision: string): Promise<string | null> {
   const t = await qcReviewTarget(reviewId);
   if ("error" in t) return null;
-  // A quality check that stopped with an error has no video to score; it can still be rejected or retried.
-  if (!t.videoAssetId) return null;
-  const scored = t.videoAssetId ? (await presentationFor(t.runId, t.videoAssetId)) !== null : false;
-  return presentationRefusal({ stage: "qc", trial: t.trial, decision, scored });
+  // A card with no video has nothing to score: a trial cannot be approved from it, but can still be rejected or retried.
+  if (!t.videoAssetId) return presentationRefusal({ stage: "qc", trial: t.trial, decision, scored: false, hasVideo: false });
+  const scored = (await presentationFor(t.runId, t.videoAssetId)) !== null;
+  return presentationRefusal({ stage: "qc", trial: t.trial, decision, scored, hasVideo: true });
 }
 
 /** How many stills the quality check samples for the advisory: only when Hermes is set up. */

@@ -233,7 +233,14 @@ export interface MuseWorkerFacts {
   jobTypes: readonly string[];
   /** The version it last reported; absent in tests that do not care. */
   version?: string | null;
+  /** When it last contacted the portal; absent in tests that do not care. */
+  lastSeenAt?: Date | string | null;
 }
+
+/** A hold worker sleeps about 5 min an hour; beyond this (the Workers page's "offline") it has missed its runs. */
+export const MUSE_OFFLINE_AFTER_MIN = 75;
+export const museReasonOffline = (name: string) =>
+  `${name || "This worker"} has not contacted the portal for over ${MUSE_OFFLINE_AFTER_MIN} min. Start it on Muse (run.sh hold) before testing`;
 
 /** a < b for dotted numeric versions ("0.13.0" < "0.14.0"). Pure. */
 function versionBefore(a: string, b: string): boolean {
@@ -254,13 +261,18 @@ export function museTaskWorkers<T extends MuseWorkerFacts>(workers: readonly T[]
  * Why the test button is disabled, or [] when it can run. Each reason is the exact thing to change. A worker that
  * does not report agent-task gets the worker reason even when others do. Pure.
  */
-export function museTestDisabledReasons(o: { portalFlag: boolean; worker?: MuseWorkerFacts | null; anyWorker: boolean }): string[] {
+export function museTestDisabledReasons(o: { portalFlag: boolean; worker?: MuseWorkerFacts | null; anyWorker: boolean; now?: Date }): string[] {
   const reasons: string[] = [];
   if (!o.portalFlag) reasons.push(MUSE_REASON_FLAG_OFF);
   const reports = o.worker ? o.worker.status === "active" && o.worker.jobTypes.includes("agent-task") : o.anyWorker;
   if (!reports) reasons.push(MUSE_REASON_NO_WORKER);
   else if (o.worker && o.worker.version !== undefined && (!o.worker.version || versionBefore(o.worker.version, MUSE_CONTEXT_WORKER_VERSION))) {
     reasons.push(museReasonOldWorker(o.worker.version));
+  } else if (o.worker && o.worker.lastSeenAt !== undefined) {
+    // Its stored job types outlive its last claim, so a worker gone for hours would still look ready.
+    const seen = o.worker.lastSeenAt ? new Date(o.worker.lastSeenAt).getTime() : NaN;
+    const ageMin = ((o.now ?? new Date()).getTime() - seen) / 60_000;
+    if (!Number.isFinite(ageMin) || ageMin >= MUSE_OFFLINE_AFTER_MIN) reasons.push(museReasonOffline(o.worker.name));
   }
   return reasons;
 }

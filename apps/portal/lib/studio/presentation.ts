@@ -66,9 +66,21 @@ export function ownerPresentationGate(r: Rubric, min: number = PRESENTATION_PASS
 /** Decisions on a final video (the qc card) that need the owner's score first on a trial run. */
 export const SCORED_DECISIONS: readonly string[] = ["approve", "override", "reject"];
 
-/** Why this decision cannot be taken yet, or null. Only trial runs require the score; other runs may skip it. */
-export function presentationRefusal(i: { stage: string; trial: boolean; decision: string; scored: boolean }): string | null {
-  if (i.stage !== "qc" || !i.trial || i.scored || !SCORED_DECISIONS.includes(i.decision)) return null;
+/** Decisions that pass a trial video on. Without a video to score they are refused. */
+const PASSING_DECISIONS: readonly string[] = ["approve", "override"];
+
+/**
+ * Why this decision cannot be taken yet, or null. Only trial runs require the score; other runs may skip it.
+ * A trial card with no video (`hasVideo` false) cannot be approved at all; it can still be rejected or retried.
+ */
+export function presentationRefusal(i: { stage: string; trial: boolean; decision: string; scored: boolean; hasVideo?: boolean }): string | null {
+  if (i.stage !== "qc" || !i.trial) return null;
+  if (i.hasVideo === false) {
+    return PASSING_DECISIONS.includes(i.decision)
+      ? "This trial has no video to score, so it cannot be approved. Retry the quality check or reject the run."
+      : null;
+  }
+  if (i.scored || !SCORED_DECISIONS.includes(i.decision)) return null;
   return "This is a trial run: the owner scores the video (hook, pacing, legibility, visual polish, audio) before deciding. Save the score first.";
 }
 

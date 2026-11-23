@@ -77,6 +77,12 @@ test("disabled reasons: the exact thing to change, the portal flag and the worke
   ]);
   assert.match(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, version: null }, anyWorker: true })[0], /unknown version/);
   assert.deepEqual(museTaskWorkers([MUSE, PLAIN, { ...MUSE, id: "w3", status: "revoked" }]).map((w) => w.id), ["w1"]);
+  // A worker that stopped claiming hours ago keeps its stored job types but cannot take the test.
+  const now = new Date("2026-11-23T12:00:00Z");
+  const seen = (min: number) => new Date(now.getTime() - min * 60_000);
+  assert.deepEqual(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, lastSeenAt: seen(60) }, anyWorker: true, now }), []);
+  assert.match(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, lastSeenAt: seen(300) }, anyWorker: true, now })[0], /not contacted the portal for over 75 min/);
+  assert.match(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, lastSeenAt: null }, anyWorker: true, now })[0], /not contacted the portal/);
   assert.match(MUSE_HONEST_NOTE, /venstudio-inbox hook/);
   assert.match(MUSE_HONEST_NOTE, /Waking takes minutes/);
   assert.match(MUSE_HONEST_NOTE, /40 min/);

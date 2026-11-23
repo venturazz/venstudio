@@ -30,13 +30,14 @@ function asStrings(v: unknown): string[] {
 }
 
 export async function museWorkerFacts(): Promise<MuseWorkerFacts[]> {
-  const rows = await db()`SELECT id, name, status, job_types, version FROM workers WHERE status <> 'revoked' ORDER BY name`;
+  const rows = await db()`SELECT id, name, status, job_types, version, last_seen_at FROM workers WHERE status <> 'revoked' ORDER BY name`;
   return rows.map((r) => ({
     id: String(r.id),
     name: String(r.name),
     status: String(r.status),
     jobTypes: asStrings(r.job_types),
     version: typeof r.version === "string" ? r.version : null,
+    lastSeenAt: r.last_seen_at ? new Date(r.last_seen_at as string | Date) : null,
   }));
 }
 

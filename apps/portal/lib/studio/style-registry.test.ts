@@ -405,6 +405,12 @@ test("promotion becomes reachable: five owner-scored trials at 80+ with technica
   assert.equal(presentationRefusal({ stage: "qc", trial: false, decision: "approve", scored: false }), null);
   assert.equal(presentationRefusal({ stage: "qc", trial: true, decision: "retry", scored: false }), null);
   assert.equal(presentationRefusal({ stage: "render", trial: true, decision: "approve", scored: false }), null);
+  // A trial card with no video cannot be approved or overridden; reject and retry stay open so it is never stuck.
+  assert.match(presentationRefusal({ stage: "qc", trial: true, decision: "approve", scored: false, hasVideo: false }) ?? "", /no video to score/);
+  assert.match(presentationRefusal({ stage: "qc", trial: true, decision: "override", scored: false, hasVideo: false }) ?? "", /no video to score/);
+  assert.equal(presentationRefusal({ stage: "qc", trial: true, decision: "reject", scored: false, hasVideo: false }), null);
+  assert.equal(presentationRefusal({ stage: "qc", trial: true, decision: "retry", scored: false, hasVideo: false }), null);
+  assert.equal(presentationRefusal({ stage: "qc", trial: false, decision: "approve", scored: false, hasVideo: false }), null);
 });
 
 test("the publishing guard: the autonomy policy never approves or publishes a trial or a Hermes render by itself", () => {
