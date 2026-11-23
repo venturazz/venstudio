@@ -16,7 +16,7 @@
   Tombol kedua, **Test a JSON result**, menguji `result.json`.
 - **Kalau tombol abu-abu:** alasannya tertulis di bawah tombol. "Set MUSE_AGENT_TASKS=1 on the portal" berarti flag
   portal mati; "Set VENSTUDIO_AGENT_TASKS=1 in the hold cron line on Muse" berarti belum ada worker yang melapor
-  `agent-task`.
+  `agent-task`; "Update this worker to 0.14.0 or later" berarti worker Muse masih versi lama.
 - **Sabar:** membangunkan Nyx butuh beberapa menit (hook cek tiap 60 detik). Job gagal sendiri setelah 40 menit.
 - **Aturan penting:** semua konteks per video (rencana, kontrak gaya, spesifikasi file) dikirim portal sebagai file di
   inbox. Memori Nyx hanya untuk aturan umum. Nyx tidak perlu membuka `~/workspace` untuk tugas ini.
@@ -192,7 +192,10 @@ start; the next start sees "already running" and exits, which is normal.
      parsed result or the issues found.
 4. The card refreshes every 10 s while the test runs and shows the timeline: queued, claimed, TASK.md written, DONE
    seen, uploaded, finished, and the wake latency (claimed to DONE). The picture is shown inline with its size.
-5. When a button is disabled, the reason is written under it.
+5. When a button is disabled, the reason is written under it: `Set MUSE_AGENT_TASKS=1 on the portal`, `Set
+   VENSTUDIO_AGENT_TASKS=1 in the hold cron line on Muse` (no worker reports `agent-task`), or `Update this worker to
+   0.14.0 or later` (an older worker would write no context files). The server action checks the same reasons again,
+   and only the owner sees the card or can queue the test.
 
 CI covers the same path without Muse: `scripts/e2e.sh` runs a hold worker with `VENSTUDIO_AGENT_TASKS=1` and a shell
 loop that plays the agent; `apps/worker/agent-task.test.ts` and `apps/portal/lib/studio/muse-task.test.ts` cover the

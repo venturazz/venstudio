@@ -30,8 +30,14 @@ function asStrings(v: unknown): string[] {
 }
 
 export async function museWorkerFacts(): Promise<MuseWorkerFacts[]> {
-  const rows = await db()`SELECT id, name, status, job_types FROM workers WHERE status <> 'revoked' ORDER BY name`;
-  return rows.map((r) => ({ id: String(r.id), name: String(r.name), status: String(r.status), jobTypes: asStrings(r.job_types) }));
+  const rows = await db()`SELECT id, name, status, job_types, version FROM workers WHERE status <> 'revoked' ORDER BY name`;
+  return rows.map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    status: String(r.status),
+    jobTypes: asStrings(r.job_types),
+    version: typeof r.version === "string" ? r.version : null,
+  }));
 }
 
 export type QueueResult = { ok: true; jobId: string } | { ok: false; error: string };
@@ -40,7 +46,7 @@ export type QueueResult = { ok: true; jobId: string } | { ok: false; error: stri
 export async function queueMuseTest(workerId: string, variant: MuseTestVariant, createdBy: string): Promise<QueueResult> {
   const workers = await museWorkerFacts();
   const worker = workers.find((w) => w.id === workerId) ?? null;
-  const reasons = museTestDisabledReasons({ portalFlag: museFlagOn(), worker: worker ?? { id: workerId, name: "", status: "unknown", jobTypes: [] }, anyWorker: workers.length > 0 });
+  const reasons = museTestDisabledReasons({ portalFlag: museFlagOn(), worker: worker ?? { id: workerId, name: "", status: "unknown", jobTypes: [], version: null }, anyWorker: workers.length > 0 });
   if (reasons.length > 0) return { ok: false, error: reasons.join(". ") };
   const jobId = await createJob({ type: "agent-task", payload: museTestPayload(variant), priority: URGENT_PRIORITY, preferredWorkerId: workerId, createdBy });
   return { ok: true, jobId };

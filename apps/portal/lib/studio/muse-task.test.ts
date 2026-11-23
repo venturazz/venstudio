@@ -70,6 +70,12 @@ test("disabled reasons: the exact thing to change, the portal flag and the worke
   assert.deepEqual(museTestDisabledReasons({ portalFlag: false, anyWorker: false }), [MUSE_REASON_FLAG_OFF, MUSE_REASON_NO_WORKER]);
   assert.deepEqual(museTestDisabledReasons({ portalFlag: true, worker: PLAIN, anyWorker: true }), [MUSE_REASON_NO_WORKER]);
   assert.deepEqual(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, status: "draining" }, anyWorker: true }), [MUSE_REASON_NO_WORKER]);
+  assert.deepEqual(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, version: "0.14.0" }, anyWorker: true }), []);
+  assert.deepEqual(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, version: "0.14.2" }, anyWorker: true }), []);
+  assert.deepEqual(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, version: "0.13.0" }, anyWorker: true }), [
+    "Update this worker to 0.14.0 or later (it runs v0.13.0); older workers write no context files",
+  ]);
+  assert.match(museTestDisabledReasons({ portalFlag: true, worker: { ...MUSE, version: null }, anyWorker: true })[0], /unknown version/);
   assert.deepEqual(museTaskWorkers([MUSE, PLAIN, { ...MUSE, id: "w3", status: "revoked" }]).map((w) => w.id), ["w1"]);
   assert.match(MUSE_HONEST_NOTE, /venstudio-inbox hook/);
   assert.match(MUSE_HONEST_NOTE, /Waking takes minutes/);

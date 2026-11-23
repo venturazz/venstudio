@@ -21,6 +21,9 @@ export const MUSE_TIMEOUT_SEC = 2400;
 
 export const MUSE_REASON_NO_WORKER = "Set VENSTUDIO_AGENT_TASKS=1 in the hold cron line on Muse";
 export const MUSE_REASON_FLAG_OFF = "Set MUSE_AGENT_TASKS=1 on the portal";
+/** A worker before 0.14.0 reports agent-task but writes no context files, so the test would not test the inbox. */
+export const museReasonOldWorker = (version: string | null | undefined) =>
+  `Update this worker to ${MUSE_CONTEXT_WORKER_VERSION} or later (it runs ${version ? `v${version}` : "an unknown version"}); older workers write no context files`;
 export const MUSE_HONEST_NOTE =
   "Delivery depends on the venstudio-inbox hook on Muse, which looks for a new TASK.md every 60 s and then wakes the agent. " +
   "Waking takes minutes, not seconds. The job times out after 40 min.";
@@ -228,6 +231,18 @@ export interface MuseWorkerFacts {
   name: string;
   status: string;
   jobTypes: readonly string[];
+  /** The version it last reported; absent in tests that do not care. */
+  version?: string | null;
+}
+
+/** a < b for dotted numeric versions ("0.13.0" < "0.14.0"). Pure. */
+function versionBefore(a: string, b: string): boolean {
+  const pa = a.split(".").map((n) => Number(n) || 0);
+  const pb = b.split(".").map((n) => Number(n) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0);
+  }
+  return false;
 }
 
 /** Workers that may take a test: active and naming agent-task in their claims (only hold mode with the flag does). */
@@ -244,6 +259,9 @@ export function museTestDisabledReasons(o: { portalFlag: boolean; worker?: MuseW
   if (!o.portalFlag) reasons.push(MUSE_REASON_FLAG_OFF);
   const reports = o.worker ? o.worker.status === "active" && o.worker.jobTypes.includes("agent-task") : o.anyWorker;
   if (!reports) reasons.push(MUSE_REASON_NO_WORKER);
+  else if (o.worker && o.worker.version !== undefined && (!o.worker.version || versionBefore(o.worker.version, MUSE_CONTEXT_WORKER_VERSION))) {
+    reasons.push(museReasonOldWorker(o.worker.version));
+  }
   return reasons;
 }
 
