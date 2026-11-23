@@ -2199,6 +2199,7 @@ async function scoreAndDecide(runId, stars, shown) {
   async function driveWorkflow(runId, label, onApproval) {
     const runCards = () => m.locator('[data-testid="review-card"]').filter({ has: m.locator(`a[href="/studio/runs/${runId}"]`) });
     const seen = new Set();
+    const handled = new Set();
     for (let i = 0; i < 60; i++) {
       await m.goto(`${APP}/review`);
       if (await cardOf(runId, "qc").first().isVisible().catch(() => false)) return seen;
@@ -2217,9 +2218,19 @@ async function scoreAndDecide(runId, stars, shown) {
       if (await approval.first().isVisible().catch(() => false)) {
         const card = approval.first();
         const stage = (await card.getAttribute("data-stage")) ?? "";
+        const reviewId = (await card.getAttribute("data-review-id")) ?? "";
+        // A card approved a moment ago can still be listed while its decision is being saved: never check it twice.
+        if (reviewId && handled.has(reviewId)) {
+          await m.waitForTimeout(1000);
+          continue;
+        }
         seen.add(stage);
         if (onApproval) await onApproval(stage, card);
         await card.getByRole("button", { name: "Approve", exact: true }).click();
+        if (reviewId) {
+          handled.add(reviewId);
+          await m.locator(`[data-testid="review-card"][data-review-id="${reviewId}"]`).waitFor({ state: "detached", timeout: 30_000 }).catch(() => {});
+        }
         await m.waitForLoadState("networkidle");
         continue;
       }
