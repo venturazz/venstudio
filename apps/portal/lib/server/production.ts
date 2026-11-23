@@ -1486,12 +1486,17 @@ interface RenderFinish {
 
 /** The file the newest earlier render attempt of this run asked Hermes for, or null. */
 async function previousRenderFile(q: Q, runId: string, attempt: number): Promise<string | null> {
+  // A finished stage's output is replaced by its conclusion, so the job is gone; its result keeps the clip's URL.
   const [r] = await q`
-    SELECT output->'hermesRender'->>'file' AS file FROM pipeline_stages
-    WHERE run_id = ${runId} AND stage = 'render' AND attempt < ${attempt} AND output->'hermesRender'->>'file' IS NOT NULL
+    SELECT coalesce(output->'hermesRender'->>'file', output->'result'->>'originUrl') AS file FROM pipeline_stages
+    WHERE run_id = ${runId} AND stage = 'render' AND attempt < ${attempt}
+      AND coalesce(output->'hermesRender'->>'file', output->'result'->>'originUrl') IS NOT NULL
     ORDER BY attempt DESC LIMIT 1
   `;
-  return r && typeof r.file === "string" && r.file ? r.file : null;
+  if (!r || typeof r.file !== "string" || !r.file) return null;
+  // The bare file name, whether the row held the name or the full media-host URL.
+  const name = r.file.split("?")[0].split("/").pop() ?? "";
+  return /^[\w.-]{1,200}$/.test(name) ? name : null;
 }
 
 /** The stage waits as pending until `untilMs`, with the job and the "rendering" status stored. No gate slot is held. */
