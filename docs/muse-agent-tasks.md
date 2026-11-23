@@ -53,6 +53,17 @@ and sends those stages to the Muse agent instead:
 4. On failure the stage's error is the job's error, including the agent's own reason from `FAILED.json`. The owner
    can retry, revise or reject as usual. A task no worker takes within 90 min is cancelled and reported.
 
+### Overflow (Hermes busy)
+
+With `MUSE_AGENT_TASKS=1` and `MUSE_OVERFLOW=1` (the default), a run that did not choose Muse still avoids queueing
+behind Hermes. For idea, research and script, when Hermes is rate limited (busy until), slow, or its gate has no free
+slot in this portal process, the portal queues the same task for a ready Muse worker and waits for it as above. The run
+page says "Hermes is busy, so a Muse worker takes this step", and the stage output records `museOverflow: true`. With
+no ready Muse worker nothing changes: the stage waits for Hermes as before. Once a task is queued the stage stays with
+Muse for that attempt, so the step is never asked twice. If that task fails, the stage errors like any other, and a
+retry starts again with Hermes. Set `MUSE_OVERFLOW=0` to always wait for Hermes. Storyboard, voice, pictures and render
+do not overflow.
+
 The option is offered only when the portal flag is on and a worker reports `agent-task` with version 0.15.0 or later
 and contact within 75 min; the reasons are listed under the checkbox, and `startRun` checks them again. Revision notes
 go to the stage's prompt the same way as for Hermes. A run that does not tick the option behaves exactly as before.

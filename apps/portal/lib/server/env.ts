@@ -32,6 +32,8 @@ const schema = z.object({
   /** Where the studio reads generated video clips from. May include a path (http://hermes-files:8000/clip). Falls back to the first HERMES_MEDIA_ORIGINS entry. */
   HERMES_VIDEO_MEDIA_ORIGIN: optional(z.string()),
   MUSE_AGENT_TASKS: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["1", "0"]).default("0")),
+  /** 1 (default): when Hermes is busy or its gate is full, idea, research and script go to a ready Muse worker instead of waiting. 0: always wait for Hermes. Needs MUSE_AGENT_TASKS=1. */
+  MUSE_OVERFLOW: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["1", "0"]).default("1")),
 });
 
 export type Env = z.infer<typeof schema>;

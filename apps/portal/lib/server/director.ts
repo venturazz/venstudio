@@ -7,7 +7,8 @@ import { saveQcReport } from "./qc.ts";
 import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
 import { museStageReadiness, pollMuseStage, startMuseStage } from "./muse-stages.ts";
-import { MUSE_POLL_SEC, runsOnMuse, type MuseThinkStage } from "../studio/muse-stage.ts";
+import { MUSE_POLL_SEC, museOverflowApplies, runsOnMuse, type MuseThinkStage } from "../studio/muse-stage.ts";
+import { hermesBusyNow, hermesGateFull } from "./hermes-gate.ts";
 import { getCapabilities } from "./capabilities.ts";
 import { skillHintsFor } from "../studio/capabilities.ts";
 import { listEndpointHealth } from "./endpoint-health.ts";
@@ -346,7 +347,7 @@ async function claimNext(runId: string): Promise<StageRow | null> {
   return { id: r.id as string, stage: r.stage as RunStage, attempt: r.attempt as number, output: toObject(r.output) };
 }
 
-type StageFailure = { ok: false; error: string; busyUntil?: Date; slow?: { afterMs: number }; museWait?: { jobId: string; until: Date; text: string } };
+type StageFailure = { ok: false; error: string; busyUntil?: Date; slow?: { afterMs: number }; museWait?: { jobId: string; until: Date; text: string; overflow?: boolean } };
 type StageOutcome = { ok: true; result: unknown; gate: GateResult | null } | StageFailure;
 
 function fromHermes<T>(
@@ -374,21 +375,46 @@ function stageAsk(kind: HermesAskKind, st: StageRow): { kind: HermesAskKind; slo
  * same validator. A task's failure (including the agent's own reason) is the stage's error.
  */
 async function think<T>(run: RunInfo, st: StageRow, stage: MuseThinkStage, prompt: ChatMessage[], validate: (v: unknown) => Validated<T>): Promise<{ ok: true; value: T } | StageFailure> {
-  if (!runsOnMuse(run.config.executors, stage)) return fromHermes(await hermesJson(prompt, validate, stageAsk(stage, st)));
   const existing = typeof st.output.museJobId === "string" ? st.output.museJobId : "";
-  const waitFor = (jobId: string, text: string, sec: number): StageFailure => ({ ok: false, error: text, museWait: { jobId, until: new Date(Date.now() + sec * 1000), text } });
-  if (!existing) {
+  const waitFor = (jobId: string, text: string, sec: number, overflow = false): StageFailure => ({ ok: false, error: text, museWait: { jobId, until: new Date(Date.now() + sec * 1000), text, overflow } });
+  // A task already queued for this attempt (chosen at the start, or taken over from a busy Hermes) is always the one to wait for.
+  if (existing) {
+    const state = await pollMuseStage(existing, stage);
+    if (state.kind === "wait") return waitFor(existing, state.text, state.pollSec);
+    if (state.kind === "error") return { ok: false, error: state.error };
+    // The same check the Hermes answer gets, now on the parsed result (the stage validator already ran on the text).
+    const checked = validate(state.value);
+    return checked.ok ? { ok: true, value: checked.value } : { ok: false, error: `The Muse agent's ${stage} answer was not usable: ${checked.issues.slice(0, 5).join("; ")}` };
+  }
+  if (runsOnMuse(run.config.executors, stage)) {
     const refusals = await museStageReadiness();
     if (refusals.length > 0) return { ok: false, error: `Muse cannot take this step: ${refusals.join(". ")}` };
     const jobId = await startMuseStage({ runId: run.id, channelId: run.channelId, project: run.topic || "VenStudio video", stage, prompt });
     return waitFor(jobId, "Waiting for a Muse worker to take this step", MUSE_POLL_SEC);
   }
-  const state = await pollMuseStage(existing, stage);
-  if (state.kind === "wait") return waitFor(existing, state.text, state.pollSec);
-  if (state.kind === "error") return { ok: false, error: state.error };
-  // The same check the Hermes answer gets, now on the parsed result (the stage validator already ran on the text).
-  const checked = validate(state.value);
-  return checked.ok ? { ok: true, value: checked.value } : { ok: false, error: `The Muse agent's ${stage} answer was not usable: ${checked.issues.slice(0, 5).join("; ")}` };
+  // Overflow: Hermes answers one ask at a time. When it is busy, rate limited, slow or its gate is full, a ready Muse
+  // worker takes this step instead of the run waiting. No ready Muse worker leaves things exactly as they were.
+  const overflowOn = museOverflowApplies({ stage, executors: run.config.executors, overflowOn: env().MUSE_OVERFLOW === "1" });
+  const takeOver = async (why: string): Promise<StageFailure | null> => {
+    if (!overflowOn || (await museStageReadiness()).length > 0) return null;
+    try {
+      const jobId = await startMuseStage({ runId: run.id, channelId: run.channelId, project: run.topic || "VenStudio video", stage, prompt });
+      return waitFor(jobId, `${why}, so a Muse worker takes this step`, MUSE_POLL_SEC, true);
+    } catch (err) {
+      console.error("muse overflow failed", run.id, stage, err);
+      return null;
+    }
+  };
+  if (overflowOn && (hermesGateFull() || (await hermesBusyNow()))) {
+    const moved = await takeOver("Hermes is busy");
+    if (moved) return moved;
+  }
+  const r = fromHermes(await hermesJson(prompt, validate, stageAsk(stage, st)));
+  if (!r.ok && r.busyUntil) {
+    const moved = await takeOver(r.slow ? "Hermes is slow" : "Hermes is busy");
+    if (moved) return moved;
+  }
+  return r;
 }
 
 async function runModel(run: RunInfo, st: StageRow, template: Template, feedback: string): Promise<StageOutcome> {
@@ -831,7 +857,7 @@ async function executeStage(runId: string, st: StageRow): Promise<void> {
     // A stage waiting on its Muse task goes back to pending until the next look; a finished task resumes the run sooner.
     if (outcome.museWait) {
       const w = outcome.museWait;
-      await deferRenderPoll(runId, st.id, w.until, { museJobId: w.jobId }, { until: w.until.toISOString(), text: w.text });
+      await deferRenderPoll(runId, st.id, w.until, { museJobId: w.jobId, ...(w.overflow ? { museOverflow: true } : {}) }, { until: w.until.toISOString(), text: w.text });
       return;
     }
     // A rate-limited or slow Hermes is not a failed stage: it waits and keeps its attempt, up to the give-up cap.

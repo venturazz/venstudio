@@ -8,6 +8,7 @@ import {
   museStageAnswer,
   museStagePayload,
   museStagePayloadIssues,
+  museOverflowApplies,
   museStagePoll,
   museStageRefusals,
   museThinkingExecutors,
@@ -40,10 +41,10 @@ test("executors: only known thinking stages set to muse are kept; nothing stored
 test("run config: Muse thinking is stored on the run and read back; a run without it reads as before", () => {
   const req = { format: "short" as const, language: "en", themeId: "", purposes: [], subtitles: [], brief: "x" };
   const plain = buildRunConfig(req, { category: null }, { styleId: "s" });
-  assert.ok(plain.ok);
+  if (!plain.ok) throw new Error(plain.error);
   assert.equal(plain.config.executors, undefined);
   const muse = buildRunConfig({ ...req, thinkOnMuse: true }, { category: null }, { styleId: "s" });
-  assert.ok(muse.ok);
+  if (!muse.ok) throw new Error(muse.error);
   assert.deepEqual(muse.config.executors, { idea: "muse", research: "muse", script: "muse" });
   const back = parseRunConfig(JSON.parse(JSON.stringify(muse.config)));
   assert.deepEqual(back.executors, muse.config.executors);
@@ -127,4 +128,14 @@ test("a waiting stage: working, queued, finished, failed with the agent's reason
   assert.match((stale as { error: string }).error, /No Muse worker took this step within 90 min/);
   // A running task is never given up on here: the worker's own 40 min limit ends it.
   assert.equal(museStagePoll(job("running", { createdAt: ago(600) }), NOW).kind, "wait");
+});
+
+test("overflow: only a thinking stage that Hermes holds, and only when switched on", () => {
+  const on = { overflowOn: true, executors: undefined };
+  for (const stage of ["idea", "research", "script"]) assert.equal(museOverflowApplies({ ...on, stage }), true, stage);
+  for (const stage of ["storyboard", "assets", "voice", "render", "qc"]) assert.equal(museOverflowApplies({ ...on, stage }), false, stage);
+  assert.equal(museOverflowApplies({ stage: "idea", executors: undefined, overflowOn: false }), false);
+  // A stage the run already gave to Muse is not "overflow".
+  assert.equal(museOverflowApplies({ stage: "idea", executors: { idea: "muse" }, overflowOn: true }), false);
+  assert.equal(museOverflowApplies({ stage: "script", executors: { idea: "muse" }, overflowOn: true }), true);
 });

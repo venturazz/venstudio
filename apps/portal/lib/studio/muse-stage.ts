@@ -148,3 +148,11 @@ export function museStagePoll(job: MuseJobFacts | null, now: Date = new Date()):
     }
   }
 }
+
+/**
+ * Whether a stage that this run gave to Hermes may move to Muse because Hermes is busy: only a thinking stage, only
+ * when overflow is on, and never one that already goes to Muse. Pure.
+ */
+export function museOverflowApplies(o: { stage: string; executors: StageExecutors | undefined; overflowOn: boolean }): boolean {
+  return o.overflowOn && isMuseThinkStage(o.stage) && !runsOnMuse(o.executors, o.stage);
+}

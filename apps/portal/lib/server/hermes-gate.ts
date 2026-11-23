@@ -99,6 +99,11 @@ export async function reportHermesOk(): Promise<void> {
   }
 }
 
+/** True when every slot of this process is taken, so a new ask would queue behind another. Read only. */
+export function hermesGateFull(): boolean {
+  return state().active >= gateConcurrency(process.env.HERMES_MAX_CONCURRENCY);
+}
+
 function acquire(timeoutMs: number): Promise<boolean> {
   const s = state();
   const limit = gateConcurrency(process.env.HERMES_MAX_CONCURRENCY);
