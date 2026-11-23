@@ -277,6 +277,11 @@ before building it:
 
 If tests 12 or 13 fail, fall back to Hermes image generation plus worker tools only.
 
+Update (worker 0.14.0): test 12 is answered by a different design. The Muse agent does not read the worker's output;
+its own `venstudio-inbox` hook polls the inbox every 60 s and wakes it when a `TASK.md` appears, and the agent creates
+`out/DONE` instead of running `run.sh submit`. The per-video context travels as files in the inbox. The owner runs the
+test task on the Workers page to check it end to end. See [../muse-agent-tasks.md](../muse-agent-tasks.md).
+
 ## 10. Risks, open questions, facts that need a live check
 
 ### Risks

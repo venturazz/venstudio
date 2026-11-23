@@ -94,8 +94,9 @@ because `platform_toolsets` is read at gateway start. The provider itself is reg
 3. **The media host is not deployed.** Without it no bytes reach the portal: Hermes can only hand
    back a name. `deploy/hermes-files.nginx.conf` now serves `/clip/` alongside `/img/`, `/tts/`,
    `/audio/`.
-4. **The Muse agent-task path** (`MUSE_AGENT_TASKS=1`) has never been exercised. Needs access to the
-   Muse VM.
+4. **The Muse agent-task path** (`MUSE_AGENT_TASKS=1`): worker 0.14.0 writes the per-video context into the inbox
+   and the owner's Muse agent has a `venstudio-inbox` hook. Not yet run on the real VM: press **Send a test task to
+   Muse** on the Workers page (`docs/muse-agent-tasks.md`).
 
 ## Still Hermes-side
 

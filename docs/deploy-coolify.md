@@ -35,7 +35,7 @@ so Coolify reads the file again. Then fill in:
 | `HERMES_IMAGE_PROVIDER_ORDER` | optional override | Providers Hermes should try first for images, e.g. `cloudflare,qwen,minimax`. Also the list of provider names the portal records as is. Any other name, and every name when this is empty, is stored as `unlisted-<name>` and needs owner confirmation in Settings. While this is unset, confirming `cloudflare` in Settings does not clear `unlisted-cloudflare`; confirm that name too |
 | `HERMES_MEDIA_ORIGINS` | optional override | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only. The first request may use plain http and private hosts, so list only origins you control |
 | `HERMES_MAX_CONCURRENCY` | optional override | Hermes model turns the portal runs at once, 1 (default) to 8. Every Hermes caller shares this gate, and a 429 or 503 from Hermes pauses all of them until `Retry-After`. Raise only if your Hermes takes parallel turns |
-| `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows the unverified Muse agent task fallback |
+| `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows Muse agent tasks: the last picture fallback and the test on the Workers page (`docs/muse-agent-tasks.md`) |
 
 ### Kokoro server (example, verify before relying on it)
 

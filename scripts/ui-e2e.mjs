@@ -903,6 +903,21 @@ try {
   await page.getByRole("button", { name: "Save update mode" }).click();
   await modeNow.filter({ hasText: "Now: Automatic" }).waitFor();
 
+  step("Muse agent tasks: with MUSE_AGENT_TASKS off and no worker reporting agent-task, both test buttons are disabled with the exact reasons");
+  const museCard = page.getByTestId("muse-agent-tasks");
+  await museCard.waitFor();
+  for (const id of ["muse-test-picture", "muse-test-json"]) {
+    const button = museCard.getByTestId(id);
+    if (!(await button.isDisabled())) throw new Error(`${id} is enabled although the Muse test cannot run`);
+  }
+  await museCard.getByRole("button", { name: "Send a test task to Muse", exact: true }).waitFor();
+  await museCard.getByRole("button", { name: "Test a JSON result", exact: true }).waitFor();
+  const museReasons = (await museCard.getByTestId("muse-test-reason").locator("li").allTextContents()).map((t) => t.trim());
+  const wantReasons = ["Set MUSE_AGENT_TASKS=1 on the portal", "Set VENSTUDIO_AGENT_TASKS=1 in the hold cron line on Muse"];
+  if (JSON.stringify(museReasons) !== JSON.stringify(wantReasons)) throw new Error(`Muse test reasons: ${JSON.stringify(museReasons)}`);
+  if (!/Waking takes minutes/.test((await museCard.getByTestId("muse-honest-note").textContent()) ?? "")) throw new Error("the Muse card lost its honest note");
+  if (Number(dbValue("SELECT count(*) FROM jobs WHERE type = 'agent-task'")) !== 0) throw new Error("a disabled Muse test queued a job");
+
   step("queue an echo job and a smoke test from the Jobs page");
   for (const [type, label] of [
     ["echo", "Echo (connectivity test)"],
@@ -1145,6 +1160,22 @@ try {
     const overflow = await m.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     if (overflow) throw new Error(`mobile layout overflows horizontally on ${url}`);
   }
+
+  step("mobile: the Muse agent tasks card fits in 390 px");
+  await m.goto(`${APP}/workers`);
+  await m.waitForLoadState("networkidle");
+  await m.getByTestId("muse-agent-tasks").waitFor();
+  const museWide = await m.evaluate(() => {
+    const card = document.querySelector('[data-testid="muse-agent-tasks"]');
+    if (!card) return "the Muse card was not found";
+    for (const el of [card, ...card.querySelectorAll("*")]) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.right > window.innerWidth + 1) return `${el.tagName.toLowerCase()} ends at ${Math.round(r.right)} px`;
+    }
+    return "";
+  });
+  if (museWide) throw new Error(`the Muse card overflows at 390 px: ${museWide}`);
+  await shot("10b-workers-muse-mobile", m);
 
   step("mobile: the capabilities card fits in 390 px");
   await m.goto(`${APP}/settings`);
@@ -2168,6 +2199,7 @@ async function scoreAndDecide(runId, stars, shown) {
   async function driveWorkflow(runId, label, onApproval) {
     const runCards = () => m.locator('[data-testid="review-card"]').filter({ has: m.locator(`a[href="/studio/runs/${runId}"]`) });
     const seen = new Set();
+    const handled = new Set();
     for (let i = 0; i < 60; i++) {
       await m.goto(`${APP}/review`);
       if (await cardOf(runId, "qc").first().isVisible().catch(() => false)) return seen;
@@ -2186,9 +2218,19 @@ async function scoreAndDecide(runId, stars, shown) {
       if (await approval.first().isVisible().catch(() => false)) {
         const card = approval.first();
         const stage = (await card.getAttribute("data-stage")) ?? "";
+        const reviewId = (await card.getAttribute("data-review-id")) ?? "";
+        // A card approved a moment ago can still be listed while its decision is being saved: never check it twice.
+        if (reviewId && handled.has(reviewId)) {
+          await m.waitForTimeout(1000);
+          continue;
+        }
         seen.add(stage);
         if (onApproval) await onApproval(stage, card);
         await card.getByRole("button", { name: "Approve", exact: true }).click();
+        if (reviewId) {
+          handled.add(reviewId);
+          await m.locator(`[data-testid="review-card"][data-review-id="${reviewId}"]`).waitFor({ state: "detached", timeout: 30_000 }).catch(() => {});
+        }
         await m.waitForLoadState("networkidle");
         continue;
       }

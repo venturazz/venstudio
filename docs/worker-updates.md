@@ -178,6 +178,15 @@ It reports the `hermes-mux` capability only where its ffmpeg has the audio-mix c
 hermes-mux jobs under that capability alone, so an older worker never claims one. Until a worker has updated, a hermes
 render of a run with its own narration stops before Hermes is asked, with a stage error that says to update the worker.
 
+## Worker 0.14.0
+
+0.14.0 (Muse agent tasks with context, `docs/muse-agent-tasks.md`) is delivered by this mechanism like any release; no
+manifest file is added. The `agent-task` handler writes the context files and inputs a payload carries into the inbox
+next to `TASK.md`, accepts `out/result.json` and html-design page files besides media, and reports its milestones and
+times. It is still advertised only with `VENSTUDIO_AGENT_TASKS=1` in hold mode. A 0.13.0 worker that takes a 0.14.0
+payload ignores the new fields and writes its old `TASK.md` (prompt only), so update the Muse worker before relying on
+the context files.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,

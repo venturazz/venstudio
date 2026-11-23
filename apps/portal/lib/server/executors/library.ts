@@ -5,6 +5,7 @@ import { hermesJson } from "../hermes-json.ts";
 import { cc0Issues, CC0_HOSTS } from "../../studio/asset-plan.ts";
 import type { FailureClass } from "../../studio/pacing.ts";
 import { dataBlock, MAX_NOTE_CHARS, type ChatMessage, type Validated } from "../../studio/director.ts";
+import { contextIssues, MUSE_TIMEOUT_SEC, type ContextFile } from "../../studio/muse-task.ts";
 
 /**
  * CC0 and public-domain fallback, plus the flagged Muse agent task. Both create worker jobs; the worker does the
@@ -99,22 +100,40 @@ export async function createFetchAssetJob(order: WorkOrderRef, candidate: Cc0Can
   return { ok: true, jobId };
 }
 
-/** Queues an agent task on a Muse machine. Off unless MUSE_AGENT_TASKS=1 because the path is not verified yet. */
-export async function createAgentTaskJob(order: WorkOrderRef, createdBy: string | null): Promise<string> {
+/** What the Muse agent gets besides the prompt (worker 0.14.0+; an older worker ignores it and gets the prompt only). */
+export interface AgentTaskExtras {
+  /** PLAN.md, CONTRACT.md, SPEC.json...: written by the worker into the inbox next to TASK.md. */
+  context?: ContextFile[];
+  outputs?: string[];
+  deliverable?: string;
+  project?: string;
+  stage?: string;
+}
+
+/**
+ * Queues an agent task on a Muse machine. Off unless MUSE_AGENT_TASKS=1. The context files are checked here with the
+ * worker's own rules, so the worker never refuses what the portal queued.
+ */
+export async function createAgentTaskJob(order: WorkOrderRef, createdBy: string | null, extras: AgentTaskExtras = {}): Promise<string> {
   if (env().MUSE_AGENT_TASKS !== "1") {
-    throw new Error("Muse agent tasks are off. They are not verified yet; set MUSE_AGENT_TASKS=1 to try them.");
+    throw new Error("Muse agent tasks are off. Set MUSE_AGENT_TASKS=1 on the portal to use them.");
   }
-  return createJob({
-    type: "agent-task",
-    channelId: order.channelId ?? null,
-    createdBy,
-    payload: {
-      inputs: [],
-      mode: "hold",
-      runId: order.runId,
-      workOrderId: order.workOrderId,
-      shotRef: order.shotRef,
-      prompt: order.prompt.slice(0, 1200),
-    },
-  });
+  const context = extras.context ?? [];
+  const issues = contextIssues(context);
+  if (issues.length > 0) throw new Error(`The agent task's context is not usable: ${issues.join("; ")}`);
+  const payload: Record<string, unknown> = {
+    inputs: [],
+    mode: "hold",
+    runId: order.runId,
+    workOrderId: order.workOrderId,
+    shotRef: order.shotRef,
+    prompt: order.prompt.slice(0, 1200),
+    timeoutSec: MUSE_TIMEOUT_SEC,
+  };
+  if (context.length > 0) payload.context = context;
+  if (extras.outputs && extras.outputs.length > 0) payload.outputs = extras.outputs;
+  if (extras.deliverable) payload.deliverable = extras.deliverable.slice(0, 300);
+  if (extras.project) payload.project = extras.project.slice(0, 120);
+  if (extras.stage) payload.stage = extras.stage;
+  return createJob({ type: "agent-task", channelId: order.channelId ?? null, createdBy, payload });
 }
