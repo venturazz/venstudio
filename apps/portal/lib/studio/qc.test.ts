@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  audioIsSilent,
+  SILENT_AUDIO_ISSUE,
+  silenceShare,
   assetsGate,
   claimsGate,
   combineGates,
@@ -64,6 +67,49 @@ test("silence only counts for narrated templates", () => {
   const amb = ambient();
   assert.equal(amb.audio.narrated, false);
   assert.equal(technicalGate({ ...m, cuts: [] }, { ...amb, pacing: { ...amb.pacing, maxShotSeconds: 60 } }, "short").passed, true);
+});
+
+test("a silent audio track fails a narrated video by name: loudness below -50 LUFS, not measured, or silence over 80%", () => {
+  const t = explainer();
+  assert.equal(t.audio.narrated, true);
+  // A silent track: ebur128 reads -70 LUFS and silencedetect finds the whole video.
+  const silent = technicalGate({ ...good(), integratedLufs: -70, silenceRuns: [{ start: 0, end: 40 }] }, t, "short");
+  assert.equal(silent.passed, false);
+  assert.equal(silent.issues[0], "The video's audio is silent");
+  assert.equal(silent.issues.filter((i) => i === SILENT_AUDIO_ISSUE).length, 1);
+  assert.ok(technicalGate({ ...good(), integratedLufs: -55 }, t, "short").issues.includes(SILENT_AUDIO_ISSUE));
+  assert.ok(technicalGate({ ...good(), integratedLufs: null }, t, "short").issues.includes(SILENT_AUDIO_ISSUE));
+  // Silence over 33 of 40 s (82%), in runs that overlap, even with a loud second of sound.
+  const runs = [{ start: 0, end: 20 }, { start: 15, end: 30 }, { start: 32, end: 35 }];
+  assert.equal(silenceShare({ durationSec: 40, silenceRuns: runs }), 33 / 40);
+  assert.ok(technicalGate({ ...good(), silenceRuns: runs }, t, "short").issues.includes(SILENT_AUDIO_ISSUE));
+  // 75% silence is a long-pause problem (named per run), not "silent".
+  const pauses = technicalGate({ ...good(), silenceRuns: [{ start: 0, end: 30 }] }, t, "short");
+  assert.equal(pauses.issues.includes(SILENT_AUDIO_ISSUE), false);
+  assert.match(pauses.issues.join(), /Silence for 30 s/);
+  // -50 LUFS exactly is quiet but heard; no audio stream at all keeps its own message.
+  assert.equal(technicalGate({ ...good(), integratedLufs: -50 }, t, "short").issues.includes(SILENT_AUDIO_ISSUE), false);
+  const none = technicalGate({ ...good(), hasAudio: false, integratedLufs: null }, t, "short");
+  assert.ok(none.issues.includes("The video has no audio stream"));
+  assert.equal(none.issues.includes(SILENT_AUDIO_ISSUE), false);
+});
+
+test("silent audio: ambient styles keep their rules (narrated flag and music policy decide)", () => {
+  const amb = { ...ambient(), pacing: { ...ambient().pacing, maxShotSeconds: 60 } };
+  assert.equal(amb.audio.narrated, false);
+  const base = { ...good(), cuts: [] };
+  // A quiet ambient bed: low but audible, with long quiet passages under 80%. Not silent.
+  assert.equal(audioIsSilent({ ...base, integratedLufs: -38, silenceRuns: [{ start: 0, end: 30 }] }, amb), false);
+  // Very quiet but not detected as silence, or detected as silence but loud enough: an ambient video is not failed.
+  assert.equal(audioIsSilent({ ...base, integratedLufs: -60, silenceRuns: [] }, amb), false);
+  assert.equal(audioIsSilent({ ...base, integratedLufs: -30, silenceRuns: [{ start: 0, end: 40 }] }, amb), false);
+  // Both measures agree and the style has music: the bed did not make it into the video.
+  const empty = technicalGate({ ...base, integratedLufs: -70, silenceRuns: [{ start: 0, end: 40 }] }, amb, "short");
+  assert.ok(empty.issues.includes(SILENT_AUDIO_ISSUE));
+  // A style with no narration and no music may be silent on purpose.
+  const mute = { ...amb, audio: { ...amb.audio, musicPolicy: "none" as const } };
+  assert.equal(audioIsSilent({ ...base, integratedLufs: -70, silenceRuns: [{ start: 0, end: 40 }] }, mute), false);
+  assert.equal(technicalGate({ ...base, integratedLufs: -70, silenceRuns: [{ start: 0, end: 40 }] }, mute, "short").issues.includes(SILENT_AUDIO_ISSUE), false);
 });
 
 test("frozen picture fails except for ambient", () => {

@@ -54,6 +54,43 @@ export const MIN_HOOK_VARIANTS = 3;
 export const VOICE_DURATION_TOLERANCE = 0.1;
 export const MIN_CLAIM_WAIT_HOURS = 6;
 export const PRESENTATION_PASS = 75;
+/** Integrated loudness below this (LUFS) is no usable sound: a silent track, or one with nothing audible in it. */
+export const SILENT_LUFS = -50;
+/** Silence (qc-video's silencedetect at -50 dB) over more than this share of the video means no usable audio. */
+export const SILENT_SHARE = 0.8;
+export const SILENT_AUDIO_ISSUE = "The video's audio is silent";
+
+/** Share of the video, 0..1, that qc-video measured as silence. Overlapping or out-of-range runs are clamped. */
+export function silenceShare(m: Pick<TechnicalMeasure, "durationSec" | "silenceRuns">): number {
+  if (!(m.durationSec > 0)) return 0;
+  const runs = m.silenceRuns
+    .map((r) => ({ start: Math.max(0, r.start), end: Math.min(m.durationSec, r.end) }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start);
+  let total = 0;
+  let reached = 0;
+  for (const r of runs) {
+    const from = Math.max(r.start, reached);
+    if (r.end > from) total += r.end - from;
+    reached = Math.max(reached, r.end);
+  }
+  return Math.min(1, total / m.durationSec);
+}
+
+/**
+ * True when an audio stream exists but carries no usable sound. A narrated template must be heard: loudness not
+ * measured or below SILENT_LUFS, or silence over more than SILENT_SHARE of the video, fails. A template without
+ * narration keeps its quiet: one whose music policy is "none" may be silent on purpose and is never failed here, and
+ * one with music fails only when both measures agree (a quiet ambient bed is above -50 LUFS and not detected as silence).
+ */
+export function audioIsSilent(m: Pick<TechnicalMeasure, "hasAudio" | "integratedLufs" | "durationSec" | "silenceRuns">, template: Pick<Template, "audio">): boolean {
+  if (!m.hasAudio) return false;
+  const quiet = m.integratedLufs === null || m.integratedLufs < SILENT_LUFS;
+  const mostlySilent = silenceShare(m) > SILENT_SHARE;
+  if (template.audio.narrated) return quiet || mostlySilent;
+  if (template.audio.musicPolicy === "none") return false;
+  return quiet && mostlySilent;
+}
 
 const fmt = (n: number): string => String(Math.round(n * 100) / 100);
 const result = (gate: GateId, issues: string[], executor: string, score?: number): GateResult => {
@@ -71,6 +108,7 @@ export function technicalGate(m: TechnicalMeasure, template: Template, format: F
     issues.push(`Duration ${fmt(m.durationSec)} s is outside ${f.durationSec[0]} to ${f.durationSec[1]} s`);
   }
   if (!m.hasAudio) issues.push("The video has no audio stream");
+  else if (audioIsSilent(m, template)) issues.push(SILENT_AUDIO_ISSUE);
   if (m.integratedLufs === null) issues.push("Loudness was not measured");
   else if (Math.abs(m.integratedLufs - template.audio.targetLufs) > LOUDNESS_TOLERANCE_LU) {
     issues.push(`Loudness is ${fmt(m.integratedLufs)} LUFS, target is ${template.audio.targetLufs} plus or minus ${LOUDNESS_TOLERANCE_LU}`);
