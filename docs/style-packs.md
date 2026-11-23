@@ -433,6 +433,40 @@ runs, so the page is checked before anything runs and run in a sandbox, and ever
   (`voice`), the video's licence and metadata (`narration`) record it, the backend is registered as a provider, and its
   terms gate the narration like any voice (a G-voice result on the render). Research-only rules are unchanged.
 
+### The run's narration on Hermes's picture (hermes-mux, worker 0.13.0)
+
+The run's narration lives in the portal's storage, which Hermes cannot read (Kokoro and 9router voices have no media-host
+URL), so a `run`-voice render used to come back silent. Now (`lib/studio/hermes-mux.ts`, `queueHermesMux` and
+`completeHermesMux` in `lib/server/production.ts`):
+
+- Every hermes render whose narration is the run's (`hermes.voice: "run"`, and any hermes render of a run with a voice
+  stage) asks Hermes for the picture and the burned-in captions only, timed to the narration ("The studio adds the sound
+  afterwards …"). Hermes is never told to render without a voice.
+- Hermes's clip is stored as a video asset ("Hermes picture", executor `hermes-render`, its backend, plugin, skill and
+  `/clip/` URL), then a `render-video` job with `engine: "hermes-mux"` is queued under the `hermes-mux` capability. Its
+  inputs (the clip, the narration, the bed and accents of the run's audio plan) are downloaded like any job input. The
+  worker drops the clip's audio and runs the shared chain (`buildMuxArgs`, `audioMixFilter`: narration tempo, bed,
+  ambience, mastered loudness). Lengths: a picture shorter than the narration holds its last frame (`tpad`, re-encoded);
+  up to 3 s longer plays whole with the narration padded with silence; longer than that is cut 0.5 s after the
+  narration. The result reports `mux` (mode, lengths) and the measured `integratedLufs`; the card says what was done.
+- The final video asset (executor `hermes-mux`, source worker) names both inputs in its metadata (`picture`,
+  `narration`, `musicBed`, `inputAssetIds`) and licence. QC runs on it as before.
+- A worker reports `hermes-mux` only where its ffmpeg has the whole audio-mix chain and `tpad`. With no such worker the
+  render stage stops before Hermes is asked: "… no worker reports hermes-mux (worker 0.13.0 or later …). Update the
+  worker …". A silent video is never concluded.
+- `stick-figure` and `zach-d-films` (`hermes.voice: "skill"`) keep Hermes's own audio; G-technical fails a video whose
+  audio is silent ("The video's audio is silent": loudness below -50 LUFS or not measured, or silence over 80% of the
+  video; styles without narration fail only when both agree, and never with music policy `none`).
+
+### Revisions on a Hermes video
+
+A note on the render or quality-check card of a hermes run goes back to the **render** stage (`revisionTarget` with
+`renderer: "hermes"`): the new attempt asks for a new file, and the start ask carries the note as a DATA block ("Owner's
+notes on the previous video") with the previous file's name. Only a note about the voice itself (`VOICE_NOTE` in
+`voice-fit.ts`: voice, accent, pronunciation, male/female, robotic, speaker, narrator) records the narration again; "no
+sound", "silent", "audio missing" never do. For worker-rendered runs a note about missing or wrong sound re-runs the
+render (the mix) and only voice words go to the voice. The card's hint says where the note goes.
+
 ### What the owner sees
 
 | | image-sequence | scene-spec | hermes-skill |

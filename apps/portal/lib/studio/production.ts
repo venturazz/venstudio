@@ -309,7 +309,9 @@ export function productionSummary(stage: ProductionStage, result: unknown): stri
     const note = typeof r.captionNote === "string" ? r.captionNote.trim().slice(0, 80) : "";
     const captions = r.captionsBurned === false && note ? `. No captions burned in: ${note}` : "";
     const music = typeof r.music === "string" && r.music.trim() ? `. ${r.music.trim().slice(0, 120)}` : "";
-    return `Video rendered${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${captions}${music}`;
+    // A Hermes picture with the run's narration laid on by a worker (hermes-mux): say so, and how the lengths were matched.
+    const mux = r.audioBy === "studio" ? `. The run's narration was added to Hermes's picture${typeof r.muxNote === "string" && r.muxNote ? `: ${r.muxNote.slice(0, 200)}` : ""}` : "";
+    return `Video rendered${sec > 0 ? `, ${Math.round(sec)} seconds` : ""}${captions}${music}${mux}`;
   }
   return "Quality check finished";
 }

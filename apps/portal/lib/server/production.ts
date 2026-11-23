@@ -73,6 +73,7 @@ import {
 } from "../studio/hermes-render-job.ts";
 import { hermesTrustedOrigins } from "./executors/hermes-image.ts";
 import { mediaHostUrl } from "../studio/hermes-render.ts";
+import { HERMES_MUX_CAPABILITY, HERMES_MUX_ENGINE, hermesMuxPayload, muxNote, muxWorkerIssue, readMuxPlan } from "../studio/hermes-mux.ts";
 import { advisoryFrameCount, runPresentationAdvisory } from "./presentation.ts";
 import { recordTrialOutcome } from "./style-trials.ts";
 import { bedNote, MUSIC_TAG, pickMusicBed, type BedCandidate, type BedPick } from "../studio/music-bed.ts";
@@ -914,6 +915,11 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
       await completeRender(existing);
       return;
     }
+    // A hermes render whose narration job failed stops here with its reason; Hermes is never asked again from here.
+    if ((status === "failed" || status === "cancelled") && isRecord(st.output.hermesClip)) {
+      await completeRender(existing);
+      return;
+    }
   }
   // The run's plan: the storyboard (image-sequence, and every run from before workflows), the scene spec or the brief.
   const recipe = runRecipeOf(run.config);
@@ -1357,19 +1363,37 @@ async function runHermesRenderStage(
   // A skill that voices itself (hermes.voice skill): the run has no voice stage, the skill records from the script.
   const brief = i.brief ?? null;
   const skillVoice = brief !== null && !runStagesOf(run.config).includes("voice");
+  // Every other hermes render uses the run's own narration, which Hermes cannot read: a worker lays it on Hermes's
+  // picture afterwards (hermes-mux.ts), so Hermes is asked for the picture and the captions only.
+  const mux = skillVoice ? null : narrationId && narrationSec > 0 ? { narrationId, narrationSec, tempo } : null;
   const scale = hermesTimeoutScale(process.env);
-  const fin: RenderFinish = { run, st, template, pack, frame, durationSec, skill: skill?.name ?? null, brief, skillVoice };
+  const fin: RenderFinish = { run, st, template, pack, frame, durationSec, skill: skill?.name ?? null, brief, skillVoice, mux };
   let job = readRenderJob(st.output.hermesRender);
   // Started (the start ask was sent): never ask again, wait for the file. Also after a restart or a reaper resume.
   if (job?.askedAt) {
     await pollHermesRender(fin, job, scale);
     return;
   }
+  if (!skillVoice && !mux) {
+    await recordStageError(run.id, st.id, "render", "This run has no recorded narration to add to Hermes's video, so the video would be silent. Record the voice again (send a revision to the voice step), then render. Nothing was rendered.");
+    return;
+  }
+  // Checked before Hermes is asked: without a worker that adds the narration, the render would only make a silent video.
+  if (mux) {
+    const why = muxWorkerIssue(await workerCapabilityLists(sql));
+    if (why) {
+      await recordStageError(run.id, st.id, "render", why);
+      return;
+    }
+  }
   const base = renderFileBase();
   if (!base) {
     await recordStageError(run.id, st.id, "render", "Hermes is not set up (no HERMES_BASE_URL or media host), so the studio cannot say where the video goes. Nothing was rendered.");
     return;
   }
+  // A revision of a Hermes video: the owner's note and the previous file go to Hermes with the new attempt.
+  const ownerNote = text(st.output.ownerNote).trim();
+  const previousFile = ownerNote ? await previousRenderFile(sql, run.id, st.attempt) : null;
   const fresh = !job;
   job ??= newRenderJob({ file: renderFileName(run.id, st.attempt, randomBytes(5).toString("hex")), base, attempt: st.attempt, skill: skill?.name ?? null, budgetMin: renderBudgetMinutes(skillOf), nowMs: Date.now() });
   job = { ...job, askedAt: new Date().toISOString() };
@@ -1398,6 +1422,8 @@ async function runHermesRenderStage(
       skill,
       ...(brief ? { brief: { skill: brief.skill, format: brief.format, shots: brief.shots, ...(brief.text ? { text: brief.text } : {}) } } : {}),
       ...(skillVoice ? { voice: "skill" as const, script: i.script ?? "" } : {}),
+      ...(mux ? { audioBy: "studio" as const } : {}),
+      ...(ownerNote ? { revision: { note: ownerNote, previousFile } } : {}),
     },
     { file: job.file, url: job.url },
   );
@@ -1454,6 +1480,18 @@ interface RenderFinish {
   skill: string | null;
   brief: SkillBrief | null;
   skillVoice: boolean;
+  /** The run's narration, laid on Hermes's picture by a hermes-mux job (hermes-mux.ts). Null: Hermes's own audio. */
+  mux: { narrationId: string; narrationSec: number; tempo: number } | null;
+}
+
+/** The file the newest earlier render attempt of this run asked Hermes for, or null. */
+async function previousRenderFile(q: Q, runId: string, attempt: number): Promise<string | null> {
+  const [r] = await q`
+    SELECT output->'hermesRender'->>'file' AS file FROM pipeline_stages
+    WHERE run_id = ${runId} AND stage = 'render' AND attempt < ${attempt} AND output->'hermesRender'->>'file' IS NOT NULL
+    ORDER BY attempt DESC LIMIT 1
+  `;
+  return r && typeof r.file === "string" && r.file ? r.file : null;
 }
 
 /** The stage waits as pending until `untilMs`, with the job and the "rendering" status stored. No gate slot is held. */
@@ -1532,18 +1570,89 @@ async function pollHermesRender(f: RenderFinish, start: RenderJob, scale: number
   return waitForRenderFile(f, job, Date.now() + renderPollEveryMs(job.polls, scale), scale);
 }
 
+/**
+ * Queues the hermes-mux job that lays the run's narration (and its mix: bed, ambience, accents, mastered loudness) on
+ * Hermes's picture, on a worker that reports hermes-mux. The stage waits on the job like a worker render; completeRender
+ * stores the result as the run's video. With no such worker it stops with a stage error naming the fix: a silent
+ * video is never concluded.
+ */
+async function queueHermesMux(
+  f: RenderFinish,
+  made: { saved: { assetId: string; provider: string }; v: HermesRender; result: Record<string, unknown> },
+): Promise<void> {
+  const { run, st, template, frame } = f;
+  const mux = f.mux as NonNullable<RenderFinish["mux"]>;
+  const sql = db();
+  const clip = {
+    assetId: made.saved.assetId,
+    provider: made.saved.provider,
+    backend: made.v.backend,
+    plugin: made.v.plugin,
+    model: made.v.model,
+    originUrl: made.v.originUrl,
+    hermesSkill: f.skill,
+  };
+  const why = muxWorkerIssue(await workerCapabilityLists(sql));
+  if (why) {
+    await mergeStageOutput(st.id, { hermesClip: clip });
+    await recordStageError(run.id, st.id, "render", why);
+    return;
+  }
+  const bedPick = await pickRunBed(sql, run, template, mux.narrationId);
+  const bed = bedPick.bed;
+  const audio = buildAudioPlan({
+    policy: template.audio.musicPolicy,
+    narrated: template.audio.narrated,
+    durationSec: mux.narrationSec,
+    targetLufs: template.audio.targetLufs,
+    maxTruePeakDb: template.audio.maxTruePeakDb,
+    bed: bed ? { assetId: bed.id, ...(typeof bed.durationSec === "number" ? { durationSec: bed.durationSec } : {}) } : null,
+  });
+  if (!audio.ok) {
+    await mergeStageOutput(st.id, { hermesClip: clip });
+    await recordStageError(run.id, st.id, "render", audio.issues.join(". "));
+    return;
+  }
+  const payload = hermesMuxPayload({
+    runId: run.id,
+    format: run.config.format,
+    width: frame.width,
+    height: frame.height,
+    fps: frame.fps,
+    pictureAssetId: made.saved.assetId,
+    narrationAssetId: mux.narrationId,
+    narrationSec: mux.narrationSec,
+    tempo: mux.tempo,
+    targetLufs: template.audio.targetLufs,
+    audio: audio.plan,
+  });
+  const jobId = await createJob({
+    type: "render-video",
+    payload,
+    channelId: run.channelId,
+    priority: URGENT_PRIORITY,
+    createdBy: null,
+    // Only a worker whose code runs engine hermes-mux (0.13.0+) reports this, so no older worker can claim it.
+    capability: HERMES_MUX_CAPABILITY,
+  });
+  const music = bedNote(bedPick, template.audio.musicPolicy);
+  await mergeStageOutput(st.id, { jobId, hermesClip: clip, hermesResult: made.result, ...(music ? { music } : {}) });
+}
+
 /** Stores the clip as the run's video (research only, with its provenance) and concludes the stage like a worker render. */
 async function finishHermesRender(f: RenderFinish, v: HermesRender): Promise<void> {
   const { run, st, template, pack, frame, durationSec, brief } = f;
   const sql = db();
   const skill = f.skill ? { name: f.skill } : null;
+  // With the run's narration laid on afterwards, any voice Hermes names is not in the video (its audio is dropped).
+  if (f.mux) v = { ...v, voice: null };
   const saved = await saveGeneratedAsset({
     bytes: v.bytes,
     name: v.info.mime === "video/webm" ? "hermes-render.webm" : v.info.mime === "video/quicktime" ? "hermes-render.mov" : "hermes-render.mp4",
     contentType: v.info.mime,
     kind: "video",
     executor: "hermes-render",
-    title: `${run.topic || "Video"} (Hermes render, research only)`,
+    title: f.mux ? `${run.topic || "Video"} (Hermes picture, research only)` : `${run.topic || "Video"} (Hermes render, research only)`,
     provider: v.provider,
     backend: v.backend,
     plugin: v.plugin,
@@ -1587,6 +1696,10 @@ async function finishHermesRender(f: RenderFinish, v: HermesRender): Promise<voi
     ...(brief ? { workflow: "hermes-skill", brief: true } : {}),
     ...(v.voice ? { narrationBy: { by: "hermes-skill", provider: v.voice.provider, backend: v.voice.backend, model: v.voice.model } } : {}),
   };
+  if (f.mux) {
+    await queueHermesMux(f, { saved, v, result });
+    return;
+  }
   if (v.voice) {
     // The skill's own voice is a voice like any other: its backend is a provider row, and its terms gate the narration.
     const name = normalizeProvider(v.voice.backend || v.voice.provider);
@@ -1779,6 +1892,7 @@ async function completeRender(jobId: string): Promise<boolean> {
   if (!runId) return false;
   const waiting = await stageWaitingOn(runId, "render", jobId);
   if (!waiting) return false;
+  if (job.payload.engine === HERMES_MUX_ENGINE) return completeHermesMux(job, waiting);
   const { run, template, st } = waiting;
   if (job.status !== "succeeded") {
     await recordStageError(runId, st.id, "render", `The video render failed: ${job.error || "the worker gave no reason"}`);
@@ -1838,6 +1952,106 @@ async function completeRender(jobId: string): Promise<boolean> {
     sceneStarts: Array.isArray(r.sceneStarts) ? (r.sceneStarts as unknown[]).filter((v): v is number => num(v) !== null).slice(0, 500) : [],
   };
   await concludeStage(run, st, template, { result, gate: null, extra: { jobId }, media: { videoAssetId: assetId } });
+  return true;
+}
+
+/**
+ * Stores a finished hermes-mux job (the run's narration on Hermes's picture) as the run's video and concludes the render
+ * stage as a hermes render. The asset names every input: Hermes's picture (its backend, plugin, skill and media-host
+ * URL), the run's narration and the mix's bed, and records how the lengths were matched.
+ */
+async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promise<boolean> {
+  const { run, template, st } = waiting;
+  const sql = db();
+  if (job.status !== "succeeded") {
+    const why = job.status === "cancelled" ? "the job was cancelled" : job.error || "the worker gave no reason";
+    await recordStageError(run.id, st.id, "render", `Hermes rendered the picture, but adding the run's narration to it failed: ${why}`.slice(0, 600));
+    return true;
+  }
+  const artifact = await firstArtifact(job.id, "video.");
+  if (!artifact) {
+    await recordStageError(run.id, st.id, "render", "The narration was added to Hermes's picture, but no video file came back");
+    return true;
+  }
+  const clip = toObject(st.output.hermesClip);
+  const pictureId = asUuid(toObject(job.payload.picture).assetId);
+  const narrationId = asUuid(job.payload.narrationAssetId);
+  const bedId = asUuid(toObject(toObject(job.payload.audio).bed).assetId);
+  const inputIds = Array.isArray(job.payload.inputs) ? job.payload.inputs.map(asUuid).filter((x): x is string => x !== null) : [];
+  const rows = inputIds.length > 0 ? await sql`SELECT id, title, license, source, origin_url, metadata FROM assets WHERE id = ANY(${inputIds}::uuid[]) ORDER BY created_at` : [];
+  const role = (id: string) => (id === pictureId ? "Picture (Hermes render, research only)" : id === narrationId ? "Narration" : id === bedId ? "Music bed" : undefined);
+  const licenseInputs = rows.map((a): RenderLicenseInput => {
+    const r = role(String(a.id));
+    return {
+      title: text(a.title),
+      provider: text(toObject(a.metadata).provider),
+      license: text(a.license),
+      source: text(a.source),
+      originUrl: text(a.origin_url),
+      ...(r ? { role: r } : {}),
+    };
+  });
+  const narrationRow = rows.find((a) => String(a.id) === narrationId);
+  const r = job.result;
+  const plan = readMuxPlan(r.mux);
+  const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  const narration = narrationId
+    ? { assetId: narrationId, title: narrationRow ? text(narrationRow.title) : "", provider: narrationRow ? text(toObject(narrationRow.metadata).provider) : "" }
+    : null;
+  const picture = {
+    assetId: pictureId,
+    executor: "hermes-render",
+    provider: text(clip.provider),
+    backend: text(clip.backend),
+    plugin: text(clip.plugin),
+    model: text(clip.model),
+    originUrl: text(clip.originUrl),
+  };
+  const assetId = await assetFromArtifact({
+    artifact,
+    title: `${run.topic || "Video"} (Hermes render with the run's narration, research only)`,
+    kind: "video",
+    source: "worker",
+    license: `${renderLicenseText(licenseInputs)} Research only: never published.`.slice(0, 1900),
+    originUrl: "",
+    channelId: run.channelId,
+    metadata: {
+      runId: run.id,
+      jobId: job.id,
+      executor: HERMES_MUX_ENGINE,
+      renderer: "hermes",
+      researchOnly: true,
+      inputAssetIds: inputIds,
+      // Who made what: Hermes drew the picture, the run's voice stage recorded the narration, the worker mixed them.
+      picture,
+      narration,
+      ...(bedId ? { musicBed: { assetId: bedId } } : {}),
+      provider: picture.provider,
+      backend: picture.backend,
+      plugin: picture.plugin,
+      hermesSkill: text(clip.hermesSkill) || null,
+      ...(plan ? { mux: plan } : {}),
+      integratedLufs: num(r.integratedLufs),
+    },
+  });
+  const note = plan ? muxNote(plan) : "";
+  const base = toObject(st.output.hermesResult);
+  const result = {
+    ...base,
+    assetId,
+    jobId: job.id,
+    durationSec: num(r.durationSec) ?? base.durationSec ?? null,
+    width: num(r.width) ?? base.width ?? null,
+    height: num(r.height) ?? base.height ?? null,
+    pictureAssetId: pictureId,
+    narrationAssetId: narrationId,
+    audioBy: "studio",
+    ...(plan ? { mux: plan, muxNote: note } : {}),
+    integratedLufs: num(r.integratedLufs),
+    narrationClipped: r.narrationClipped === true,
+    music: text(st.output.music) || (bedId ? "Music bed" : "No music bed"),
+  };
+  await concludeStage(run, st, template, { result, gate: null, extra: { renderer: "hermes", jobId: job.id }, media: { videoAssetId: assetId } });
   return true;
 }
 
