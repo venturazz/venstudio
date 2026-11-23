@@ -496,7 +496,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
     const contract = { name: pack?.name ?? template.label, elements: pack?.plan?.elements ?? [], motionTokens: pack?.plan?.motionTokens ?? [] };
     if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
-    const r = fromHermes(await hermesJson(sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }), stageAsk("scene-spec", st)));
+    const r = await think(run, st, "scene-spec", sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: sceneSpecGate(template, r.value, notes, narrationSec) };
   }
@@ -531,7 +531,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     if (!pack) return { ok: false, error: "This run's style pack could not be read, so the skill brief cannot follow its skill" };
     const h = pack.hermes ?? null;
     const skill: BriefSkill | null = h ? { name: h.skill, mode: h.mode, voice: h.voice, input: h.input } : null;
-    const r = fromHermes(await hermesJson(skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill), stageAsk("skill-brief", st)));
+    const r = await think(run, st, "skill-brief", skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: skillBriefGate(template, r.value, narrationSec) };
   }

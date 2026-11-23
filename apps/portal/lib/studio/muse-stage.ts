@@ -10,8 +10,8 @@ import { MUSE_RESULT_SCHEMA, MUSE_TIMEOUT_SEC, clipText, contextIssues, validate
 import { versionBefore } from "./muse-task.ts";
 import type { ChatMessage } from "./director.ts";
 
-/** The stages that may run on Muse. Scene spec, skill brief and html-design (Hermes-only workflows) and the production stages stay with Hermes. */
-export const MUSE_THINK_STAGES = ["idea", "research", "script", "storyboard"] as const;
+/** The stages that may run on Muse. html-design (it writes page files) and the production stages stay with Hermes. */
+export const MUSE_THINK_STAGES = ["idea", "research", "script", "storyboard", "scene-spec", "skill-brief"] as const;
 export type MuseThinkStage = (typeof MUSE_THINK_STAGES)[number];
 
 export function isMuseThinkStage(v: unknown): v is MuseThinkStage {
@@ -108,6 +108,16 @@ export function museStageRefusals(o: { portalFlag: boolean; workers: readonly Mu
     reasons.push("No Muse worker has contacted the portal in the last 75 min");
   }
   return reasons;
+}
+
+/** result.json as parsed data, for a caller that checks it with the exact validator its Hermes ask uses. Pure. */
+export function museStageJson(text: string | null): { ok: true; value: unknown } | { ok: false; error: string } {
+  if (text === null) return { ok: false, error: "The Muse agent finished but no result.json came back" };
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch (err) {
+    return { ok: false, error: `The Muse agent's result.json is not valid JSON: ${(err as Error).message.slice(0, 120)}` };
+  }
 }
 
 export type MuseStageAnswer = { ok: true; value: unknown } | { ok: false; error: string };

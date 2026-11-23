@@ -7,7 +7,7 @@ import type { ChatMessage } from "../studio/director.ts";
 import {
   MUSE_POLL_SEC,
   messagesText,
-  museStageAnswer,
+  museStageJson,
   museStagePayload,
   museStagePayloadIssues,
   museStagePoll,
@@ -40,7 +40,7 @@ export type MuseStageState =
   | { kind: "error"; error: string };
 
 /** Where the task of a waiting stage stands: still going, its checked answer, or why it failed. */
-export async function pollMuseStage(jobId: string, stage: MuseThinkStage): Promise<MuseStageState> {
+export async function pollMuseStage(jobId: string, _stage: MuseThinkStage): Promise<MuseStageState> {
   const sql = db();
   const [j] = await sql`SELECT status, error, created_at FROM jobs WHERE id = ${jobId} AND type = 'agent-task'`;
   const next = museStagePoll(j ? { status: String(j.status), error: (j.error as string | null) ?? null, createdAt: j.created_at as Date } : null);
@@ -52,6 +52,7 @@ export async function pollMuseStage(jobId: string, stage: MuseThinkStage): Promi
   }
   const [a] = await sql`SELECT storage_path FROM artifacts WHERE job_id = ${jobId} AND name = 'agent-result.json' ORDER BY created_at DESC LIMIT 1`;
   const text = a ? await readArtifactText(String(a.storage_path), MUSE_RESULT_MAX_BYTES) : null;
-  const answer = museStageAnswer(stage, text);
+  // Parsed only: the caller checks it with the same validator (and the same run facts) as the Hermes ask for this stage.
+  const answer = museStageJson(text);
   return answer.ok ? { kind: "done", value: answer.value } : { kind: "error", error: answer.error };
 }

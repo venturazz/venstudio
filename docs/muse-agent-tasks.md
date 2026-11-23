@@ -32,10 +32,10 @@ Today the portal sends agent tasks:
 
 - as the last picture fallback in production (after Hermes, 9router and the CC0 library), when `MUSE_AGENT_TASKS=1`;
 - as the owner's test from the Workers page;
-- for the thinking stages **idea, research, script and storyboard**, when the owner ticks **Muse does the thinking** on New Video
+- for the thinking stages **idea, research, script, storyboard, scene spec and skill brief**, when the owner ticks **Muse does the thinking** on New Video
   (see "Stages on Muse" below).
 
-The Hermes-only workflows (scene spec, skill brief, html-design) and the production stages (assets, render, quality check) do not go to Muse. Voice has its own path (see "Voice on a worker").
+The html-design page (it writes page files) and the production stages (assets, render, quality check) do not go to Muse. A Hermes research render (`hermes` engine) is still rendered by Hermes. Voice has its own path (see "Voice on a worker").
 
 ## Stages on Muse
 
@@ -49,14 +49,14 @@ and sends those stages to the Muse agent instead:
 2. The stage goes back to pending and looks at its job every 30 s. A finished job resumes the run at once. It holds no
    Hermes slot while it waits.
 3. On success the portal reads `agent-result.json` and checks it with the stage's own validator (`validateIdeas`,
-   `validateResearch`, `validateScript`, `validateStoryboard` with the image backends Hermes reported, so an unknown provider is dropped with a note as for Hermes), then runs the same gate and shows the same review card as for Hermes.
+   `validateResearch`, `validateScript`, `validateStoryboard`, `validateSceneSpec`, `validateSkillBrief` with the run's own contract and skill, as for Hermes; the storyboard check includes the image backends Hermes reported, so an unknown provider is dropped with a note as for Hermes), then runs the same gate and shows the same review card as for Hermes.
 4. On failure the stage's error is the job's error, including the agent's own reason from `FAILED.json`. The owner
    can retry, revise or reject as usual. A task no worker takes within 90 min is cancelled and reported.
 
 ### Overflow (Hermes busy)
 
 With `MUSE_AGENT_TASKS=1` and `MUSE_OVERFLOW=1` (the default), a run that did not choose Muse still avoids queueing
-behind Hermes. For idea, research, script and storyboard, when Hermes is rate limited (busy until), slow, or its gate has no free
+behind Hermes. For every thinking stage above, when Hermes is rate limited (busy until), slow, or its gate has no free
 slot in this portal process, the portal queues the same task for a ready Muse worker and waits for it as above. The run
 page says "Hermes is busy, so a Muse worker takes this step", and the stage output records `museOverflow: true`. With
 no ready Muse worker nothing changes: the stage waits for Hermes as before. Once a task is queued the stage stays with
