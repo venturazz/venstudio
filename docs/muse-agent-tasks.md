@@ -28,13 +28,34 @@ An `agent-task` job hands a work order to the agent on a Muse machine. The porta
 that VM claims the job (hold mode), writes an inbox folder, and waits for the agent to finish. The agent is woken by
 its own hook, not by the worker.
 
-Today the portal sends agent tasks only:
+Today the portal sends agent tasks:
 
 - as the last picture fallback in production (after Hermes, 9router and the CC0 library), when `MUSE_AGENT_TASKS=1`;
-- as the owner's test from the Workers page.
+- as the owner's test from the Workers page;
+- for the thinking stages **idea, research and script**, when the owner ticks **Muse does the thinking** on New Video
+  (see "Stages on Muse" below).
 
-No other stage is routed to Muse yet. The `result.json` path exists so that thinking steps can move later, checked by
-the same validators as Hermes's answers.
+Other stages (storyboard, voice, render) are not routed to Muse yet.
+
+## Stages on Muse
+
+Hermes answers one ask at a time through its gate (`HERMES_MAX_CONCURRENCY`, default 1), so many runs queue behind
+it. A run started with **Muse does the thinking** stores `executors: {idea, research, script: "muse"}` in its config
+and sends those stages to the Muse agent instead:
+
+1. The portal builds the same prompt Hermes would get and queues an `agent-task` with it as `PROMPT.md`, the schema
+   as `SPEC.json`, and `result.json` as the one output. Any worker that reports `agent-task` may take it, so ten Muse
+   workers work ten runs in parallel.
+2. The stage goes back to pending and looks at its job every 30 s. A finished job resumes the run at once. It holds no
+   Hermes slot while it waits.
+3. On success the portal reads `agent-result.json` and checks it with the stage's own validator (`validateIdeas`,
+   `validateResearch`, `validateScript`), then runs the same gate and shows the same review card as for Hermes.
+4. On failure the stage's error is the job's error, including the agent's own reason from `FAILED.json`. The owner
+   can retry, revise or reject as usual. A task no worker takes within 90 min is cancelled and reported.
+
+The option is offered only when the portal flag is on and a worker reports `agent-task` with version 0.15.0 or later
+and contact within 75 min; the reasons are listed under the checkbox, and `startRun` checks them again. Revision notes
+go to the stage's prompt the same way as for Hermes. A run that does not tick the option behaves exactly as before.
 
 ## Inbox layout
 

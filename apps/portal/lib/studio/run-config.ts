@@ -10,6 +10,7 @@ import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
 import { LAB_TRIAL_BADGE, parseRunStylePack, type RunStylePack } from "./style-registry.ts";
 import { parseTrialBatch, type TrialBatch } from "./trial-batch.ts";
 import { parseRunWorkflow, workflowText, type RunWorkflow } from "./recipes.ts";
+import { executorsText, museThinkingExecutors, parseStageExecutors, type StageExecutors } from "./muse-stage.ts";
 
 /** The brief the owner may type. Empty means Hermes picks ideas from the channel plan. */
 export const MAX_BRIEF_CHARS = 2000;
@@ -52,6 +53,11 @@ export interface RunConfig {
    * workflows, which keep RUN_STAGES (the image-sequence list).
    */
   workflow?: RunWorkflow;
+  /**
+   * Thinking stages this run sends to the Muse agent instead of Hermes (muse-stage.ts; additive). Absent: Hermes does
+   * them, as before. Set once at start from "Muse does the thinking" on New Video.
+   */
+  executors?: StageExecutors;
 }
 
 const STUDY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -84,7 +90,13 @@ export function parseRunConfig(raw: unknown): RunConfig {
     ...(typeof c.labStudyId === "string" && STUDY_ID_RE.test(c.labStudyId) ? { labStudyId: c.labStudyId } : {}),
     ...trialBatchOf(c.trialBatch),
     ...workflowOf(c.workflow),
+    ...executorsOf(c.executors),
   };
+}
+
+function executorsOf(raw: unknown): { executors?: StageExecutors } {
+  const e = parseStageExecutors(raw);
+  return Object.keys(e).length > 0 ? { executors: e } : {};
 }
 
 function workflowOf(raw: unknown): { workflow?: RunWorkflow } {
@@ -123,6 +135,8 @@ export interface RunRequest {
   purposes: string[];
   subtitles: string[];
   brief: string;
+  /** "Muse does the thinking": idea, research and script go to the Muse agent (the caller checked it is ready). */
+  thinkOnMuse?: boolean;
 }
 
 export type RunConfigResult = { ok: true; config: RunConfig } | { ok: false; error: string };
@@ -165,6 +179,7 @@ export function buildRunConfig(req: RunRequest, channel: { category: string | nu
       topicHint: req.brief.trim().slice(0, MAX_BRIEF_CHARS),
       subtitles,
       themeSource,
+      ...(req.thinkOnMuse ? { executors: museThinkingExecutors() } : {}),
     },
   };
 }
@@ -289,5 +304,6 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
     ...(config.labStudyId ? [{ label: "Lab study", value: config.labStudyId }] : []),
     ...(config.trialBatch ? [{ label: "Batch trial", value: `${config.trialBatch.index} of ${config.trialBatch.total}` }] : []),
     ...(config.workflow ? [{ label: "Workflow", value: workflowText(config.workflow) }] : []),
+    ...(executorsText(config.executors) ? [{ label: "Thinking", value: executorsText(config.executors) as string }] : []),
   ];
 }

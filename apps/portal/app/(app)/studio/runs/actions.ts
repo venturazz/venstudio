@@ -30,6 +30,7 @@ const startSchema = z.object({
   productionId: z.union([z.uuid(), z.literal("")]),
   labStudyId: z.union([z.uuid(), z.literal("")]),
   labTrialPackId: z.union([z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/), z.literal("")]),
+  thinkOnMuse: z.boolean(),
 });
 
 function all(fd: FormData, key: string): string[] {
@@ -52,6 +53,7 @@ export async function startRunAction(_prev: RunFormState, fd: FormData): Promise
     productionId: str(fd, "productionId", 40),
     labStudyId: str(fd, "labStudyId", 40),
     labTrialPackId: str(fd, "labTrialPackId", 63),
+    thinkOnMuse: str(fd, "thinkOnMuse", 4) === "on",
   });
   if (!parsed.success) return fail(fd, parsed.error.issues[0]?.message ?? "Check the form and try again.");
   const { labTrialPackId, ...data } = parsed.data;
@@ -69,7 +71,8 @@ export async function startRunAction(_prev: RunFormState, fd: FormData): Promise
   revalidatePath("/studio");
   if (parsed.data.labStudyId) revalidatePath(`/studio/lab/${parsed.data.labStudyId}`);
   if (labTrial) revalidatePath("/studio/styles");
-  return { ok: labTrial ? `Lab trial started (${LAB_TRIAL_BADGE}, never published). Hermes is working on ideas.` : "Run started. Hermes is working on ideas.", runId };
+  const worker = data.thinkOnMuse ? "Muse" : "Hermes";
+  return { ok: labTrial ? `Lab trial started (${LAB_TRIAL_BADGE}, never published). ${worker} is working on ideas.` : `Run started. ${worker} is working on ideas.`, runId };
 }
 
 const batchSchema = startSchema.omit({ templateId: true, productionId: true, labStudyId: true, labTrialPackId: true }).extend({
@@ -92,6 +95,7 @@ export async function startBatchTrialAction(_prev: BatchTrialState, fd: FormData
     purposes: all(fd, "purposes"),
     subtitles: all(fd, "subtitles"),
     templateIds: all(fd, "batchTemplateIds"),
+    thinkOnMuse: str(fd, "thinkOnMuse", 4) === "on",
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form and try again." };
   const { templateIds, ...data } = parsed.data;

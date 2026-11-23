@@ -12,6 +12,7 @@ import { autonomyText, EMPTY_PREFILL, prefillFromProduction, type RunFormPrefill
 import { RunForm, type RunFormChannel, type RunFormTemplate } from "../runs/run-form.tsx";
 import { StudioNav } from "../studio-nav.tsx";
 import { TrialQueue } from "../trial-queue.tsx";
+import { museStageReadiness } from "@/lib/server/muse-stages.ts";
 import { getStudy, studyTrialState } from "@/lib/server/lab-studies.ts";
 
 export const metadata = { title: "New video" };
@@ -34,10 +35,11 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
   let queue: TrialQueueBatch[] = [];
   let prefill: RunFormPrefill = EMPTY_PREFILL;
   let loadError = "";
+  let museReasons: string[] = [];
   let studyNote: { tone: "warn" | "info"; title: string; text: string } | null = null;
   let labNote: { tone: "warn" | "info"; text: string } | null = null;
   try {
-    const [channelRows, offer, plans, batches, envWorkers] = await Promise.all([
+    const [channelRows, offer, plans, batches, envWorkers, museRefusals] = await Promise.all([
       db()`SELECT id, name, category, plan, autonomy_level, autonomy_paused FROM channels ORDER BY name`,
       // Listed and Trial styles from the vendored packs and stored worker rows: no call to a worker while the page renders.
       // Research-only packs (engine hermes) are rendered by the portal through Hermes: offered, in the Trial section only,
@@ -46,7 +48,9 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       listSavedPlans().catch(() => [] as SavedPlanRow[]),
       trialQueue(),
       workerEnvironmentRows().catch(() => []),
+      museStageReadiness().catch(() => ["Muse's status could not be read"]),
     ]);
+    museReasons = museRefusals;
     // A pack with an environment: the engine line also says whether a worker has it (stored rows only).
     const withEnv = (t: RunFormTemplate): RunFormTemplate => {
       const line = environmentLine(offer.registry.find((e) => e.id === t.styleId)?.pack, envWorkers);
@@ -166,6 +170,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
                 waiting={waiting}
                 capabilities={capabilities}
                 prefill={prefill}
+                muse={{ ready: museReasons.length === 0, reasons: museReasons }}
               />
             )}
           </CardBody>

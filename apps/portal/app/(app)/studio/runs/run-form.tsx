@@ -34,6 +34,8 @@ export interface RunFormOptions {
   /** Capabilities enrolled workers report, from the stored rows. */
   capabilities: string[];
   prefill: RunFormPrefill;
+  /** Whether Muse can do the thinking now; the reasons say what to change when it cannot. */
+  muse?: { ready: boolean; reasons: string[] };
 }
 
 /** A Hermes-rendered style always reads "Hermes render (research only)" first, whatever its pack is named. */
@@ -56,7 +58,7 @@ function themeFor(channel: RunFormChannel | undefined): string {
  * The New video form. Every field is controlled and the form submits through onSubmit and a transition, not a form
  * action: React 19 resets a form after its action runs, which would clear the native selects.
  */
-export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill }: RunFormOptions) {
+export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill, muse: museThinking }: RunFormOptions) {
   const templates = [...listed, ...trialTemplates, ...labTemplates];
   const [state, dispatch] = useActionState(startRunAction, undefined);
   const [batchState, dispatchBatch] = useActionState(startBatchTrialAction, undefined);
@@ -78,6 +80,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
   const [purposes, setPurposes] = useState<string[]>(prefill.purposes);
   const [subtitles, setSubtitles] = useState<string[]>(prefill.subtitles);
   const [brief, setBrief] = useState(prefill.brief);
+  const [thinkOnMuse, setThinkOnMuse] = useState(false);
   const [suggested, setSuggested] = useState<Array<{ templateId: string; label: string; matched: string[] }> | null>(null);
 
   const template = templates.find((t) => t.id === templateId);
@@ -486,8 +489,36 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
         </fieldset>
       </div>
 
+      {museThinking && (
+        <div className="space-y-1.5 rounded-lg border border-border p-3 text-sm" data-testid="muse-thinking">
+          <label className={`flex min-h-11 items-start gap-2 ${museThinking.ready ? "" : "opacity-60"}`}>
+            <input
+              type="checkbox"
+              name="thinkOnMuse"
+              checked={thinkOnMuse && museThinking.ready}
+              disabled={!museThinking.ready}
+              onChange={(e) => setThinkOnMuse(e.target.checked)}
+              className="mt-1 size-4 shrink-0 accent-[var(--vs-accent)]"
+            />
+            <span className="min-w-0">
+              <span className="block font-medium">Muse does the thinking</span>
+              <span className="block text-xs text-muted">Idea, research and script go to the Muse agent, so Hermes is not asked. It takes minutes per step. Approval stays with you.</span>
+            </span>
+          </label>
+          {!museThinking.ready && (
+            <ul className="list-disc space-y-0.5 pl-6 text-xs text-muted" data-testid="muse-thinking-reasons">
+              {museThinking.reasons.map((r) => (
+                <li key={r} className="break-words">
+                  {r}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <Button type="submit" variant="primary" className="min-h-12 w-full sm:w-auto" disabled={isPending} aria-busy={isPending}>
-        {isPending ? "Starting…" : "Ask Hermes for ideas"}
+        {isPending ? "Starting…" : thinkOnMuse && museThinking?.ready ? "Ask Muse for ideas" : "Ask Hermes for ideas"}
       </Button>
     </form>
   );

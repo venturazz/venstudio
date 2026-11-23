@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
+import { isMuseThinkStage } from "../studio/muse-stage.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
 import { getTemplate } from "./templates.ts";
@@ -2323,6 +2324,8 @@ export async function onJobFinished(jobId: string): Promise<string | null> {
     if (!job || (job.status !== "succeeded" && job.status !== "failed" && job.status !== "cancelled")) return null;
     const runId = asUuid(job.payload.runId);
     if (!runId) return null;
+    // A thinking stage waiting on its Muse task: the run picks it up now instead of at the next look.
+    if (job.type === "agent-task" && isMuseThinkStage(job.payload.museStage)) return runId;
     if (job.type === "fetch-asset" || job.type === "agent-task") {
       const settled = await settleOrderJob(job);
       if (!settled) return null;

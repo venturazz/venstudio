@@ -243,7 +243,7 @@ export const museReasonOffline = (name: string) =>
   `${name || "This worker"} has not contacted the portal for over ${MUSE_OFFLINE_AFTER_MIN} min. Start it on Muse (run.sh hold) before testing`;
 
 /** a < b for dotted numeric versions ("0.13.0" < "0.14.0"). Pure. */
-function versionBefore(a: string, b: string): boolean {
+export function versionBefore(a: string, b: string): boolean {
   const pa = a.split(".").map((n) => Number(n) || 0);
   const pb = b.split(".").map((n) => Number(n) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {

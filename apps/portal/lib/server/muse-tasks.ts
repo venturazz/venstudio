@@ -53,7 +53,7 @@ export async function queueMuseTest(workerId: string, variant: MuseTestVariant, 
   return { ok: true, jobId };
 }
 
-async function readArtifactText(storagePath: string, max: number): Promise<string | null> {
+export async function readArtifactText(storagePath: string, max: number): Promise<string | null> {
   try {
     const f = await openStored(storagePath);
     if (f.size > max) {
