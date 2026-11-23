@@ -187,6 +187,12 @@ times. It is still advertised only with `VENSTUDIO_AGENT_TASKS=1` in hold mode. 
 payload ignores the new fields and writes its old `TASK.md` (prompt only), so update the Muse worker before relying on
 the context files.
 
+## Worker 0.15.0
+
+0.15.0 (Muse status files, `docs/muse-agent-tasks.md`) is delivered by this mechanism like any release; no manifest file
+is added. The `agent-task` handler reads `out/PROGRESS.json` on every poll and reports each change as a job event, and
+stops at once with the agent's reason when `out/FAILED.json` exists. Neither file is uploaded or counted as an output.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,

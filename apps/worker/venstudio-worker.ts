@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.14.0";
+export const VERSION = "0.15.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -6343,6 +6343,10 @@ export const AGENT_CONTEXT_LIMITS = { files: 8, totalBytes: 200 * 1024 } as cons
 /** out/result.json, the answer of a thinking step (0.14.0+). */
 export const AGENT_RESULT_MAX_BYTES = 256 * 1024;
 export const AGENT_RESULT_FILE = "result.json";
+/** out/PROGRESS.json and out/FAILED.json: status the agent leaves while it works (0.15.0+). Never uploaded. */
+export const AGENT_PROGRESS_FILE = "PROGRESS.json";
+export const AGENT_FAILED_FILE = "FAILED.json";
+const AGENT_STATUS_MAX_BYTES = 4096;
 /** Input assets downloaded into inbox/<jobId>/in/ (0.14.0+). */
 export const AGENT_MAX_INPUTS = 10;
 const AGENT_CONTEXT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,40}\.(md|json|txt)$/;
@@ -6478,7 +6482,9 @@ export function agentTaskMarkdown(o: {
     "",
     "1. Read the files above. Everything this video needs is in this folder; do not use files from earlier tasks or other folders.",
     `2. Make ${outputs.length > 0 ? outputs.join(", ") : "the file(s)"} and save ${outputs.length === 1 ? "it" : "them"} in out/.`,
-    "3. When finished, create an empty file named DONE in out/. Create DONE last: the worker uploads out/ as soon as it sees DONE.",
+    "3. While you work, you may keep out/PROGRESS.json up to date, e.g. {\"step\": 2, \"of\": 4, \"note\": \"writing the script\"}; the studio shows it. It is never uploaded.",
+    "4. When finished, create an empty file named DONE in out/. Create DONE last: the worker uploads out/ as soon as it sees DONE.",
+    "5. If you cannot make the deliverable, write out/FAILED.json, e.g. {\"reason\": \"what went wrong\"}. The studio shows your reason and stops waiting.",
     "",
     "Allowed in out/: PNG, JPEG, WebP, WAV, MP3 or Ogg files (at most 10, 25 MB each), and result.json (valid JSON, at most 256 KB)" +
       (page ? ", and the page files index.html, *.js, *.css, *.svg (at most 20 files, 300 KB together, no network use)." : ".") +
@@ -6499,12 +6505,66 @@ export function agentTaskMarkdown(o: {
   ].join("\n");
 }
 
+/** One line of text: control characters and newlines become spaces, cut to `max`. */
+function statusLine(v: unknown, max: number): string {
+  return typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max) : "";
+}
+
+export interface AgentProgress {
+  step: number;
+  of: number;
+  note: string;
+}
+
+/** out/PROGRESS.json: {"step": 2, "of": 5, "note": "writing the script"}. null when it is not that. Pure. */
+export function parseAgentProgress(text: string): AgentProgress | null {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  const of = Number(r.of);
+  const step = Number(r.step);
+  if (!Number.isInteger(of) || !Number.isInteger(step) || of < 1 || of > 50 || step < 0 || step > of) return null;
+  return { step, of, note: statusLine(r.note, 160) };
+}
+
+/** out/FAILED.json: {"reason": "..."}. The reason, or null when the file says nothing usable. Pure. */
+export function parseAgentFailure(text: string): string | null {
+  try {
+    const v: unknown = JSON.parse(text);
+    if (typeof v === "object" && v !== null && !Array.isArray(v)) return statusLine((v as Record<string, unknown>).reason, 300) || null;
+  } catch {
+    // Not JSON: the agent still said it failed.
+  }
+  return statusLine(text, 300) || null;
+}
+
+/** The text of a small regular file in out/, or null (missing, a link, a folder, too large). */
+async function readAgentStatusFile(outDir: string, name: string): Promise<string | null> {
+  const file = path.join(outDir, name);
+  const info = await lstat(file).catch(() => null);
+  if (!info || !info.isFile() || info.size > AGENT_STATUS_MAX_BYTES) return null;
+  return readFile(file, "utf8").catch(() => null);
+}
+
+/** Message and fraction for the portal's timeline from a progress file. Pure. */
+export function agentProgressReport(pr: AgentProgress): { fraction: number; message: string } {
+  return {
+    fraction: 0.05 + 0.7 * (pr.step / pr.of),
+    message: `Muse agent: step ${pr.step} of ${pr.of}${pr.note ? `: ${pr.note}` : ""}`,
+  };
+}
+
 /** Regular files in the out directory (no links, no folders, no hidden files, not the DONE marker), oldest name first. */
 export async function listAgentOutputs(outDir: string): Promise<string[]> {
   const names = await readdir(outDir).catch(() => [] as string[]);
   const files: string[] = [];
   for (const n of names.sort()) {
-    if (n === "DONE" || n.startsWith(".") || !/^[A-Za-z0-9._-]{1,80}$/.test(n)) continue;
+    if (n === "DONE" || n === AGENT_PROGRESS_FILE || n === AGENT_FAILED_FILE || n.startsWith(".") || !/^[A-Za-z0-9._-]{1,80}$/.test(n)) continue;
     const info = await lstat(path.join(outDir, n)).catch(() => null);
     if (info && info.isFile() && info.size > 0) files.push(n);
   }
@@ -6634,11 +6694,31 @@ async function agentTaskHandler(ctx: JobContext): Promise<Record<string, unknown
   const timeoutSec = clampInt(p.timeoutSec, 5, 3000, 2400);
   const pollMs = clampInt(p.pollMs, 200, 10_000, 5000);
   const deadline = Date.now() + timeoutSec * 1000;
+  let lastProgress = "";
+  const failedMessage = async (): Promise<string | null> => {
+    const text = await readAgentStatusFile(outDir, AGENT_FAILED_FILE);
+    return text === null ? null : `The Muse agent could not finish: ${parseAgentFailure(text) ?? "it left FAILED.json with no reason"}`;
+  };
   while (!existsSync(path.join(outDir, "DONE"))) {
     if (ctx.signal.aborted) throw new Error("Aborted");
+    // The agent says it cannot finish: stop now with its reason instead of waiting for the timeout.
+    const failed = await failedMessage();
+    if (failed) throw new NonRetryableError(failed);
+    const progressText = await readAgentStatusFile(outDir, AGENT_PROGRESS_FILE);
+    const progress = progressText === null ? null : parseAgentProgress(progressText);
+    if (progress) {
+      const r = agentProgressReport(progress);
+      if (r.message !== lastProgress) {
+        lastProgress = r.message;
+        await report(r.fraction, r.message);
+      }
+    }
     if (Date.now() > deadline) throw new NonRetryableError(`The Muse agent did not create out/DONE within ${timeoutSec >= 120 ? `${Math.round(timeoutSec / 60)} min` : `${timeoutSec} s`}`);
     await sleep(pollMs);
   }
+  // DONE with a FAILED.json beside it is still a failure: the agent finished by saying it could not.
+  const failedAfterDone = await failedMessage();
+  if (failedAfterDone) throw new NonRetryableError(failedAfterDone);
   const doneAt = new Date();
   const waitedSec = Math.round((doneAt.getTime() - taskWrittenAt.getTime()) / 100) / 10;
   await report(0.8, `DONE seen after ${waitedSec} s; checking and uploading out/`);

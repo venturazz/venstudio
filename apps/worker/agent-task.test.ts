@@ -16,8 +16,12 @@ import {
   agentTaskMarkdown,
   collectAgentOutputs,
   handlers,
+  agentProgressReport,
+  listAgentOutputs,
   parseAgentContext,
+  parseAgentFailure,
   parseAgentInputs,
+  parseAgentProgress,
   PAGE_BUNDLE_KIND,
   type JobContext,
 } from "./venstudio-worker.ts";
@@ -315,4 +319,83 @@ test("a bad context fails before anything is written, and an agent that never fi
   assert.ok(!existsSync(path.join(home, "inbox", id)), "no inbox folder for a refused payload");
   const slow = agentCtx(home, id, { mode: "hold", prompt: "p", timeoutSec: 1, pollMs: 200 });
   await assert.rejects(handlers["agent-task"](slow.ctx), /did not create out\/DONE within/);
+});
+
+test("parseAgentProgress and parseAgentFailure: what the agent may say about itself, one clean line", () => {
+  assert.deepEqual(parseAgentProgress('{"step":2,"of":5,"note":"writing the script"}'), { step: 2, of: 5, note: "writing the script" });
+  assert.deepEqual(parseAgentProgress('{"step":0,"of":3}'), { step: 0, of: 3, note: "" });
+  assert.equal(parseAgentProgress('{"step":"2","of":5}')?.step, 2);
+  for (const bad of ["not json", "[]", "null", '{"step":6,"of":5}', '{"step":-1,"of":5}', '{"step":1,"of":0}', '{"step":1,"of":99}', '{"step":1.5,"of":3}', "{}"]) {
+    assert.equal(parseAgentProgress(bad), null, bad);
+  }
+  assert.equal(parseAgentProgress(`{"step":1,"of":2,"note":${JSON.stringify("a\nb\u0000c " + "x".repeat(400))}}`)?.note.length, 160);
+  assert.doesNotMatch(parseAgentProgress(`{"step":1,"of":2,"note":"a\\nb"}`)?.note ?? "", /\n/);
+  const mid = agentProgressReport({ step: 2, of: 4, note: "pictures" });
+  assert.ok(Math.abs(mid.fraction - 0.4) < 1e-9);
+  assert.equal(mid.message, "Muse agent: step 2 of 4: pictures");
+  assert.equal(agentProgressReport({ step: 4, of: 4, note: "" }).message, "Muse agent: step 4 of 4");
+  assert.equal(parseAgentFailure('{"reason":"no internet"}'), "no internet");
+  assert.equal(parseAgentFailure("kokoro would not start"), "kokoro would not start");
+  assert.equal(parseAgentFailure("{}"), null);
+  assert.equal(parseAgentFailure(""), null);
+});
+
+test("PROGRESS.json and FAILED.json are not outputs: they are never uploaded and never refused", async (t) => {
+  const home = await withHome(t);
+  const out = path.join(home, "out");
+  await mkdir(out, { recursive: true });
+  await writeFile(path.join(out, "PROGRESS.json"), '{"step":1,"of":2}');
+  await writeFile(path.join(out, "FAILED.json"), '{"reason":"x"}');
+  await writeFile(path.join(out, "result.json"), "{}");
+  assert.deepEqual(await listAgentOutputs(out), ["result.json"]);
+});
+
+test("a simulated Muse agent reports progress, and the worker passes each step to the portal", async (t) => {
+  const home = await withHome(t);
+  const id = "bbbbbbbb-2222-4222-8222-000000000001";
+  const { ctx, reports } = agentCtx(home, id, { mode: "hold", prompt: "make a result", stage: "script", pollMs: 200, outputs: ["result.json"] });
+  const inbox = path.join(home, "inbox", id);
+  const agent = (async () => {
+    for (let i = 0; i < 200 && !existsSync(path.join(inbox, "TASK.md")); i++) await new Promise((r) => setTimeout(r, 25));
+    await writeFile(path.join(inbox, "out", "PROGRESS.json"), '{"step":1,"of":2,"note":"reading the plan"}');
+    await new Promise((r) => setTimeout(r, 500));
+    await writeFile(path.join(inbox, "out", "PROGRESS.json"), '{"step":2,"of":2,"note":"writing result.json"}');
+    await new Promise((r) => setTimeout(r, 500));
+    await writeFile(path.join(inbox, "out", "result.json"), '{"ok":true}');
+    await writeFile(path.join(inbox, "out", "DONE"), "");
+  })();
+  const result = await handlers["agent-task"](ctx);
+  await agent;
+  const messages = reports.map((r) => r.msg);
+  assert.ok(messages.includes("Muse agent: step 1 of 2: reading the plan"), messages.join(" | "));
+  assert.ok(messages.includes("Muse agent: step 2 of 2: writing result.json"), messages.join(" | "));
+  assert.equal(messages.filter((m) => m.startsWith("Muse agent: step 1")).length, 1, "an unchanged file is reported once");
+  assert.equal((result.files as unknown[]).length, 0);
+  assert.ok(result.result);
+});
+
+test("an agent that writes FAILED.json stops the job at once with its reason, before and after DONE", async (t) => {
+  const home = await withHome(t);
+  const id = "bbbbbbbb-2222-4222-8222-000000000002";
+  const { ctx } = agentCtx(home, id, { mode: "hold", prompt: "make a picture", timeoutSec: 60, pollMs: 200 });
+  const inbox = path.join(home, "inbox", id);
+  const agent = (async () => {
+    for (let i = 0; i < 200 && !existsSync(path.join(inbox, "TASK.md")); i++) await new Promise((r) => setTimeout(r, 25));
+    await writeFile(path.join(inbox, "out", "FAILED.json"), '{"reason":"the image tool is down"}');
+  })();
+  const started = Date.now();
+  await assert.rejects(handlers["agent-task"](ctx), /The Muse agent could not finish: the image tool is down/);
+  await agent;
+  assert.ok(Date.now() - started < 10_000, "did not wait for the timeout");
+
+  const id2 = "bbbbbbbb-2222-4222-8222-000000000003";
+  const second = agentCtx(home, id2, { mode: "hold", prompt: "make a picture", pollMs: 200 });
+  const inbox2 = path.join(home, "inbox", id2);
+  const agent2 = (async () => {
+    for (let i = 0; i < 200 && !existsSync(path.join(inbox2, "TASK.md")); i++) await new Promise((r) => setTimeout(r, 25));
+    await writeFile(path.join(inbox2, "out", "FAILED.json"), "not json at all");
+    await writeFile(path.join(inbox2, "out", "DONE"), "");
+  })();
+  await assert.rejects(handlers["agent-task"](second.ctx), /could not finish: not json at all/);
+  await agent2;
 });
