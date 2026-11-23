@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
-import { isMuseThinkStage } from "../studio/muse-stage.ts";
+import { MUSE_POLL_SEC, isMuseThinkStage, runsOnMuse } from "../studio/muse-stage.ts";
+import { museStageReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
 import { getTemplate } from "./templates.ts";
@@ -1451,6 +1452,11 @@ async function runHermesRenderStage(
   const mux = skillVoice ? null : narrationId && narrationSec > 0 ? { narrationId, narrationSec, tempo } : null;
   const scale = hermesTimeoutScale(process.env);
   const fin: RenderFinish = { run, st, template, pack, frame, durationSec, skill: skill?.name ?? null, brief, skillVoice, mux };
+  // "Muse does the work": the Muse agent renders with the same skill and brief; the run's narration is laid on after.
+  if (runsOnMuse(run.config.executors, "render")) {
+    await runMuseRender(fin, { skill, brief, captions: i.captions, script: i.script ?? "", narrationId, narrationSec });
+    return;
+  }
   let job = readRenderJob(st.output.hermesRender);
   // Started (the start ask was sent): never ask again, wait for the file. Also after a restart or a reaper resume.
   if (job?.askedAt) {
@@ -1567,6 +1573,83 @@ interface RenderFinish {
   mux: { narrationId: string; narrationSec: number; tempo: number } | null;
 }
 
+/**
+ * The render on Muse (agent-task, stage render, worker 0.16.0+): the skill, the brief, the contract and the narration go
+ * to the inbox, the stage waits for out/video.mp4 without holding a Hermes slot, and the video then goes the way a
+ * Hermes picture goes: stored, the narration laid on by a hermes-mux job, then the quality check.
+ */
+async function runMuseRender(
+  f: RenderFinish,
+  i: {
+    skill: { name: string; aliases: string[]; mode: string; input: string; output: string } | null;
+    brief: SkillBrief | null;
+    captions: string[];
+    script: string;
+    narrationId: string | null;
+    narrationSec: number;
+  },
+): Promise<void> {
+  const { run, st, frame } = f;
+  const sql = db();
+  const wait = async (jobId: string, text: string, sec: number) => {
+    const until = new Date(Date.now() + sec * 1000);
+    await deferRenderPoll(run.id, st.id, until, { museJobId: jobId, renderer: "muse" }, { until: until.toISOString(), text });
+  };
+  const existing = asUuid(st.output.museJobId);
+  if (existing) {
+    const state = await pollMuseRender(existing);
+    if (state.kind === "wait") return wait(existing, state.text, state.pollSec);
+    if (state.kind === "error") return recordStageError(run.id, st.id, "render", state.error);
+    await finishHermesRender(f, {
+      bytes: state.bytes,
+      info: state.info,
+      provider: "muse-agent",
+      backend: "muse",
+      plugin: i.skill?.name ?? "",
+      model: "",
+      originUrl: "",
+      voice: null,
+      by: "muse",
+    });
+    return;
+  }
+  if (!f.mux || !i.narrationId) {
+    await recordStageError(run.id, st.id, "render", "This run has no recorded narration, so Muse's video would be silent. Record the voice again (send a revision to the voice step), then render. Nothing was rendered.");
+    return;
+  }
+  const why = muxWorkerIssue(await workerCapabilityLists(sql));
+  if (why) {
+    await recordStageError(run.id, st.id, "render", why);
+    return;
+  }
+  const refusals = await museStageReadiness();
+  if (refusals.length > 0) {
+    await recordStageError(run.id, st.id, "render", `Muse cannot render this video: ${refusals.join(". ")}`);
+    return;
+  }
+  const [n] = await sql`SELECT content_type FROM assets WHERE id = ${i.narrationId}`;
+  const type = text(n?.content_type);
+  const ext = type === "audio/mpeg" ? "mp3" : type === "audio/ogg" ? "ogg" : "wav";
+  const ownerNote = text(st.output.ownerNote).trim();
+  const jobId = await startMuseRender({
+    runId: run.id,
+    channelId: run.channelId,
+    project: run.topic || "VenStudio video",
+    width: frame.width,
+    height: frame.height,
+    fps: frame.fps,
+    durationSec: f.durationSec,
+    narration: { assetId: i.narrationId, ext, seconds: i.narrationSec },
+    captions: i.captions,
+    script: i.script,
+    skill: i.skill,
+    brief: i.brief ? { format: i.brief.format, shots: i.brief.shots, ...(i.brief.text ? { text: i.brief.text } : {}) } : null,
+    contract: await packContract(f.pack.id),
+    ...(ownerNote ? { ownerNote } : {}),
+  });
+  return wait(jobId, "Waiting for a Muse worker to take the render", MUSE_POLL_SEC);
+}
+
 /** The file the newest earlier render attempt of this run asked Hermes for, or null. */
 async function previousRenderFile(q: Q, runId: string, attempt: number): Promise<string | null> {
   // A finished stage's output is replaced by its conclusion, so the job is gone; its result keeps the clip's URL.
@@ -1679,6 +1762,7 @@ async function queueHermesMux(
     model: made.v.model,
     originUrl: made.v.originUrl,
     hermesSkill: f.skill,
+    ...(made.v.by === "muse" ? { by: "muse" } : {}),
   };
   const why = muxWorkerIssue(await workerCapabilityLists(sql));
   if (why) {
@@ -1734,13 +1818,14 @@ async function finishHermesRender(f: RenderFinish, v: HermesRender): Promise<voi
   const skill = f.skill ? { name: f.skill } : null;
   // With the run's narration laid on afterwards, any voice Hermes names is not in the video (its audio is dropped).
   if (f.mux) v = { ...v, voice: null };
+  const maker = v.by === "muse" ? "Muse" : "Hermes";
   const saved = await saveGeneratedAsset({
     bytes: v.bytes,
-    name: v.info.mime === "video/webm" ? "hermes-render.webm" : v.info.mime === "video/quicktime" ? "hermes-render.mov" : "hermes-render.mp4",
+    name: `${v.by === "muse" ? "muse" : "hermes"}-render.${v.info.mime === "video/webm" ? "webm" : v.info.mime === "video/quicktime" ? "mov" : "mp4"}`,
     contentType: v.info.mime,
     kind: "video",
-    executor: "hermes-render",
-    title: f.mux ? `${run.topic || "Video"} (Hermes picture, research only)` : `${run.topic || "Video"} (Hermes render, research only)`,
+    executor: v.by === "muse" ? "muse-agent" : "hermes-render",
+    title: f.mux ? `${run.topic || "Video"} (${maker} picture, research only)` : `${run.topic || "Video"} (${maker} render, research only)`,
     provider: v.provider,
     backend: v.backend,
     plugin: v.plugin,
@@ -1765,7 +1850,7 @@ async function finishHermesRender(f: RenderFinish, v: HermesRender): Promise<voi
   `;
   const result = {
     assetId: saved.assetId,
-    renderer: "hermes",
+    renderer: v.by === "muse" ? "muse" : "hermes",
     // The planned length; the quality check measures the real one.
     durationSec: Math.round(durationSec * 100) / 100,
     width: frame.width,
@@ -1776,7 +1861,7 @@ async function finishHermesRender(f: RenderFinish, v: HermesRender): Promise<voi
     hermesSkill: skill?.name ?? null,
     originUrl: v.originUrl,
     captionsBurned: true,
-    captionNote: "Hermes drew the captions with its own tools",
+    captionNote: `${maker} drew the captions with the skill's tools`,
     music: "",
     stylePack: pack,
     researchOnly: true,
@@ -2076,7 +2161,8 @@ async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promi
   const bedId = asUuid(toObject(toObject(job.payload.audio).bed).assetId);
   const inputIds = Array.isArray(job.payload.inputs) ? job.payload.inputs.map(asUuid).filter((x): x is string => x !== null) : [];
   const rows = inputIds.length > 0 ? await sql`SELECT id, title, license, source, origin_url, metadata FROM assets WHERE id = ANY(${inputIds}::uuid[]) ORDER BY created_at` : [];
-  const role = (id: string) => (id === pictureId ? "Picture (Hermes render, research only)" : id === narrationId ? "Narration" : id === bedId ? "Music bed" : undefined);
+  const byMuse = text(clip.by) === "muse";
+  const role = (id: string) => (id === pictureId ? `Picture (${byMuse ? "Muse" : "Hermes"} render, research only)` : id === narrationId ? "Narration" : id === bedId ? "Music bed" : undefined);
   const licenseInputs = rows.map((a): RenderLicenseInput => {
     const r = role(String(a.id));
     return {
@@ -2097,7 +2183,7 @@ async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promi
     : null;
   const picture = {
     assetId: pictureId,
-    executor: "hermes-render",
+    executor: byMuse ? "muse-agent" : "hermes-render",
     provider: text(clip.provider),
     backend: text(clip.backend),
     plugin: text(clip.plugin),
@@ -2106,7 +2192,7 @@ async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promi
   };
   const assetId = await assetFromArtifact({
     artifact,
-    title: `${run.topic || "Video"} (Hermes render with the run's narration, research only)`,
+    title: `${run.topic || "Video"} (${byMuse ? "Muse" : "Hermes"} render with the run's narration, research only)`,
     kind: "video",
     source: "worker",
     license: `${renderLicenseText(licenseInputs)} Research only: never published.`.slice(0, 1900),
@@ -2116,7 +2202,7 @@ async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promi
       runId: run.id,
       jobId: job.id,
       executor: HERMES_MUX_ENGINE,
-      renderer: "hermes",
+      renderer: byMuse ? "muse" : "hermes",
       researchOnly: true,
       inputAssetIds: inputIds,
       // Who made what: Hermes drew the picture, the run's voice stage recorded the narration, the worker mixed them.
@@ -2373,6 +2459,8 @@ export async function onJobFinished(jobId: string): Promise<string | null> {
     if (!job || (job.status !== "succeeded" && job.status !== "failed" && job.status !== "cancelled")) return null;
     const runId = asUuid(job.payload.runId);
     if (!runId) return null;
+    // A render waiting on Muse: the run picks it up now instead of at the next look.
+    if (job.type === "agent-task" && job.payload.museRender === true) return runId;
     // A voice stage waiting on a worker's Kokoro: the run picks it up now instead of at the next look.
     if (job.type === "tts") return runId;
     // A thinking stage waiting on its Muse task: the run picks it up now instead of at the next look.

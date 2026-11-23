@@ -3,6 +3,9 @@ import { db } from "./db.ts";
 import { cancelJob, createJob } from "./jobs.ts";
 import { museFlagOn, museWorkerFacts, readArtifactText } from "./muse-tasks.ts";
 import { MUSE_RESULT_MAX_BYTES } from "../studio/muse-task.ts";
+import { openStored } from "./storage.ts";
+import { checkRenderBytes } from "./executors/hermes-render.ts";
+import { MAX_VIDEO_BYTES, type VideoInfo } from "../studio/image-result.ts";
 import type { ChatMessage } from "../studio/director.ts";
 import {
   MUSE_POLL_SEC,
@@ -11,7 +14,9 @@ import {
   museStagePayload,
   museStagePayloadIssues,
   museStagePoll,
+  museRenderPayload,
   museStageRefusals,
+  type MuseRenderInput,
   type MuseThinkStage,
 } from "../studio/muse-stage.ts";
 
@@ -55,4 +60,45 @@ export async function pollMuseStage(jobId: string, _stage: MuseThinkStage): Prom
   // Parsed only: the caller checks it with the same validator (and the same run facts) as the Hermes ask for this stage.
   const answer = museStageJson(text);
   return answer.ok ? { kind: "done", value: answer.value } : { kind: "error", error: answer.error };
+}
+
+/** Queues the render of a Hermes-skill video on Muse. Returns the job id. */
+export async function startMuseRender(i: MuseRenderInput & { channelId: string | null }): Promise<string> {
+  const payload = museRenderPayload(i);
+  const issues = museStagePayloadIssues(payload);
+  if (issues.length > 0) throw new Error(`The Muse render task is not usable: ${issues.join("; ")}`);
+  return createJob({ type: "agent-task", channelId: i.channelId, createdBy: null, payload });
+}
+
+export type MuseRenderState =
+  | { kind: "wait"; text: string; pollSec: number }
+  | { kind: "done"; bytes: Uint8Array; info: VideoInfo; workerId: string | null }
+  | { kind: "error"; error: string };
+
+/** Where a Muse render stands: still going, the checked video bytes, or why it failed. */
+export async function pollMuseRender(jobId: string): Promise<MuseRenderState> {
+  const sql = db();
+  const [j] = await sql`SELECT status, error, created_at, worker_id FROM jobs WHERE id = ${jobId} AND type = 'agent-task'`;
+  const next = museStagePoll(j ? { status: String(j.status), error: (j.error as string | null) ?? null, createdAt: j.created_at as Date } : null);
+  if (next.kind === "wait") return { kind: "wait", text: next.text === "Muse is working on this step" ? "Muse is rendering the video" : "Waiting for a Muse worker to take the render", pollSec: MUSE_POLL_SEC };
+  if (next.kind === "error") {
+    if (j && j.status === "queued") await cancelJob(jobId).catch(() => undefined);
+    return { kind: "error", error: next.error };
+  }
+  const [a] = await sql`SELECT storage_path FROM artifacts WHERE job_id = ${jobId} AND name = 'agent-video.mp4' ORDER BY created_at DESC LIMIT 1`;
+  if (!a) return { kind: "error", error: "The Muse agent finished the render but no video.mp4 came back" };
+  try {
+    const f = await openStored(String(a.storage_path));
+    if (f.size > MAX_VIDEO_BYTES) {
+      f.stream.destroy();
+      return { kind: "error", error: `The video Muse rendered is ${Math.round(f.size / 1048576)} MB; the limit is ${MAX_VIDEO_BYTES / 1048576} MB` };
+    }
+    const chunks: Buffer[] = [];
+    for await (const c of f.stream) chunks.push(c as Buffer);
+    const got = checkRenderBytes(new Uint8Array(Buffer.concat(chunks)));
+    if (!got.ok) return { kind: "error", error: `The video Muse rendered is not usable: ${got.issue}` };
+    return { kind: "done", bytes: got.bytes, info: got.info, workerId: (j?.worker_id as string | null) ?? null };
+  } catch {
+    return { kind: "error", error: "The video Muse rendered could not be read back" };
+  }
 }

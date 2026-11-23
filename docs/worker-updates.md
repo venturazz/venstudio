@@ -193,6 +193,12 @@ the context files.
 is added. The `agent-task` handler reads `out/PROGRESS.json` on every poll and reports each change as a job event, and
 stops at once with the agent's reason when `out/FAILED.json` exists. Neither file is uploaded or counted as an output.
 
+## Worker 0.16.0
+
+0.16.0 (render on Muse, `docs/muse-agent-tasks.md`) is delivered by this mechanism like any release. On an
+`agent-task` with `stage: "render"` the handler accepts `out/video.mp4` (an MP4, at most 200 MB), uploads it as
+`agent-video.mp4`, and honours a timeout of up to four hours. Any other task still refuses a video.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,

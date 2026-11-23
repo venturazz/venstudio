@@ -399,3 +399,37 @@ test("an agent that writes FAILED.json stops the job at once with its reason, be
   await assert.rejects(handlers["agent-task"](second.ctx), /could not finish: not json at all/);
   await agent2;
 });
+
+test("a render task may return video.mp4 (an MP4, 200 MB at most); any other task may not", async (t) => {
+  const { isMp4Head } = await import("./venstudio-worker.ts");
+  const home = await withHome(t);
+  const out = path.join(home, "out-video");
+  await mkdir(out, { recursive: true });
+  const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypisom"), Buffer.alloc(64)]);
+  assert.equal(isMp4Head(mp4), true);
+  assert.equal(isMp4Head(PNG_1x1), false);
+  await writeFile(path.join(out, "video.mp4"), mp4);
+  const found = await collectAgentOutputs(out, { page: false, expected: ["video.mp4"], video: true });
+  assert.deepEqual(found.media, [{ name: "video.mp4", mime: "video/mp4" }]);
+  await assert.rejects(collectAgentOutputs(out, { page: false, expected: ["video.mp4"] }), /accepted only for a render task/);
+  await writeFile(path.join(out, "video.mp4"), PNG_1x1);
+  await assert.rejects(collectAgentOutputs(out, { page: false, expected: ["video.mp4"], video: true }), /is not an MP4 video/);
+});
+
+test("a render task waits longer than other tasks: the payload's timeout is honoured up to four hours", async (t) => {
+  const home = await withHome(t);
+  const id = "cccccccc-3333-4333-8333-000000000001";
+  const { ctx } = agentCtx(home, id, { mode: "hold", prompt: "render", stage: "render", outputs: ["video.mp4"], timeoutSec: 4 * 3600, pollMs: 200 });
+  const inbox = path.join(home, "inbox", id);
+  const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypisom"), Buffer.alloc(64)]);
+  const agent = (async () => {
+    for (let i = 0; i < 200 && !existsSync(path.join(inbox, "TASK.md")); i++) await new Promise((r) => setTimeout(r, 25));
+    const task = await readFile(path.join(inbox, "TASK.md"), "utf8");
+    assert.match(task, /video\.mp4 \(H\.264 MP4, at most 200 MB\)/);
+    await writeFile(path.join(inbox, "out", "video.mp4"), mp4);
+    await writeFile(path.join(inbox, "out", "DONE"), "");
+  })();
+  const result = await handlers["agent-task"](ctx);
+  await agent;
+  assert.deepEqual((result.files as Array<{ name: string; mime: string }>).map((f) => [f.name, f.mime]), [["video.mp4", "video/mp4"]]);
+});

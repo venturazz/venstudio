@@ -36,6 +36,8 @@ export interface HermesRender {
   originUrl: string;
   /** hermes.voice skill: the voice backend the skill recorded the narration with (from Hermes's answer), else null. */
   voice: SkillVoice | null;
+  /** "muse": the Muse agent rendered it with the skill (an agent-task job), not Hermes. Absent: Hermes. */
+  by?: "muse";
 }
 
 export type RenderAsk = { ok: true; reply: RenderReply } | { ok: false; error: string; cause: FailureClass; busyUntil?: Date; slow?: { afterMs: number } };

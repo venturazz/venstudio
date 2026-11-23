@@ -304,6 +304,6 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
     ...(config.labStudyId ? [{ label: "Lab study", value: config.labStudyId }] : []),
     ...(config.trialBatch ? [{ label: "Batch trial", value: `${config.trialBatch.index} of ${config.trialBatch.total}` }] : []),
     ...(config.workflow ? [{ label: "Workflow", value: workflowText(config.workflow) }] : []),
-    ...(executorsText(config.executors) ? [{ label: "Thinking", value: executorsText(config.executors) as string }] : []),
+    ...(executorsText(config.executors) ? [{ label: "Muse", value: executorsText(config.executors) as string }] : []),
   ];
 }

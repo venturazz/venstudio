@@ -501,8 +501,8 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
               className="mt-1 size-4 shrink-0 accent-[var(--vs-accent)]"
             />
             <span className="min-w-0">
-              <span className="block font-medium">Muse does the thinking</span>
-              <span className="block text-xs text-muted">Idea, research, script, storyboard, scene spec and skill brief go to the Muse agent, so Hermes is not asked. It takes minutes per step. Approval stays with you.</span>
+              <span className="block font-medium">Muse does the work</span>
+              <span className="block text-xs text-muted">Idea, research, script, storyboard, scene spec, skill brief and the Hermes-skill render go to the Muse agent, so Hermes is not asked. The voice is made by the studio (Kokoro on a worker). Each step takes minutes. Approval stays with you.</span>
             </span>
           </label>
           {!museThinking.ready && (

@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.15.0";
+export const VERSION = "0.16.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -6347,6 +6347,15 @@ export const AGENT_RESULT_FILE = "result.json";
 export const AGENT_PROGRESS_FILE = "PROGRESS.json";
 export const AGENT_FAILED_FILE = "FAILED.json";
 const AGENT_STATUS_MAX_BYTES = 4096;
+/** A render task (stage "render", 0.16.0+): the agent's finished video, out/video.mp4. Same limit as the portal's video check. */
+export const AGENT_VIDEO_FILE = "video.mp4";
+export const AGENT_VIDEO_MAX_BYTES = 200 * 1024 * 1024;
+export const AGENT_RENDER_MAX_TIMEOUT_SEC = 4 * 3600;
+
+/** An ISO-BMFF video (MP4 or MOV): a box size, then "ftyp". Pure. */
+export function isMp4Head(b: Uint8Array): boolean {
+  return b.length >= 12 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
+}
 /** Input assets downloaded into inbox/<jobId>/in/ (0.14.0+). */
 export const AGENT_MAX_INPUTS = 10;
 const AGENT_CONTEXT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,40}\.(md|json|txt)$/;
@@ -6487,7 +6496,8 @@ export function agentTaskMarkdown(o: {
     "5. If you cannot make the deliverable, write out/FAILED.json, e.g. {\"reason\": \"what went wrong\"}. The studio shows your reason and stops waiting.",
     "",
     "Allowed in out/: PNG, JPEG, WebP, WAV, MP3 or Ogg files (at most 10, 25 MB each), and result.json (valid JSON, at most 256 KB)" +
-      (page ? ", and the page files index.html, *.js, *.css, *.svg (at most 20 files, 300 KB together, no network use)." : ".") +
+      (page ? ", and the page files index.html, *.js, *.css, *.svg (at most 20 files, 300 KB together, no network use)." : "") +
+      (p.stage === "render" ? ", and the finished video as video.mp4 (H.264 MP4, at most 200 MB)." : page ? "" : ".") +
       " Nothing else.",
     "",
     "## Safety",
@@ -6584,7 +6594,7 @@ export interface AgentOutputs {
  * result.json and, for an html-design task, the page files (index.html, .js, .css, .svg within the page limits).
  * Every expected output must be there. Throws NonRetryableError naming the file.
  */
-export async function collectAgentOutputs(outDir: string, o: { page: boolean; expected: readonly string[] }): Promise<AgentOutputs> {
+export async function collectAgentOutputs(outDir: string, o: { page: boolean; expected: readonly string[]; video?: boolean }): Promise<AgentOutputs> {
   const names = await listAgentOutputs(outDir);
   const missing = o.expected.filter((n) => !names.includes(n));
   if (missing.length > 0) throw new NonRetryableError(`The Muse agent finished but out/ has no ${missing.join(", ")}`);
@@ -6618,10 +6628,20 @@ export async function collectAgentOutputs(outDir: string, o: { page: boolean; ex
       pageFiles.push({ path: name, text });
       continue;
     }
+    if (name === AGENT_VIDEO_FILE) {
+      if (!o.video) throw new NonRetryableError(`${name} is a video; a video is accepted only for a render task`);
+      if (size > AGENT_VIDEO_MAX_BYTES) throw new NonRetryableError(`${name} is ${Math.round(size / 1048576)} MB; the limit is ${AGENT_VIDEO_MAX_BYTES / 1048576} MB`);
+      const fh = await open(file, "r");
+      const head = Buffer.alloc(12);
+      const { bytesRead } = await fh.read(head, 0, 12, 0).finally(() => fh.close());
+      if (!isMp4Head(head.subarray(0, bytesRead))) throw new NonRetryableError(`${name} is not an MP4 video`);
+      media.push({ name, mime: "video/mp4" });
+      continue;
+    }
     const info = await sniffFile(file);
     if (!info) {
       throw new NonRetryableError(
-        `${name} is not a PNG, JPEG, WebP, WAV, MP3 or Ogg file${o.page ? ", a page file" : ""} or result.json. Only those may be left in out/`,
+        `${name} is not a PNG, JPEG, WebP, WAV, MP3 or Ogg file${o.page ? ", a page file" : ""}${o.video ? ", video.mp4" : ""} or result.json. Only those may be left in out/`,
       );
     }
     if (size > AGENT_MAX_FILE_BYTES) throw new NonRetryableError(`${name} is larger than 25 MB`);
@@ -6691,7 +6711,8 @@ async function agentTaskHandler(ctx: JobContext): Promise<Record<string, unknown
   log(`agent-task ${ctx.job.id}: wrote ${path.join(dir, "TASK.md")}`);
   await report(0.05, `TASK.md written (${context.length} context file${context.length === 1 ? "" : "s"}, ${written.length} input${written.length === 1 ? "" : "s"}); waiting for the Muse agent to create out/DONE`);
 
-  const timeoutSec = clampInt(p.timeoutSec, 5, 3000, 2400);
+  // A render task (0.16.0+) may take hours, like a Hermes project render; every other task waits at most 50 min.
+  const timeoutSec = clampInt(p.timeoutSec, 5, p.stage === "render" ? AGENT_RENDER_MAX_TIMEOUT_SEC : 3000, 2400);
   const pollMs = clampInt(p.pollMs, 200, 10_000, 5000);
   const deadline = Date.now() + timeoutSec * 1000;
   let lastProgress = "";
@@ -6722,7 +6743,7 @@ async function agentTaskHandler(ctx: JobContext): Promise<Record<string, unknown
   const doneAt = new Date();
   const waitedSec = Math.round((doneAt.getTime() - taskWrittenAt.getTime()) / 100) / 10;
   await report(0.8, `DONE seen after ${waitedSec} s; checking and uploading out/`);
-  const found = await collectAgentOutputs(outDir, { page, expected });
+  const found = await collectAgentOutputs(outDir, { page, expected, video: p.stage === "render" });
   const uploaded: Array<{ name: string; bytes: number; sha256: string; mime: string; width?: number; height?: number }> = [];
   for (const m of found.media) {
     const file = path.join(outDir, m.name);
