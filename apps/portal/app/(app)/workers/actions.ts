@@ -8,6 +8,7 @@ import { audit } from "@/lib/server/audit.ts";
 import { installFileSha256, portalUrl } from "@/lib/server/install-files.ts";
 import { requestMeta } from "@/lib/server/request.ts";
 import { createEnrollmentCode, ENROLLMENT_MINUTES } from "@/lib/server/workers.ts";
+import { queueMuseTest } from "@/lib/server/muse-tasks.ts";
 import { str } from "@/lib/form.ts";
 
 export type EnrollState =
@@ -146,5 +147,32 @@ export async function setPinnedVersion(version: string | null) {
   if (version !== null && !/^\d{1,6}(\.\d{1,6}){0,3}$/.test(version)) return;
   await db()`UPDATE worker_update_settings SET pinned_version = ${version}, updated_by = ${user.id}, updated_at = now() WHERE id = 'default'`;
   await audit({ userId: user.id, action: "worker.update_pin", detail: { version }, ip: (await requestMeta()).ip });
+  revalidatePath("/workers");
+}
+
+// ---- Muse agent test task (owner only, docs/muse-agent-tasks.md) ----
+
+const variantSchema = z.enum(["picture", "json"]);
+
+/**
+ * Queues a test agent task for this worker (preferred worker, urgent priority, a tiny CONTRACT.md and SPEC.json).
+ * Refused, with nothing queued, when the portal flag is off or the worker does not report agent-task.
+ */
+export async function sendMuseTestTask(workerId: string, variant: string) {
+  const user = await requireUser("owner");
+  if (!idSchema.safeParse(workerId).success) return;
+  const v = variantSchema.safeParse(variant);
+  if (!v.success) return;
+  const r = await queueMuseTest(workerId, v.data, user.id);
+  const detail: Record<string, unknown> = { variant: v.data };
+  if (r.ok) detail.jobId = r.jobId;
+  else detail.refused = r.error;
+  await audit({
+    userId: user.id,
+    action: "worker.muse_test",
+    target: workerId,
+    detail,
+    ip: (await requestMeta()).ip,
+  });
   revalidatePath("/workers");
 }

@@ -14,6 +14,7 @@ import { Alert, Badge, Card, CardBody, CardHeader, EmptyState, PageHeader, timeA
 import { ConfirmButton, CopyButton, SubmitButton } from "@/components/client.tsx";
 import { WorkerPresence } from "@/components/status.tsx";
 import { EnrollForm } from "./enroll-form.tsx";
+import { MuseTestCard } from "./muse-test.tsx";
 import {
   approveAllWorkerUpdates,
   approveWorkerUpdate,
@@ -220,7 +221,8 @@ export default async function WorkersPage() {
           )}
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
+          {isOwner && <MuseTestCard />}
           {isOwner && (
             <Card className="h-fit">
               <CardHeader title="Add a worker" description="Creates a one-time code valid for 30 minutes." />
