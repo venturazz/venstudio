@@ -78,6 +78,19 @@ test("buildProvenance for a fetch without a licence is caught by provenanceIssue
   assert.ok(provenanceIssues([lib.record], "publish").length > 0);
 });
 
+test("buildProvenance for a Muse agent file: executor muse-agent, source muse, the worker and the prompt hash", () => {
+  const sha = "ab".repeat(32);
+  const m = buildProvenance({ executor: "muse-agent", title: "shot-01 image", kind: "image", provider: "muse-agent", prompt: "A road", promptSha256: sha, workerId: "w-1", workerName: "Nyx", shotRef: "shot-01" });
+  assert.equal(m.record.source, "muse");
+  assert.equal(m.providerKind, "image");
+  assert.equal(m.metadata.executor, "muse-agent");
+  assert.equal(m.metadata.via, "worker");
+  assert.equal(m.metadata.workerId, "w-1");
+  assert.equal(m.metadata.promptSha256, sha);
+  assert.match(m.record.license, /^Made by the agent on a Muse machine \(worker Nyx\)/);
+  assert.deepEqual(provenanceIssues([m.record], "publish"), []);
+});
+
 test("fallbackChain adds the Muse agent only when flagged", () => {
   assert.deepEqual(fallbackChain({ hermesConfigured: true, museAgentTasks: false }), ["hermes-image", "library"]);
   assert.deepEqual(fallbackChain({ hermesConfigured: true, museAgentTasks: true }), ["hermes-image", "library", "muse-agent"]);

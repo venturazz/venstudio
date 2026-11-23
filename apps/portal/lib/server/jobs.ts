@@ -61,8 +61,9 @@ export const JOB_TYPES: Record<JobType, { capability: Capability; label: string;
   },
   "agent-task": {
     capability: "echo",
-    label: "Muse agent task (unverified)",
-    description: "Asks the agent on a Muse machine to make an asset. Not verified yet and off unless the owner turns it on.",
+    label: "Muse agent task",
+    description:
+      "Asks the agent on a Muse machine to make a file, through its inbox (TASK.md plus the context files). Off unless the owner sets MUSE_AGENT_TASKS=1; waking the agent takes minutes.",
   },
 };
 
@@ -75,6 +76,8 @@ export async function createJob(input: {
   createdBy: string | null;
   /** Overrides the type's capability, e.g. a render-video job for an engine that needs more than ffmpeg. */
   capability?: Capability;
+  /** The worker that should take it (default: the channel's home worker). With an urgent priority any worker may. */
+  preferredWorkerId?: string | null;
 }) {
   const def = JOB_TYPES[input.type];
   const capability: Capability = input.capability ?? def.capability;
@@ -84,7 +87,7 @@ export async function createJob(input: {
     VALUES (
       ${input.type}, ${capability}, ${JSON.stringify(input.payload ?? {})}::text::jsonb,
       ${input.channelId ?? null},
-      (SELECT home_worker_id FROM channels WHERE id = ${input.channelId ?? null}),
+      COALESCE(${input.preferredWorkerId ?? null}::uuid, (SELECT home_worker_id FROM channels WHERE id = ${input.channelId ?? null})),
       ${input.priority ?? 0}, ${input.createdBy}
     )
     RETURNING id

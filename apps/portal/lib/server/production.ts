@@ -1,5 +1,5 @@
 import "server-only";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
@@ -13,7 +13,8 @@ import { generateImage } from "./executors/hermes-image.ts";
 import { generateRouterImage, routerImageModel } from "./executors/router-image.ts";
 import { getCapabilities } from "./capabilities.ts";
 import { missingCapabilityMessage, scanStateOf } from "../studio/capabilities.ts";
-import { createAgentTaskJob, createFetchAssetJob, findCc0Candidate } from "./executors/library.ts";
+import { createAgentTaskJob, createFetchAssetJob, findCc0Candidate, type AgentTaskExtras } from "./executors/library.ts";
+import { contractMarkdown, pictureFallbackContext, planMarkdown } from "../studio/muse-task.ts";
 import { ensureProvider, listProviderTerms, safeFileName, saveGeneratedAsset } from "./executors/persist.ts";
 import {
   concludeStage,
@@ -353,7 +354,7 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
       return { kind: "waiting" };
     } else {
       try {
-        const jobId = await createAgentTaskJob(ref, null);
+        const jobId = await createAgentTaskJob(ref, null, await agentPictureExtras(run, order));
         await waitOnJob(order.id, jobId, "agent-task");
         return { kind: "waiting" };
       } catch (err) {
@@ -368,6 +369,38 @@ async function produceOrder(run: RunInfo, order: OrderRow, excluded: Set<string>
     reasons.unshift(missingCapabilityMessage("image", scanStateOf(snap)));
   }
   return { kind: "failed", reason: reasons.join(" | ").slice(0, 480) || "No image source is configured", cause: orderFailureCause(causes) };
+}
+
+/**
+ * The context of the agent-task picture fallback (docs/muse-agent-tasks.md): the shot prompt and the exact file in
+ * SPEC.json, the style contract in CONTRACT.md and the run's approved script and shot list in PLAN.md. The agent
+ * reads these from the inbox, never from its own workspace.
+ */
+async function agentPictureExtras(run: RunInfo, order: OrderRow): Promise<AgentTaskExtras> {
+  const sql = db();
+  const [script, shape] = await Promise.all([approvedScript(sql, run.id), storyboardShape(sql, run.id)]);
+  const packId = run.config.stylePack?.id ?? null;
+  const contract = packId ? await packContract(packId).catch(() => null) : null;
+  const m = /^shot-(\d{1,4})$/.exec(order.shotRef);
+  const plan = planMarkdown({
+    topic: run.topic,
+    styleId: run.config.styleId,
+    script: script?.value.script ?? null,
+    shots: shape?.shots.map((s) => ({ beatRole: s.beatRole, seconds: s.seconds, description: s.description, imagePrompt: s.imagePrompt })) ?? null,
+    shotRef: order.shotRef,
+    shotIndex: m ? Number(m[1]) - 1 : null,
+  });
+  const short = run.config.format === "short";
+  const built = pictureFallbackContext({
+    shotRef: order.shotRef,
+    prompt: order.spec.prompt,
+    format: run.config.format,
+    width: short ? 1080 : 1920,
+    height: short ? 1920 : 1080,
+    plan,
+    contract: contractMarkdown({ styleId: run.config.styleId, packId, contract }),
+  });
+  return { ...built, project: run.topic || "VenStudio run", stage: "assets" };
 }
 
 /** Counts work orders by state for one run. */
@@ -1794,10 +1827,16 @@ interface FinishedJob {
   payload: Record<string, unknown>;
   result: Record<string, unknown>;
   error: string;
+  /** The worker that finished it (kept on a succeeded job), and its name. */
+  workerId: string;
+  workerName: string;
 }
 
 async function loadJob(jobId: string): Promise<FinishedJob | null> {
-  const [j] = await db()`SELECT id, type, status, payload, result, error FROM jobs WHERE id = ${jobId}`;
+  const [j] = await db()`
+    SELECT j.id, j.type, j.status, j.payload, j.result, j.error, j.worker_id, w.name AS worker_name
+    FROM jobs j LEFT JOIN workers w ON w.id = j.worker_id WHERE j.id = ${jobId}
+  `;
   if (!j) return null;
   return {
     id: j.id as string,
@@ -1806,6 +1845,8 @@ async function loadJob(jobId: string): Promise<FinishedJob | null> {
     payload: toObject(j.payload),
     result: toObject(j.result),
     error: text(j.error),
+    workerId: text(j.worker_id),
+    workerName: text(j.worker_name),
   };
 }
 
@@ -1844,10 +1885,11 @@ interface ArtifactRow {
   storagePath: string;
 }
 
-async function firstArtifact(jobId: string, namePrefix: string): Promise<ArtifactRow | null> {
+async function firstArtifact(jobId: string, namePrefix: string, typePrefixes?: readonly string[]): Promise<ArtifactRow | null> {
+  const types = (typePrefixes ?? [""]).map((t) => `${t}%`);
   const rows = await db()`
     SELECT id, name, content_type, bytes, sha256, storage_path FROM artifacts
-    WHERE job_id = ${jobId} AND name LIKE ${`${namePrefix}%`} ORDER BY created_at LIMIT 1
+    WHERE job_id = ${jobId} AND name LIKE ${`${namePrefix}%`} AND content_type LIKE ANY(${types}::text[]) ORDER BY created_at LIMIT 1
   `;
   const a = rows[0];
   if (!a) return null;
@@ -2193,9 +2235,10 @@ async function settleOrderJob(job: FinishedJob): Promise<string | null> {
     await failOrder(orderId, `${label} ${job.status === "cancelled" ? "was cancelled" : "failed"}: ${job.error || "the worker gave no reason"}`);
     return runId;
   }
-  const artifact = await firstArtifact(job.id, isAgent ? "agent-" : "asset.");
+  // An agent task may also return result.json (agent-result.json): the picture is its first image or sound file.
+  const artifact = await firstArtifact(job.id, isAgent ? "agent-" : "asset.", isAgent ? ["image/", "audio/"] : undefined);
   if (!artifact) {
-    await failOrder(orderId, `${label} finished but no file came back`);
+    await failOrder(orderId, `${label} finished but no ${isAgent ? "picture" : "file"} came back`);
     return runId;
   }
   const run = await loadRun(sql, runId);
@@ -2204,23 +2247,33 @@ async function settleOrderJob(job: FinishedJob): Promise<string | null> {
   let assetId: string;
   let provider: string;
   if (isAgent) {
+    const prompt = text(job.payload.prompt);
     const built = buildProvenance({
-      executor: "worker-fetch",
+      executor: "muse-agent",
       title: `${shotRef} image`,
       kind,
       provider: "muse-agent",
-      licence: "Made by the agent on a Muse machine. Delivery is unverified, so the owner confirms the terms in Settings.",
+      prompt,
+      promptSha256: prompt ? createHash("sha256").update(prompt).digest("hex") : undefined,
+      workerId: job.workerId || undefined,
+      workerName: job.workerName || undefined,
       shotRef,
     });
     assetId = await assetFromArtifact({
       artifact,
       title: built.record.title,
       kind,
-      source: "muse",
+      source: built.record.source,
       license: built.record.license,
       originUrl: "",
       channelId: run?.channelId ?? null,
-      metadata: { ...built.metadata, runId, workOrderId: orderId, jobId: job.id },
+      metadata: {
+        ...built.metadata,
+        runId,
+        workOrderId: orderId,
+        jobId: job.id,
+        contextFiles: Array.isArray(job.result.contextFiles) ? job.result.contextFiles : [],
+      },
     });
     await ensureProvider(built.provider, built.providerKind);
     provider = built.provider;
