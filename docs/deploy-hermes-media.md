@@ -95,6 +95,37 @@ Then one turn on **Settings → test Hermes image**. Expected reply from Hermes:
 recorded as `unlisted-9router`. If Settings lists only `unlisted-9router`, the reply lost the field. See "Provider
 identity" in `docs/architecture-autonomous-studio.md`.
 
+## Research renders (engine `hermes`)
+
+A research pack's video is rendered by Hermes itself (docs/style-packs.md, "Long renders"). The portal names the file:
+
+```
+Save the finished MP4 as exactly vs-<runId>-<attempt>-<rand>.mp4 in your generated videos folder
+(cache/generated/videos), which your media host serves at http://hermes-files:8000/clip/vs-….mp4
+```
+
+and Hermes answers as soon as the render has started: `{"status":"started","file":"vs-….mp4",...}`. The portal then
+sends a HEAD for that URL every minute (backing off to 3 min) until the file is there and has stopped growing.
+
+What Hermes must do for this to work:
+
+- **Write to `/opt/data/cache/generated/videos/<the given name>`.** That is what `/clip/` serves. The
+  claude-animation-skills skills do not do this by themselves: `/stick-figure`'s `make.sh` writes
+  `<folder>/<folder name>.mp4` in its project folder, `/zach-d-films` writes `<name>.mp4` in its project, and `/graph`
+  "hands over the mp4 path" (their SKILL.md at the pinned commit). So Hermes has to copy or move the final MP4 to the
+  given name; the request says so. Best: copy to a temporary name in that folder and rename, so the file appears
+  whole (the portal also waits until the size is the same at two looks before it takes the file).
+- **Keep rendering after it answers.** A skill that renders inside the chat turn (most do) takes the turn as long as
+  the render. Hermes should start it as a background process (its terminal tool's background mode) and answer. If it
+  does not, the portal's 5-minute start ask times out, the render is taken as started, and the file is still waited
+  for (never asked again). Whether the turn's work goes on after the portal closes the connection depends on Hermes's
+  API server; if it stops the turn on disconnect, the skill must run in the background or the file never comes.
+- **Fallbacks.** An answer with a different name or URL on the media host is accepted. An answer of `done` with a URL
+  (a quick skill) is taken at once, as before.
+
+To check by hand: `curl -sI http://hermes-files:8000/clip/<name>.mp4` from the portal container answers 404 until
+the file is there, then 200 with its Content-Length.
+
 ## Security
 
 **Never root the server at `/opt/data/cache`.** That directory also holds `canva_tokens/` — live Canva OAuth

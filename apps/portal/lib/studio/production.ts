@@ -124,19 +124,24 @@ export interface StageProbe {
   orders?: OrderCounts;
   /** The render stage is a hermes render (the portal waits for Hermes, there is no worker job). */
   portalRender?: boolean;
+  /** A hermes render's job (hermes-render-job.ts renderClock): minutes since it was asked for, and its budget. */
+  renderClock?: { elapsedMinutes: number; budgetMinutes: number } | null;
 }
 
 /**
- * How long a hermes render may run before the reaper gives up: every ask and download at its limit plus slack
- * (hermes-render.ts), never less than the other production steps get.
+ * How long one pass of a hermes render may hold the stage as running before the reaper puts it back to pending: its
+ * asks and download at their limits plus slack (hermes-render.ts), never less than the other production steps get.
+ * The render itself is limited by its budget (renderClock), not by this.
  */
 export const HERMES_RENDER_STUCK_MINUTES = Math.max(PRODUCTION_STUCK_MINUTES + 1, HERMES_RENDER_MAX_MINUTES);
+/** Past its budget, a hermes render gets this long for the check ask and the last look before the reaper fails it. */
+export const HERMES_RENDER_OVERDUE_SLACK_MINUTES = 45;
 
 export type StageAction =
   | { action: "none" }
   /** Assets: every order is settled but nobody concluded the stage. */
   | { action: "finalize" }
-  /** Assets: orders are pending and nothing is running; run the stage again. */
+  /** Assets: orders are pending and nothing is running; a hermes render pass stopped answering. Run the stage again. */
   | { action: "resume" }
   /** Render or qc: the job finished, the hook was lost. */
   | { action: "complete" }
@@ -155,7 +160,14 @@ export function productionStageAction(p: StageProbe): StageAction {
   }
   const what = p.stage === "render" ? "The video render" : p.stage === "preview" ? "The still-frame preview" : "The quality check";
   if (p.stage === "render" && p.portalRender && p.jobStatus === null) {
-    return p.idleMinutes > HERMES_RENDER_STUCK_MINUTES ? { action: "fail", reason: "Hermes did not finish the render (research only) and it was cancelled" } : { action: "none" };
+    // The render runs in Hermes within its budget; the stage only polls. Its budget is the limit, never a turn timeout.
+    const c = p.renderClock;
+    if (c && c.elapsedMinutes > c.budgetMinutes + HERMES_RENDER_OVERDUE_SLACK_MINUTES) {
+      return { action: "fail", reason: `Hermes did not produce the video within its ${Math.round(c.budgetMinutes)} min budget, so the render stopped (research only). Nothing was restarted; Retry starts a new render.` };
+    }
+    // A pass that stopped answering (a restart while it polled or asked) goes back to pending: the next pass polls for
+    // the same file, or, for a render from before render jobs, starts once with the new flow. Hermes is not re-asked.
+    return p.idleMinutes > HERMES_RENDER_STUCK_MINUTES ? { action: "resume" } : { action: "none" };
   }
   if (p.jobStatus === null) {
     return p.idleMinutes > PRODUCTION_STUCK_MINUTES ? { action: "fail", reason: `${what} was never queued` } : { action: "none" };

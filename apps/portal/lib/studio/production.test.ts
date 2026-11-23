@@ -19,6 +19,7 @@ import {
   productionSummary,
   PRODUCTION_STUCK_MINUTES,
   VOICE_STUCK_MINUTES,
+  HERMES_RENDER_OVERDUE_SLACK_MINUTES,
   HERMES_RENDER_STUCK_MINUTES,
   renderLicenseText,
   retryStageFor,
@@ -178,11 +179,18 @@ test("productionSummary describes each stage", () => {
   assert.equal(productionSummary("qc", null), "Quality check finished");
 });
 
-test("productionStageAction: a hermes render has no worker job and gets Hermes's time before it is given up", () => {
+test("productionStageAction: a hermes render is limited by its budget, and a pass that stopped answering resumes (never re-asks)", () => {
   assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: PRODUCTION_STUCK_MINUTES + 1, jobStatus: null, portalRender: true }), { action: "none" });
-  assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: HERMES_RENDER_STUCK_MINUTES + 1, jobStatus: null, portalRender: true }), {
-    action: "fail",
-    reason: "Hermes did not finish the render (research only) and it was cancelled",
-  });
+  // A pass that held the stage longer than its asks and download can take goes back to pending: the next pass polls.
+  assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: HERMES_RENDER_STUCK_MINUTES + 1, jobStatus: null, portalRender: true }), { action: "resume" });
+  assert.deepEqual(
+    productionStageAction({ stage: "render", idleMinutes: HERMES_RENDER_STUCK_MINUTES + 1, jobStatus: null, portalRender: true, renderClock: { elapsedMinutes: 100, budgetMinutes: 240 } }),
+    { action: "resume" },
+  );
+  // Past its budget (plus the slack for the check ask), the render stops: the budget is the limit, not a turn timeout.
+  const over = productionStageAction({ stage: "render", idleMinutes: 1, jobStatus: null, portalRender: true, renderClock: { elapsedMinutes: 240 + HERMES_RENDER_OVERDUE_SLACK_MINUTES + 1, budgetMinutes: 240 } });
+  assert.equal(over.action, "fail");
+  assert.match(over.action === "fail" ? over.reason : "", /within its 240 min budget.*Nothing was restarted; Retry starts a new render/);
+  assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: 1, jobStatus: null, portalRender: true, renderClock: { elapsedMinutes: 200, budgetMinutes: 240 } }), { action: "none" }, "a 3-hour project render inside its budget");
   assert.equal(productionStageAction({ stage: "render", idleMinutes: PRODUCTION_STUCK_MINUTES + 1, jobStatus: null }).action, "fail", "a worker render that was never queued still fails");
 });

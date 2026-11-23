@@ -149,7 +149,8 @@ and the pack's contract (`lib/studio/hermes-render.ts`). Hermes renders with its
 `/clip/` URL, which is parsed, downloaded from a trusted media origin and sniffed like any Hermes clip
 (`lib/server/executors/hermes-render.ts`). The video is stored with executor `hermes-render` and the backend and
 plugin Hermes named in its provenance, then goes through qc-video, Review and the curation log like any render,
-with `renderer: hermes`. Rules, each in code with no bypass:
+with `renderer: hermes`. The render is a job the portal starts once and then waits for (below, "Long renders").
+Rules, each in code with no bypass:
 
 | Rule | Where |
 | --- | --- |
@@ -216,6 +217,47 @@ of a storyboard and pictures. Hermes's reply is handled exactly as before: a `/c
 trusted media origin, sniffed, then qc-video. The video asset's metadata records `executor: hermes-render`, the
 backend, the plugin and `hermesSkill`; the render stage's result carries `hermesSkill` too.
 
+### Long renders: start once, then wait for the file
+
+A long skill (`/stick-figure`, `/zach-d-films`, 3D) renders for longer than any chat turn the portal can hold open.
+The render used to be one turn with a 30-minute timeout; after a slow turn the stage waited and asked again, so Hermes
+started the same video from scratch every time and never finished. Now (`lib/studio/hermes-render-job.ts`, driven by
+`runHermesRenderStage` in `lib/server/production.ts`):
+
+1. **Start once.** The request names the output file, `vs-<runId>-<attempt>-<rand>.mp4` under the video media base
+   (`/clip/` → Hermes's `cache/generated/videos`; without `HERMES_MEDIA_ORIGINS`, `/clip` on the Hermes origin), and
+   asks Hermes to render with the pack's skill, save exactly that name, and answer as soon as the render has started:
+   `{"status":"started"|"done"|"error","file","note",...}`. The start ask goes through the gate with a 5-minute
+   timeout and is never retried inside the call. The job (file, URL, `startedAt`, attempt, budget, Hermes's answer)
+   is stored in the stage output (`hermesRender`) *before* the ask, so a restart polls instead of asking again.
+2. **Poll, don't re-ask.** The stage then waits as pending with a not-before time, holding no gate slot: every minute
+   for 10 looks, every 2 min for 10 more, then every 3 min, the portal sends a HEAD for the expected URL (a trusted
+   media origin only; a host without HEAD gets a GET). The file is taken when Hermes said it is done, or when it has
+   the same size at two looks in a row; then it is downloaded (`fetchMedia` limits), sniffed, stored with the usual
+   provenance (executor `hermes-render`, backend, plugin, `hermesSkill`, research only) and qc-video is queued as
+   before. A complete file that is not a video is looked at again and fails after 3 in a row. Polls run from the
+   in-process resume timer, the worker claim route's nudge and the reaper's restart of due stages; pages never make the
+   call themselves.
+3. **Status.** The run page and Review say "Video: Hermes is rendering with /<skill> (started HH:MM UTC, N min ago).
+   The studio checks for the finished file every minute; nothing is restarted." (`renderingText`). No progress asks
+   are made while it renders (Hermes is one agent and is busy with the render).
+4. **Limits.** The budget is the pack's `hermes.renderMinutes` when the styles format has it (the portal reads it;
+   the styles validator does not accept the key yet), else 120 min for a `spec` skill and 240 min for a `project`
+   skill. Past it, Hermes gets one tiny check ask ("is vs-….mp4 still being rendered?"); then the stage fails with
+   "Hermes did not produce <file> within N min; ..." and Retry, which starts a new attempt with a new file name.
+   If the check cannot be asked (Hermes busy), the studio tries again for 30 min, then fails without it. A render is
+   never restarted automatically. The reaper uses the budget too: it fails a hermes render only past its budget plus
+   45 min, and puts a pass that stopped answering (a restart mid-poll) back to pending, which polls again.
+5. **Old Hermes behaviour.** An answer of `done` with a URL (a quick skill, or the old `{"status":"ok","video":...}`)
+   is taken at once. A different file name or URL on the trusted media host is accepted and recorded. An answer that
+   is not JSON, or a start turn that times out, is taken as "started": the file is waited for, never asked again.
+6. **The gate.** Only the start ask, the check ask and (for a skill that voices itself and did not name its voice
+   backend) one provenance ask go through the gate. Waiting does not hold it, so other runs and the owner's chat go on.
+7. **Runs from before.** A render stage left in the old "busy or slow, trying again" state has no `hermesRender` in
+   its output: on its next turn it starts once with this flow (a fresh attempt, the old slow streak and wait clock
+   dropped). A pass the old code left running is put back to pending by the reaper and does the same. The owner can
+   also Cancel such a run.
+
 ### Packs the catalogue does not know
 
 A pack without a catalogue entry (the html-capture adaptations, the research packs, a future learned pack) gets its
@@ -232,8 +274,8 @@ New Video's Trial section has a "Try these styles" list: tick two or more Trial 
 in the order ticked (`startBatchTrialAction`; `batchTrialIssues` refuses fewer than 2 or more than 12 picks, repeats,
 styles New Video does not offer in its Trial section, lab trials and the wrong format, before any run starts). Each run
 records `config.trialBatch` (`{ id, index, total }`, additive). They start together; Hermes takes one ask at a time
-through its gate (concurrency 1 unless `HERMES_MAX_CONCURRENCY` says otherwise) and a Hermes render holds the slot for
-the whole render, so the runs move in turn. The **Trial queue** card on New Video and Styles shows the newest batches,
+through its gate (concurrency 1 unless `HERMES_MAX_CONCURRENCY` says otherwise). A Hermes render holds the slot only
+for its start ask; while Hermes renders, the studio waits for the file without a slot, so the runs move in turn. The **Trial queue** card on New Video and Styles shows the newest batches,
 each run with its position and where it is (queued for Hermes, Hermes is on it, waiting for you in Review, finished).
 
 ### Lab trials (Draft and Lab packs)

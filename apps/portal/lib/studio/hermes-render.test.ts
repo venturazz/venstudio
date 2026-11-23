@@ -63,8 +63,9 @@ test("only assets already on a trusted media origin are handed to Hermes", () =>
   assert.equal(mediaHostUrl(null, trusted), null);
 });
 
-test("the reaper waits as long as a hermes render can take", () => {
+test("the reaper gives one pass of a hermes render as long as its asks and download can take", () => {
   assert.ok(HERMES_RENDER_STUCK_MINUTES >= HERMES_RENDER_MAX_MINUTES);
-  assert.ok(HERMES_RENDER_MAX_MINUTES >= 2 * 40, String(HERMES_RENDER_MAX_MINUTES));
+  // The start ask (5 min), two check asks (3 min each), a download (10 min) and three gate queues (2 min each).
+  assert.ok(HERMES_RENDER_MAX_MINUTES >= 27, String(HERMES_RENDER_MAX_MINUTES));
   assert.ok(HERMES_RENDER_STUCK_MINUTES > PRODUCTION_STUCK_MINUTES);
 });

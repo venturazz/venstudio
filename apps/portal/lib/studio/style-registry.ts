@@ -93,6 +93,8 @@ export interface PackHermesSkill {
   output: string;
   /** Packs this one is the Hermes research variant of. */
   variantOf: string[];
+  /** The render budget in minutes (hermes.renderMinutes), or null for the default by mode (hermes-render-job.ts). */
+  renderMinutes: number | null;
 }
 
 /**
@@ -242,6 +244,7 @@ function hermesOf(raw: unknown): PackHermesSkill | null {
     input: str(raw.input).slice(0, 2000),
     output: str(raw.output).slice(0, 2000),
     variantOf: strs(raw.variantOf, 8).filter((v) => ID_RE.test(v)),
+    renderMinutes: typeof raw.renderMinutes === "number" && Number.isInteger(raw.renderMinutes) && raw.renderMinutes >= 10 && raw.renderMinutes <= 720 ? raw.renderMinutes : null,
   };
 }
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;

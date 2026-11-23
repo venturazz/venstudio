@@ -11,7 +11,7 @@ import { stageLabel } from "@/lib/studio/review.ts";
 import { isModelStage, isProductionStage, isRunStage, stageSummary } from "@/lib/studio/engine.ts";
 import { RECIPES, runRecipeOf, runStagesOf } from "@/lib/studio/recipes.ts";
 import { productionSummary } from "@/lib/studio/production.ts";
-import { stageWaitText, waitingText } from "@/lib/studio/pacing.ts";
+import { isRenderingWait, stageWaitText, waitingText } from "@/lib/studio/pacing.ts";
 import { isTrialRun, parseRunConfig, runSettings } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, isResearchEngine } from "@/lib/studio/style-registry.ts";
 import { cancelRunAction } from "../actions.ts";
@@ -120,9 +120,12 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         </div>
       )}
       {waiting && (
-        <div className="mb-4" data-testid="hermes-wait">
+        // A render Hermes is working on says so itself (it is not a busy or slow Hermes): "the studio checks for the
+        // finished file; nothing is restarted".
+        <div className="mb-4" data-testid={isRenderingWait(waiting.output.hermesWait) ? "hermes-rendering" : "hermes-wait"}>
           <Alert tone="info">
-            {stageLabel(waiting.stage)}: {waitLine}. Nothing failed; the step continues on its own.
+            {stageLabel(waiting.stage)}: {waitLine}
+            {isRenderingWait(waiting.output.hermesWait) ? "" : ". Nothing failed; the step continues on its own."}
           </Alert>
         </div>
       )}

@@ -9,7 +9,7 @@ import { narrationTempoReady } from "@/lib/server/production.ts";
 import { listOpenReviews } from "@/lib/server/reviews.ts";
 import { advisoryFor, presentationFor } from "@/lib/server/presentation.ts";
 import { listWaitingRuns, type WaitingRun } from "@/lib/server/runs.ts";
-import { stageWaitText } from "@/lib/studio/pacing.ts";
+import { isRenderingWait, stageWaitText } from "@/lib/studio/pacing.ts";
 import { AutoRefresh } from "@/components/auto-refresh.tsx";
 import { Alert, Card, EmptyState, PageHeader, timeAgo } from "@/components/ui.tsx";
 import { describeGateIssues, sortReviews, stageLabel } from "@/lib/studio/review.ts";
@@ -110,7 +110,10 @@ export default async function ReviewPage() {
                 {stageLabel(w.stage)} · {w.topic || "Untitled run"}
                 {w.channelName ? ` · ${w.channelName}` : ""}
               </p>
-              <p className="mt-1 break-words text-muted">{stageWaitText(w.hermesWait, w.until.getTime(), now)}. Nothing to do; it continues on its own.</p>
+              <p className="mt-1 break-words text-muted">
+                {stageWaitText(w.hermesWait, w.until.getTime(), now)}
+                {isRenderingWait(w.hermesWait) ? "" : ". Nothing to do; it continues on its own."}
+              </p>
               <Link href={`/studio/runs/${w.runId}`} className="inline-flex min-h-11 items-center text-accent underline-offset-2 hover:underline">
                 Open the run
               </Link>

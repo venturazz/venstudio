@@ -409,7 +409,7 @@ because pages render on the server). `output.waitSince` marks when the wait bega
 | storyboard, scene spec, skill brief | 8 min |
 | HTML design | 12 min |
 | images, voice through Hermes, CC0 search (no kind) | 180 s |
-| revision classifier, Test Hermes JSON, capability scan, Check skills, lab analyses, Hermes render | their own (45 s, 60 s, ..., 30 min) |
+| revision classifier, Test Hermes JSON, capability scan, Check skills, lab analyses, Hermes render start and check asks | their own (45 s, 60 s, ..., 5 min and 3 min; the render itself runs in Hermes within its budget, docs/style-packs.md "Long renders") |
 
 The call is made with `node:http` (`lib/hermes-transport.ts`), not fetch: fetch's client stops waiting for headers
 after 300 s, which would cut a 10-minute research ask at 5, and its timeout cannot say whether the connection was made.

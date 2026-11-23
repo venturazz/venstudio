@@ -1,4 +1,5 @@
 import "server-only";
+import { randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
@@ -16,6 +17,7 @@ import { createAgentTaskJob, createFetchAssetJob, findCc0Candidate } from "./exe
 import { ensureProvider, listProviderTerms, safeFileName, saveGeneratedAsset } from "./executors/persist.ts";
 import {
   concludeStage,
+  deferRenderPoll,
   deferStage,
   latestPassedOutput,
   loadRun,
@@ -25,7 +27,7 @@ import {
   type StageConclusion,
   type StageRow,
 } from "./director.ts";
-import { giveUpMessage, orderFailureCause, pauseMessage, systemicPause, waitExpired, type FailureClass } from "../studio/pacing.ts";
+import { durationText, giveUpMessage, hermesTimeoutScale, looksRateLimited, orderFailureCause, pauseMessage, slowBackoffMs, systemicPause, waitExpired, type FailureClass } from "../studio/pacing.ts";
 import { assetsGate, combineGates, qcSummary, voiceAssessment, type GateId, type GateResult } from "../studio/qc.ts";
 import { aiDisclosureRequired, type ProvenanceRecord } from "../studio/provenance.ts";
 import { buildProvenance, claimedLicence, fallbackChain, normalizeProvider, providerTermsIssues, type ProviderKind, type ProviderTerms } from "../studio/asset-plan.ts";
@@ -52,7 +54,23 @@ import { DEFAULT_RENDER_ENGINE, isPortalEngine, transitionForWorker } from "../s
 import { gateCapabilities, mixFeaturesFor, packWaitNote, renderJobCapability, renderStageError, tempoReadyFor, tempoWorkerMessage, withFadeFallback } from "../studio/render-gate.ts";
 import { runStylePack, type RunStylePack } from "../studio/style-registry.ts";
 import { packContract, registryEntry } from "./style-packs.ts";
-import { renderWithHermes } from "./executors/hermes-render.ts";
+import { askRenderCheck, askRenderStart, checkRenderBytes, downloadRender, probeRender, renderFileBase, renderMaker, type HermesRender } from "./executors/hermes-render.ts";
+import {
+  RENDER_VOICE_ASKS,
+  applyCheckReply,
+  applyStartReply,
+  newRenderJob,
+  readRenderJob,
+  renderBudgetMinutes,
+  renderClock,
+  renderFetchFailed,
+  renderFileName,
+  renderingWait,
+  renderPollEveryMs,
+  renderPollStep,
+  type RenderJob,
+  type RenderReply,
+} from "../studio/hermes-render-job.ts";
 import { hermesTrustedOrigins } from "./executors/hermes-image.ts";
 import { mediaHostUrl } from "../studio/hermes-render.ts";
 import { advisoryFrameCount, runPresentationAdvisory } from "./presentation.ts";
@@ -1339,38 +1357,186 @@ async function runHermesRenderStage(
   // A skill that voices itself (hermes.voice skill): the run has no voice stage, the skill records from the script.
   const brief = i.brief ?? null;
   const skillVoice = brief !== null && !runStagesOf(run.config).includes("voice");
-  // Marks the stage as a portal render, so the reaper waits for Hermes instead of looking for a worker job.
-  await mergeStageOutput(st.id, { renderer: "hermes" });
-  const rendered = await renderWithHermes({
-    topic: run.topic,
-    format: run.config.format,
-    width: frame.width,
-    height: frame.height,
-    fps: frame.fps,
-    durationSec,
-    shots,
-    scenePlan: scenes.ok ? scenes.plan : null,
-    narration: { url: narrationId ? (urlOf.get(narrationId) ?? null) : null, seconds: narrationSec, tempo },
-    captions: i.captions,
-    packId: pack.id,
-    packVersion: pack.version,
-    contract: await packContract(pack.id),
-    skill,
-    ...(brief ? { brief: { skill: brief.skill, format: brief.format, shots: brief.shots, ...(brief.text ? { text: brief.text } : {}) } } : {}),
-    ...(skillVoice ? { voice: "skill" as const, script: i.script ?? "" } : {}),
-  });
-  if (!rendered.ok) {
-    // A busy or slow Hermes waits, up to the same 3-hour cap as every other wait for Hermes.
-    const busy = rendered.cause === "busy" && rendered.busyUntil !== undefined;
-    if (busy && rendered.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
-      await deferStage(run.id, st.id, rendered.busyUntil, rendered.error, rendered.slow ? { slow: { afterMs: rendered.slow.afterMs, streak: slowStreakOf(st.output) + 1 } } : {});
-    } else {
-      const capped = busy ? `${giveUpMessage(undefined, rendered.slow ? "slow" : "rate-limit")} ` : "";
-      await recordStageError(run.id, st.id, "render", `${capped}Hermes could not render the video: ${rendered.error}`);
-    }
+  const scale = hermesTimeoutScale(process.env);
+  const fin: RenderFinish = { run, st, template, pack, frame, durationSec, skill: skill?.name ?? null, brief, skillVoice };
+  let job = readRenderJob(st.output.hermesRender);
+  // Started (the start ask was sent): never ask again, wait for the file. Also after a restart or a reaper resume.
+  if (job?.askedAt) {
+    await pollHermesRender(fin, job, scale);
     return;
   }
-  const v = rendered.video;
+  const base = renderFileBase();
+  if (!base) {
+    await recordStageError(run.id, st.id, "render", "Hermes is not set up (no HERMES_BASE_URL or media host), so the studio cannot say where the video goes. Nothing was rendered.");
+    return;
+  }
+  const fresh = !job;
+  job ??= newRenderJob({ file: renderFileName(run.id, st.attempt, randomBytes(5).toString("hex")), base, attempt: st.attempt, skill: skill?.name ?? null, budgetMin: renderBudgetMinutes(skillOf), nowMs: Date.now() });
+  job = { ...job, askedAt: new Date().toISOString() };
+  // Stored before the ask: a restart while Hermes works waits for this file instead of asking again. A render from
+  // before render jobs (the old one-turn ask, "slow, retrying") starts here once, with a fresh clock.
+  await sql`
+    UPDATE pipeline_stages
+    SET output = (output - ${fresh ? ["slowStreak", "waitSince", "hermesWait"] : ["hermesWait"]}::text[]) || ${json({ renderer: "hermes", hermesRender: job })}::text::jsonb
+    WHERE id = ${st.id} AND state = 'running'
+  `;
+  const asked = await askRenderStart(
+    {
+      topic: run.topic,
+      format: run.config.format,
+      width: frame.width,
+      height: frame.height,
+      fps: frame.fps,
+      durationSec,
+      shots,
+      scenePlan: scenes.ok ? scenes.plan : null,
+      narration: { url: narrationId ? (urlOf.get(narrationId) ?? null) : null, seconds: narrationSec, tempo },
+      captions: i.captions,
+      packId: pack.id,
+      packVersion: pack.version,
+      contract: await packContract(pack.id),
+      skill,
+      ...(brief ? { brief: { skill: brief.skill, format: brief.format, shots: brief.shots, ...(brief.text ? { text: brief.text } : {}) } } : {}),
+      ...(skillVoice ? { voice: "skill" as const, script: i.script ?? "" } : {}),
+    },
+    { file: job.file, url: job.url },
+  );
+  const notTaken = async (until: Date, error: string) => {
+    // Hermes did not take the request (rate limited, the gate busy, not reached): the same file is asked for later,
+    // up to the same 3-hour cap as every other wait for Hermes.
+    if (job) await mergeStageOutput(st.id, { hermesRender: { ...job, askedAt: null } });
+    if (waitExpired(fresh ? null : st.output.waitSince, Date.now())) {
+      await recordStageError(run.id, st.id, "render", `${giveUpMessage()} Hermes could not start the render: ${error}`);
+      return;
+    }
+    await deferStage(run.id, st.id, until, error);
+  };
+  if (!asked.ok) {
+    if (asked.slow) {
+      // Hermes took the request and is still working on it: it is rendering. Never asked again; the file is awaited.
+      job = { ...job, reply: { status: "unclear", file: job.file, url: job.url, note: `Hermes did not answer the start ask within ${durationText(asked.slow.afterMs)}; it is taken as rendering`, provider: "", backend: "", model: "", voice: null } };
+      await waitForRenderFile(fin, job, Date.now() + renderPollEveryMs(0, scale), scale);
+      return;
+    }
+    if (asked.cause === "busy" || asked.cause === "unreachable") {
+      await notTaken(asked.busyUntil ?? new Date(Date.now() + slowBackoffMs(1, scale)), asked.error);
+      return;
+    }
+    await mergeStageOutput(st.id, { hermesRender: job });
+    await recordStageError(run.id, st.id, "render", `Hermes could not start the render: ${asked.error}`);
+    return;
+  }
+  const reply = asked.reply;
+  if (reply.status === "error" && looksRateLimited(reply.note)) {
+    await notTaken(new Date(Date.now() + slowBackoffMs(1, scale)), `Hermes said it is rate limited: ${reply.note}`);
+    return;
+  }
+  job = applyStartReply(job, reply);
+  if (reply.status === "error") {
+    await mergeStageOutput(st.id, { hermesRender: job });
+    await recordStageError(run.id, st.id, "render", `Hermes could not render the video: ${reply.note || "it gave no reason"}`);
+    return;
+  }
+  // Done already (a quick skill, or a Hermes that renders within the turn): take the file now. Else the first look
+  // is in a minute.
+  if (job.doneReported) await pollHermesRender(fin, job, scale);
+  else await waitForRenderFile(fin, job, Date.now() + renderPollEveryMs(0, scale), scale);
+}
+
+/** What finishing a hermes render needs, worked out once per pass. */
+interface RenderFinish {
+  run: RunInfo;
+  st: StageRow;
+  template: Template;
+  pack: RunStylePack;
+  frame: { width: number; height: number; fps: number };
+  durationSec: number;
+  skill: string | null;
+  brief: SkillBrief | null;
+  skillVoice: boolean;
+}
+
+/** The stage waits as pending until `untilMs`, with the job and the "rendering" status stored. No gate slot is held. */
+async function waitForRenderFile(f: RenderFinish, job: RenderJob, untilMs: number, scale: number): Promise<void> {
+  const every = renderPollEveryMs(job.polls, scale);
+  await deferRenderPoll(f.run.id, f.st.id, new Date(untilMs), { renderer: "hermes", hermesRender: job }, renderingWait(job, every));
+}
+
+/**
+ * One pass of the wait: look for the file on the media host, and take it when it is complete. Past the budget, Hermes
+ * is asked once whether it is still rendering; then the stage fails with Retry (a new render, a new file name). The
+ * render is never started again from here.
+ */
+async function pollHermesRender(f: RenderFinish, start: RenderJob, scale: number): Promise<void> {
+  const { run, st } = f;
+  let job = start;
+  const fail = async (j: RenderJob, reason: string) => {
+    await mergeStageOutput(st.id, { hermesRender: j });
+    await recordStageError(run.id, st.id, "render", reason);
+  };
+  // At most a look, a check ask and a second look in one pass.
+  for (let pass = 0; pass < 3; pass++) {
+    const looked = await probeRender(job.url);
+    const step = renderPollStep(job, looked.probe, Date.now(), scale);
+    if (step.action === "wait") return waitForRenderFile(f, step.job, step.untilMs, scale);
+    if (step.action === "fail") return fail(step.job, step.reason);
+    if (step.action === "check") {
+      const c = await askRenderCheck(step.job, { voice: f.skillVoice, why: "overdue" });
+      if (c.ok) {
+        job = applyCheckReply(step.job, c.reply, Date.now());
+        continue;
+      }
+      if (c.slow) {
+        // Asked, but no answer within the check timeout: the next look decides.
+        job = { ...step.job, checkAskedAt: new Date().toISOString(), checkReply: null };
+        continue;
+      }
+      // Not asked (Hermes busy or not reached): look again later and ask then, within the grace time.
+      return waitForRenderFile(f, { ...step.job, checkTries: step.job.checkTries + 1 }, Date.now() + renderPollEveryMs(step.job.polls, scale), scale);
+    }
+    // The file is complete (same size twice, or Hermes said done): download and check the real bytes.
+    const got = looked.bytes ? checkRenderBytes(looked.bytes) : await downloadRender(step.job.url);
+    if (!got.ok) {
+      const next = renderFetchFailed(step.job, got.issue, Date.now(), scale);
+      if (next.action === "fail") return fail(next.job, next.reason);
+      return waitForRenderFile(f, next.job, next.action === "wait" ? next.untilMs : Date.now() + renderPollEveryMs(next.job.polls, scale), scale);
+    }
+    job = step.job;
+    // A skill that recorded its own voice must say with what, so the narration's provenance and terms are known.
+    let voice = job.reply?.voice ?? job.checkReply?.voice ?? null;
+    let told: RenderReply | null = null;
+    if (f.skillVoice && !voice) {
+      if (job.voiceAsks >= RENDER_VOICE_ASKS) {
+        return fail(job, `Hermes rendered ${job.file} but did not say which voice backend recorded the narration, so its provenance and terms are unknown. Retry starts a new render.`);
+      }
+      const c = await askRenderCheck(job, { voice: true, why: "provenance" });
+      // Hermes busy (the ask was not made): ask again after the busy time, without counting it.
+      if (!c.ok && c.cause === "busy" && !c.slow) return waitForRenderFile(f, job, (c.busyUntil?.getTime() ?? Date.now()) + 1000, scale);
+      job = { ...job, voiceAsks: job.voiceAsks + 1 };
+      if (c.ok) {
+        told = c.reply;
+        voice = c.reply.voice;
+      }
+      if (!voice) {
+        return job.voiceAsks >= RENDER_VOICE_ASKS
+          ? fail(job, `Hermes rendered ${job.file} but did not say which voice backend recorded the narration, so its provenance and terms are unknown. Retry starts a new render.`)
+          : waitForRenderFile(f, job, Date.now() + renderPollEveryMs(job.polls, scale), scale);
+      }
+    }
+    const maker = renderMaker([told, job.checkReply, job.reply]);
+    await mergeStageOutput(st.id, { hermesRender: { ...job, finishedAt: new Date().toISOString() } });
+    await finishHermesRender(f, { bytes: got.bytes, info: got.info, provider: maker.provider, backend: maker.backend, plugin: maker.plugin, model: maker.model, originUrl: job.url, voice });
+    return;
+  }
+  // Three passes without a decision cannot happen (the second look after a check always decides); wait to be safe.
+  return waitForRenderFile(f, job, Date.now() + renderPollEveryMs(job.polls, scale), scale);
+}
+
+/** Stores the clip as the run's video (research only, with its provenance) and concludes the stage like a worker render. */
+async function finishHermesRender(f: RenderFinish, v: HermesRender): Promise<void> {
+  const { run, st, template, pack, frame, durationSec, brief } = f;
+  const sql = db();
+  const skill = f.skill ? { name: f.skill } : null;
   const saved = await saveGeneratedAsset({
     bytes: v.bytes,
     name: v.info.mime === "video/webm" ? "hermes-render.webm" : v.info.mime === "video/quicktime" ? "hermes-render.mov" : "hermes-render.mp4",
@@ -2015,7 +2181,9 @@ async function reapStages(touched: Set<string>): Promise<void> {
       const job = jobId ? await loadJob(jobId) : null;
       const orders = stage === "assets" ? await orderCounts(sql, runId) : undefined;
       const portalRender = stage === "render" && toObject(s.output).renderer === "hermes";
-      const act = productionStageAction({ stage, idleMinutes: Number(s.idle), jobStatus: job ? job.status : null, jobError: job?.error ?? null, orders, portalRender });
+      // A hermes render is limited by its own budget (hermes-render-job.ts), counted from when it was asked for.
+      const renderClockNow = portalRender ? renderClock(toObject(s.output).hermesRender, Date.now()) : null;
+      const act = productionStageAction({ stage, idleMinutes: Number(s.idle), jobStatus: job ? job.status : null, jobError: job?.error ?? null, orders, portalRender, renderClock: renderClockNow });
       if (act.action === "none") continue;
       touched.add(runId);
       if (act.action === "finalize") await finalizeAssets(runId);

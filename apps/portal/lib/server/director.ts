@@ -591,6 +591,21 @@ export async function deferStage(
   if (rows.length > 0) scheduleResume(runId, until);
 }
 
+/**
+ * A hermes render waits for its file (hermes-render-job.ts): the stage goes back to pending until the next poll, with
+ * the render job and the "rendering" wait in its output, and a resume is scheduled. Not a wait for a busy Hermes: no
+ * slow streak, no give-up clock (the render's budget is the limit), no gate slot held.
+ */
+export async function deferRenderPoll(runId: string, stageId: string, until: Date, patch: Record<string, unknown>, wait: Record<string, unknown>): Promise<void> {
+  const rows = await db()`
+    UPDATE pipeline_stages SET state = 'pending', started_at = NULL, not_before = ${until},
+      output = (output - 'finalizingAt' - 'slowStreak' - 'waitSince') || ${json(patch)}::text::jsonb || jsonb_build_object('hermesWait', ${json(wait)}::text::jsonb)
+    WHERE id = ${stageId} AND state = 'running'
+    RETURNING id
+  `;
+  if (rows.length > 0) scheduleResume(runId, until);
+}
+
 export async function recordStageError(runId: string, stageId: string, stage: RunStage, message: string): Promise<void> {
   const text = message.slice(0, 500);
   await db().begin(async (tx) => {
