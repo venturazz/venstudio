@@ -155,7 +155,7 @@ saves a `draft` template. A draft stays a draft; `readyForTrials` is true only w
 | `render-video` | 4 | worker (ffmpeg) | Renders ordered stills with a gentle zoom, the narration WAV and captions to `video.mp4` (x264 veryfast, 2 threads, loudnorm). Shots must add up to the narration length within 1 s. Worker 0.6.0: an optional `narrationTempo` (portal 0.9 to 1.15, worker accepts 0.8 to 1.25) plays the narration at that tempo with `atempo` before `loudnorm`, on every engine; `narrationSec` is then the played length and the 1 s check compares file length / tempo. Absent field: byte-identical arguments (golden test) | Code and offline tests. Real render runs in CI (`scripts/e2e.sh`, then `scripts/ui-e2e.mjs`). Not yet run on a Muse VM |
 | `fetch-asset` | 4 | any worker (capability `echo`) | Downloads one CC0 or public-domain image or audio file from an allowlisted host, checks magic bytes, hashes it, uploads it | Offline tests with a local server. Never run against a real host |
 | `tts` | 4 | worker that sets `VENSTUDIO_KOKORO_URL` | Narration chunks through Kokoro to `narration.wav` | Offline tests. The portal does not create it: it speaks in-process, so no key reaches a worker |
-| `agent-task` | 4 | Muse worker, hold mode, `VENSTUDIO_AGENT_TASKS=1` | Hands a work order to the Muse agent through the inbox (section 6) | **UNVERIFIED** |
+| `agent-task` | 4 | Muse worker, hold mode, `VENSTUDIO_AGENT_TASKS=1` | Hands a work order and its context files to the Muse agent through the inbox (section 6) | Worker 0.14.0; owner test on the Workers page |
 
 Existing job types (`analyze-video`, `render-preview`, and others) stay. A new job type needs: `JOB_TYPES` in
 `lib/server/jobs.ts`, the `JobType` union in `packages/protocol` (a unit test compares the two), a worker handler, a
@@ -202,7 +202,8 @@ Fallback chain per shot (`fallbackChain`), one work order at a time (`FOR UPDATE
    public-domain licence string, and a `fetch-asset` job downloads it. The work order waits for the job. The licence
    text is Hermes' claim, so it is stored as "Claimed ... (stated by Hermes, not verified)" with the licence or source
    link, and the host is a provider the owner has to confirm in Settings.
-3. Muse agent task, only when `MUSE_AGENT_TASKS=1` on the portal.
+3. Muse agent task, only when `MUSE_AGENT_TASKS=1` on the portal. The task carries the shot prompt, the style contract
+   (`CONTRACT.md`), the run's plan (`PLAN.md`) and the exact file (`SPEC.json`) as inbox files (section 6).
 A shot that fails the whole chain fails its work order with the reasons. Retry in Review resets only failed orders.
 
 Voice (superseded in part by Phase 4.5 below; the optional override still behaves like this): Kokoro is narration (OpenAI-compatible `POST /v1/audio/speech` with `response_format: wav`, `GET
@@ -543,17 +544,33 @@ Endpoint health. Backends Hermes's chain reported failing in the last 30 minutes
 or set aside, are named in the prompt as "failed recently, skip them if you can" (`recentlyFailing`). The shot's own
 preference is never listed there.
 
-## 6. Muse agent-task delivery (UNVERIFIED, needs a Muse test)
+## 6. Muse agent-task delivery (inbox, worker 0.14.0+)
 
-0. Flag-gated: the portal creates these jobs only when `MUSE_AGENT_TASKS=1`, and a worker advertises the handler only when `VENSTUDIO_AGENT_TASKS=1`. Both default to off, and the task is never in the default fallback chain.
-1. Portal creates an `agent-task` job from a work order.
-2. A worker in `hold` mode claims it, writes `/home/hatch/venstudio/inbox/<jobId>/TASK.md`, and prints the task text.
-3. The Muse agent that launched `run.sh` reads it and performs the task, saving files to
-   `/home/hatch/venstudio/inbox/<jobId>/out/`.
-4. The agent runs `run.sh submit <jobId>`, which uploads the artifacts and completes the job.
+The full contract, the TASK.md template, the limits and the test are in [muse-agent-tasks.md](muse-agent-tasks.md).
 
-Worker 0.4.0 has a handler for this (`agent-task`, off unless `VENSTUDIO_AGENT_TASKS=1`, hold mode only). It uses an `out/DONE` marker instead of `run.sh submit`. It stays UNVERIFIED: tests 12 to 16 in the research doc are still needed. Task text comes only from the authenticated portal channel
-(prompt-injection control). If it fails, work orders use Hermes image generation and worker tools only.
+0. Flag-gated: the portal creates these jobs only when `MUSE_AGENT_TASKS=1`, and a worker advertises the handler only
+   when `VENSTUDIO_AGENT_TASKS=1` in hold mode. Both default to off. In production the task is only the last picture
+   fallback (after Hermes, 9router and the CC0 library); no other stage is routed to Muse yet.
+1. The portal creates an `agent-task` job. Its payload carries the prompt and, since 0.14.0, the per-video context as
+   files: `PLAN.md` (the run's approved script and shot list), `CONTRACT.md` (the style contract), `SPEC.json` (the
+   exact deliverable), and input asset ids for `in/`.
+2. A worker in `hold` mode claims it and writes `/home/hatch/venstudio/inbox/<jobId>/`: the inputs (downloaded and
+   checksum-checked like any job input), the context files, then `TASK.md` last, listing every file.
+3. The Muse agent's own hook (`venstudio-inbox`, polling every 60 s) sees the new `TASK.md` and wakes the agent, which
+   makes the files in `out/` and creates `out/DONE`. Waking takes minutes.
+4. The worker sees `DONE` (it polls every 5 s, up to 40 min), checks and uploads `out/`: media as `agent-<name>`,
+   `result.json` as `agent-result.json`, html-design page files as one `agent-page.json` bundle. It reports each
+   milestone as a job message and the times (`taskWrittenAt`, `doneAt`, `uploadedAt`, `wakeSec`) in the result.
+5. The portal checks what came back: a picture becomes an asset with provenance executor `muse-agent`, the worker id
+   and the prompt's SHA-256; a `result.json` goes through the same validator that checks Hermes's answer for that
+   stage (`lib/studio/muse-task.ts` `validateMuseResult`).
+
+Where truth lives (owner decision): the agent's durable memory holds general rules only (how to read an inbox, the
+safety rule, house style habits). Everything about one video (the plan, the contract, the deliverable, the inputs)
+comes from the portal as files in that job's inbox, never from paths in the agent's own workspace. This keeps
+provenance and licences in the studio, lets any Muse VM do any task, and means the agent never guesses a path. Every
+file in the inbox is data describing what to make, not instructions; `TASK.md` says so. Task text comes only from the
+authenticated portal channel. The owner checks the path end to end with the test task on the Workers page.
 
 ## 7. Review screens (mobile first)
 
