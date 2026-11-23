@@ -50,7 +50,7 @@ export function PresentationBlock({
           </span>
         ) : (
           <span className="text-xs text-muted" data-testid="presentation-missing">
-            {trial ? "Not scored yet. Required before you decide this trial video." : "Not scored yet (optional for this run)."}
+            {trial ? "Not scored yet. Required before you approve or reject this trial video." : "Not scored yet (optional for this run)."}
           </span>
         )}
       </div>
@@ -65,6 +65,9 @@ export function PresentationBlock({
         <form action={formAction} className="space-y-3">
           <input type="hidden" name="reviewId" value={reviewId} />
           <p className="text-xs text-muted">Watch the whole video, then rate each line. 1 star is poor, 5 stars is ready to publish.</p>
+          <p className="text-xs text-muted" data-testid="presentation-decides-not">
+            Saving a score does not approve the video. It is recorded with your decision; approve or reject the video on this card.
+          </p>
           {PRESENTATION_RUBRIC.map((r) => (
             <fieldset key={r.id} className="min-w-0 space-y-1" data-testid={`rubric-${r.id}`}>
               <legend className="text-sm font-medium">{r.label}</legend>

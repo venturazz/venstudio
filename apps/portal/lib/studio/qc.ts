@@ -59,6 +59,7 @@ export const SILENT_LUFS = -50;
 /** Silence (qc-video's silencedetect at -50 dB) over more than this share of the video means no usable audio. */
 export const SILENT_SHARE = 0.8;
 export const SILENT_AUDIO_ISSUE = "The video's audio is silent";
+export const NO_AUDIO_ISSUE = "The video has no audio stream";
 
 /** Share of the video, 0..1, that qc-video measured as silence. Overlapping or out-of-range runs are clamped. */
 export function silenceShare(m: Pick<TechnicalMeasure, "durationSec" | "silenceRuns">): number {
@@ -107,7 +108,7 @@ export function technicalGate(m: TechnicalMeasure, template: Template, format: F
   if (m.durationSec < f.durationSec[0] || m.durationSec > f.durationSec[1]) {
     issues.push(`Duration ${fmt(m.durationSec)} s is outside ${f.durationSec[0]} to ${f.durationSec[1]} s`);
   }
-  if (!m.hasAudio) issues.push("The video has no audio stream");
+  if (!m.hasAudio) issues.push(NO_AUDIO_ISSUE);
   else if (audioIsSilent(m, template)) issues.push(SILENT_AUDIO_ISSUE);
   if (m.integratedLufs === null) issues.push("Loudness was not measured");
   else if (Math.abs(m.integratedLufs - template.audio.targetLufs) > LOUDNESS_TOLERANCE_LU) {

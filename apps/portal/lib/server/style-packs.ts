@@ -232,6 +232,8 @@ function rowToOutcome(r: Record<string, unknown>): TrialOutcome {
     hermesAdvisory: readAdvisory(r.hermes_advisory),
     renderer: typeof r.renderer === "string" ? r.renderer : null,
     labTrial: r.lab_trial === true,
+    qcWaived: r.qc_waived === true,
+    waivedIssues: Array.isArray(r.waived_issues) ? r.waived_issues.filter((i): i is string => typeof i === "string") : [],
   };
 }
 
@@ -239,7 +241,7 @@ function rowToOutcome(r: Record<string, unknown>): TrialOutcome {
 export async function listTrialOutcomes(sql: Q = db()): Promise<TrialOutcome[]> {
   const rows = await sql`
     SELECT run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision, video_asset_id, decided_at, created_at,
-           owner_rubric, hermes_advisory, renderer, lab_trial
+           owner_rubric, hermes_advisory, renderer, lab_trial, qc_waived, waived_issues
     FROM style_trial_outcomes ORDER BY created_at DESC LIMIT 2000
   `;
   return rows.map((r) => rowToOutcome(r as Record<string, unknown>));

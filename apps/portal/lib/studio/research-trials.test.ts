@@ -156,8 +156,8 @@ test("lab-trial outcomes are recorded but never counted toward promotion; they a
   const counts = trialCounts(outcomes, "0.1.1");
   assert.deepEqual([counts.trials, counts.presentationScored, counts.meanPresentationScore, counts.approved, counts.rejected], [2, 2, 85, 2, 0]);
   const lab = labTrialCounts(outcomes);
-  assert.deepEqual(lab, { runs: 2, measured: 2, scored: 1, meanPresentationScore: 60, approved: 1, rejected: 1 });
-  assert.deepEqual(labTrialCounts([outcome(3)]), { runs: 0, measured: 0, scored: 0, meanPresentationScore: null, approved: 0, rejected: 0 });
+  assert.deepEqual(lab, { runs: 2, measured: 2, scored: 1, meanPresentationScore: 60, approved: 1, rejected: 1, waived: 0 });
+  assert.deepEqual(labTrialCounts([outcome(3)]), { runs: 0, measured: 0, scored: 0, meanPresentationScore: null, approved: 0, rejected: 0, waived: 0 });
   // The curation record to copy into the pack never carries a lab trial.
   const record = curationRecord(pack("probe-line-graph", { status: "trial" }), outcomes, counts);
   assert.deepEqual(record.filter((e) => e.kind === "trial-run").map((e) => e.ref), [`venstudio run ${outcome(3).runId}`, `venstudio run ${outcome(4).runId}`]);

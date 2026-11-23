@@ -2196,6 +2196,8 @@ async function completeQc(jobId: string): Promise<boolean> {
     issues,
     checks: qcSummary(gates),
     media: videoAssetId ? { videoAssetId } : undefined,
+    // What the card needs to say whether a failed check may be approved anyway (review.ts qcWaiver).
+    qcFacts: { failedGates: gates.filter((g) => !g.passed).map((g) => g.gate), narrated: template.audio.narrated !== false },
     final: true,
   });
   // A Trial pack's run: its QC result (and an automatic approval, if the autonomy policy gave one) goes into the
