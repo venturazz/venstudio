@@ -64,6 +64,26 @@ Muse for that attempt, so the step is never asked twice. If that task fails, the
 retry starts again with Hermes. Set `MUSE_OVERFLOW=0` to always wait for Hermes. Storyboard, voice, pictures and render
 do not overflow.
 
+## Voice on a worker
+
+Narration is made by the portal's voice stage, not by Muse. Its paths, in order: your own `KOKORO_BASE_URL` server,
+Kokoro as 9router lists it, **Kokoro on a worker**, then the Hermes paths (Hermes asked for Kokoro, then CapCut). Only
+the Hermes paths go through the one-at-a-time Hermes gate. Kokoro on a worker needs no public address and runs beside
+other workers:
+
+1. A worker that sets `VENSTUDIO_KOKORO_URL` (a Kokoro it can reach, for example installed on the Muse VM) advertises the
+   `tts` job type and, when that Kokoro answers, the `tts-kokoro` capability.
+2. When the first two paths fail and such a worker was seen in the last 75 min, the voice stage queues a `tts` job (the
+   script in pieces of at most 400 characters, the voice for the narration language) and waits for it, looking every
+   15 s. A finished job resumes the run at once.
+3. The worker returns `narration.wav`. The portal checks its SHA-256 against what the worker reported, measures the WAV
+   like any other narration, and records provider `kokoro` with `via: worker`.
+4. If the job fails, or no worker takes it within 20 min, the voice stage carries on with the Hermes paths and keeps the
+   reason in the narration's note. A script fit is never asked for twice while the job runs.
+
+No setting is needed on the portal. Hold-mode workers claim about every 25 s, but a worker asleep for its few minutes
+each hour delays the job until it wakes.
+
 The option is offered only when the portal flag is on and a worker reports `agent-task` with version 0.15.0 or later
 and contact within 75 min; the reasons are listed under the checkbox, and `startRun` checks them again. Revision notes
 go to the stage's prompt the same way as for Hermes. A run that does not tick the option behaves exactly as before.

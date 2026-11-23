@@ -7,7 +7,9 @@ import { isMuseThinkStage } from "../studio/muse-stage.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
 import { getTemplate } from "./templates.ts";
-import { synthesize } from "./tts.ts";
+import { synthesize, workerNarration, type SynthesisResult } from "./tts.ts";
+import { pollTtsJob, startTtsJob, ttsWorkerAvailable } from "./tts-worker.ts";
+import { TTS_POLL_SEC } from "../studio/tts-worker.ts";
 import { hermesJson } from "./hermes-json.ts";
 import { paceForRun, recordSpeechSample } from "./speech-rate.ts";
 import { generateImage } from "./executors/hermes-image.ts";
@@ -860,14 +862,61 @@ async function runVoiceStage(run: RunInfo, st: StageRow, template: Template): Pr
   }
   let script = checked.value.script;
   let fittedWords: number | null = null;
-  const fitRequest = parseTightenRequest(st.output.tighten);
+  const ttsJobId = asUuid(st.output.ttsJobId);
+  // Back from a worker's Kokoro: the script is the one the job spoke (a fit is not asked for again), and the job decides.
+  const spoken = ttsJobId && typeof st.output.ttsScript === "string" ? st.output.ttsScript : null;
+  const fitRequest = spoken ? null : parseTightenRequest(st.output.tighten);
+  if (spoken) {
+    script = spoken;
+    if (typeof st.output.ttsFittedWords === "number") fittedWords = st.output.ttsFittedWords;
+  }
   if (fitRequest) {
     const fitted = await fitScript(run, st, fitRequest);
     if (!fitted) return;
     script = fitted.script;
     fittedWords = fitted.words;
   }
-  const tts = await synthesize(script, run.config.language);
+  let tts: SynthesisResult;
+  const workerVoice = (st.output.ttsVoice ?? null) as { voice?: string; verified?: boolean; notes?: string[] } | null;
+  if (ttsJobId && spoken) {
+    const job = await pollTtsJob(ttsJobId);
+    if (job.kind === "wait") {
+      const until = new Date(Date.now() + job.pollSec * 1000);
+      await deferRenderPoll(run.id, st.id, until, {}, { until: until.toISOString(), text: job.text });
+      return;
+    }
+    if (job.kind === "done") {
+      tts = { ok: true, narration: workerNarration(job.audio, { voice: workerVoice?.voice ?? "", verified: workerVoice?.verified === true, notes: workerVoice?.notes ?? [] }) };
+    } else {
+      // The worker could not speak it: the Hermes paths are next, with what happened kept in the notes.
+      tts = await synthesize(script, run.config.language);
+      if (tts.ok) tts = { ok: true, narration: { ...tts.narration, skipped: [job.error, ...tts.narration.skipped], note: `Other voice paths: ${[job.error, ...tts.narration.skipped].join(" ")}` } };
+    }
+  } else {
+    tts = await synthesize(script, run.config.language, { workerTts: await ttsWorkerAvailable() });
+    if (!tts.ok && tts.workerTts) {
+      const w = tts.workerTts;
+      let jobId: string | null = null;
+      try {
+        jobId = await startTtsJob({ runId: run.id, channelId: run.channelId, chunks: w.chunks, voice: w.voice });
+      } catch (err) {
+        console.error("could not queue the worker narration", run.id, err);
+      }
+      if (jobId) {
+        const until = new Date(Date.now() + TTS_POLL_SEC * 1000);
+        await deferRenderPoll(
+          run.id,
+          st.id,
+          until,
+          { ttsJobId: jobId, ttsScript: script, ttsVoice: { voice: w.voice, verified: w.verified, notes: w.notes }, ...(fittedWords !== null ? { ttsFittedWords: fittedWords } : {}) },
+          { until: until.toISOString(), text: "Waiting for a worker with Kokoro to take the narration" },
+        );
+        return;
+      }
+      // Could not queue it: carry on with the Hermes paths, as if no worker were offered.
+      tts = await synthesize(script, run.config.language);
+    }
+  }
   if (!tts.ok) {
     // 9router could not speak and Hermes is rate limited: wait for Hermes instead of failing the voice.
     if (tts.busyUntil && !waitExpired(st.output.waitSince, Date.now())) {
@@ -2324,6 +2373,8 @@ export async function onJobFinished(jobId: string): Promise<string | null> {
     if (!job || (job.status !== "succeeded" && job.status !== "failed" && job.status !== "cancelled")) return null;
     const runId = asUuid(job.payload.runId);
     if (!runId) return null;
+    // A voice stage waiting on a worker's Kokoro: the run picks it up now instead of at the next look.
+    if (job.type === "tts") return runId;
     // A thinking stage waiting on its Muse task: the run picks it up now instead of at the next look.
     if (job.type === "agent-task" && isMuseThinkStage(job.payload.museStage)) return runId;
     if (job.type === "fetch-asset" || job.type === "agent-task") {

@@ -27,6 +27,7 @@ import type { FailureClass } from "../studio/pacing.ts";
 import { listEndpointHealth, recordEndpointResult } from "./endpoint-health.ts";
 import { audioIssues, capcutAudioIssues, decodeInlineSource, MAX_AUDIO_BYTES, parseAudioReply, sniffAudio } from "../studio/image-result.ts";
 import { chunkScript, kokoroVoiceFor } from "../studio/voice.ts";
+import { ttsWorkerChunks, TTS_WORKER_MODEL } from "../studio/tts-worker.ts";
 import { concatWav, isClipped, padWithSilence, parseWav } from "../studio/wav.ts";
 
 /**
@@ -314,7 +315,7 @@ export interface Narration {
   /** Hermes paths: the plugin in front of that engine (for example capcut). */
   plugin?: string;
   executor: ProvenanceExecutor;
-  via: "9router" | "hermes" | "direct";
+  via: "9router" | "hermes" | "direct" | "worker";
   voice: string;
   model: string;
   /** True only for voices someone has heard and checked (English). */
@@ -335,7 +336,9 @@ export interface Narration {
 export type SynthesisResult =
   | { ok: true; narration: Narration }
   /** `slow`: Hermes took the voice request but had not finished in time (a wait, like a rate limit). */
-  | { ok: false; error: string; busyUntil?: Date; slow?: { afterMs: number } };
+  | { ok: false; error: string; busyUntil?: Date; slow?: { afterMs: number }; workerTts?: undefined }
+  /** Only when synthesize was told a worker can speak: the next path is Kokoro on a worker, which the caller queues and waits for. */
+  | { ok: false; error: string; busyUntil?: undefined; slow?: undefined; workerTts: { voice: string; verified: boolean; chunks: string[]; notes: string[] } };
 
 function measure(audio: Uint8Array): { durationSec: number | null; clipped: boolean | null; deferredCheck: boolean } {
   try {
@@ -413,6 +416,24 @@ export async function hermesSpeak(engine: "kokoro" | "capcut", script: string, l
 }
 
 /** CapCut text to speech through Hermes. */
+/** The narration of a worker's Kokoro WAV (the job's narration.wav), measured like any other WAV. */
+export function workerNarration(audio: Uint8Array, o: { voice: string; verified: boolean; notes: string[] }): Narration {
+  return {
+    provider: "kokoro",
+    executor: "kokoro",
+    via: "worker",
+    voice: o.voice,
+    model: TTS_WORKER_MODEL,
+    voiceVerified: o.verified,
+    audio,
+    mime: "audio/wav",
+    ext: "wav",
+    ...measure(audio),
+    note: o.notes.length > 0 ? `Kokoro on a worker. Other voice paths: ${o.notes.join(" ")}` : "Kokoro on a worker.",
+    skipped: o.notes,
+  };
+}
+
 export function capcutSpeak(script: string, language: string): Promise<SynthesisResult> {
   return hermesSpeak("capcut", script, language);
 }
@@ -480,7 +501,7 @@ async function runAttempt(a: VoiceAttempt, text: string, language: string, snap:
  * Tries the voice paths in order (see planVoice). Every skipped path and every failure is kept and reported, so a
  * failed narration says what was tried and why. With nothing to try the message says what is missing.
  */
-export async function synthesize(script: string, language: string, opts: { ignoreQuarantine?: boolean } = {}): Promise<SynthesisResult> {
+export async function synthesize(script: string, language: string, opts: { ignoreQuarantine?: boolean; workerTts?: boolean } = {}): Promise<SynthesisResult> {
   const text = script.trim();
   if (!text) return { ok: false, error: "The script is empty, so there is nothing to narrate." };
   const snap = await readSnapshot();
@@ -499,12 +520,18 @@ export async function synthesize(script: string, language: string, opts: { ignor
   const plan = planFor(language, router, health);
   const notes = [...failures, ...plan.skipped];
   const attempts = plan.attempts.filter((a) => a.engine !== "kokoro-override");
-  if (attempts.length === 0) {
+  // Kokoro on a worker comes after the direct and 9router voices and before every Hermes path (it runs beside other workers).
+  const workerChoice = opts.workerTts ? kokoroVoiceFor(language, env().KOKORO_VOICE) : null;
+  const workerChunks = workerChoice ? ttsWorkerChunks(text) : null;
+  const workerRequest: SynthesisResult | null =
+    workerChoice && workerChunks ? { ok: false, error: "Kokoro on a worker", workerTts: { voice: workerChoice.voice, verified: workerChoice.verified, chunks: workerChunks, notes } } : null;
+  if (attempts.length === 0 && !workerRequest) {
     return { ok: false, error: [missingCapabilityMessage("voice", scanStateOf(snap)), ...notes].join(" ") };
   }
   let busyUntil: Date | undefined;
   let slow: { afterMs: number } | undefined;
   for (const a of attempts) {
+    if (workerRequest && (a.engine === "hermes-kokoro" || a.engine === "hermes-capcut")) return workerRequest;
     // Hermes is rate limited: its other voice path would only wait too, so the stage waits instead of failing.
     if (busyUntil && (a.engine === "hermes-kokoro" || a.engine === "hermes-capcut")) continue;
     const r = await runAttempt(a, text, language, snap);
@@ -517,6 +544,7 @@ export async function synthesize(script: string, language: string, opts: { ignor
       slow = r.slow;
     }
   }
+  if (workerRequest) return workerRequest;
   if (busyUntil) return { ok: false, error: `No voice yet. ${notes.join(" ")}`.slice(0, 900), busyUntil, ...(slow ? { slow } : {}) };
   return { ok: false, error: `No voice path worked. ${notes.join(" ")}`.slice(0, 900) };
 }
