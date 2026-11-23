@@ -799,6 +799,10 @@ export interface TrialOutcome {
   renderer?: string | null;
   /** A lab trial of a Draft or Lab pack (migration 0018): recorded, never counted toward promotion. */
   labTrial?: boolean;
+  /** The owner approved it anyway although its quality check failed (migration 0022): never a technical pass. */
+  qcWaived?: boolean;
+  /** The quality-check issues the owner waived. */
+  waivedIssues?: string[];
 }
 
 /** The QC part of an outcome, from the run's latest gate results. */
@@ -824,6 +828,8 @@ export interface TrialCounts extends TemplateEvidence {
   approved: number;
   rejected: number;
   undecided: number;
+  /** Approved anyway on a failed quality check: counted as trials, never as a technical pass. */
+  waived: number;
 }
 
 /**
@@ -836,7 +842,8 @@ export function trialCounts(outcomes: readonly TrialOutcome[], version: string):
   const scores = mine.flatMap((o) => (o.presentationScore === null ? [] : [o.presentationScore]));
   return {
     trials: mine.length,
-    passRate: mine.length ? mine.filter((o) => o.qcPassed).length / mine.length : 0,
+    // A waived quality check is never a technical pass, whatever the stored gate says.
+    passRate: mine.length ? mine.filter((o) => o.qcPassed && o.qcWaived !== true).length / mine.length : 0,
     meanPresentationScore: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0,
     assetFailures: mine.filter((o) => failed(o, "G-assets")).length,
     complianceFailures: mine.filter((o) => failed(o, "G-compliance")).length,
@@ -846,6 +853,7 @@ export function trialCounts(outcomes: readonly TrialOutcome[], version: string):
     approved: mine.filter((o) => o.ownerDecision === "approved").length,
     rejected: mine.filter((o) => o.ownerDecision === "rejected").length,
     undecided: mine.filter((o) => o.ownerDecision === null).length,
+    waived: mine.filter((o) => o.qcWaived === true).length,
   };
 }
 
@@ -856,6 +864,8 @@ export interface LabTrialCounts {
   meanPresentationScore: number | null;
   approved: number;
   rejected: number;
+  /** Approved anyway on a failed quality check. */
+  waived: number;
 }
 
 /** A pack's lab trials, every version: what the Styles page shows apart from the promotion counts. */
@@ -869,6 +879,7 @@ export function labTrialCounts(outcomes: readonly TrialOutcome[]): LabTrialCount
     meanPresentationScore: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null,
     approved: lab.filter((o) => o.ownerDecision === "approved").length,
     rejected: lab.filter((o) => o.ownerDecision === "rejected").length,
+    waived: lab.filter((o) => o.qcWaived === true).length,
   };
 }
 
@@ -885,6 +896,7 @@ export function packPromotionIssues(pack: StylePack, template: Template | null, 
   // A run without a presentation score is not counted as 0 and not as a pass: the rule needs the score measured.
   const unscored = counts.trials - counts.presentationScored;
   if (unscored > 0) issues.push(`${unscored} of ${counts.trials} trial run(s) have no presentation score yet (G-presentation); the rule needs it measured`);
+  if (counts.waived > 0) issues.push(`${counts.waived} of ${counts.trials} trial run(s) were approved with the quality check waived; a waived check never counts as a technical pass`);
   return issues;
 }
 
@@ -903,10 +915,10 @@ export function curationRecord(pack: StylePack, outcomes: readonly TrialOutcome[
     date: day(o.decidedAt ?? o.createdAt),
     kind: "trial-run",
     ref: `venstudio run ${o.runId}${o.videoAssetId ? `, video asset ${o.videoAssetId}` : ""}`,
-    result: o.qcPassed ? "pass" : "fail",
+    result: o.qcPassed && o.qcWaived !== true ? "pass" : "fail",
     notes: [
       `pack ${pack.id}@${o.packVersion}`,
-      `G-technical ${o.qcPassed ? "passed" : "failed"}`,
+      o.qcWaived ? `quality check waived by the owner (${(o.waivedIssues ?? []).join(" ") || "no issues recorded"})` : `G-technical ${o.qcPassed ? "passed" : "failed"}`,
       o.presentationScore !== null ? `presentation ${o.presentationScore}${o.ownerRubric ? ` (owner: ${rubricText(o.ownerRubric)})` : ""}` : "no presentation score",
       ...(o.hermesAdvisory ? [`Hermes advisory ${o.hermesAdvisory.score} (not counted)`] : []),
       ...(o.renderer ? [`renderer ${o.renderer}`] : []),
@@ -920,7 +932,7 @@ export function curationRecord(pack: StylePack, outcomes: readonly TrialOutcome[
       kind: "qc",
       ref: `venstudio Styles page, ${pack.id}@${pack.version}`,
       result: counts.passRate === 1 ? "pass" : "fail",
-      notes: `${counts.trials} trials, ${Math.round(counts.passRate * 100)}% technical pass, mean presentation ${Math.round(counts.meanPresentationScore)}, ${counts.assetFailures} asset and ${counts.complianceFailures} compliance failures, ${counts.claims} claims; owner approved ${counts.approved}, rejected ${counts.rejected}.`,
+      notes: `${counts.trials} trials, ${Math.round(counts.passRate * 100)}% technical pass${counts.waived > 0 ? ` (${counts.waived} waived by the owner)` : ""}, mean presentation ${Math.round(counts.meanPresentationScore)}, ${counts.assetFailures} asset and ${counts.complianceFailures} compliance failures, ${counts.claims} claims; owner approved ${counts.approved}, rejected ${counts.rejected}.`,
     });
   }
   return entries;

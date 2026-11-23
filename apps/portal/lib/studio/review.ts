@@ -2,8 +2,8 @@
  * Review inbox domain, pure. What kinds of items the owner sees, how they are ordered, which decisions each
  * kind offers and plain-language labels. Spec: docs/architecture-autonomous-studio.md (Phase 3).
  */
-import { qcSummary, type GateResult } from "./qc.ts";
-import { onlyTermsIssues } from "./production.ts";
+import { NO_AUDIO_ISSUE, qcSummary, SILENT_AUDIO_ISSUE, type GateId, type GateResult } from "./qc.ts";
+import { isTermsIssue, onlyTermsIssues } from "./production.ts";
 import { canRecheck, hasTermsIssues, type ProviderRowUse } from "./terms-review.ts";
 import { LENGTH_PROBLEMS, SOFT_PROBLEMS, type VoiceFix } from "./voice-fit.ts";
 
@@ -13,7 +13,8 @@ export type ReviewState = "open" | "approved" | "revision" | "rejected" | "super
  * "recheck" runs only the gate again on work that is already made (assets cards held up by provider terms, any voice
  * gate failure). The voice fixes: "fit" plays the narration at a small tempo change so it fits the shots (nothing is
  * made again), "tighten" has Hermes rewrite the script to a length that fits and records only the voice again,
- * "override" is the owner's Approve anyway for a soft voice problem.
+ * "override" is the owner's Approve anyway: for a soft voice problem, and for a final quality check that failed only
+ * checks that may be waived (qcWaiver).
  */
 export type ReviewDecision = "approve" | "revise" | "reject" | "retry" | "recheck" | "fit" | "tighten" | "override";
 export const REVIEW_DECISIONS: readonly ReviewDecision[] = ["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override"];
@@ -66,6 +67,114 @@ export interface DecisionContext {
   hermesRender?: boolean;
   /** False when the run has no voice stage (a Hermes skill that voices itself). */
   voiced?: boolean;
+  /** Final quality check cards: which gates failed and whether the style is narrated (payload.qc). */
+  qc?: QcFacts | null;
+  /** A trial, research or lab run: the owner's score is needed before the final decision, and it goes to curation. */
+  trial?: boolean;
+}
+
+/** What the final quality check card records about its gates (payload.qc), so its choices can be worked out. */
+export interface QcFacts {
+  failedGates: GateId[];
+  /** The style's template is narrated: a silent or missing audio track is then never waived. */
+  narrated: boolean;
+}
+
+const QC_GATE_IDS: readonly GateId[] = ["G-script", "G-storyboard", "G-assets", "G-voice", "G-technical", "G-presentation", "G-compliance", "G-claims"];
+
+/** payload.qc as stored, or null. */
+export function parseQcFacts(raw: unknown): QcFacts | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (!Array.isArray(o.failedGates) || typeof o.narrated !== "boolean") return null;
+  const failedGates = QC_GATE_IDS.filter((g) => (o.failedGates as unknown[]).includes(g));
+  return { failedGates, narrated: o.narrated };
+}
+
+/** Why a failed final check cannot be approved anyway. */
+export type WaiverBlock = "terms" | "provenance" | "audio";
+
+export interface QcWaiver {
+  /** Approve anyway may be offered: there are issues and none of them blocks. */
+  waivable: boolean;
+  blocks: WaiverBlock[];
+  /** Short names of the failed checks, for the hint and the card. */
+  checks: string[];
+}
+
+/** Gates whose failure is about rights, provenance or copyright: never waived. */
+const NEVER_WAIVED_GATES: readonly GateId[] = ["G-assets", "G-compliance", "G-claims"];
+/** Provenance, licence and copyright lines (provenance.ts, assetsGate, complianceGate, claimsGate) on a card made before payload.qc. */
+const PROVENANCE_RE =
+  /no licence or permission note|reference video can be studied|add an origin link|shows a real person|shows a brand logo|asset with a provenance record|assets are not allowed in this template|is not allowed in this template|^Vision check:|copyright checklist|Music has no licence|YouTube reports a/i;
+
+const CHECK_NAMES: ReadonlyArray<[RegExp, string]> = [
+  [/^A shot longer than allowed/, "shot length"],
+  [/hook window/, "hook window"],
+  [/^Loudness/, "loudness"],
+  [/^True peak/, "true peak"],
+  [/^Black frames/, "black frames"],
+  [/^Frozen picture/, "frozen picture"],
+  [/^Silence for/, "silence"],
+  [/^Resolution/, "resolution"],
+  [/^Frame rate/, "frame rate"],
+  [/^Duration/, "duration"],
+];
+
+/** A short name for one quality-check issue ("shot length", "loudness"), or the issue itself. */
+export function checkName(issue: string): string {
+  if (issue === SILENT_AUDIO_ISSUE) return "silent audio";
+  if (issue === NO_AUDIO_ISSUE) return "no audio track";
+  if (isTermsIssue(issue)) return "provider terms";
+  for (const [re, name] of CHECK_NAMES) if (re.test(issue)) return name;
+  return issue.length > 80 ? `${issue.slice(0, 77)}...` : issue;
+}
+
+/**
+ * Whether a failed final quality check may be approved anyway by the owner. Never for provider terms (not confirmed or
+ * refused), provenance or copyright problems (an assets, compliance or claims gate), or a silent or missing audio track
+ * on a narrated style. Everything else the technical check measures (shot length, the hook window, loudness, black or
+ * frozen frames, resolution, duration) and a voice problem the owner already let through may be waived. A card made
+ * before payload.qc counts as narrated.
+ */
+export function qcWaiver(issues: readonly string[], facts: QcFacts | null | undefined): QcWaiver {
+  const blocks: WaiverBlock[] = [];
+  const add = (b: WaiverBlock) => {
+    if (!blocks.includes(b)) blocks.push(b);
+  };
+  if (issues.some(isTermsIssue)) add("terms");
+  if ((facts?.failedGates ?? []).some((g) => NEVER_WAIVED_GATES.includes(g)) || issues.some((i) => PROVENANCE_RE.test(i))) add("provenance");
+  if (facts?.narrated !== false && issues.some((i) => i === SILENT_AUDIO_ISSUE || i === NO_AUDIO_ISSUE)) add("audio");
+  const checks = [...new Set(issues.map(checkName))];
+  return { waivable: issues.length > 0 && blocks.length === 0, blocks, checks };
+}
+
+/**
+ * The line on a failed final quality check that says why there is no plain Approve, and what the owner can do.
+ * Null for every other card.
+ */
+export function qcFailureText(kind: ReviewKind, stage: string, ctx: DecisionContext & { isOwner?: boolean } = {}): string | null {
+  if (kind !== "gate-failure" || stage !== "qc") return null;
+  const issues = ctx.issues ?? [];
+  const w = qcWaiver(issues, ctx.qc);
+  const what = w.checks.length > 0 ? w.checks.join(", ") : "see the issues above";
+  if (w.waivable) {
+    const who = ctx.isOwner ? "You can approve anyway" : "The owner can approve anyway";
+    const score = !ctx.trial ? "" : ctx.isOwner ? " Save your score first; the curation record marks the check as waived." : " The owner's score is needed first, and the curation record marks the check as waived.";
+    return `The quality check failed: ${what}. ${who}; it is recorded.${score}`;
+  }
+  const why: string[] = [];
+  if (w.blocks.includes("terms")) {
+    why.push("Provider terms are not confirmed or were refused for some of this work, which is never waived: confirm them in Settings, then send a revision about the images or the voice so that step is checked again.");
+  }
+  if (w.blocks.includes("provenance")) {
+    why.push("A provenance or copyright problem (a licence, permission or source) is never waived: send a revision so the affected work is replaced.");
+  }
+  if (w.blocks.includes("audio")) {
+    const redo = ctx.hermesRender ? "Hermes redoes the video with your note" : "the video is rendered again (the mix) with the same narration";
+    why.push(`A narrated video with silent or missing sound is never approved: send a revision about the sound, and ${redo}.`);
+  }
+  return `The quality check failed: ${what}. ${why.join(" ")}`;
 }
 
 const VOICE_ONLY = "The narration will be recorded again only for a note about the voice itself (its accent, pronunciation, or a robotic or wrong voice).";
@@ -132,6 +241,9 @@ export function decisionOptions(kind: ReviewKind, ctx: DecisionContext = {}): Re
     case "gate-failure": {
       const stage = ctx.stage ?? "";
       if (stage === "voice") return voiceOptions(ctx.issues ?? [], ctx.voice, ctx.tempoReady === true);
+      // The final video: Approve anyway (the owner's, audited) when every failed check may be waived. Never for
+      // provider terms, provenance or a silent narrated video (qcWaiver); those keep Try again and a revision.
+      if (stage === "qc") return qcWaiver(ctx.issues ?? [], ctx.qc).waivable ? ["retry", "override", "revise", "reject"] : ["retry", "revise", "reject"];
       if (!canRecheck(kind, stage, ctx.issues)) return ["retry", "revise", "reject"];
       // A reel whose own voice is held up only by provider terms: the terms are checked again, nothing is rendered again.
       if (stage === "render") return ["recheck", "retry", "revise", "reject"];
@@ -141,6 +253,17 @@ export function decisionOptions(kind: ReviewKind, ctx: DecisionContext = {}): Re
     case "stage-error":
       return ["retry", "revise", "reject"];
   }
+}
+
+/**
+ * Why the server refuses this decision on this card, or null: a choice the card does not offer, or Approve anyway by
+ * someone who is not the owner. decideReview checks this before anything is written; a trial run's final decision
+ * also needs the owner's score (presentation.ts presentationRefusal).
+ */
+export function decisionRefusal(kind: ReviewKind, decision: ReviewDecision, ctx: DecisionContext & { isOwner?: boolean } = {}): string | null {
+  if (!decisionOptions(kind, ctx).includes(decision)) return `${reviewTitle(kind, ctx.stage ?? "")}: that choice is not available here`;
+  if (decision === "override" && ctx.isOwner !== true) return "Only the owner can approve anyway";
+  return null;
 }
 
 export const DECISION_LABELS: Record<ReviewDecision, string> = {
@@ -186,6 +309,11 @@ export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: 
   if (decision === "tighten") {
     const to = fix?.tightenSec ? ` to about ${sec(fix.tightenSec)} s` : " to fit the shots";
     return `Hermes rewrites the script${to} with the same beats, and only the voice is recorded again. ${ctx.pictures === false ? "The plan is kept." : "The storyboard and every image are kept."}`;
+  }
+  if (decision === "override" && stage === "qc") {
+    const checks = qcWaiver(ctx.issues ?? [], ctx.qc).checks.join(", ");
+    const trial = ctx.trial ? " Save your score first; the curation record marks the quality check as waived and it never counts as a technical pass." : "";
+    return `Owner only. Approves this video although these checks failed: ${checks}. Your decision is recorded in the audit log.${trial}`;
   }
   if (decision === "override") return "Owner only. Uses this narration as it is, after you have listened to it. Your decision is recorded in the audit log.";
   if (decision === "reject") {
@@ -268,6 +396,8 @@ export interface ReviewPayload {
    * shot, the brief's project text, and a note on what the card shows.
    */
   plan?: { kind: PlanKind; lines: string[]; text?: string; note?: string };
+  /** Final quality check cards: the gates that failed and whether the style is narrated. Read with parseQcFacts. */
+  qc?: QcFacts;
 }
 
 /** The kinds of plan a card can show (plan-review.ts). */

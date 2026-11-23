@@ -54,7 +54,7 @@ import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill }
 import { htmlDesignGate, htmlDesignPrompt, validateHtmlDesign, type DesignBrief } from "../studio/html-design.ts";
 import { packVendoredFiles } from "./style-packs.ts";
 import { VIDEO_FORMATS } from "../studio/catalog.ts";
-import { decisionOptions, reviewTitle, stageLabel, tightenLabel, videoRevisionMessage, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
+import { decisionRefusal, parseQcFacts, stageLabel, tightenLabel, videoRevisionMessage, type QcFacts, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
 import { addGateIssues, finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
 import { cancelRunWork, narrationTempoReady, planScriptFit, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
 import { paceForRun } from "./speech-rate.ts";
@@ -645,6 +645,8 @@ export interface StageConclusion {
   voice?: VoiceFix;
   /** Preview: the plan the stills show (the scene spec or the page), shown on the card with the stills. */
   plan?: ReviewPayload["plan"];
+  /** The final quality check: which gates failed and whether the style is narrated (payload.qc). */
+  qcFacts?: QcFacts;
 }
 
 /** What concludeStage decided, worked out before any write. */
@@ -696,6 +698,7 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
     ...(outcome.voice ? { voice: outcome.voice } : {}),
     ...(isPlanStage(stage) ? planReview(stage, outcome.result, runStagesOf(run.config)) : {}),
     ...(outcome.plan ? { plan: outcome.plan } : {}),
+    ...(outcome.qcFacts ? { qc: outcome.qcFacts } : {}),
   };
   return { decision, base, summary, issues, reason, detail, autoRevisions, result: outcome.result };
 }
@@ -975,9 +978,9 @@ export async function decideReview(input: {
     if (decision === "recheck" || decision === "fit") return { ok: false, error: "Use Check again for this" };
     const voiceFix = parseVoiceFix(payload.voice);
     // tempoReady only matters for "fit", which goes through recheckReview.
-    const options = decisionOptions(kind, { stage, issues: storedIssues, voice: voiceFix, tempoReady: true });
-    if (!options.includes(decision)) return { ok: false, error: `${reviewTitle(kind, stage)}: that choice is not available here` };
-    if (decision === "override" && input.isOwner !== true) return { ok: false, error: "Only the owner can approve anyway" };
+    const qcFacts = parseQcFacts(payload.qc);
+    const refused = decisionRefusal(kind, decision, { stage, issues: storedIssues, voice: voiceFix, tempoReady: true, qc: qcFacts, isOwner: input.isOwner === true });
+    if (refused) return { ok: false, error: refused };
     // A trial's final video is scored by the owner before it is decided (the curation log needs the score).
     if (stage === "qc") {
       const refusal = await scoreRefusal(input.reviewId, decision);
@@ -1049,7 +1052,8 @@ export async function decideReview(input: {
         return;
       }
       if (decision === "override") {
-        // Only offered for soft voice problems (decisionOptions); never for terms, clipping or language.
+        // Only offered for soft voice problems and for a final check whose failures may be waived (decisionOptions);
+        // never for provider terms, clipping, language, provenance or a silent narrated video.
         if (latest.state !== "waiting-human") throw new DecisionError("This stage is no longer waiting for you");
         await approveStage(tx, runId, latest.id as string, stage, { auto: false, override: { by: input.userId, at: new Date().toISOString(), issues: storedIssues } });
         message = `Approved anyway. ${approveMessage(stage, nextRunStage(stage, stages)).replace(/^Approved\. /, "")}`;
@@ -1104,7 +1108,7 @@ export async function decideReview(input: {
     // The owner's final decision on a Trial pack's video goes into the curation log.
     if (stage === "qc") await recordTrialOutcome(runId);
     const action = fitRequest ? "review.fit-script" : `review.${decision}`;
-    await safeAudit({ userId: input.userId, action, target: input.reviewId, detail: { runId, stage, kind, ...(decision === "override" ? { issues: storedIssues } : {}), ...(fitRequest ? { fit: fitRequest } : {}) } });
+    await safeAudit({ userId: input.userId, action, target: input.reviewId, detail: { runId, stage, kind, ...(decision === "override" ? { issues: storedIssues } : {}), ...(decision === "override" && stage === "qc" ? { waived: "quality check" } : {}), ...(fitRequest ? { fit: fitRequest } : {}) } });
     return { ok: true, runId, message };
   } catch (err) {
     if (err instanceof DecisionError) return { ok: false, error: err.message };

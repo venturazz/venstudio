@@ -32,6 +32,7 @@ import {
   trialCounts,
   type StylePack,
   type TrialOutcome,
+  labTrialCounts,
 } from "./style-registry.ts";
 
 const STYLES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../styles");
@@ -426,4 +427,34 @@ test("the publishing guard: the autonomy policy never approves or publishes a tr
     assert.equal(guardFinalDecision(d, null).action, action);
   }
   for (const action of ["ask-owner", "revise", "block"]) assert.equal(guardFinalDecision({ action, reason: "r" }, hermes).action, action);
+});
+
+test("a quality check the owner waived (Approve anyway) is recorded as waived and never counts as a technical pass", () => {
+  const p = pack("explainer-flat-vector");
+  const five = [1, 2, 3, 4, 5].map((n) => outcome(n));
+  const failedTech = [{ gate: "G-technical" as const, passed: false, score: null }, { gate: "G-presentation" as const, passed: true, score: 85 }];
+  const waived = outcome(5, { qcPassed: false, gates: failedTech, qcWaived: true, waivedIssues: ["A shot longer than allowed: 9.2 s, limit 6 s"] });
+  const withWaived = [...five.slice(0, 4), waived];
+  const counts = trialCounts(withWaived, "1.0.1");
+  assert.equal(counts.trials, 5);
+  assert.equal(counts.waived, 1);
+  assert.equal(counts.approved, 5, "the owner's approval is still the owner's decision");
+  assert.equal(counts.passRate, 0.8);
+  const issues = packPromotionIssues(p, signedTemplate(), counts);
+  assert.ok(issues.some((i) => /pass rate is 80 percent/.test(i)), issues.join(" | "));
+  assert.ok(issues.some((i) => i === "1 of 5 trial run(s) were approved with the quality check waived; a waived check never counts as a technical pass"), issues.join(" | "));
+  // Even a stored gate that says passed is not a pass once the owner waived the check.
+  const odd = trialCounts([...five.slice(0, 4), outcome(5, { qcWaived: true })], "1.0.1");
+  assert.equal(odd.passRate, 0.8);
+  assert.equal(trialCounts(five, "1.0.1").waived, 0);
+  // The curation record says so, with the issues.
+  const record = curationRecord(p, withWaived, counts);
+  const entry = record.find((e) => e.ref.includes(waived.runId))!;
+  assert.equal(entry.result, "fail");
+  assert.match(entry.notes, /quality check waived by the owner \(A shot longer than allowed: 9\.2 s, limit 6 s\)/);
+  assert.doesNotMatch(entry.notes, /G-technical passed/);
+  assert.match(record[record.length - 1].notes, /5 trials, 80% technical pass \(1 waived by the owner\)/);
+  // Lab trials count their waivers apart.
+  const lab = labTrialCounts([outcome(6, { labTrial: true, qcWaived: true, qcPassed: false, gates: failedTech })]);
+  assert.equal(lab.waived, 1);
 });

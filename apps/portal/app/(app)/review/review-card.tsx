@@ -5,7 +5,7 @@ import { useActionState } from "react";
 import { Alert, Badge, Card, CardBody, Input, Textarea } from "@/components/ui.tsx";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE } from "@/lib/studio/style-registry.ts";
 import { SubmitButton } from "@/components/client.tsx";
-import { decisionHint, decisionLabel, decisionOptions, reviewTitle, stageLabel, type ReviewKind, type ReviewPayload } from "@/lib/studio/review.ts";
+import { decisionHint, decisionLabel, decisionOptions, qcFailureText, reviewTitle, stageLabel, type ReviewKind, type ReviewPayload } from "@/lib/studio/review.ts";
 import type { BlockingRow } from "@/lib/studio/terms-review.ts";
 import { decideReviewAction, setTermsOnCardAction } from "./actions.ts";
 import { PresentationBlock, type AdvisoryView, type PresentationView } from "./presentation-form.tsx";
@@ -273,8 +273,12 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
     pictures: item.pictures !== false,
     hermesRender: item.hermesRender === true,
     voiced: item.voiced !== false,
+    qc: p.qc ?? null,
+    trial: item.trial === true,
   };
   const actions = decisionOptions(item.kind, ctx);
+  // A failed final check says why there is no plain Approve, and whether Approve anyway is there.
+  const qcFailure = qcFailureText(item.kind, item.stage, { ...ctx, isOwner: item.isOwner });
   const reviseHint = decisionHint("revise", item.kind, item.stage, ctx);
   const rejectHint = decisionHint("reject", item.kind, item.stage, ctx);
   // The choices shown as their own buttons; revise and reject live in the note form below.
@@ -386,6 +390,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
             </ul>
             <NotesBlock notes={p.notes} />
             <PlanBlock payload={p} />
+            {qcFailure && (
+              <p className="break-words rounded-lg border border-warn/60 p-3 text-sm" data-testid="qc-failure-note">
+                {qcFailure}
+              </p>
+            )}
             <MediaBlock stage={item.stage} payload={p} termsShown={item.blocking !== null} />
             {item.stage === "qc" && p.media?.videoAssetId && (
               <PresentationBlock reviewId={item.id} isOwner={item.isOwner} trial={item.trial === true} presentation={item.presentation ?? null} advisory={item.advisory ?? null} />

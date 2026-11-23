@@ -79,7 +79,7 @@ export async function scorePresentationAction(_prev: FormState, fd: FormData): P
   if (!r.ok) return fail(fd, r.error);
   revalidatePath(`/studio/runs/${r.runId}`);
   revalidatePath("/studio/styles");
-  return { ok: `Saved: presentation ${r.score}/100 (${r.passed ? "passes" : "below the bar"}).` };
+  return { ok: `Saved: presentation ${r.score}/100 (${r.passed ? "at or above the bar" : "below the bar"}). The video is not decided yet: approve or reject it on the card.` };
 }
 
 const STATUS_TEXT = { yes: "Commercial use OK", no: "Not for commercial use", unknown: "Not confirmed" } as const;

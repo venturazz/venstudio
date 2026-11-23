@@ -343,6 +343,19 @@ later" if an enrolled worker cannot apply it (a job is queued under one capabili
 claim it and ignore the field). Without a fit the payload is unchanged. Clipping, language, terms and copyright problems
 are never approvable, and a length problem is not either (the render could not fit it).
 
+**The final card (quality check)**. When the gates pass, the card is an approval with **Approve**, for every run:
+`guardFinalDecision` only stops trial, research, html-design and lab runs from being approved or published by the
+policy; the owner's Approve is theirs, and `publishRefusal` still refuses publishing. The owner's presentation score
+never changes the card's kind (G-presentation is not one of the gates the qc card is made from). When the check fails,
+the card says why there is no plain Approve (`qcFailureText`). If every failure may be waived (`qcWaiver`: shot length,
+hook window, loudness, black or frozen frames, resolution, duration, a voice problem already let through), the owner
+gets **Approve anyway** (decision `override`, owner only, audit `review.override` with `waived: "quality check"`);
+a trial run needs the saved score first. It is never offered for provider terms, a provenance or copyright problem
+(G-assets, G-compliance, G-claims), or a silent or missing track on a narrated style; the card names the path instead.
+The card carries `payload.qc` (`failedGates`, `narrated`) for this. A waived trial outcome is stored with
+`qc_waived` and `waived_issues` (migration 0022), never counts as a technical pass in `trialCounts`, and Styles shows it
+as waived.
+
 **Send revision on a voice card** (`voiceRevisionRoute`): a note about length or speed ("shorter", "too long",
 "faster", "fit", "seconds" ...) takes the Tighten path with the note as a DATA block; a note about the voice ("voice",
 "accent", "robotic" ...) records the voice again; anything else is sorted as before (`revisionTarget`). Before this, a

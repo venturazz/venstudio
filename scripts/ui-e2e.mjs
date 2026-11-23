@@ -1312,6 +1312,27 @@ try {
     await card.getByTestId("presentation-score").getByRole("button", { name: /^(Save|Update) score$/ }).click();
     await card.getByTestId("presentation-value").getByText(shown, { exact: true }).waitFor({ timeout: 20_000 });
   }
+  /**
+   * A final (qc) card offers what its run's gates say, read from this run's newest gate rows: gates that pass show a
+   * plain Approve and no Approve anyway; a failed check never shows a plain Approve. Returns "pass", "fail" or null
+   * (no database).
+   */
+  let plainApproveCards = 0;
+  async function checkQcChoices(runId, card, label) {
+    const passed = dbValue(`SELECT coalesce(bool_and(passed), false)::text FROM (SELECT DISTINCT ON (gate) passed FROM qc_reports
+      WHERE run_id = '${runId}' AND gate IN ('G-assets', 'G-voice', 'G-technical') ORDER BY gate, created_at DESC) g`);
+    if (passed === null) return null;
+    const kind = await card.getAttribute("data-kind");
+    const plain = await card.getByRole("button", { name: "Approve", exact: true }).count();
+    const anyway = await card.getByRole("button", { name: "Approve anyway", exact: true }).count();
+    const ok = passed === "true" ? kind === "approval" && plain === 1 && anyway === 0 : kind === "gate-failure" && plain === 0;
+    if (!ok) {
+      await dumpPipeline(m, `/studio/runs/${runId}`, `${label}: the final card's choices do not match its gates`);
+      throw new Error(`${label}: gates passed=${passed}, but the qc card is ${kind} with ${plain} Approve and ${anyway} Approve anyway button(s)`);
+    }
+    if (passed === "true") plainApproveCards++;
+    return passed === "true" ? "pass" : "fail";
+  }
   async function assertNoOverflow(p, url) {
     const wide = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     if (wide) throw new Error(`mobile layout overflows horizontally on ${url}`);
@@ -1688,6 +1709,10 @@ try {
   await assertNoOverflow(m, "/review (quality check)");
   await shot("24-review-qc-mobile", m);
   const qc = m.locator('[data-testid="review-card"][data-stage="qc"]').first();
+  {
+    const qcRunId = /([0-9a-f-]{36})$/.exec((await qc.getByRole("link", { name: "Open run", exact: true }).getAttribute("href")) ?? "")?.[1] ?? "";
+    if (qcRunId) await checkQcChoices(qcRunId, qc, "production");
+  }
   // A trial run's final video is scored by the owner on its card before the decision (hook, pacing, legibility,
   // visual polish, audio; 1-5 stars, 0-100 on the server). Deciding first is refused by name.
   const approveQc = qc.getByRole("button", { name: "Approve", exact: true });
@@ -1922,6 +1947,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await m.goto(`${APP}/review`);
     const card = cardOf(runId, "qc").first();
     await scoreVideo(card, stars, shown);
+    await checkQcChoices(runId, card, `qc card of ${runId}`);
     const approve = card.getByRole("button", { name: "Approve", exact: true });
     if (await approve.isVisible().catch(() => false)) await approve.click();
     else await card.getByRole("button", { name: "Reject", exact: true }).click();
@@ -1984,9 +2010,24 @@ async function scoreAndDecide(runId, stars, shown) {
     if (!prodRunIdForTrials || stored === null) console.log("   no database access (UI_DB unset) or no finished production: the batch renders are skipped");
     else {
       const before = fakeStats.hermesSkills.length;
-      await reuseProduction(batchIds[0], "batch trial /graph");
-      await reuseProduction(batchIds[1], "batch trial /dan-koe");
-      await driveToQc(batchIds, "batch trial");
+      // Approve anyway: the /graph trial's final check is made to fail one check the owner may waive. Its template's
+      // hook window (read only by the quality check, never by the render) is set to 1 ms while the two runs are rendered
+      // and checked, then put back. The /dan-koe run has its own template and is not touched.
+      const waiveRun = batchIds[0];
+      const waiveTpl = dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${waiveRun}'`) ?? "";
+      if (!waiveTpl || waiveTpl === dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${batchIds[1]}'`)) throw new Error(`the /graph batch run's template "${waiveTpl}" is not its own`);
+      if (dbValue(`SELECT coalesce(config->>'format', 'short') FROM pipeline_runs WHERE id = '${waiveRun}'`) !== "short") throw new Error("the /graph batch run is not a short: the hook window does not apply");
+      const tplVersion = `FROM templates t WHERE t.id = v.template_id AND v.version = t.current_version AND t.id = '${waiveTpl}'`;
+      const hookBefore = dbValue(`SELECT coalesce(v.spec->'pacing'->>'hookByMs', '') FROM template_versions v, templates t WHERE t.id = v.template_id AND v.version = t.current_version AND t.id = '${waiveTpl}'`) ?? "";
+      if (!/^\d+$/.test(hookBefore)) throw new Error(`the ${waiveTpl} template has no hook window ("${hookBefore}")`);
+      dbExec(`UPDATE template_versions v SET spec = jsonb_set(v.spec, '{pacing,hookByMs}', '1'::jsonb) ${tplVersion}`);
+      try {
+        await reuseProduction(batchIds[0], "batch trial /graph");
+        await reuseProduction(batchIds[1], "batch trial /dan-koe");
+        await driveToQc(batchIds, "batch trial");
+      } finally {
+        dbExec(`UPDATE template_versions v SET spec = jsonb_set(v.spec, '{pacing,hookByMs}', '${hookBefore}'::jsonb) ${tplVersion}`);
+      }
       const skills = fakeStats.hermesSkills.slice(before).sort();
       if (JSON.stringify(skills) !== JSON.stringify(["/dan-koe", "/graph"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /graph and /dan-koe`);
       for (const [id, skill] of [[batchIds[0], "graph"], [batchIds[1], "dan-koe"]]) {
@@ -1996,13 +2037,69 @@ async function scoreAndDecide(runId, stars, shown) {
         await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
         await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
       }
-      await scoreAndDecide(batchIds[0], { hook: 4, pacing: 4, legibility: 5, polish: 4, audio: 3 }, "75/100 by the owner");
+      {
+        // The /graph trial's final check failed the hook window (a check the owner may waive) and nothing that is never
+        // waived: its card has no plain Approve, says why, and offers the owner Approve anyway naming the failed check.
+        const techIssues = dbValue(`SELECT details->'issues' FROM qc_reports WHERE run_id = '${waiveRun}' AND gate = 'G-technical' ORDER BY created_at DESC LIMIT 1`) ?? "";
+        if (!/hook window/.test(techIssues) || /audio is silent|no audio stream|commercial-use terms|cannot be published/.test(techIssues)) {
+          await dumpPipeline(m, `/studio/runs/${waiveRun}`, "the /graph trial's quality check did not fail only waivable checks");
+          throw new Error(`the /graph trial's G-technical issues are ${techIssues}`);
+        }
+        await m.goto(`${APP}/review`);
+        const card = cardOf(waiveRun, "qc").first();
+        if ((await card.getAttribute("data-kind")) !== "gate-failure") throw new Error(`the /graph trial's final card is "${await card.getAttribute("data-kind")}", not a failed check`);
+        if ((await checkQcChoices(waiveRun, card, "the /graph trial (waived)")) !== "fail") throw new Error("the /graph trial's gates did not fail");
+        await card
+          .getByTestId("qc-failure-note")
+          .getByText(/^The quality check failed: (.+, )?hook window(, .+)?\. You can approve anyway; it is recorded\. Save your score first; the curation record marks the check as waived\.$/)
+          .waitFor();
+        const anyway = card.getByRole("button", { name: "Approve anyway", exact: true });
+        await anyway.waitFor();
+        await card.getByText(/^Owner only\. Approves this video although these checks failed: (.+, )?hook window(, .+)?\. Your decision is recorded in the audit log\. Save your score first/).waitFor();
+        // A trial run: Approve anyway before the score is refused by name, like any final decision.
+        await anyway.click();
+        await card.getByText(/^This is a trial run: the owner scores the video/).waitFor();
+        await scoreVideo(card, { hook: 4, pacing: 4, legibility: 5, polish: 4, audio: 3 }, "75/100 by the owner");
+        await card.getByTestId("presentation-decides-not").getByText("Saving a score does not approve the video. It is recorded with your decision; approve or reject the video on this card.", { exact: true }).waitFor();
+        if ((await card.getByRole("button", { name: "Approve", exact: true }).count()) !== 0) throw new Error("a saved score turned the failed final card into a plain Approve");
+        await assertNoOverflow(m, "/review (quality check, approve anyway)");
+        await shot("29a-review-qc-approve-anyway-mobile", m);
+        const reviewId = (await card.getAttribute("data-review-id")) ?? "";
+        await card.getByRole("button", { name: "Approve anyway", exact: true }).click();
+        await m.locator(`[data-testid="review-card"][data-review-id="${reviewId}"]`).waitFor({ state: "detached", timeout: 30_000 });
+        // The run is done and approved; the qc stage keeps the override; the curation row says waived, with the issue,
+        // and never a technical pass; the owner's decision is in the audit log.
+        let waivedRow = "";
+        for (let i = 0; i < 20; i++) {
+          waivedRow =
+            dbValue(`SELECT r.state || ' ' || ri.state || ' ' || (s.output ? 'override')::text || ' ' || coalesce(o.owner_decision, 'none') || ' ' || o.qc_waived::text || ' ' ||
+                (o.waived_issues::text LIKE '%hook window%')::text || ' ' || coalesce(o.qc_passed::text, 'null') || ' ' || coalesce(o.presentation_score::text, 'none')
+              FROM pipeline_runs r
+              JOIN review_items ri ON ri.id = '${reviewId}' AND ri.run_id = r.id
+              JOIN LATERAL (SELECT output FROM pipeline_stages WHERE run_id = r.id AND stage = 'qc' ORDER BY attempt DESC LIMIT 1) s ON true
+              LEFT JOIN style_trial_outcomes o ON o.run_id = r.id
+              WHERE r.id = '${waiveRun}'`) ?? "";
+          if (waivedRow === "done approved true approved true true false 75") break;
+          await m.waitForTimeout(1000);
+        }
+        if (waivedRow !== "done approved true approved true true false 75") {
+          await dumpPipeline(m, `/studio/runs/${waiveRun}`, "Approve anyway was not recorded as a waived approval");
+          throw new Error(`after Approve anyway the /graph trial reads "${waivedRow}", expected "done approved true approved true true false 75"`);
+        }
+        const audited = dbValue(`SELECT count(*) FROM audit_log WHERE action = 'review.override' AND target = '${reviewId}' AND detail->>'waived' = 'quality check' AND detail->>'runId' = '${waiveRun}'`);
+        if (audited !== "1") throw new Error(`Approve anyway on the /graph trial has ${audited} audit row(s)`);
+      }
       await scoreAndDecide(batchIds[1], { hook: 5, pacing: 5, legibility: 5, polish: 5, audio: 5 }, "100/100 by the owner");
       await shot("29b-review-batch-scored-mobile", m);
       await page.goto(`${APP}/studio/styles`);
       await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
       const research = page.getByTestId("style-group-research");
-      await research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 75 \(1 scored\) · owner (approved 1, rejected 0|approved 0, rejected 1)$/).waitFor();
+      // The /graph trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
+      const graphRecord = research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record");
+      await graphRecord.getByText(/^Trial runs of v0\.2\.0: 1 · technical pass 0% \(1 waived by the owner, not counted as a pass\) · mean presentation 75 \(1 scored\) · owner approved 1, rejected 0$/).waitFor();
+      await graphRecord.getByTestId("trial-waived").waitFor();
+      await graphRecord.getByTestId("promotion-issues").getByText("1 of 1 trial run(s) were approved with the quality check waived; a waived check never counts as a technical pass", { exact: true }).waitFor();
+      await research.getByTestId("style-pack-hermes-graph").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
       await research.getByTestId("style-pack-hermes-dan-koe").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
       await research.getByTestId("style-pack-hermes-graph").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
       await shot("29c-styles-research-scored-desktop");
@@ -2537,6 +2634,11 @@ async function scoreAndDecide(runId, stars, shown) {
     if (await page.getByTestId("stage-assets").count()) throw new Error("the hermes-skill run page shows an assets stage");
     console.log(`   hermes-skill: ${[...seen].join(", ")} approved; the brief (${asked[0].briefShots} shots) reached Hermes; 0 image asks`);
   }
+  // Every final card decided above was checked against its run's gates (checkQcChoices); this says how many passed.
+  console.log(`   final cards whose gates passed and showed a plain Approve (no Approve anyway): ${plainApproveCards}`);
+  // The production run's own final check passes its gates in CI (assets, technical and voice), so at least that card
+  // was checked for a plain Approve.
+  if (dbValue("SELECT 1") !== null && plainApproveCards < 1) throw new Error("no final card with passing gates was seen, so the plain Approve was never checked");
 
   step("production: the render mixed the tagged music track as its bed, never the narration");
   {

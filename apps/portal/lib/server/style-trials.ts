@@ -10,6 +10,13 @@ const asUuid = (v: unknown): string | null => (typeof v === "string" && UUID_RE.
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const RENDERER_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 
+/** The issues of the owner's Approve anyway stored on the qc stage output (director.ts decideReview), or null. */
+function waiverOf(raw: unknown): string[] | null {
+  if (!isRecord(raw)) return null;
+  const issues = Array.isArray(raw.issues) ? raw.issues.filter((i): i is string => typeof i === "string").map((i) => i.slice(0, 300)).slice(0, 30) : [];
+  return issues;
+}
+
 /**
  * Records (or refreshes) what a Trial-pack run showed: the pack version it rendered with, the QC gates, the
  * presentation score, the finished video and the owner's final decision. Idempotent: it re-reads the run and upserts
@@ -65,18 +72,21 @@ export async function recordTrialOutcome(runId: string): Promise<void> {
     const decidedAt = review?.decided_at instanceof Date ? review.decided_at : null;
     // A lab trial (a Draft or Lab pack run from Styles or a study) is recorded, never counted toward promotion.
     const labTrial = pack.lab === true;
+    // Approved anyway on a failed quality check (Review, decision "override"): recorded as waived, with its issues, and
+    // never counted as a technical pass (migration 0022).
+    const waiver = decision === "approved" ? waiverOf(qcOut.override) : null;
     await sql`
       INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision, decided_by, decided_at, video_asset_id,
-                                        owner_rubric, presentation_by, hermes_advisory, renderer, lab_trial)
+                                        owner_rubric, presentation_by, hermes_advisory, renderer, lab_trial, qc_waived, waived_issues)
       VALUES (${runId}, ${pack.id}, ${version}, ${qc.qcPassed}, ${JSON.stringify(gates)}::text::jsonb, ${qc.presentationScore},
               ${decision}, ${decidedBy}, ${decidedAt}, ${videoAssetId},
               ${rubric ? JSON.stringify(rubric) : null}::text::jsonb, ${presentationBy}, ${advisory ? JSON.stringify(advisory) : null}::text::jsonb, ${renderer},
-              ${labTrial})
+              ${labTrial}, ${waiver !== null}, ${JSON.stringify(waiver ?? [])}::text::jsonb)
       ON CONFLICT (run_id) DO UPDATE SET pack_version = EXCLUDED.pack_version, qc_passed = EXCLUDED.qc_passed, qc_gates = EXCLUDED.qc_gates,
         presentation_score = EXCLUDED.presentation_score, owner_decision = EXCLUDED.owner_decision, decided_by = EXCLUDED.decided_by,
         decided_at = EXCLUDED.decided_at, video_asset_id = EXCLUDED.video_asset_id, owner_rubric = EXCLUDED.owner_rubric,
         presentation_by = EXCLUDED.presentation_by, hermes_advisory = EXCLUDED.hermes_advisory, renderer = EXCLUDED.renderer,
-        lab_trial = EXCLUDED.lab_trial, updated_at = now()
+        lab_trial = EXCLUDED.lab_trial, qc_waived = EXCLUDED.qc_waived, waived_issues = EXCLUDED.waived_issues, updated_at = now()
     `;
   } catch (err) {
     console.error("could not record the trial outcome", runId, err);

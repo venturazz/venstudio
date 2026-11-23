@@ -322,7 +322,8 @@ function PackCard({
       {pack.status === "trial" && (
         <div className="mt-3 space-y-1.5 rounded-lg border border-border p-3 text-xs" data-testid="trial-record">
           <p className="font-medium">
-            Trial runs of v{pack.version}: {counts.trials} · technical pass {Math.round(counts.passRate * 100)}% · mean presentation{" "}
+            Trial runs of v{pack.version}: {counts.trials} · technical pass {Math.round(counts.passRate * 100)}%
+            {counts.waived > 0 && <span data-testid="trial-waived">{` (${counts.waived} waived by the owner, not counted as a pass)`}</span>} · mean presentation{" "}
             {Math.round(counts.meanPresentationScore)} ({counts.presentationScored} scored) · owner approved {counts.approved}, rejected {counts.rejected}
           </p>
           <p className="text-muted">Promotion rule: {PROMOTION_RULE_TEXT}</p>
@@ -351,6 +352,7 @@ function PackCard({
           <p className="font-medium">
             {LAB_TRIAL_BADGE} runs: {lab.runs} · mean presentation {lab.meanPresentationScore === null ? "not scored" : Math.round(lab.meanPresentationScore)} ({lab.scored}{" "}
             scored) · owner approved {lab.approved}, rejected {lab.rejected}
+            {lab.waived > 0 && <span data-testid="lab-trial-waived">{` · quality check waived ${lab.waived}`}</span>}
           </p>
           <p className="text-muted">Counted apart: lab trials never count toward this pack&apos;s promotion. Once the pack is at Trial, its trial runs do.</p>
         </div>
@@ -378,7 +380,14 @@ function PackCard({
           {outcomes.map((o) => (
             <li key={o.runId} className="break-words">
               {o.createdAt.slice(0, 10)} <Badge>{o.labTrial ? "lab trial" : "portal trial"}</Badge>{" "}
-              <Badge tone={o.qcPassed ? "ok" : "danger"}>{o.qcPassed ? "QC pass" : "QC fail"}</Badge> v{o.packVersion}, decision {o.ownerDecision ?? "pending"}
+              {o.qcWaived ? (
+                <span data-testid="outcome-qc-waived" title={(o.waivedIssues ?? []).join(" ")}>
+                  <Badge tone="warn">QC waived</Badge>
+                </span>
+              ) : (
+                <Badge tone={o.qcPassed ? "ok" : "danger"}>{o.qcPassed ? "QC pass" : "QC fail"}</Badge>
+              )}{" "}
+              v{o.packVersion}, decision {o.ownerDecision ?? "pending"}
               {o.presentationScore !== null ? `, presentation ${o.presentationScore}` : ""}.{" "}
               <a href={`/studio/runs/${o.runId}`} className="text-accent underline-offset-2 hover:underline">
                 Run
