@@ -126,3 +126,38 @@ test("revisionTarget handles production stages", () => {
   assert.equal(revisionTarget(null, "brighter images please", "voice"), "assets");
   assert.equal(revisionTarget(null, "a calmer voice", "assets"), "assets");
 });
+
+test("notes on a Hermes-rendered video go back to Hermes; only a note about the voice itself records the narration", () => {
+  const h = { renderer: "hermes" };
+  for (const own of ["render", "qc"] as const) {
+    assert.equal(revisionTarget(null, "there is no sound", own, RUN_STAGES, h), "render");
+    assert.equal(revisionTarget(null, "The video is silent", own, RUN_STAGES, h), "render");
+    assert.equal(revisionTarget(null, "audio missing", own, RUN_STAGES, h), "render");
+    assert.equal(revisionTarget(null, "I can't hear the narration", own, RUN_STAGES, h), "render");
+    assert.equal(revisionTarget(null, "no voice at all", own, RUN_STAGES, h), "render", "a missing voice is the video's fault, not the voice's");
+    assert.equal(revisionTarget(null, "the music is too loud", own, RUN_STAGES, h), "render");
+    assert.equal(revisionTarget(null, "the voice sounds robotic", own, RUN_STAGES, h), "voice");
+    assert.equal(revisionTarget(null, "wrong accent, use a female narrator", own, RUN_STAGES, h), "voice");
+    assert.equal(revisionTarget(null, "make it better", own, RUN_STAGES, h), "render", "no keyword: Hermes redoes the video");
+    // Content notes still go to their step.
+    assert.equal(revisionTarget(null, "rewrite the hook", own, RUN_STAGES, h), "script");
+  }
+  // A skill that voices itself: a note about its voice is Hermes's to fix too.
+  const SKILL_VOICED = ["idea", "research", "script", "skill-brief", "render", "qc"] as const;
+  assert.equal(revisionTarget(null, "the voice sounds robotic", "qc", SKILL_VOICED, h), "render");
+  assert.equal(revisionTarget(null, "there is no sound", "qc", SKILL_VOICED, h), "render");
+});
+
+test("notes on a worker-rendered video: missing sound re-runs the render (the mix), only voice words record the voice", () => {
+  assert.equal(revisionTarget(null, "there is no sound", "render"), "render");
+  assert.equal(revisionTarget(null, "there is no sound", "qc"), "render");
+  assert.equal(revisionTarget(null, "the audio is missing", "qc"), "render");
+  assert.equal(revisionTarget(null, "the music is too quiet", "qc"), "render");
+  assert.equal(revisionTarget(null, "the voice sounds robotic", "qc"), "voice");
+  assert.equal(revisionTarget(null, "a calmer voice", "render"), "voice");
+  // Unchanged: no keyword stays on the card's own step, and other notes keep their routing.
+  assert.equal(revisionTarget(null, "make it better", "qc"), "qc");
+  assert.equal(revisionTarget(null, "brighter images please", "qc"), "assets");
+  // Notes on earlier cards are not sorted by sound (never later than the card).
+  assert.equal(revisionTarget(null, "there is no sound", "assets"), "assets");
+});

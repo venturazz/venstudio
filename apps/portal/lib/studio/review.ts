@@ -62,6 +62,25 @@ export interface DecisionContext {
   tempoReady?: boolean;
   /** False for a run whose workflow makes no pictures (scene spec, skill brief, HTML design): labels say "the plan". */
   pictures?: boolean;
+  /** Hermes renders the run's video (research only): notes on the video go back to Hermes. */
+  hermesRender?: boolean;
+  /** False when the run has no voice stage (a Hermes skill that voices itself). */
+  voiced?: boolean;
+}
+
+const VOICE_ONLY = "The narration will be recorded again only for a note about the voice itself (its accent, pronunciation, or a robotic or wrong voice).";
+
+/** Where a revision note on the finished video (render or quality-check card) goes, said before the owner writes it. */
+export function videoRevisionHint(ctx: Pick<DecisionContext, "hermesRender" | "voiced">): string {
+  if (ctx.hermesRender) return ctx.voiced === false ? "Hermes will redo the video with your note, its voice included." : `Hermes will redo the video with your note. ${VOICE_ONLY}`;
+  return `A note about missing or wrong sound renders the video again (the mix) with the same narration. ${VOICE_ONLY}`;
+}
+
+/** What the owner is told once a revision note on the finished video is sent, by where it went. Null: the usual line. */
+export function videoRevisionMessage(target: string, ctx: Pick<DecisionContext, "hermesRender">): string | null {
+  if (target === "render") return ctx.hermesRender ? "Revision sent. Hermes will redo the video with your note." : "Revision sent. The video is rendered again with the same narration.";
+  if (target === "voice") return "Revision sent. The narration will be recorded again with your note, then the video is made again.";
+  return null;
 }
 
 /** What a script fit keeps, in the run's own words: its pictures, or the plan of a workflow that makes none. */
@@ -179,6 +198,7 @@ export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: 
   if (decision === "retry" && kind === "gate-failure" && stage === "assets") return "Makes only the shots that failed again. Finished images are kept.";
   if (decision === "retry" && kind === "gate-failure" && stage === "voice") return "Records the whole narration again.";
   if (decision === "revise" && stage === "assets" && (kind === "gate-failure" || kind === "approval")) return "Makes every image again with your note.";
+  if (decision === "revise" && (stage === "render" || stage === "qc")) return videoRevisionHint(ctx);
   if (decision === "revise" && stage === "preview") return "Your note goes back to the step these stills show (the scene spec or the page), which is made again.";
   return null;
 }

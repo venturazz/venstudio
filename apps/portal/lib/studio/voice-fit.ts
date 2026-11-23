@@ -269,7 +269,26 @@ export function parseVoiceFix(raw: unknown): VoiceFix | null {
  * pictures ("tighten"); notes about the voice itself stay on the voice stage; anything else is sorted as before (null).
  */
 const LENGTH_NOTE = /\b(shorter|longer|lengthen|length|too long|too short|faster|slower|too fast|too slow|speed|pace|tight(?:en|er)?|trim|seconds?|fit)\b/i;
-const VOICE_NOTE = /\b(voice|voices|accent|pronounc\w*|tone of voice|male|female|robotic|speaker|narrator)\b/i;
+/** A note about the voice itself (who speaks and how): the only kind of note that records the narration again. */
+export const VOICE_NOTE = /\b(voice|voices|accent|pronounc\w*|tone of voice|male|female|robotic|speaker|narrator)\b/i;
+/** The finished video has no usable sound: a render problem (the mix, or Hermes's video), never a new voice. */
+const MISSING_SOUND_NOTE =
+  /\b(no (?:sound|audio|voice|voiceover|narration|music)|silent|silence|muted?|mute|inaudible|(?:can'?t|cannot|can not|couldn'?t) hear|(?:sound|audio|voice|narration)(?: is| was)? (?:missing|gone|lost|absent)|without (?:sound|audio))\b/i;
+/** Other notes about the soundtrack (level, music, the mix): the render makes it. */
+const MIX_NOTE = /\b(sound|audio|music|volume|loud|louder|quiet|quieter|soundtrack|mix)\b/i;
+
+/**
+ * Where a note about the sound of the finished video goes (a render or quality-check card): "render" when the sound is
+ * missing or the mix is off, "voice" only when the note is clearly about the voice itself (VOICE_NOTE), null when the
+ * note says nothing about sound. A missing sound is checked first, so "no voice" or "the narration is silent" is a
+ * render problem, not a reason to record a new voice.
+ */
+export function videoSoundRoute(note: string): "render" | "voice" | null {
+  if (MISSING_SOUND_NOTE.test(note)) return "render";
+  if (VOICE_NOTE.test(note)) return "voice";
+  if (MIX_NOTE.test(note)) return "render";
+  return null;
+}
 
 export function voiceRevisionRoute(note: string): { route: "tighten"; direction: LengthDirection } | { route: "voice" } | null {
   if (LENGTH_NOTE.test(note)) {

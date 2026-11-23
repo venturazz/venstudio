@@ -29,6 +29,8 @@ export interface ReviewCard {
   designed: boolean;
   /** False when the run's workflow makes no pictures (no assets stage): labels say "the plan", not "the pictures". */
   pictures: boolean;
+  /** False when the run has no voice stage (a Hermes skill that voices itself). */
+  voiced: boolean;
 }
 
 function toPayload(raw: unknown): ReviewPayload {
@@ -126,7 +128,8 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
       coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render,
       coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial,
       coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) OR coalesce((r.config->'stylePack'->>'designed')::boolean, false) AS designed,
-      (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures
+      (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures,
+      (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'voice', false)) AS voiced
     FROM review_items ri
     JOIN pipeline_runs r ON r.id = ri.run_id
     LEFT JOIN channels c ON c.id = r.channel_id
@@ -152,6 +155,7 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     labTrial: r.lab_trial === true,
     designed: r.designed === true,
     pictures: r.pictures !== false,
+    voiced: r.voiced !== false,
   }));
 }
 

@@ -197,5 +197,6 @@ test("decisionOptions and labels for terms cards", () => {
   assert.match(decisionHint("retry", "gate-failure", "voice") ?? "", /whole narration again/);
   // Revise on a voice card says where length and voice notes go.
   assert.match(decisionHint("revise", "gate-failure", "voice") ?? "", /length or speed rewrites the script to fit and keeps the pictures/);
-  assert.equal(decisionHint("revise", "gate-failure", "render"), null);
+  // The reel's own voice held up by terms: a revision note goes back to Hermes, which records the voice too.
+  assert.equal(decisionHint("revise", "gate-failure", "render", { hermesRender: true, voiced: false }), "Hermes will redo the video with your note, its voice included.");
 });

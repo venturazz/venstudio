@@ -867,7 +867,9 @@ const IDEA_WORDS = /\b(idea|ideas|topic|subject|different video|another video|th
 const SCRIPT_WORDS = /\b(script|hook|wording|words|narration|text|sentence|intro|ending|tone|longer|shorter|facts?|claims?)\b/i;
 const STORYBOARD_WORDS = /\b(storyboard|shot|shots|scene|scenes|pacing|order)\b/i;
 const ASSET_WORDS = /\b(image|images|picture|pictures|photo|photos|footage|asset|assets|visual|visuals)\b/i;
-const VOICE_WORDS = /\b(voice|voiceover|audio|music|sound|speak|accent)\b/i;
+// Only words about the voice itself: a note about missing sound or the music is not a reason to record a new voice
+// (render and quality-check notes about sound go to the render, engine.ts revisionTarget).
+const VOICE_WORDS = /\b(voice|voices|voiceover|speak|speaking|speaker|narrator|accent|pronounc\w*|male|female|robotic)\b/i;
 
 export function guessRevisionStage(note: string, fallback: RevisableStage): RevisionGuess {
   if (IDEA_WORDS.test(note)) return { stage: "idea", deferred: false };

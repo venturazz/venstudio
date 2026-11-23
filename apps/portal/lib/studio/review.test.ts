@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decisionOptions, describeGateIssues, reviewTitle, sortReviews, stageLabel, type ReviewKind, type ReviewState } from "./review.ts";
+import { decisionHint, decisionOptions, describeGateIssues, reviewTitle, sortReviews, stageLabel, videoRevisionMessage, type ReviewKind, type ReviewState } from "./review.ts";
 import type { GateResult } from "./qc.ts";
 
 const item = (id: string, kind: ReviewKind, state: ReviewState, createdAt: string) => ({ id, kind, state, createdAt });
@@ -49,4 +49,19 @@ test("describeGateIssues wraps qcSummary", () => {
   assert.equal(lines.length, 1);
   assert.match(lines[0], /Script: needs attention/);
   assert.deepEqual(describeGateIssues([]), ["No checks have run yet."]);
+});
+
+test("the revision hint on the finished video says where the note goes, and the message after sending says where it went", () => {
+  for (const stage of ["render", "qc"]) {
+    assert.equal(
+      decisionHint("revise", "approval", stage, { hermesRender: true }),
+      "Hermes will redo the video with your note. The narration will be recorded again only for a note about the voice itself (its accent, pronunciation, or a robotic or wrong voice).",
+    );
+    assert.equal(decisionHint("revise", "gate-failure", stage, { hermesRender: true, voiced: false }), "Hermes will redo the video with your note, its voice included.");
+    assert.match(decisionHint("revise", "approval", stage, {}) ?? "", /^A note about missing or wrong sound renders the video again \(the mix\) with the same narration\. The narration will be recorded again only for/);
+  }
+  assert.equal(videoRevisionMessage("render", { hermesRender: true }), "Revision sent. Hermes will redo the video with your note.");
+  assert.equal(videoRevisionMessage("render", { hermesRender: false }), "Revision sent. The video is rendered again with the same narration.");
+  assert.equal(videoRevisionMessage("voice", { hermesRender: true }), "Revision sent. The narration will be recorded again with your note, then the video is made again.");
+  assert.equal(videoRevisionMessage("script", { hermesRender: true }), null);
 });

@@ -28,6 +28,8 @@ export interface ReviewCardView {
   designed?: boolean;
   /** False when the run's workflow makes no pictures, so the voice fixes say "keep the plan". */
   pictures?: boolean;
+  /** False when the run has no voice stage (a Hermes skill that voices itself). */
+  voiced?: boolean;
   /** The final video's presentation score (qc cards). */
   presentation?: PresentationView | null;
   /** Hermes's advisory rating of the final video (qc cards); never decides. */
@@ -263,7 +265,15 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
   const p = item.payload;
   const issues = p.issues && p.issues.length > 0 ? p.issues : item.gateLines;
   const ideas = p.ideas ?? [];
-  const ctx = { stage: item.stage, issues: p.issues ?? [], voice: p.voice ?? null, tempoReady: item.tempoReady, pictures: item.pictures !== false };
+  const ctx = {
+    stage: item.stage,
+    issues: p.issues ?? [],
+    voice: p.voice ?? null,
+    tempoReady: item.tempoReady,
+    pictures: item.pictures !== false,
+    hermesRender: item.hermesRender === true,
+    voiced: item.voiced !== false,
+  };
   const actions = decisionOptions(item.kind, ctx);
   const reviseHint = decisionHint("revise", item.kind, item.stage, ctx);
   const rejectHint = decisionHint("reject", item.kind, item.stage, ctx);
@@ -438,7 +448,11 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
               Reject
             </SubmitButton>
           </div>
-          {reviseHint && <p className="text-xs text-muted">{reviseHint}</p>}
+          {reviseHint && (
+            <p className="text-xs text-muted" data-testid="revise-hint">
+              {reviseHint}
+            </p>
+          )}
           {rejectHint && (
             <p className="text-xs text-muted" data-testid="reject-hint">
               Reject: {rejectHint}

@@ -3,6 +3,7 @@
  * one-line summary of a stage result. The database side lives in lib/server/director.ts.
  */
 import { hermesStageWorstSec } from "./pacing.ts";
+import { videoSoundRoute } from "./voice-fit.ts";
 import { guessRevisionStage, type DirectorStage, type Idea, type ResearchNote, type RevisableStage, type Shot } from "./director.ts";
 
 export const ENGINE_STAGES: readonly DirectorStage[] = ["idea", "research", "script", "storyboard"];
@@ -112,7 +113,13 @@ export function nextStage(stage: DirectorStage): DirectorStage | null {
  * Which stage an owner's revision note restarts. The classifier's answer wins; without one, keywords decide; a
  * note with no keyword restarts the stage the owner was looking at. The result is never later than that stage.
  */
-export function revisionTarget(classified: RunStage | null, note: string, own: RunStage, stages: readonly RunStage[] = RUN_STAGES): RunStage {
+export function revisionTarget(
+  classified: RunStage | null,
+  note: string,
+  own: RunStage,
+  stages: readonly RunStage[] = RUN_STAGES,
+  opts: { renderer?: string | null } = {},
+): RunStage {
   // A note on the still frames is about the plan they show: it goes back to the stage before the preview (the scene
   // spec, or the page Hermes wrote), or earlier when the note says so. The preview itself has nothing to redo.
   if (own === "preview") {
@@ -120,12 +127,21 @@ export function revisionTarget(classified: RunStage | null, note: string, own: R
     if (before) own = before;
   }
   let target: RunStage;
-  if (classified) target = classified;
+  // A note on the finished video (the render or quality-check card) about its sound: a missing or wrong sound is made
+  // again by the render (the mix, or Hermes's video), and only a note about the voice itself records the narration.
+  // On a Hermes-rendered video every other note without a keyword goes back to Hermes too (the quality check has
+  // nothing of its own to redo), and a voice note in a run whose skill voices itself is Hermes's to fix.
+  const onVideo = !classified && (own === "render" || own === "qc") && stages.includes("render");
+  const hermes = opts.renderer === "hermes";
+  const sound = onVideo ? videoSoundRoute(note) : null;
+  if (sound === "render") target = "render";
+  else if (sound === "voice") target = hermes && !stages.includes("voice") ? "render" : "voice";
+  else if (classified) target = classified;
   else {
     const a: RevisableStage = guessRevisionStage(note, "idea").stage;
     const b: RevisableStage = guessRevisionStage(note, "script").stage;
     // The two fallbacks differ only when no keyword matched.
-    target = a === b ? a : own;
+    target = a === b ? a : onVideo && hermes ? "render" : own;
   }
   // A kind this run does not have (a storyboard or pictures in a scene-spec run) is the run's stage in its place.
   target = stageInRun(target, stages);
