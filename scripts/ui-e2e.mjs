@@ -200,6 +200,7 @@ function directorReply(messages) {
     if (skill === ASYNC_RENDER_SKILL && requested) {
       const runId = /^vs-([0-9a-f-]{36})-/.exec(requested)?.[1] ?? "?";
       fakeStats.asyncRenderAsks[runId] = (fakeStats.asyncRenderAsks[runId] ?? 0) + 1;
+      (fakeStats.asyncRenderPrompts[runId] ??= []).push({ file: requested, prompt: first });
       asyncRenders.set(requested, Date.now());
       return JSON.stringify({ status: "started", file: requested, note: "fake: rendering in the background", provider: "capcut", source: "capcut", model: `fake-${skill.slice(1)}` });
     }
@@ -440,6 +441,18 @@ function fakeClipFor(name) {
   skillClips.set(skill, readFileSync(file));
   return skillClips.get(skill);
 }
+/**
+ * The async skill's clip: a real H.264/AAC MP4 whose audio track is SILENT, which is what a Hermes render "without a
+ * voice" came back as. The studio must lay the run's narration on it; a silent final video fails the e2e.
+ */
+let silentClip = null;
+function fakeSilentClipBytes() {
+  if (silentClip) return silentClip;
+  const file = path.join(OUT, "fake-hermes-silent.mp4");
+  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=16", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-shortest", "-vf", "hue=h=200", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", file], { timeout: 120_000 });
+  silentClip = readFileSync(file);
+  return silentClip;
+}
 function fakeClipBytes() {
   if (fakeClip) return fakeClip;
   execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=16", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=16", "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", FAKE_CLIP], { timeout: 120_000 });
@@ -453,12 +466,15 @@ function fakeClipBytes() {
  * CI by VENSTUDIO_TEST_HERMES_TIMEOUT_SCALE), waits, and asks again; the second ask is answered.
  */
 const SLOW_RESEARCH = "SLOW-RESEARCH";
-/** The long skill the fake renders in the background, and how long its clip takes to appear on the media host. */
-const ASYNC_RENDER_SKILL = "/stick-figure";
+/**
+ * The long skill the fake renders in the background, and how long its clip takes to appear on the media host. A pack
+ * whose narration is the run's (hermes.voice "run"), so the studio lays that narration on Hermes's silent clip.
+ */
+const ASYNC_RENDER_SKILL = "/kurzgesagt";
 const ASYNC_RENDER_DELAY_MS = 25_000;
 /** Requested render file name to the time the fake Hermes started it. */
 const asyncRenders = new Map();
-const fakeStats = { asyncRenderAsks: {}, asyncClipLooks: 0, asyncClipServed: 0, renderChecks: 0, slowResearchHeld: 0, slowResearchClosed: 0, slowResearchAsks: 0, hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [], htmlDesignAsks: {}, htmlDesignRetryNotes: {} };
+const fakeStats = { asyncRenderAsks: {}, asyncRenderPrompts: {}, asyncClipLooks: 0, asyncClipServed: 0, renderChecks: 0, slowResearchHeld: 0, slowResearchClosed: 0, slowResearchAsks: 0, hermesSkills: [], labSourceAsks: 0, labYoutubeAsks: 0, labYoutubePrompt: "", labSynthesisAsks: 0, youtubeHits: 0, hermesRenders: 0, clipDownloads: 0, advisoryAsks: 0, advisoryImages: 0, scriptFitAsks: 0, imageAsks: {}, pathAnswers: 0, errorAnswers: 0, urlAnswers: 0, routerSpeechCalls: 0, routerImageCalls: 0, routerBadImageCalls: 0, hermesImageRefusals: 0, hermesKokoroCalls: 0, capabilityScans: 0, hermes429: 0, shotPreferenceAsks: 0, droppedPreferenceAsks: 0, imageAsksByBrief: {}, storyboardAsksByBrief: {}, researchDataAsks: 0, sceneSpecAsks: 0, skillBriefAsks: 0, renderRequests: [], htmlDesignAsks: {}, htmlDesignRetryNotes: {} };
 // The first image asks get HTTP 429 with a short Retry-After, like a busy Hermes. The shots must wait and then finish,
 // not fail, and the wait must not use up their attempts.
 const HERMES_429_BURST = 3;
@@ -497,7 +513,7 @@ const fakeHermes = createServer((req, res) => {
       return res.end("not rendered yet");
     }
     fakeStats.asyncClipServed++;
-    const body = fakeClipFor(`${ASYNC_RENDER_SKILL.slice(1)}-1`);
+    const body = fakeSilentClipBytes();
     res.writeHead(200, { "content-type": "video/mp4", "content-length": String(body.length) });
     return res.end(body);
   }
@@ -708,6 +724,40 @@ async function checkEnvironmentPack(page) {
     dbExec(`DELETE FROM workers WHERE name = '${checkName}'`);
   }
 }
+/**
+ * A Hermes render of a run whose narration is the run's own (hermes-mux.ts): exactly one worker job, render-video with
+ * engine hermes-mux under the hermes-mux capability, succeeded, its video audible (the loudness the worker measured),
+ * and no other worker render. The video's provenance names Hermes's picture and the run's narration (by asset id).
+ * Scoped to this run and to its newest render attempt. Returns the picture's provenance lines for the caller's checks.
+ */
+function hermesMuxFacts(runId, label) {
+  const other = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}' AND coalesce(payload->>'engine', '') <> 'hermes-mux'`);
+  if (other !== "0") throw new Error(`${label}: the Hermes render queued ${other} worker render job(s) besides the narration mux`);
+  const render = `(SELECT output FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'render' AND state IN ('passed', 'waiting-human') ORDER BY attempt DESC LIMIT 1)`;
+  const job = dbValue(`SELECT j.status || ' ' || j.capability || ' ' || coalesce(j.payload->>'engine', '-') || ' ' || coalesce(j.result->'mux'->>'mode', '-') || ' ' || coalesce(j.result->>'integratedLufs', 'null')
+    FROM jobs j WHERE j.id = (${render}->>'jobId')::uuid`);
+  const m = /^succeeded hermes-mux hermes-mux (match|freeze|pad|trim) (-?\d+(?:\.\d+)?)$/.exec(job ?? "");
+  if (!m) throw new Error(`${label}: the narration mux job reads "${job}"`);
+  const lufs = Number(m[2]);
+  if (!(lufs > -30)) throw new Error(`${label}: the final video is not audible (${lufs} LUFS)`);
+  const video = `(SELECT a FROM assets a WHERE a.id = (${render}->'result'->>'assetId')::uuid)`;
+  const narration = `(SELECT output->'result'->>'assetId' FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'voice' AND state = 'passed' ORDER BY attempt DESC LIMIT 1)`;
+  const names = dbValue(`SELECT (v).metadata->>'executor' || ' ' || ((v).metadata->'narration'->>'assetId' = ${narration})::text || ' ' || ((v).metadata->'inputAssetIds' ? ${narration})::text
+      || ' ' || ((v).metadata->'inputAssetIds' ? ((v).metadata->'picture'->>'assetId'))::text || ' ' || coalesce((v).metadata->'mux'->>'mode', '-') || ' ' || coalesce(${render}->'result'->>'audioBy', '-')
+    FROM ${video} AS t(v)`);
+  if (names !== `hermes-mux true true true ${m[1]} studio`) throw new Error(`${label}: the video's provenance does not name Hermes's picture and the run's narration: "${names}"`);
+  const picture = `(SELECT p FROM assets p WHERE p.id = ((SELECT (v).metadata->'picture'->>'assetId' FROM ${video} AS t(v)))::uuid)`;
+  const pic = (sql) => dbValue(`SELECT ${sql} FROM ${picture} AS q(p)`) ?? "";
+  return {
+    mode: m[1],
+    lufs,
+    // executor backend origin, and executor backend skill origin, as the clip's own provenance reads.
+    picture: pic(`(p).metadata->>'executor' || ' ' || coalesce((p).metadata->>'backend', '?') || ' ' || (p).origin_url`),
+    pictureSkill: pic(`(p).metadata->>'executor' || ' ' || coalesce((p).metadata->>'backend', '?') || ' ' || coalesce((p).metadata->>'hermesSkill', 'no-skill') || ' ' || (p).origin_url`),
+    pictureLicense: pic(`(p).metadata->>'executor' || ' ' || coalesce((p).metadata->>'hermesSkill', 'no-skill') || ' ' || (p).license`),
+  };
+}
+
 function runWorker(args) {
   return execFileSync("bash", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
@@ -1717,11 +1767,9 @@ try {
       for (const want of ['"scenePlan"', '"contract"', '"shots"', '"id":"hermes-research-explainer"', "/clip/"]) {
         if (!renderAsk.includes(want)) throw new Error(`the hermes-render request misses ${want}`);
       }
-      const renderJobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${hermesRunId}'`);
-      if (renderJobs !== "0") throw new Error(`a Hermes render queued ${renderJobs} worker render job(s)`);
-      const provenance = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'backend', '?') || ' ' || a.origin_url FROM assets a
-        WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${hermesRunId}' AND stage = 'render' AND state = 'passed' LIMIT 1)`);
-      if (!/^hermes-render capcut http:\/\/127\.0\.0\.1:\d+\/clip\/render-\d+\.mp4$/.test(provenance ?? "")) throw new Error(`the Hermes render's provenance is "${provenance}"`);
+      // Hermes drew the picture; the only worker render is the one that laid the run's narration on it (hermes-mux).
+      const muxed = hermesMuxFacts(hermesRunId, "the Hermes render");
+      if (!/^hermes-render capcut http:\/\/127\.0\.0\.1:\d+\/clip\/render-\d+\.mp4$/.test(muxed.picture)) throw new Error(`the Hermes render's picture provenance is "${muxed.picture}"`);
       const card = hermesCard("qc").first();
       await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
       await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
@@ -1911,11 +1959,8 @@ async function scoreAndDecide(runId, stars, shown) {
       const skills = fakeStats.hermesSkills.slice(before).sort();
       if (JSON.stringify(skills) !== JSON.stringify(["/dan-koe", "/graph"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /graph and /dan-koe`);
       for (const [id, skill] of [[batchIds[0], "graph"], [batchIds[1], "dan-koe"]]) {
-        const jobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${id}'`);
-        if (jobs !== "0") throw new Error(`a research render queued ${jobs} worker render job(s)`);
-        const prov = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'backend', '?') || ' ' || coalesce(a.metadata->>'hermesSkill', 'no-skill') || ' ' || a.origin_url FROM assets a
-          WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${id}' AND stage = 'render' AND state = 'passed' LIMIT 1)`);
-        if (!new RegExp(`^hermes-render capcut /${skill} http://127\\.0\\.0\\.1:\\d+/clip/${skill}-\\d+\\.mp4$`).test(prov ?? "")) throw new Error(`the ${skill} render's provenance is "${prov}"`);
+        const prov = hermesMuxFacts(id, `the ${skill} render`).pictureSkill;
+        if (!new RegExp(`^hermes-render capcut /${skill} http://127\\.0\\.0\\.1:\\d+/clip/${skill}-\\d+\\.mp4$`).test(prov)) throw new Error(`the ${skill} render's picture provenance is "${prov}"`);
         const card = cardOf(id, "qc").first();
         await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
         await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
@@ -1941,14 +1986,14 @@ async function scoreAndDecide(runId, stars, shown) {
     }
   }
 
-  step("async hermes render: a long skill (/stick-figure) is asked once and answers started; the run page says Hermes is rendering (not busy or slow); the clip is taken when it appears; QC runs and the owner scores it");
+  step("async hermes render: a long skill (/kurzgesagt) is asked once and answers started; the run page says Hermes is rendering; its SILENT clip gets the run's narration from a worker; QC passes the sound; a 'no sound' note goes back to Hermes, not to the voice");
   {
     const ciOn = process.env.CI === "true" || process.env.CI === "1";
     if (!prodRunIdForTrials || dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset) or no finished production: the async render step is skipped");
     else {
-      const packId = "hermes-stick-figure";
+      const packId = `hermes-${ASYNC_RENDER_SKILL.slice(1)}`;
       // The run reuses the finished production's approved stages (copied rows), like the Hermes render step above; only
-      // the render, the quality check and the review run again. A trial of the /stick-figure research pack.
+      // the render, the quality check and the review run again. A trial of a research pack whose narration is the run's.
       const asyncRunId = dbExec(`INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, state)
         SELECT channel_id, 'tpl-${packId}', (SELECT current_version FROM templates WHERE id = 'tpl-${packId}'),
                topic || ' (async Hermes render)', autonomy_level,
@@ -1966,60 +2011,99 @@ async function scoreAndDecide(runId, stars, shown) {
       }
       dbExec(`INSERT INTO pipeline_stages (run_id, stage, state, attempt) VALUES ('${asyncRunId}', 'render', 'pending', 1)`);
       const asyncHref = `/studio/runs/${asyncRunId}`;
-      const renderRow = () => dbValue(`SELECT state || ' ' || coalesce(output->'hermesRender'->>'file', '-') || ' ' || coalesce(output->'hermesWait'->>'reason', '-') FROM pipeline_stages WHERE run_id = '${asyncRunId}' AND stage = 'render' ORDER BY attempt DESC LIMIT 1`) ?? "";
-      const renderingLine = /^Video: Hermes is rendering with \/stick-figure \(started \d\d:\d\d UTC, (just now|\d+ min ago)\)\. The studio checks for the finished file every [^;]+; nothing is restarted\.$/;
-      let sawRendering = "";
-      let settled = false;
-      // Review restarts the run; the portal asks Hermes once, then waits for the file (in CI the polls come every 6 s).
-      for (let i = 0; i < 80 && !settled; i++) {
-        await m.goto(`${APP}/review`);
-        await page.goto(`${APP}${asyncHref}`);
-        const rendering = page.getByTestId("hermes-rendering");
-        if (await rendering.isVisible().catch(() => false)) {
-          const line = (await rendering.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-          if (line && !renderingLine.test(line)) {
-            await dumpPipeline(page, asyncHref, "async render: the rendering status line is not as expected");
-            throw new Error(`the async render's status reads "${line}"`);
+      const renderRow = () => dbValue(`SELECT state || ' ' || attempt || ' ' || coalesce(output->'hermesRender'->>'file', '-') || ' ' || coalesce(output->'hermesWait'->>'reason', '-') FROM pipeline_stages WHERE run_id = '${asyncRunId}' AND stage = 'render' ORDER BY attempt DESC LIMIT 1`) ?? "";
+      const muxWaiting = () => dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'engine' = 'hermes-mux' AND payload->>'runId' = '${asyncRunId}' AND status IN ('queued', 'running')`) !== "0";
+      const renderingLine = new RegExp(`^Video: Hermes is rendering with ${ASYNC_RENDER_SKILL.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} \\(started \\d\\d:\\d\\d UTC, (just now|\\d+ min ago)\\)\\. The studio checks for the finished file every [^;]+; nothing is restarted\\.$`);
+      const speech = () => fakeStats.routerSpeechCalls + fakeStats.hermesKokoroCalls;
+      const voiceRows = () => dbValue(`SELECT count(*) || ' ' || coalesce(string_agg(DISTINCT output->'result'->>'assetId', ','), '-') FROM pipeline_stages WHERE run_id = '${asyncRunId}' AND stage = 'voice'`);
+      /** Review restarts the run; the portal asks Hermes, waits for the file, and a worker tick lays the narration on it. */
+      async function awaitRender(attempt, label) {
+        let sawRendering = "";
+        let settled = false;
+        for (let i = 0; i < 90 && !settled; i++) {
+          await m.goto(`${APP}/review`);
+          await page.goto(`${APP}${asyncHref}`);
+          const rendering = page.getByTestId("hermes-rendering");
+          if (await rendering.isVisible().catch(() => false)) {
+            const line = (await rendering.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+            if (line && !renderingLine.test(line)) {
+              await dumpPipeline(page, asyncHref, `${label}: the rendering status line is not as expected`);
+              throw new Error(`${label}: the status reads "${line}"`);
+            }
+            if (line) sawRendering = line;
           }
-          if (line) sawRendering = line;
-        }
-        const waitLine = page.getByTestId("hermes-wait");
-        if (await waitLine.isVisible().catch(() => false)) {
-          const line = (await waitLine.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-          if (/busy or slow/.test(line)) {
-            await dumpPipeline(page, asyncHref, "async render: the run waits as busy or slow");
-            throw new Error(`the async render waits as a busy or slow Hermes: "${line}"`);
+          const waitLine = page.getByTestId("hermes-wait");
+          if (await waitLine.isVisible().catch(() => false)) {
+            const line = (await waitLine.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+            if (/busy or slow/.test(line)) {
+              await dumpPipeline(page, asyncHref, `${label}: the run waits as busy or slow`);
+              throw new Error(`${label}: the run waits as a busy or slow Hermes: "${line}"`);
+            }
           }
+          const row = renderRow();
+          if (/^failed /.test(row)) {
+            await dumpPipeline(page, asyncHref, `${label}: the render stage failed`);
+            throw new Error(`${label}: the render failed: ${row}`);
+          }
+          settled = new RegExp(`^(passed|waiting-human) ${attempt} `).test(row);
+          // The clip is taken: a worker lays the run's narration on it (the stage waits on that job).
+          if (!settled && muxWaiting()) runWorker([`${OUT}/worker/run.sh`, "tick"]);
+          else if (!settled) await page.waitForTimeout(ciOn ? 1500 : 5000);
         }
-        const row = renderRow();
-        if (/^failed /.test(row)) {
-          await dumpPipeline(page, asyncHref, "async render: the render stage failed");
-          throw new Error(`the async render failed: ${row}`);
+        if (!settled) {
+          await dumpPipeline(page, asyncHref, `${label}: the video was never made`);
+          throw new Error(`${label}: never finished: ${renderRow()} (clip looks ${fakeStats.asyncClipLooks}, served ${fakeStats.asyncClipServed})`);
         }
-        settled = /^(passed|waiting-human) /.test(row);
-        if (!settled) await page.waitForTimeout(ciOn ? 1500 : 5000);
+        return sawRendering;
       }
-      if (!settled) {
-        await dumpPipeline(page, asyncHref, "async render: the clip was never taken");
-        throw new Error(`the async render never finished: ${renderRow()} (clip looks ${fakeStats.asyncClipLooks}, served ${fakeStats.asyncClipServed})`);
-      }
+      const sawRendering = await awaitRender(1, "async render");
       if (!sawRendering) throw new Error("the run page never said that Hermes is rendering while the studio waited for the file");
       console.log(`   while waiting: "${sawRendering}"`);
       const asks = fakeStats.asyncRenderAsks[asyncRunId] ?? 0;
       if (asks !== 1) throw new Error(`Hermes was asked to render the async run ${asks} time(s), expected exactly once`);
       if (fakeStats.renderChecks !== 0) throw new Error(`Hermes got ${fakeStats.renderChecks} check ask(s) within the render budget`);
       if (fakeStats.asyncClipLooks < 2 || fakeStats.asyncClipServed < 1) throw new Error(`the media host was looked at ${fakeStats.asyncClipLooks} time(s) and served the clip ${fakeStats.asyncClipServed} time(s)`);
-      const jobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${asyncRunId}'`);
-      if (jobs !== "0") throw new Error(`the async render queued ${jobs} worker render job(s)`);
-      const prov = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'backend', '?') || ' ' || coalesce(a.metadata->>'hermesSkill', 'no-skill') || ' ' || a.origin_url FROM assets a
-        WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${asyncRunId}' AND stage = 'render' ORDER BY attempt DESC LIMIT 1)`);
-      if (!new RegExp(`^hermes-render capcut /stick-figure http://127\\.0\\.0\\.1:\\d+/clip/vs-${asyncRunId}-1-[0-9a-f]+\\.mp4$`).test(prov ?? "")) throw new Error(`the async render's provenance is "${prov}"`);
+      // Hermes was asked for the picture only: the studio adds the sound, so it is never told to render silent.
+      const firstAsk = fakeStats.asyncRenderPrompts[asyncRunId]?.[0]?.prompt ?? "";
+      if (!firstAsk.includes("The studio adds the sound afterwards") || firstAsk.includes("make the video without a voice")) throw new Error("the async render ask does not say that the studio adds the run's narration");
+      // The SILENT clip came back with the run's narration on it: audible, and the provenance names both.
+      const first = hermesMuxFacts(asyncRunId, "the async render");
+      if (!new RegExp(`^hermes-render capcut ${ASYNC_RENDER_SKILL} http://127\\.0\\.0\\.1:\\d+/clip/vs-${asyncRunId}-1-[0-9a-f]+\\.mp4$`).test(first.pictureSkill)) throw new Error(`the async render's picture provenance is "${first.pictureSkill}"`);
+      console.log(`   the silent clip came back with the run's narration: ${first.lufs} LUFS (${first.mode})`);
       await driveToQc([asyncRunId], "async render");
+      const silentIssues = dbValue(`SELECT count(*) FROM qc_reports WHERE run_id = '${asyncRunId}' AND gate = 'G-technical' AND details::text LIKE '%audio is silent%'`);
+      if (silentIssues !== "0") throw new Error("the quality check found the async render's audio silent after the narration was added");
       const card = cardOf(asyncRunId, "qc").first();
       await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
       await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
+      // The owner says "there is no sound" on the final card: the card says the note goes to Hermes, and it does.
+      await card.getByTestId("revise-hint").getByText("Hermes will redo the video with your note. The narration will be recorded again only for a note about the voice itself (its accent, pronunciation, or a robotic or wrong voice).", { exact: true }).waitFor();
+      const speechBefore = speech();
+      const voicesBefore = voiceRows();
+      const OWNER_NOTE = "there is no sound";
+      await card.getByLabel("What should change?", { exact: true }).fill(OWNER_NOTE);
+      await card.getByRole("button", { name: "Send revision", exact: true }).click();
+      await m.waitForLoadState("networkidle");
+      // The newest render attempt is the revision, and it carries the note (the voice step is checked below).
+      const target = dbValue(`SELECT attempt || ' ' || coalesce(output->>'ownerNote', '-') FROM pipeline_stages WHERE run_id = '${asyncRunId}' AND stage = 'render' ORDER BY attempt DESC LIMIT 1`);
+      if (target !== `2 ${OWNER_NOTE}`) {
+        await dumpPipeline(m, asyncHref, "the 'no sound' revision went to the wrong step");
+        throw new Error(`the 'no sound' revision restarted "${target}", expected the render with the owner's note`);
+      }
+      await awaitRender(2, "async render, revision");
+      const prompts = fakeStats.asyncRenderPrompts[asyncRunId] ?? [];
+      if (prompts.length !== 2) throw new Error(`Hermes was asked to render the async run ${prompts.length} time(s) after the revision, expected twice`);
+      const [before, again] = prompts;
+      if (!new RegExp(`^vs-${asyncRunId}-2-[0-9a-f]+\\.mp4$`).test(again.file) || again.file === before.file) throw new Error(`the revision asked for ${again.file}, not a new attempt's file (the first was ${before.file})`);
+      if (!again.prompt.includes(`<<<DATA Owner's notes on the previous video\n${OWNER_NOTE}\nDATA Owner's notes on the previous video>>>`)) throw new Error("the revision's render ask does not carry the owner's note as a DATA block");
+      if (!again.prompt.includes(`a video you rendered before (${before.file})`)) throw new Error("the revision's render ask does not name the previous file");
+      if (speech() !== speechBefore) throw new Error(`the 'no sound' revision recorded speech again (${speech() - speechBefore} TTS call(s))`);
+      if (voiceRows() !== voicesBefore) throw new Error(`the 'no sound' revision touched the voice step: ${voicesBefore} -> ${voiceRows()}`);
+      const second = hermesMuxFacts(asyncRunId, "the async render, revision");
+      if (!new RegExp(`/clip/vs-${asyncRunId}-2-[0-9a-f]+\\.mp4$`).test(second.pictureSkill)) throw new Error(`the revised render's picture is "${second.pictureSkill}"`);
+      await driveToQc([asyncRunId], "async render, revision");
       await scoreAndDecide(asyncRunId, { hook: 4, pacing: 4, legibility: 5, polish: 4, audio: 3 }, "75/100 by the owner");
-      if ((fakeStats.asyncRenderAsks[asyncRunId] ?? 0) !== 1) throw new Error(`Hermes was asked to render the async run ${fakeStats.asyncRenderAsks[asyncRunId]} time(s) by the end, expected once`);
+      if ((fakeStats.asyncRenderAsks[asyncRunId] ?? 0) !== 2) throw new Error(`Hermes was asked to render the async run ${fakeStats.asyncRenderAsks[asyncRunId]} time(s) by the end, expected twice (the first render and the revision)`);
       await page.goto(`${APP}${asyncHref}`);
       await page.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
       if (await page.getByText(/busy or slow/).count()) throw new Error("the async run's page mentions a busy or slow Hermes");
@@ -2399,11 +2483,8 @@ async function scoreAndDecide(runId, stars, shown) {
     const tag = brief.slice(0, 60);
     if (fakeStats.imageAsksByBrief[tag] || fakeStats.storyboardAsksByBrief[tag]) throw new Error(`the hermes-skill run asked for ${fakeStats.imageAsksByBrief[tag] ?? 0} image(s) and ${fakeStats.storyboardAsksByBrief[tag] ?? 0} storyboard(s)`);
     console.log(`   image asks while the hermes-skill run ran, any run: ${imageAskTotal() - imagesBefore}`);
-    const jobs = dbValue(`SELECT count(*) FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}'`);
-    if (jobs !== "0") throw new Error(`a research render queued ${jobs} worker render job(s)`);
-    const prov = dbValue(`SELECT a.metadata->>'executor' || ' ' || coalesce(a.metadata->>'hermesSkill', 'no-skill') || ' ' || a.license FROM assets a
-      WHERE a.id = (SELECT (output->'result'->>'assetId')::uuid FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'render' AND state = 'passed' ORDER BY attempt DESC LIMIT 1)`);
-    if (!/^hermes-render \/graph .*from this run's skill brief and narration\. Research only/.test(prov ?? "")) throw new Error(`the hermes-skill render's provenance is "${prov}"`);
+    const prov = hermesMuxFacts(runId, "the hermes-skill render").pictureLicense;
+    if (!/^hermes-render \/graph .*from this run's skill brief and narration\. Research only/.test(prov)) throw new Error(`the hermes-skill render's picture provenance is "${prov}"`);
     const card = cardOf(runId, "qc").first();
     await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");

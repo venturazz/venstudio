@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.12.0";
+export const VERSION = "0.13.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -288,6 +288,10 @@ export async function detectCapabilities(home?: string): Promise<Capability[]> {
     // that chain exists. Reported after the code that honours it, never before: the portal sends `audio` only to a
     // fleet in which every render worker reports this.
     if (missingAudioMixFilters().length === 0) caps.push("audio-mix");
+    // hermes-mux (0.13.0): render-video engine hermes-mux lays a run's narration (and its mix) on Hermes's picture,
+    // holding the last frame with tpad when the picture is short. Reported only where that whole chain exists, and only
+    // by code that runs it (hermesMuxHandler): the portal queues the job under this capability alone.
+    if (missingAudioMixFilters().length === 0 && ffmpegHasFilter("tpad")) caps.push("hermes-mux");
     // render-video draws captions with payload.captionStyle on both engines (0.7.0+).
     caps.push("caption-style");
     // remotion-2d also needs ffmpeg, which adds the narration. Reported only when the project is installed here and
@@ -2356,6 +2360,11 @@ export interface MuxOptions {
   concat?: boolean;
   bed?: string;
   sfx?: string[];
+  /**
+   * hermes-mux (0.13.0): the picture is encoded again instead of copied, holding its last frame for `freezeSec`
+   * (ffmpeg tpad) when it is shorter than the narration. Absent: the picture is copied, exactly as before.
+   */
+  picture?: { freezeSec: number; reencode: boolean };
 }
 
 /**
@@ -2376,15 +2385,18 @@ export function buildMuxArgs(
   }
   if ((opts.sfx ?? []).length !== audioSfxAssets(spec).length) throw new NonRetryableError("render-video: there must be one accent file per accent asset");
   for (const f of opts.sfx ?? []) extra.push("-i", f);
+  const pic = opts.picture && (opts.picture.reencode || opts.picture.freezeSec > 0) ? opts.picture : null;
+  const sound = audioMixFilter(spec, audioInputsFrom(spec, 1));
+  const picture = pic ? `[0:v:0]${pic.freezeSec > 0 ? `tpad=stop_mode=clone:stop_duration=${secs(pic.freezeSec)}` : "null"},format=yuv420p[v]` : null;
   return [
     "-y", "-hide_banner", "-loglevel", "error",
     ...(opts.concat ? ["-f", "concat", "-safe", "0"] : []),
     "-i", video, "-i", narration,
     ...extra,
-    "-filter_complex", audioMixFilter(spec, audioInputsFrom(spec, 1)),
-    "-map", "0:v:0", "-map", "[a]",
+    "-filter_complex", picture ? `${sound};${picture}` : sound,
+    "-map", picture ? "[v]" : "0:v:0", "-map", "[a]",
     "-t", String(spec.durationSec),
-    "-c:v", "copy",
+    ...(picture ? ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] : ["-c:v", "copy"]),
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
     "-movflags", "+faststart",
     "-progress", "pipe:1", "-nostats",
@@ -5628,7 +5640,258 @@ export async function captureHtmlFixture(o: { pack: string; out: string; payload
   }
 }
 
+// ---------------------------------------------------------------------------
+// hermes-mux (0.13.0): a run's narration on Hermes's picture.
+//
+// Hermes renders a research video with its own tools but cannot read the portal's storage, so a run that recorded its
+// own voice came back silent. The portal now takes Hermes's clip as the picture and queues render-video with engine
+// hermes-mux: the clip and the narration (and the mix's bed and accents) arrive as ordinary job inputs, and the shared
+// chain (buildMuxArgs, audioMixFilter: tempo, bed, ambience, mastered loudness) adds the soundtrack. Hermes's own audio
+// is dropped. The lengths are matched by hermesMuxPlan, the mirror of apps/portal/lib/studio/hermes-mux.ts.
+
+export const HERMES_MUX_ENGINE = "hermes-mux";
+/** Up to this much longer than the narration, the picture plays whole and the narration is padded with silence. */
+export const MUX_MAX_PAD_SEC = 3;
+/** A picture cut to the narration keeps this much after the last word. */
+export const MUX_TAIL_SEC = 0.5;
+/** Below this, a longer picture is a match, not a pad. */
+export const MUX_MATCH_SEC = 0.05;
+
+export interface HermesMuxPlan {
+  mode: "match" | "freeze" | "pad" | "trim";
+  durationSec: number;
+  clipSec: number;
+  narrationSec: number;
+  freezeSec: number;
+  padSec: number;
+  trimSec: number;
+}
+
+/** How the picture and the narration (as it plays) are made one length. Mirror of the portal's hermesMuxPlan. Pure. */
+export function hermesMuxPlan(i: { clipSec: number; narrationSec: number; fps: number }): HermesMuxPlan {
+  const clip = round3(i.clipSec);
+  const narr = round3(i.narrationSec);
+  const frame = i.fps > 0 ? 1 / i.fps : 1 / 30;
+  const base = { clipSec: clip, narrationSec: narr, freezeSec: 0, padSec: 0, trimSec: 0 };
+  if (clip < narr - frame) return { ...base, mode: "freeze", durationSec: narr, freezeSec: round3(narr - clip) };
+  if (clip > narr + MUX_MAX_PAD_SEC) {
+    const durationSec = round3(narr + MUX_TAIL_SEC);
+    return { ...base, mode: "trim", durationSec, trimSec: round3(clip - durationSec) };
+  }
+  const pad = round3(clip - narr);
+  if (pad < MUX_MATCH_SEC) return { ...base, mode: "match", durationSec: clip };
+  return { ...base, mode: "pad", durationSec: clip, padSec: pad };
+}
+
+export interface HermesMuxSpec {
+  width: number;
+  height: number;
+  fps: number;
+  pictureAssetId: string;
+  narrationAssetId: string;
+  /** The narration as it plays, after narrationTempo (as planned by the portal). */
+  narrationSec: number;
+  narrationTempo?: number;
+  targetLufs: number;
+  /** The raw audio plan; parsed once the finished length is known (parseAudioPlan). */
+  audio: unknown;
+  inputs: string[];
+}
+
+/** Strict check of a hermes-mux payload. Throws NonRetryableError with a plain message. */
+export function parseHermesMuxSpec(payload: Record<string, unknown>): HermesMuxSpec {
+  const bad = (m: string): never => {
+    throw new NonRetryableError(`render-video hermes-mux payload: ${m}`);
+  };
+  if (payload.engine !== HERMES_MUX_ENGINE) bad(`engine must be "${HERMES_MUX_ENGINE}"`);
+  const inputs = Array.isArray(payload.inputs) ? payload.inputs.filter((v): v is string => typeof v === "string") : [];
+  const width = num(payload.width);
+  const height = num(payload.height);
+  const fps = num(payload.fps);
+  if (!Number.isInteger(width) || width < 320 || width > 2160 || width % 2 !== 0) bad("width must be an even whole number from 320 to 2160");
+  if (!Number.isInteger(height) || height < 320 || height > 3840 || height % 2 !== 0) bad("height must be an even whole number from 320 to 3840");
+  if (!Number.isInteger(fps) || fps < 1 || fps > 60) bad("fps must be a whole number from 1 to 60");
+  const picture = isRecord(payload.picture) ? payload.picture.assetId : undefined;
+  if (typeof picture !== "string" || !UUID_RE.test(picture)) bad("there is no picture (Hermes's clip) asset");
+  if (!inputs.includes(picture as string)) bad("the picture asset is not listed in inputs");
+  const narrationAssetId = payload.narrationAssetId;
+  if (typeof narrationAssetId !== "string" || !UUID_RE.test(narrationAssetId)) bad("there is no narration asset");
+  if (!inputs.includes(narrationAssetId as string)) bad("the narration asset is not listed in inputs");
+  if (narrationAssetId === picture) bad("the picture and the narration are the same asset");
+  const narrationSec = num(payload.narrationSec);
+  if (!(narrationSec > 0) || narrationSec > RENDER_LIMITS.maxSeconds) bad(`narrationSec must be above 0 and at most ${RENDER_LIMITS.maxSeconds}`);
+  const tempo = payload.narrationTempo === undefined || payload.narrationTempo === null ? 1 : num(payload.narrationTempo);
+  if (!(tempo >= NARRATION_TEMPO_LIMITS[0] && tempo <= NARRATION_TEMPO_LIMITS[1])) bad(`narrationTempo must be from ${NARRATION_TEMPO_LIMITS[0]} to ${NARRATION_TEMPO_LIMITS[1]}`);
+  const targetLufs = payload.targetLufs === undefined ? -16 : num(payload.targetLufs);
+  if (!(targetLufs >= -30 && targetLufs <= -5)) bad("targetLufs must be between -30 and -5");
+  return {
+    width,
+    height,
+    fps,
+    pictureAssetId: picture as string,
+    narrationAssetId: narrationAssetId as string,
+    narrationSec,
+    ...(tempo !== 1 ? { narrationTempo: round3(tempo) } : {}),
+    targetLufs,
+    audio: payload.audio === undefined || payload.audio === null ? null : payload.audio,
+    inputs,
+  };
+}
+
+/** The asset ids a hermes-mux job downloads: the picture, the narration, and the mix's bed and accents. */
+export function hermesMuxInputsOf(spec: HermesMuxSpec, audio: RenderAudio | null): string[] {
+  return Array.from(new Set([spec.pictureAssetId, spec.narrationAssetId, ...(audio?.bed ? [audio.bed.assetId] : []), ...audioSfxAssets({ audio: audio ?? undefined })]));
+}
+
+/**
+ * The ffmpeg arguments of a hermes-mux: the shared mux (buildMuxArgs) over Hermes's picture, with the plan's length.
+ * The picture is copied when it is H.264 and long enough; it is encoded again when its last frame is held (freeze) or
+ * when it is another codec, so the result is always an H.264/AAC MP4. Hermes's own audio is never mapped. Pure.
+ */
+export function buildHermesMuxArgs(
+  spec: Pick<HermesMuxSpec, "targetLufs" | "narrationTempo">,
+  plan: HermesMuxPlan,
+  audio: RenderAudio | null,
+  files: { picture: string; narration: string; output: string; bed?: string; sfx?: string[] },
+  opts: { pictureCodec: string },
+): string[] {
+  const mux = { targetLufs: spec.targetLufs, durationSec: plan.durationSec, ...(spec.narrationTempo !== undefined ? { narrationTempo: spec.narrationTempo } : {}), ...(audio ? { audio } : {}) };
+  return buildMuxArgs(mux, files.picture, files.narration, files.output, {
+    ...(audio?.bed ? { bed: files.bed } : {}),
+    sfx: files.sfx ?? [],
+    picture: { freezeSec: plan.mode === "freeze" ? plan.freezeSec : 0, reencode: plan.mode === "freeze" || opts.pictureCodec !== "h264" },
+  });
+}
+
+/** A video file by its magic bytes (MP4/MOV ftyp, WebM/Matroska EBML), with the extension ffmpeg reads it by. */
+export function sniffVideoBytes(b: Uint8Array): { ext: "mp4" | "mov" | "webm" } | null {
+  if (b.length >= 12 && String.fromCharCode(b[4], b[5], b[6], b[7]) === "ftyp") return { ext: String.fromCharCode(b[8], b[9], b[10], b[11]) === "qt  " ? "mov" : "mp4" };
+  if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return { ext: "webm" };
+  return null;
+}
+
+async function hermesMuxHandler(ctx: JobContext): Promise<Record<string, unknown>> {
+  const spec = parseHermesMuxSpec(ctx.job.payload);
+  const missing = [...missingAudioMixFilters(), ...(ffmpegHasFilter("tpad") ? [] : ["tpad"])];
+  if (missing.length > 0) {
+    throw new NonRetryableError(
+      `This job lays the run's narration on Hermes's picture, but this worker's ffmpeg has no ${missing.join(", ")} filter. Nothing was made. ` +
+        "Install a full ffmpeg build on the worker, then press Retry.",
+    );
+  }
+  // The plan is checked against the planned narration first (so a bad bed or accent fails before any download).
+  const planned = spec.audio === null ? null : parseAudioPlan(spec.audio, { durationSec: spec.narrationSec + MUX_MAX_PAD_SEC + MUX_TAIL_SEC, targetLufs: spec.targetLufs, inputs: spec.inputs });
+  const inDir = path.join(ctx.workDir, "in");
+  await mkdir(inDir, { recursive: true });
+  const wanted = hermesMuxInputsOf(spec, planned);
+  const named = new Map<string, string>();
+  for (const [k, id] of wanted.entries()) {
+    const dest = path.join(inDir, id);
+    if (!(await stat(dest).catch(() => null))) await ctx.download(id, dest);
+    ctx.progress(0.02 + ((k + 1) / wanted.length) * 0.1, `Downloaded ${k + 1} of ${wanted.length} files`);
+    const fh = await open(dest, "r");
+    const head = Buffer.alloc(16);
+    const { bytesRead } = await fh.read(head, 0, 16, 0).finally(() => fh.close());
+    let ext: string;
+    if (id === spec.pictureAssetId) {
+      const v = sniffVideoBytes(head.subarray(0, bytesRead));
+      if (!v) throw new NonRetryableError("Hermes's picture is not an MP4, MOV or WebM video");
+      ext = v.ext;
+    } else {
+      const info = sniffMedia(head.subarray(0, bytesRead));
+      if (!info || info.kind !== "audio") throw new NonRetryableError(`Asset ${id} is used as ${id === spec.narrationAssetId ? "the narration" : "a sound in the mix"} but is ${info?.mime ?? "not audio"}`);
+      ext = info.ext;
+    }
+    const target = path.join(inDir, `${id}.${ext}`);
+    await rename(dest, target);
+    named.set(id, path.join("in", `${id}.${ext}`));
+  }
+  const pictureRel = named.get(spec.pictureAssetId) as string;
+  const narrationRel = named.get(spec.narrationAssetId) as string;
+  ctx.progress(0.13, "Measuring Hermes's picture and the narration");
+  let clipJson: unknown;
+  try {
+    clipJson = JSON.parse((await runCapture(ffprobePath(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path.join(ctx.workDir, pictureRel)], ctx.signal)).stdout);
+  } catch (err) {
+    if (ctx.signal.aborted) throw err;
+    throw new NonRetryableError("Hermes's picture is not a readable video");
+  }
+  const clip = parseProbe(clipJson);
+  const videoStream = ((clipJson as { streams?: Array<Record<string, unknown>> }).streams ?? []).find((s) => s.codec_type === "video");
+  const pictureCodec = String(videoStream?.codec_name ?? "");
+  // The picture's own length: a clip whose audio runs past its last frame would otherwise end in a blank picture.
+  const streamSec = Number(videoStream?.duration);
+  const clipSec = Number.isFinite(streamSec) && streamSec > 0 ? Math.min(streamSec, clip.durationSec) : clip.durationSec;
+  let narrationProbe: unknown = null;
+  try {
+    narrationProbe = JSON.parse((await runCapture(ffprobePath(), ["-v", "error", "-print_format", "json", "-show_format", path.join(ctx.workDir, narrationRel)], ctx.signal)).stdout);
+  } catch {
+    narrationProbe = null;
+  }
+  const realSec = parseAudioDuration(narrationProbe);
+  const tempo = spec.narrationTempo ?? 1;
+  const lengthIssue = narrationLengthIssue(realSec, spec.narrationSec, tempo);
+  if (lengthIssue) throw new NonRetryableError(lengthIssue.replace("the shots were planned for", "the studio planned"));
+  const peakDb = parseAstatsPeak(
+    (await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", path.join(ctx.workDir, narrationRel), "-af", "astats=metadata=0", "-f", "null", "-"], ctx.signal)).stderr,
+  );
+  const plan = hermesMuxPlan({ clipSec, narrationSec: (realSec as number) / tempo, fps: spec.fps });
+  // The mix is parsed again for the finished length, so every layer runs exactly the video's length.
+  const audio = spec.audio === null ? null : parseAudioPlan(spec.audio, { durationSec: plan.durationSec, targetLufs: spec.targetLufs, inputs: spec.inputs });
+  const started = Date.now();
+  ctx.progress(0.2, plan.mode === "freeze" ? "Holding the last frame and adding the narration" : audio ? "Mixing the soundtrack onto Hermes's picture" : "Adding the narration to Hermes's picture");
+  await runFfmpeg(
+    buildHermesMuxArgs(spec, plan, audio, {
+      picture: pictureRel,
+      narration: narrationRel,
+      output: "video.part.mp4",
+      ...(audio?.bed ? { bed: named.get(audio.bed.assetId) as string } : {}),
+      sfx: audioSfxAssets({ audio: audio ?? undefined }).map((id) => named.get(id) as string),
+    }, { pictureCodec }),
+    plan.durationSec,
+    (f) => ctx.progress(0.2 + f * 0.6, "Adding the narration"),
+    ctx.signal,
+    ctx.workDir,
+  );
+  const out = path.join(ctx.workDir, "video.mp4");
+  await rename(path.join(ctx.workDir, "video.part.mp4"), out);
+  ctx.progress(0.85, "Checking the result");
+  const probe = parseProbe(JSON.parse((await runCapture(ffprobePath(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", out], ctx.signal)).stdout));
+  if (!probe.hasAudio) throw new NonRetryableError("The video has no audio after adding the narration");
+  const measured = (await runCapture(ffmpegPath(), ["-hide_banner", "-nostats", "-i", out, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], ctx.signal)).stderr;
+  const integratedLufs = parseLoudness(measured);
+  const up = await ctx.upload("video.mp4", out, "video/mp4");
+  return {
+    durationSec: probe.durationSec,
+    width: probe.width,
+    height: probe.height,
+    fps: probe.fps,
+    engine: HERMES_MUX_ENGINE,
+    renderer: HERMES_MUX_ENGINE,
+    // What was done to make the picture and the narration one length.
+    mux: plan,
+    pictureCodec,
+    pictureReencoded: plan.mode === "freeze" || pictureCodec !== "h264",
+    narrationSec: plan.narrationSec,
+    ...(spec.narrationTempo !== undefined ? { narrationTempo: spec.narrationTempo } : {}),
+    narrationClipped: peakDb !== null ? peakDb >= -0.1 : null,
+    narrationPeakDb: peakDb,
+    // The finished file's loudness, measured here (the quality check measures it again).
+    integratedLufs,
+    truePeakDb: parseTruePeak(measured),
+    ...(audio ? { audioMix: { bed: audio.bed ? { assetId: audio.bed.assetId, cover: audio.bed.cover } : null, ambient: audio.ambient !== null, sfx: audio.sfx.length, targetLufs: audio.master.targetLufs } } : {}),
+    sceneStarts: [],
+    captionsBurned: true,
+    captionNote: "Hermes drew the captions with its own tools",
+    renderSeconds: round2((Date.now() - started) / 1000),
+    bytes: up.bytes,
+    sha256: up.sha256,
+  };
+}
+
 async function renderVideoHandler(ctx: JobContext): Promise<Record<string, unknown>> {
+  // hermes-mux (0.13.0) has no shots and no renderer plugin: Hermes drew the picture, this worker adds the sound.
+  if (ctx.job.payload.engine === HERMES_MUX_ENGINE) return hermesMuxHandler(ctx);
   // Dispatch before anything else: a job for an engine this machine cannot run fails here, before a single download,
   // and names the engine. It is never rendered as stills instead.
   const engine = renderEngineOf(ctx.job.payload);

@@ -54,7 +54,7 @@ import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill }
 import { htmlDesignGate, htmlDesignPrompt, validateHtmlDesign, type DesignBrief } from "../studio/html-design.ts";
 import { packVendoredFiles } from "./style-packs.ts";
 import { VIDEO_FORMATS } from "../studio/catalog.ts";
-import { decisionOptions, reviewTitle, stageLabel, tightenLabel, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
+import { decisionOptions, reviewTitle, stageLabel, tightenLabel, videoRevisionMessage, type ReviewDecision, type ReviewKind, type ReviewMedia, type ReviewPayload } from "../studio/review.ts";
 import { addGateIssues, finalReason, productionDecision, productionSummary, retryStageFor } from "../studio/production.ts";
 import { cancelRunWork, narrationTempoReady, planScriptFit, reapProduction, recheckConclusion, resetFailedOrders, resetOrdersForRevision, runProductionStage } from "./production.ts";
 import { paceForRun } from "./speech-rate.ts";
@@ -986,7 +986,12 @@ export async function decideReview(input: {
     const note = input.note.trim().slice(0, MAX_NOTE_CHARS);
     // The run's own stage list: revisions land on a stage this run has (a scene-spec run has no storyboard).
     const [runCfg] = await sql`SELECT config FROM pipeline_runs WHERE id = ${runId}`;
-    const stages = runStagesOf(parseRunConfig(runCfg?.config));
+    const runConfig = parseRunConfig(runCfg?.config);
+    const stages = runStagesOf(runConfig);
+    // A run whose video Hermes renders (its pack's engine, or the renderer its last video was made with): notes on the
+    // video go back to Hermes, with the note, instead of to the voice.
+    const [lastRender] = await sql`SELECT output->>'renderer' AS renderer FROM pipeline_stages WHERE run_id = ${runId} AND stage = 'render' ORDER BY attempt DESC LIMIT 1`;
+    const hermesRender = runConfig.stylePack?.engine === "hermes" || lastRender?.renderer === "hermes";
 
     let target: RunStage = stage;
     // A script fit: Hermes rewrites the script to a length that fits and only the voice is made again. Asked for with
@@ -1009,7 +1014,7 @@ export async function decideReview(input: {
         target = "voice";
       } else if (isProductionStage(stage)) {
         // The Hermes classifier only knows the four director stages, so production notes are sorted by keywords.
-        target = revisionTarget(null, note, stage, stages);
+        target = revisionTarget(null, note, stage, stages, { renderer: hermesRender ? "hermes" : null });
       } else {
         // A scene spec or skill brief is asked about as the storyboard it stands for; the answer maps back to the run's list.
         const c = await hermesJson(classifyPrompt(note, isPlanStage(stage) ? "storyboard" : stage), validateClassification, { retries: 1, timeoutMs: 45_000, queueTimeoutMs: 5_000 });
@@ -1089,9 +1094,12 @@ export async function decideReview(input: {
       await clearOpenStages(tx, runId);
       // New notes about the images restart every shot, and the note reaches the image prompt as data.
       if (target === "assets") await resetOrdersForRevision(tx, runId, note);
-      await insertPending(tx, runId, target, note, 0);
+      // A Hermes render made again for the owner's note: the note reaches Hermes's start ask (as a DATA block), with
+      // the previous file's name, and a new file is asked for.
+      await insertPending(tx, runId, target, note, 0, target === "render" && hermesRender ? { ownerNote: note } : {});
       await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
-      message = target === stage ? "Revision sent. Hermes is redoing this step." : `Revision sent. Hermes goes back to the ${stageLabel(target).toLowerCase()} step.`;
+      const onVideo = stage === "render" || stage === "qc" ? videoRevisionMessage(target, { hermesRender }) : null;
+      message = onVideo ?? (target === stage ? "Revision sent. Hermes is redoing this step." : `Revision sent. Hermes goes back to the ${stageLabel(target).toLowerCase()} step.`);
     });
     // The owner's final decision on a Trial pack's video goes into the curation log.
     if (stage === "qc") await recordTrialOutcome(runId);

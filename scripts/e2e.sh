@@ -125,6 +125,13 @@ if grep -qF "preview-frames" <<<"$CAPS"; then fail "a worker without html-captur
 if grep -qF "pack:hermes-designed-explainer@" <<<"$CAPS"; then fail "a worker without html-capture reports the html-design pack"; fi
 # ...and does not even name the preview-frames job type in its claims, so it never takes a preview queued under a pack.
 [ "$(q "SELECT 'preview-frames' = ANY(job_types) FROM workers WHERE id = '$WORKER'")" = "f" ] || fail "a worker without the still probe names the preview-frames job type in its claims"
+# hermes-mux (0.13.0) lays a run's narration on Hermes's picture: reported exactly where the audio-mix chain and tpad exist.
+FILTERS=$(ffmpeg -hide_banner -filters 2>/dev/null || true)
+if grep -qF "audio-mix" <<<"$CAPS" && grep -qE '\stpad\s' <<<"$FILTERS"; then
+  grep -qF "hermes-mux" <<<"$CAPS" || fail "a worker with the audio-mix chain and tpad does not report hermes-mux (capabilities: $CAPS)"
+elif grep -qF "hermes-mux" <<<"$CAPS"; then
+  fail "a worker without the audio-mix chain or tpad reports hermes-mux (capabilities: $CAPS)"
+fi
 # A render queued under a pack capability is claimed only by a worker reporting it.
 PACK_JOB=$(q "INSERT INTO jobs (type, capability) VALUES ('echo','pack:explainer-flat-vector@$(pack_version explainer-flat-vector)') RETURNING id")
 "$WORK/worker/run.sh" tick || fail "tick with a pack job exited non-zero"

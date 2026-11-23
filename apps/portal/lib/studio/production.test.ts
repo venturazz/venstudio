@@ -194,3 +194,11 @@ test("productionStageAction: a hermes render is limited by its budget, and a pas
   assert.deepEqual(productionStageAction({ stage: "render", idleMinutes: 1, jobStatus: null, portalRender: true, renderClock: { elapsedMinutes: 200, budgetMinutes: 240 } }), { action: "none" }, "a 3-hour project render inside its budget");
   assert.equal(productionStageAction({ stage: "render", idleMinutes: PRODUCTION_STUCK_MINUTES + 1, jobStatus: null }).action, "fail", "a worker render that was never queued still fails");
 });
+
+test("productionSummary says when the run's narration was added to Hermes's picture, and how the lengths were matched", () => {
+  assert.equal(
+    productionSummary("render", { durationSec: 16, music: "No music bed", audioBy: "studio", muxNote: "Hermes's picture is 14.2 s and the narration 16 s: the last frame is held for 1.8 s so the narration ends on screen." }),
+    "Video rendered, 16 seconds. No music bed. The run's narration was added to Hermes's picture: Hermes's picture is 14.2 s and the narration 16 s: the last frame is held for 1.8 s so the narration ends on screen.",
+  );
+  assert.equal(productionSummary("render", { durationSec: 16, music: "" }), "Video rendered, 16 seconds");
+});
