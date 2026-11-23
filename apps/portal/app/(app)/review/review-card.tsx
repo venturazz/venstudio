@@ -22,6 +22,8 @@ export interface ReviewCardView {
   trial?: boolean;
   /** Hermes renders the run's video (research only, never published). */
   hermesRender?: boolean;
+  /** A failed Hermes-skill render may be retried on Muse. */
+  museRender?: boolean;
   /** A lab trial of a Draft or Lab pack: research only, never published, counted apart. */
   labTrial?: boolean;
   /** The run draws a page Hermes wrote (html-design): research only, never published. */
@@ -272,6 +274,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
     tempoReady: item.tempoReady,
     pictures: item.pictures !== false,
     hermesRender: item.hermesRender === true,
+    museRender: item.museRender === true,
     voiced: item.voiced !== false,
     qc: p.qc ?? null,
     trial: item.trial === true,
@@ -433,7 +436,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
                 <SubmitButton
                   variant={i === 0 ? "primary" : "secondary"}
                   className={BTN}
-                  pendingLabel={d === "recheck" ? "Checking…" : d === "fit" ? "Fitting…" : "Saving…"}
+                  pendingLabel={d === "recheck" ? "Checking…" : d === "fit" ? "Fitting…" : d === "muse" ? "Sending to Muse…" : "Saving…"}
                 >
                   {decisionLabel(d, item.kind, item.stage, ctx)}
                 </SubmitButton>

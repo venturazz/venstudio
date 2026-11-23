@@ -1051,8 +1051,17 @@ export async function decideReview(input: {
     const voiceFix = parseVoiceFix(payload.voice);
     // tempoReady only matters for "fit", which goes through recheckReview.
     const qcFacts = parseQcFacts(payload.qc);
-    const refused = decisionRefusal(kind, decision, { stage, issues: storedIssues, voice: voiceFix, tempoReady: true, qc: qcFacts, isOwner: input.isOwner === true });
+    // Whether a failed Hermes-skill render may move to Muse: the run renders with Hermes and has its own narration.
+    const [cfgRow] = await sql`SELECT config FROM pipeline_runs WHERE id = ${runId}`;
+    const cfg0 = parseRunConfig(cfgRow?.config);
+    const museRender = cfg0.stylePack?.engine === "hermes" && runStagesOf(cfg0).includes("voice") && !runsOnMuse(cfg0.executors, "render");
+    const refused = decisionRefusal(kind, decision, { stage, issues: storedIssues, voice: voiceFix, tempoReady: true, qc: qcFacts, museRender, isOwner: input.isOwner === true });
     if (refused) return { ok: false, error: refused };
+    // Retry on Muse: said up front when no Muse worker has this skill, so nothing changes on the run.
+    if (decision === "muse") {
+      const ready = cfg0.stylePack ? await museRenderReadiness(cfg0.stylePack.id) : { refusals: ["This run has no style pack"], skill: null };
+      if (ready.refusals.length > 0) return { ok: false, error: `Muse cannot render this video yet. ${ready.refusals.join(". ")}` };
+    }
     // A trial's final video is scored by the owner before it is decided (the curation log needs the score).
     if (stage === "qc") {
       const refusal = await scoreRefusal(input.reviewId, decision);
@@ -1148,6 +1157,19 @@ export async function decideReview(input: {
         await cancelRunWork(tx, runId);
         await tx`UPDATE pipeline_runs SET state = 'cancelled', finished_at = now() WHERE id = ${runId}`;
         message = "Rejected. The run is cancelled.";
+        return;
+      }
+      if (decision === "muse") {
+        // From now on this run's video is rendered on Muse; the script, brief and narration are kept.
+        await tx`
+          UPDATE pipeline_runs SET config = jsonb_set(config, '{executors}', coalesce(config->'executors', '{}'::jsonb) || '{"render":"muse"}'::jsonb)
+          WHERE id = ${runId}
+        `;
+        await supersedeOpenReviews(tx, runId);
+        await clearOpenStages(tx, runId);
+        await insertPending(tx, runId, "render", "", 0);
+        await tx`UPDATE pipeline_runs SET state = 'running' WHERE id = ${runId}`;
+        message = "Sent to Muse. A Muse worker renders this video with the same skill.";
         return;
       }
       if (decision === "retry") {

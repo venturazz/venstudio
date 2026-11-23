@@ -14,7 +14,7 @@ import type { FormState } from "@/lib/form.ts";
 
 const schema = z.object({
   reviewId: z.uuid("Unknown review item"),
-  decision: z.enum(["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override"]),
+  decision: z.enum(["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override", "muse"]),
   note: z.string().max(1000),
   ideaIndex: z.union([z.literal(""), z.coerce.number().int().min(0).max(50)]),
 });

@@ -75,6 +75,7 @@ export default async function ReviewPage() {
         channelName: r.channelName,
         trial: r.trial,
         hermesRender: r.hermesRender,
+        museRender: r.museRender,
         labTrial: r.labTrial,
         designed: r.designed,
         pictures: r.pictures,

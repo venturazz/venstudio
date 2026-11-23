@@ -79,6 +79,7 @@ A run started with **Muse does the work** also sends the render of a Hermes-skil
 4. The portal checks the bytes like a Hermes video, stores it (executor `muse-agent`, renderer `muse`), and queues the
    same `hermes-mux` job that lays the run's narration and mix on; then the quality check runs as for Hermes.
 5. A failure (including FAILED.json) is the render stage's error. Notes on the video start a new Muse render with the note.
+6. A run that Hermes renders (started before, or without "Muse does the work") gets **Retry on Muse** on a failed video card, when the run has its own voice stage and a Muse worker has the skill. It sets the run's render to Muse and renders again; the script, brief and narration are kept.
 
 ### Where the skill comes from (worker 0.17.0)
 

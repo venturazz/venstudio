@@ -207,3 +207,14 @@ test("parseQcFacts reads payload.qc and drops what it does not know", () => {
   assert.equal(parseQcFacts(null), null);
   assert.equal(parseQcFacts([]), null);
 });
+
+test("a failed Hermes-skill render offers Retry on Muse only when the run can move to Muse", async () => {
+  const { decisionOptions, decisionLabel, decisionHint, decisionRefusal } = await import("./review.ts");
+  assert.deepEqual(decisionOptions("stage-error", { stage: "render", museRender: true }), ["retry", "muse", "revise", "reject"]);
+  assert.deepEqual(decisionOptions("stage-error", { stage: "render" }), ["retry", "revise", "reject"]);
+  assert.deepEqual(decisionOptions("stage-error", { stage: "voice", museRender: true }), ["retry", "revise", "reject"]);
+  assert.equal(decisionLabel("muse", "stage-error", "render"), "Retry on Muse");
+  assert.match(decisionHint("muse", "stage-error", "render") ?? "", /Muse worker with the same skill/);
+  assert.match(decisionRefusal("stage-error", "muse", { stage: "render" }) ?? "", /not available here/);
+  assert.equal(decisionRefusal("stage-error", "muse", { stage: "render", museRender: true }), null);
+});

@@ -23,6 +23,8 @@ export interface ReviewCard {
   trial: boolean;
   /** The run's pack renders with Hermes (research only, never published). */
   hermesRender: boolean;
+  /** A Hermes-skill render that could move to Muse (it has its own voice stage and is not on Muse already). */
+  museRender: boolean;
   /** A lab trial of a Draft or Lab pack (pipeline_runs.config.stylePack.lab): research only, counted apart. */
   labTrial: boolean;
   /** The run draws a page Hermes wrote (workflow html-design): research only, always a trial, never published. */
@@ -128,6 +130,8 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
       coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false)
         OR coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) AS trial,
       coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render,
+      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AND coalesce(r.config->'workflow'->'stages' ? 'voice', false)
+        AND coalesce(r.config->'executors'->>'render', '') <> 'muse' AS muse_render,
       coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial,
       coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) OR coalesce((r.config->'stylePack'->>'designed')::boolean, false) AS designed,
       (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures,
@@ -154,6 +158,7 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     gates: gates.get(r.run_id as string) ?? [],
     trial: r.trial === true,
     hermesRender: r.hermes_render === true,
+    museRender: r.muse_render === true,
     labTrial: r.lab_trial === true,
     designed: r.designed === true,
     pictures: r.pictures !== false,

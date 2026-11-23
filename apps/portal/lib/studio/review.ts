@@ -16,8 +16,8 @@ export type ReviewState = "open" | "approved" | "revision" | "rejected" | "super
  * "override" is the owner's Approve anyway: for a soft voice problem, and for a final quality check that failed only
  * checks that may be waived (qcWaiver).
  */
-export type ReviewDecision = "approve" | "revise" | "reject" | "retry" | "recheck" | "fit" | "tighten" | "override";
-export const REVIEW_DECISIONS: readonly ReviewDecision[] = ["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override"];
+export type ReviewDecision = "approve" | "revise" | "reject" | "retry" | "recheck" | "fit" | "tighten" | "override" | "muse";
+export const REVIEW_DECISIONS: readonly ReviewDecision[] = ["approve", "revise", "reject", "retry", "recheck", "fit", "tighten", "override", "muse"];
 
 export const STAGE_LABELS: Record<string, string> = {
   idea: "Idea",
@@ -71,6 +71,11 @@ export interface DecisionContext {
   qc?: QcFacts | null;
   /** A trial, research or lab run: the owner's score is needed before the final decision, and it goes to curation. */
   trial?: boolean;
+  /**
+   * The run's video is a Hermes-skill render that could be rendered on Muse instead (engine hermes, the run has its own
+   * voice stage, and its render is not already on Muse): a failed render offers "Retry on Muse".
+   */
+  museRender?: boolean;
 }
 
 /** What the final quality check card records about its gates (payload.qc), so its choices can be worked out. */
@@ -251,7 +256,7 @@ export function decisionOptions(kind: ReviewKind, ctx: DecisionContext = {}): Re
       return stage === "assets" ? ["recheck", "revise", "reject"] : ["recheck", "retry", "revise", "reject"];
     }
     case "stage-error":
-      return ["retry", "revise", "reject"];
+      return ctx.stage === "render" && ctx.museRender ? ["retry", "muse", "revise", "reject"] : ["retry", "revise", "reject"];
   }
 }
 
@@ -275,6 +280,7 @@ export const DECISION_LABELS: Record<ReviewDecision, string> = {
   fit: "Fit the narration to the video",
   tighten: "Tighten the script, keep the pictures",
   override: "Approve anyway",
+  muse: "Retry on Muse",
 };
 
 /** The button text, named after what the choice really does on this card. */
@@ -295,6 +301,7 @@ const sec = (n: number) => String(Math.round(n * 10) / 10);
 /** One plain line under a button when its effect is not obvious from the label. */
 export function decisionHint(decision: ReviewDecision, kind: ReviewKind, stage: string, ctx: DecisionContext = {}): string | null {
   const fix = ctx.voice;
+  if (decision === "muse") return "Renders this video on a Muse worker with the same skill from venstudio-styles, instead of Hermes. The script, brief and narration are kept; this run's later renders stay on Muse.";
   if (decision === "recheck") {
     if (stage === "voice" && !hasTermsIssues(ctx.issues)) return "Checks this narration again with the current rules. Nothing is recorded again.";
     if (stage === "render") return "Checks the reel's own voice against the provider terms as they are now. Nothing is rendered again.";
