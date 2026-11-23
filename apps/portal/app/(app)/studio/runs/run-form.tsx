@@ -502,7 +502,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             />
             <span className="min-w-0">
               <span className="block font-medium">Muse does the thinking</span>
-              <span className="block text-xs text-muted">Idea, research and script go to the Muse agent, so Hermes is not asked. It takes minutes per step. Approval stays with you.</span>
+              <span className="block text-xs text-muted">Idea, research, script and storyboard go to the Muse agent, so Hermes is not asked. It takes minutes per step. Approval stays with you.</span>
             </span>
           </label>
           {!museThinking.ready && (

@@ -36,7 +36,7 @@ so Coolify reads the file again. Then fill in:
 | `HERMES_MEDIA_ORIGINS` | optional override | Extra origins (scheme, host, port) Hermes serves generated files from, e.g. `http://hermes-files:8000`. Needed only if file URLs differ from `HERMES_BASE_URL`. Exact match, first request only. The first request may use plain http and private hosts, so list only origins you control |
 | `HERMES_MAX_CONCURRENCY` | optional override | Hermes model turns the portal runs at once, 1 (default) to 8. Every Hermes caller shares this gate, and a 429 or 503 from Hermes pauses all of them until `Retry-After`. Raise only if your Hermes takes parallel turns |
 | `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows Muse agent tasks: the last picture fallback and the test on the Workers page (`docs/muse-agent-tasks.md`) |
-| `MUSE_OVERFLOW` | optional | `1` (default). With `MUSE_AGENT_TASKS=1`, idea, research and script go to a ready Muse worker when Hermes is busy or its gate is full. `0` always waits for Hermes |
+| `MUSE_OVERFLOW` | optional | `1` (default). With `MUSE_AGENT_TASKS=1`, idea, research, script and storyboard go to a ready Muse worker when Hermes is busy or its gate is full. `0` always waits for Hermes |
 
 ### Kokoro server (example, verify before relying on it)
 

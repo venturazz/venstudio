@@ -5,7 +5,7 @@
  * The worker (0.14.0+) writes the context files into /home/hatch/venstudio/inbox/<jobId>/ next to TASK.md; everything
  * in there is data describing what to make, never instructions.
  */
-import { validateIdeas, validateResearch, validateScript, type Validated } from "./director.ts";
+import { validateIdeas, validateResearch, validateScript, validateStoryboard, type StoryboardCheck, type Validated } from "./director.ts";
 import { validateHtmlDesign, type PageCheck } from "./html-design.ts";
 import { validateSceneSpec, type SceneSpecCheck } from "./scene-spec.ts";
 import { validateSkillBrief, type BriefSkill } from "./skill-brief.ts";
@@ -72,7 +72,7 @@ export function contextIssues(files: readonly ContextFile[]): string[] {
 // ---------------------------------------------------------------------------------------------------------------
 // result.json: checked with the validator that checks Hermes's answer for the same stage
 
-export const MUSE_RESULT_STAGES = ["test", "idea", "research", "script", "scene-spec", "skill-brief", "html-design"] as const;
+export const MUSE_RESULT_STAGES = ["test", "idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "html-design"] as const;
 export type MuseResultStage = (typeof MUSE_RESULT_STAGES)[number];
 
 /** The shape each stage's result.json must have (the same schema Hermes is given for that stage). */
@@ -81,6 +81,8 @@ export const MUSE_RESULT_SCHEMA: Record<MuseResultStage, string> = {
   idea: '{"ideas":[{"title":string,"hook":string,"angle":string,"score":number}]} with 5 to 10 ideas, score 0 to 100',
   research: '{"notes":[{"claim":string,"sourceUrl":string,"sourced":boolean,"summary":string}]} with 1 to 30 notes',
   script: '{"hooks":[string],"chosenHook":number,"script":string} with 3 to 10 hooks; chosenHook is an index into hooks',
+  storyboard:
+    '{"shots":[{"beatRole":string,"seconds":number,"description":string,"imagePrompt":string,"provider"?:string,"needs"?:string,"onScreen"?:{"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[]}],"tokens"?:string[]}}]}; imagePrompt names no real person, brand or copyrighted character; provider and needs are optional',
   "scene-spec":
     '{"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string],"caption":string}]}',
   "skill-brief": '{"shots":[{"beat":string,"seconds":number,"description":string,"onScreenText"?:string,"spec"?:object}],"text"?:string}',
@@ -117,6 +119,8 @@ export function validateMuseTestResult(value: unknown, folder: readonly string[]
 export interface MuseResultCheck {
   /** test: the files TASK.md listed (TASK.md and the context files). */
   folder?: readonly string[];
+  /** storyboard: the image backends Hermes has reported, as for Hermes (an unknown provider is dropped with a note). */
+  storyboard?: StoryboardCheck;
   /** scene-spec: the pack contract and the run's research notes, as for Hermes. */
   sceneSpec?: SceneSpecCheck;
   /** skill-brief: the run's skill, as for Hermes (null: the default text brief). */
@@ -147,6 +151,8 @@ export function validateMuseResult(stage: MuseResultStage, text: string, check: 
       return validateResearch(value);
     case "script":
       return validateScript(value);
+    case "storyboard":
+      return validateStoryboard(value, check.storyboard ?? {});
     case "scene-spec":
       if (!check.sceneSpec) return { ok: false, issues: ["A scene spec is checked against the run's style contract, which this check was not given"] };
       return validateSceneSpec(value, check.sceneSpec);

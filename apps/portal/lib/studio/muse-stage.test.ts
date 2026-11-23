@@ -26,16 +26,18 @@ test("executors: only known thinking stages set to muse are kept; nothing stored
   assert.deepEqual(parseStageExecutors(undefined), {});
   assert.deepEqual(parseStageExecutors("muse"), {});
   assert.deepEqual(parseStageExecutors([]), {});
-  assert.deepEqual(parseStageExecutors({ idea: "muse", script: "hermes", storyboard: "muse", render: "muse" }), { idea: "muse" });
-  assert.deepEqual(parseStageExecutors(museThinkingExecutors()), { idea: "muse", research: "muse", script: "muse" });
+  assert.deepEqual(parseStageExecutors({ idea: "muse", script: "hermes", storyboard: "muse", voice: "muse", render: "muse" }), { idea: "muse", storyboard: "muse" });
+  assert.deepEqual(parseStageExecutors(museThinkingExecutors()), { idea: "muse", research: "muse", script: "muse", storyboard: "muse" });
   assert.equal(runsOnMuse({ idea: "muse" }, "idea"), true);
   assert.equal(runsOnMuse({ idea: "muse" }, "script"), false);
   assert.equal(runsOnMuse(undefined, "idea"), false);
   assert.equal(runsOnMuse({ idea: "muse" }, "storyboard"), false);
-  assert.equal(isMuseThinkStage("storyboard"), false);
+  assert.equal(runsOnMuse({ storyboard: "muse" }, "storyboard"), true);
+  assert.equal(isMuseThinkStage("storyboard"), true);
+  assert.equal(isMuseThinkStage("voice"), false);
   assert.equal(executorsText(undefined), null);
   assert.equal(executorsText({}), null);
-  assert.equal(executorsText(museThinkingExecutors()), "Muse does the idea, research, script");
+  assert.equal(executorsText(museThinkingExecutors()), "Muse does the idea, research, script, storyboard");
 });
 
 test("run config: Muse thinking is stored on the run and read back; a run without it reads as before", () => {
@@ -45,7 +47,7 @@ test("run config: Muse thinking is stored on the run and read back; a run withou
   assert.equal(plain.config.executors, undefined);
   const muse = buildRunConfig({ ...req, thinkOnMuse: true }, { category: null }, { styleId: "s" });
   if (!muse.ok) throw new Error(muse.error);
-  assert.deepEqual(muse.config.executors, { idea: "muse", research: "muse", script: "muse" });
+  assert.deepEqual(muse.config.executors, { idea: "muse", research: "muse", script: "muse", storyboard: "muse" });
   const back = parseRunConfig(JSON.parse(JSON.stringify(muse.config)));
   assert.deepEqual(back.executors, muse.config.executors);
   assert.equal(parseRunConfig({}).executors, undefined);
@@ -132,10 +134,23 @@ test("a waiting stage: working, queued, finished, failed with the agent's reason
 
 test("overflow: only a thinking stage that Hermes holds, and only when switched on", () => {
   const on = { overflowOn: true, executors: undefined };
-  for (const stage of ["idea", "research", "script"]) assert.equal(museOverflowApplies({ ...on, stage }), true, stage);
-  for (const stage of ["storyboard", "assets", "voice", "render", "qc"]) assert.equal(museOverflowApplies({ ...on, stage }), false, stage);
+  for (const stage of ["idea", "research", "script", "storyboard"]) assert.equal(museOverflowApplies({ ...on, stage }), true, stage);
+  for (const stage of ["scene-spec", "assets", "voice", "render", "qc"]) assert.equal(museOverflowApplies({ ...on, stage }), false, stage);
   assert.equal(museOverflowApplies({ stage: "idea", executors: undefined, overflowOn: false }), false);
   // A stage the run already gave to Muse is not "overflow".
   assert.equal(museOverflowApplies({ stage: "idea", executors: { idea: "muse" }, overflowOn: true }), false);
   assert.equal(museOverflowApplies({ stage: "script", executors: { idea: "muse" }, overflowOn: true }), true);
+});
+
+test("a storyboard answer is read with the storyboard validator; an unknown provider is dropped, not refused", () => {
+  const board = (provider?: string) =>
+    JSON.stringify({ shots: [{ beatRole: "hook", seconds: 4, description: "A door opens", imagePrompt: "An open wooden door in warm light", ...(provider ? { provider } : {}) }] });
+  const ok = museStageAnswer("storyboard", board());
+  assert.ok(ok.ok);
+  assert.equal(museStageAnswer("storyboard", '{"shots":[]}').ok, false);
+  assert.match((museStageAnswer("storyboard", '{"nope":1}') as { error: string }).error, /storyboard answer was not usable/);
+  const p = museStagePayload({ stage: "storyboard", prompt: "x", runId: "r", project: "p" });
+  const spec = JSON.parse((p.context as Array<{ text: string }>)[1].text) as { schema: string; stage: string };
+  assert.equal(spec.stage, "storyboard");
+  assert.match(spec.schema, /"shots"/);
 });

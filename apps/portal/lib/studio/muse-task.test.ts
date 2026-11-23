@@ -116,7 +116,7 @@ test("result.json goes through the same validator as Hermes's answer for that st
   const brief = { shots: [{ beat: "hook", seconds: 3, description: "d" }], text: "draw a line" };
   assert.deepEqual(validateMuseResult("skill-brief", JSON.stringify(brief)), validateSkillBrief(brief, null));
   assert.deepEqual(validateMuseResult("scene-spec", JSON.stringify({ scenes: [] })), { ok: false, issues: ["A scene spec is checked against the run's style contract, which this check was not given"] });
-  assert.deepEqual([...MUSE_RESULT_STAGES], ["test", "idea", "research", "script", "scene-spec", "skill-brief", "html-design"]);
+  assert.deepEqual([...MUSE_RESULT_STAGES], ["test", "idea", "research", "script", "storyboard", "scene-spec", "skill-brief", "html-design"]);
 });
 
 test("html-design: the page files from out/ take the place of html and files, then validateHtmlDesign checks the whole", () => {

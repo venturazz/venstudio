@@ -542,12 +542,12 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     snap?.hermes?.imageProviders ?? [],
     health.filter((h) => h.endpoint === "hermes").map((h) => h.model),
   );
-  const r = fromHermes(
-    await hermesJson(
-      storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap), backends),
-      (v) => validateStoryboard(v, { knownProviders: backends }),
-      stageAsk("storyboard", st),
-    ),
+  const r = await think(
+    run,
+    st,
+    "storyboard",
+    storyboardPrompt(ctx, checkedScript.value.script, hint, skillHintsFor("image", snap), backends),
+    (v) => validateStoryboard(v, { knownProviders: backends }),
   );
   if (!r.ok) return r;
   return { ok: true, result: r.value, gate: storyboardGate(template, r.value.shots, narrationSec) };

@@ -10,8 +10,8 @@ import { MUSE_RESULT_SCHEMA, MUSE_TIMEOUT_SEC, clipText, contextIssues, validate
 import { versionBefore } from "./muse-task.ts";
 import type { ChatMessage } from "./director.ts";
 
-/** The stages that may run on Muse. Storyboard and the later stages stay with Hermes until they have a schema here. */
-export const MUSE_THINK_STAGES = ["idea", "research", "script"] as const;
+/** The stages that may run on Muse. Scene spec, skill brief and html-design (Hermes-only workflows) and the production stages stay with Hermes. */
+export const MUSE_THINK_STAGES = ["idea", "research", "script", "storyboard"] as const;
 export type MuseThinkStage = (typeof MUSE_THINK_STAGES)[number];
 
 export function isMuseThinkStage(v: unknown): v is MuseThinkStage {
