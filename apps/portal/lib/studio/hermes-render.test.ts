@@ -81,6 +81,8 @@ test("with the studio adding the sound, Hermes is asked for the picture and capt
   // A project skill is not told to use the narration as its voiceover when the studio lays it on.
   const skill = { name: "/kurzgesagt", aliases: [], mode: "project" as const, input: "", output: "" };
   assert.doesNotMatch(hermesRenderMessages(request({ skill, audioBy: "studio", output: out }))[0].content, /use the narration below as the voiceover/);
+  // A project skill whose input says to record a voice skips that step when the studio narrates.
+  assert.match(hermesRenderMessages(request({ skill, audioBy: "studio", output: out }))[0].content, /skip that step for this video/);
   assert.match(hermesRenderMessages(request({ skill, output: out }))[0].content, /use the narration below as the voiceover/);
   // A skill that voices itself keeps its own voice instruction whatever audioBy says.
   assert.match(hermesRenderMessages(request({ skill, voice: "skill", script: "Hello.", audioBy: "studio", output: out }))[0].content, /makes its own voice/);

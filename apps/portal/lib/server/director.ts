@@ -52,7 +52,7 @@ import {
   MODEL_STAGE_STUCK_MINUTES,
   type RunStage,
 } from "../studio/engine.ts";
-import { alwaysReviewed, runRecipeOf, runStagesOf, workflowForPack } from "../studio/recipes.ts";
+import { alwaysReviewed, runRecipeOf, runStagesOf, withStudioVoice, workflowForPack } from "../studio/recipes.ts";
 import { planReview } from "../studio/plan-review.ts";
 import { sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, validateSceneSpec } from "../studio/scene-spec.ts";
 import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill } from "../studio/skill-brief.ts";
@@ -301,7 +301,7 @@ export async function startRun(
       stylePack: labStudyId ? { ...pack, trial: true } : pack,
       ...(labStudyId ? { labStudyId } : {}),
       ...(input.trialBatch ? { trialBatch: input.trialBatch } : {}),
-      workflow: flow.workflow,
+      workflow: env().SKILL_VOICE === "studio" ? withStudioVoice(flow.workflow) : flow.workflow,
     };
     const topic = topicFromBrief(config.topicHint);
     let productionId: string | null = null;
@@ -530,7 +530,9 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     // Without the pack the brief could not follow its skill's mapping: stop instead of writing a generic brief.
     if (!pack) return { ok: false, error: "This run's style pack could not be read, so the skill brief cannot follow its skill" };
     const h = pack.hermes ?? null;
-    const skill: BriefSkill | null = h ? { name: h.skill, mode: h.mode, voice: h.voice, input: h.input } : null;
+    // A run with its own voice stage narrates for the skill (withStudioVoice): the brief must not tell the skill to record one.
+    const voice = h && runStagesOf(run.config).includes("voice") ? "run" : h?.voice;
+    const skill: BriefSkill | null = h ? { name: h.skill, mode: h.mode, voice: voice ?? "run", input: h.input } : null;
     const r = await think(run, st, "skill-brief", skillBriefPrompt(ctx, checkedScript.value.script, notes, skill, pack.name, hint), (v) => validateSkillBrief(v, skill));
     if (!r.ok) return r;
     return { ok: true, result: r.value, gate: skillBriefGate(template, r.value, narrationSec) };

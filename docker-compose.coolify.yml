@@ -66,6 +66,7 @@ services:
       # 1 lets the studio create unverified Muse agent tasks. Leave 0 until they are tested.
       MUSE_AGENT_TASKS: ${MUSE_AGENT_TASKS:-0}
       MUSE_OVERFLOW: ${MUSE_OVERFLOW:-1}
+      SKILL_VOICE: ${SKILL_VOICE:-studio}
     volumes:
       - venstudio-artifacts:/data/artifacts
     networks:

@@ -178,6 +178,9 @@ export function hermesRenderMessages(r: HermesRenderRequest): ChatMessage[] {
       : studioAudio
         ? [
             `The studio adds the sound afterwards: it lays this run's narration (${Math.round(r.narration.seconds)} s) and any music under your video and replaces whatever audio your file has. Make the picture and the burned-in captions, timed to the narration, and leave the sound out. Do not make a voice of your own.`,
+            ...(r.skill?.mode === "project"
+              ? [`If "skill.input" or the skill's own steps say to record a voiceover (a TTS or voice tool), skip that step for this video: time the shots and captions to the narration's ${Math.round(r.narration.seconds)} s and the captions below instead.`]
+              : []),
             ...(r.narration.url ? [`You can listen to the narration at ${r.narration.url} to time the shots and captions${r.narration.tempo !== 1 ? ` (it plays at ${r.narration.tempo}x speed)` : ""}.`] : []),
           ]
         : [

@@ -226,3 +226,21 @@ test("Template Lab: a recipe verdict is honest about what is not built, and fit 
   assert.match(recipeFitIssue("hermes-skill", "html-capture", true, "plates-and-diagrams") ?? "", /hermes renderer/);
   assert.equal(workflowText({ recipe: "hermes-skill", stages: SKILL_VOICED }), "Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Video → Quality check");
 });
+
+test("the studio's voice for a skill that could voice itself: the voice stage comes back; other lists are kept", async () => {
+  const { withStudioVoice } = await import("./recipes.ts");
+  const flow = workflowForPack(pack("hermes-stick-figure"));
+  assert.ok(flow.ok);
+  if (!flow.ok) return;
+  assert.ok(!flow.workflow.stages.includes("voice"));
+  const studio = withStudioVoice(flow.workflow);
+  assert.deepEqual(studio.stages, ["idea", "research", "script", "skill-brief", "voice", "render", "qc"]);
+  assert.deepEqual(studio.review, flow.workflow.review);
+  // A stored run with the studio's voice reads back as a valid list.
+  assert.deepEqual(parseRunWorkflow(JSON.parse(JSON.stringify(studio)))?.stages, studio.stages);
+  const graph = workflowForPack(pack("hermes-graph"));
+  assert.ok(graph.ok);
+  if (graph.ok) assert.equal(withStudioVoice(graph.workflow), graph.workflow);
+  const stills = workflowForPack(pack("documentary-stills"));
+  if (stills.ok) assert.equal(withStudioVoice(stills.workflow), stills.workflow);
+});

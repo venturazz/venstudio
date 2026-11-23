@@ -433,6 +433,12 @@ runs, so the page is checked before anything runs and run in a sandbox, and ever
   (`voice`), the video's licence and metadata (`narration`) record it, the backend is registered as a provider, and its
   terms gate the narration like any voice (a G-voice result on the render). Research-only rules are unchanged.
 
+- **Portal override, `SKILL_VOICE=studio` (default).** New runs of these two packs keep the voice stage anyway
+  (`withStudioVoice` in `recipes.ts`; the pack files are unchanged). The narration is made by the studio's voice paths,
+  Kokoro on a worker first, instead of inside the long Hermes render; the skill brief tells the skill the run narrates;
+  the render asks Hermes for picture and captions only and tells it to skip the skill's own voice step; a `hermes-mux`
+  worker lays the narration on. Runs started earlier keep their stored list. `SKILL_VOICE=skill` restores the old way.
+
 ### The run's narration on Hermes's picture (hermes-mux, worker 0.13.0)
 
 The run's narration lives in the portal's storage, which Hermes cannot read (Kokoro and 9router voices have no media-host

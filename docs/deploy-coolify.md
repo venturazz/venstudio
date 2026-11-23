@@ -37,6 +37,7 @@ so Coolify reads the file again. Then fill in:
 | `HERMES_MAX_CONCURRENCY` | optional override | Hermes model turns the portal runs at once, 1 (default) to 8. Every Hermes caller shares this gate, and a 429 or 503 from Hermes pauses all of them until `Retry-After`. Raise only if your Hermes takes parallel turns |
 | `MUSE_AGENT_TASKS` | optional | `0` (default). `1` allows Muse agent tasks: the last picture fallback and the test on the Workers page (`docs/muse-agent-tasks.md`) |
 | `MUSE_OVERFLOW` | optional | `1` (default). With `MUSE_AGENT_TASKS=1`, idea, research, script and storyboard go to a ready Muse worker when Hermes is busy or its gate is full. `0` always waits for Hermes |
+| `SKILL_VOICE` | optional | `studio` (default): a Hermes skill that could voice itself (`stick-figure`, `zach-d-films`) still gets the run's voice stage, so the narration is made by the studio (Kokoro on a worker first) and a worker lays it on Hermes's picture (needs a `hermes-mux` worker, 0.13.0+). `skill`: the skill records its own voice inside the render, as before |
 
 ### Kokoro server (example, verify before relying on it)
 

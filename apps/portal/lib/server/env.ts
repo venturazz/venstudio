@@ -22,6 +22,8 @@ const schema = z.object({
   KOKORO_API_KEY: optional(z.string()),
   KOKORO_MODEL: optional(z.string()),
   KOKORO_VOICE: optional(z.string()),
+  /** studio (default): a hermes skill that could voice itself gets the run's voice stage too (Kokoro on a worker, then the other voice paths) and a worker adds it to the picture. skill: the skill records its own voice inside the Hermes render, as before. */
+  SKILL_VOICE: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["studio", "skill"]).default("studio")),
   TTS_BACKUP: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["hermes-capcut", "off"]).default("hermes-capcut")),
   HERMES_IMAGE_PROVIDER_ORDER: optional(z.string()),
   HERMES_MEDIA_ORIGINS: optional(z.string()),

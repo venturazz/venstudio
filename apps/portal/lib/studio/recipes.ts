@@ -161,6 +161,18 @@ export function workflowForPack(p: WorkflowSource): { ok: true; workflow: RunWor
   return { ok: true, workflow: { recipe: id, stages, review } };
 }
 
+/**
+ * The studio records the narration even for a hermes skill that could voice itself (SKILL_VOICE=studio, the default):
+ * the voice stage goes back into the list, so the narration is made by the studio's voice paths (Kokoro on a worker
+ * first, never queued behind Hermes), the skill is asked for picture and captions only, and a worker lays the
+ * narration on (hermes-mux). A list that already has the voice is returned as is. Pure.
+ */
+export function withStudioVoice(workflow: RunWorkflow): RunWorkflow {
+  if (workflow.recipe !== "hermes-skill" || workflow.stages.includes("voice")) return workflow;
+  const full = RECIPES["hermes-skill"].stages.filter((k): k is RunStage => isRunStage(k));
+  return { ...workflow, stages: full };
+}
+
 /** The stage lists a stored workflow may hold: its recipe's, or that without the stages the recipe lets a pack drop. */
 function allowedLists(recipe: BuiltRecipe): RunStage[][] {
   const r = RECIPES[recipe];
