@@ -5,7 +5,8 @@ import path from "node:path";
 import { env } from "./env.ts";
 import { REMOTION_BUNDLE_NAME, REMOTION_RUNTIME_FILES, projectBundle } from "../install-bundle.ts";
 import { PACKS_FILE_NAME, packsIndexText } from "../style-packs-index.ts";
-import { htmlPackSources, remotionPackSources, servedEnvPacks, servedPacksIndex } from "./style-packs.ts";
+import { htmlPackSources, remotionPackSources, servedAgentSkills, servedEnvPacks, servedPacksIndex } from "./style-packs.ts";
+import { AGENT_SKILLS_FILE_NAME, agentSkillsText } from "../agent-skills.ts";
 import { ENV_PACKS_FILE_NAME, envPacksText } from "../env-packs.ts";
 import { publicSigningKey } from "./update-key.ts";
 
@@ -13,7 +14,7 @@ import { publicSigningKey } from "./update-key.ts";
  * Public install files for workers. Muse VMs can't read the private GitHub repo,
  * so the portal serves the worker itself. These files contain no secrets.
  */
-export const INSTALL_FILES: Record<string, { source: string; type: string; template?: boolean; bundle?: boolean; packs?: boolean; envPacks?: boolean }> = {
+export const INSTALL_FILES: Record<string, { source: string; type: string; template?: boolean; bundle?: boolean; packs?: boolean; envPacks?: boolean; agentSkills?: boolean }> = {
   "SETUP.md": { source: "SETUP.md", type: "text/markdown; charset=utf-8", template: true },
   // Old name, kept so existing links keep working.
   "AGENT_DEPLOY.md": { source: "SETUP.md", type: "text/markdown; charset=utf-8", template: true },
@@ -28,6 +29,9 @@ export const INSTALL_FILES: Record<string, { source: string; type: string; templ
   // The packs with an environment, with their files (worker 0.12.0+ installs them to <home>/packs/ and their
   // environments between jobs, reporting env:<id>@<version> only after each probe passes).
   [ENV_PACKS_FILE_NAME]: { source: "styles/lock.json", type: "application/json; charset=utf-8", envPacks: true },
+  // The skills (curated and candidate) and their kits (worker 0.17.0+ installs them to <home>/agent-skills/ and
+  // reports skill:<id>@<version>; a Muse render of a skill goes only to a worker that reports it).
+  [AGENT_SKILLS_FILE_NAME]: { source: "styles/lock.json", type: "application/json; charset=utf-8", agentSkills: true },
 };
 
 export function portalUrl() {
@@ -40,6 +44,7 @@ export async function renderInstallFile(name: string): Promise<string | null> {
   const dir = path.resolve(/*turbopackIgnore: true*/ process.cwd(), env().WORKER_DIR);
   if (entry.packs) return packsIndexText(await servedPacksIndex());
   if (entry.envPacks) return envPacksText(await servedEnvPacks());
+  if (entry.agentSkills) return agentSkillsText(await servedAgentSkills());
   if (entry.bundle) {
     // Read every listed file first; the reader passed to projectBundle is synchronous.
     const root = path.join(/*turbopackIgnore: true*/ dir, entry.source);

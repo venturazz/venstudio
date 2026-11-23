@@ -7,7 +7,7 @@
  *   node scripts/sync-styles.mjs --check                                         styles/ matches lock.json and validates
  *
  * Files come from the commit itself (git ls-tree / git show), never from the working tree, so uncommitted edits in
- * the checkout cannot slip in. Copied: packs/, tools/, schema/, FORMAT.md. styles/README.md is venstudio's own.
+ * the checkout cannot slip in. Copied: packs/, skills/, tools/, schema/, FORMAT.md. styles/README.md is venstudio's own.
  * lock.json has no timestamps: the same commit always gives the same bytes.
  *
  * Zero dependencies; the validator is the one in the commit being vendored (tools/validate.mjs).
@@ -24,7 +24,9 @@ export const STYLES_DIR = path.join(ROOT, "styles");
 export const LOCK_FORMAT = 1;
 export const SOURCE_REPO = "venturazz/venstudio-styles";
 /** What is vendored from the styles repo. Everything else in it (CI, runtime copy, docs) stays there. */
-export const VENDORED = ["packs", "tools", "schema", "FORMAT.md"];
+export const VENDORED = ["packs", "skills", "tools", "schema", "FORMAT.md"];
+/** The skill folders (skills/README.md in the styles repo): skills/<status>/<id>/ and skills/kits/<id>/. */
+export const SKILL_STATUSES = ["curated", "candidate"];
 /** venstudio's own files inside styles/, never replaced by a sync. */
 const OWN = ["README.md", "lock.json"];
 
@@ -61,7 +63,7 @@ function hashes(dir, files) {
  */
 export function buildLock(dir, commit, validator) {
   const all = walk(dir).filter((f) => !OWN.includes(f));
-  const other = all.filter((f) => !f.startsWith("packs/"));
+  const other = all.filter((f) => !f.startsWith("packs/") && !f.startsWith("skills/"));
   const ids = [...new Set(all.filter((f) => f.startsWith("packs/")).map((f) => f.split("/")[1]))].sort();
   const packs = ids.map((id) => {
     const base = path.join(dir, "packs", id);
@@ -77,7 +79,36 @@ export function buildLock(dir, commit, validator) {
       files,
     };
   });
-  return { format: LOCK_FORMAT, source: { repo: SOURCE_REPO, commit }, files: hashes(dir, other), packs };
+  const lock = { format: LOCK_FORMAT, source: { repo: SOURCE_REPO, commit }, files: hashes(dir, other), packs };
+  // Skills and their kits (styles repo skills/README.md): every file hashed, one digest per folder, as for packs.
+  const folder = (rel) => {
+    const base = path.join(dir, rel);
+    const files = hashes(base, walk(base));
+    return { files, sha256: validator.packDigest(files) };
+  };
+  const sub = (rel) => (existsSync(path.join(dir, rel)) ? readdirSync(path.join(dir, rel)).filter((n) => !n.startsWith(".") && statSync(path.join(dir, rel, n)).isDirectory()).sort() : []);
+  if (existsSync(path.join(dir, "skills"))) {
+    lock.kits = sub("skills/kits").map((id) => {
+      const kit = JSON.parse(readFileSync(path.join(dir, "skills/kits", id, "kit.json"), "utf8"));
+      return { id, version: kit.version, ...folder(`skills/kits/${id}`) };
+    });
+    lock.skills = SKILL_STATUSES.flatMap((status) =>
+      sub(`skills/${status}`).map((id) => {
+        const skill = JSON.parse(readFileSync(path.join(dir, "skills", status, id, "skill.json"), "utf8"));
+        return { id, status, version: skill.version, kit: skill.kit ?? null, packs: skill.packs ?? [], ...folder(`skills/${status}/${id}`) };
+      }),
+    ).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    // Keep the key order stable: files, sha256 last, as packs do.
+    lock.kits = lock.kits.map(({ files, sha256, ...k }) => ({ ...k, sha256, files }));
+    lock.skills = lock.skills.map(({ files, sha256, ...k }) => ({ ...k, sha256, files }));
+  }
+  return lock;
+}
+
+/** The skills validator of the vendored tree (tools/skills.mjs), or null when that commit has none. */
+async function loadSkillsValidator(dir) {
+  const file = path.join(dir, "tools", "skills.mjs");
+  return existsSync(file) ? import(pathToFileURL(file).href) : null;
 }
 
 export const lockText = (lock) => `${JSON.stringify(lock, null, 2)}\n`;
@@ -125,6 +156,9 @@ export async function syncStyles({ from, commit = "HEAD", target = STYLES_DIR })
     const validator = await loadValidator(tmp);
     const { issues } = validator.validateRepo(tmp);
     if (issues.length > 0) throw new Error(`the packs at ${full.slice(0, 12)} do not validate:\n- ${issues.join("\n- ")}`);
+    const skills = await loadSkillsValidator(tmp);
+    const skillIssues = skills ? skills.validateSkills(tmp).issues : [];
+    if (skillIssues.length > 0) throw new Error(`the skills at ${full.slice(0, 12)} do not validate:\n- ${skillIssues.join("\n- ")}`);
     replaceVendored(tmp, target);
     const lock = buildLock(target, full, validator);
     writeFileSync(path.join(target, "lock.json"), lockText(lock));
@@ -148,10 +182,13 @@ export async function checkStyles(target = STYLES_DIR) {
     for (const p of again.packs) if (was.get(p.id)?.sha256 !== p.sha256) issues.push(`styles/packs/${p.id} differs from lock.json (edited by hand? run the sync again)`);
     for (const id of was.keys()) if (!again.packs.some((p) => p.id === id)) issues.push(`styles/packs/${id} is in lock.json but missing`);
     if (JSON.stringify(again.files) !== JSON.stringify(lock.files)) issues.push("styles/tools, styles/schema or styles/FORMAT.md differ from lock.json");
+    if (JSON.stringify(again.skills ?? null) !== JSON.stringify(lock.skills ?? null) || JSON.stringify(again.kits ?? null) !== JSON.stringify(lock.kits ?? null)) issues.push("styles/skills differs from lock.json (edited by hand? run the sync again)");
     if (issues.length === 0) issues.push("styles/lock.json is not in its canonical form; run the sync again");
   }
   const { issues: invalid } = validator.validateRepo(target);
   issues.push(...invalid);
+  const skills = await loadSkillsValidator(target);
+  if (skills) issues.push(...skills.validateSkills(target).issues);
   return issues;
 }
 
@@ -192,6 +229,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const lock = await syncStyles({ from, commit: arg("--commit") ?? "HEAD" });
       console.log(`vendored ${SOURCE_REPO}@${lock.source.commit} into styles/:`);
       for (const p of lock.packs) console.log(`  ${p.id}@${p.version} ${p.status} ${p.engine} ${p.sha256.slice(0, 12)}`);
+      for (const k of lock.skills ?? []) console.log(`  skill /${k.id}@${k.version} ${k.status} ${k.sha256.slice(0, 12)}`);
       const drift = runtimeDrift(from);
       if (drift.length > 0) console.warn(`warning: the styles repo's runtime copy differs from apps/render-remotion and apps/worker in ${drift.join(", ")}; refresh it there`);
       console.log(`commit it as: bump styles to ${lock.source.commit.slice(0, 12)}`);

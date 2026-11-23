@@ -6,9 +6,10 @@ import { audit } from "./audit.ts";
 import { saveQcReport } from "./qc.ts";
 import { ensureSeedTemplates, getTemplate } from "./templates.ts";
 import { hermesJson } from "./hermes-json.ts";
-import { museStageReadiness, pollMuseStage, startMuseStage } from "./muse-stages.ts";
+import { museRenderReadiness, museStageReadiness, pollMuseStage, startMuseStage } from "./muse-stages.ts";
 import { MUSE_POLL_SEC, museOverflowApplies, runsOnMuse, type MuseThinkStage } from "../studio/muse-stage.ts";
 import { hermesBusyNow, hermesGateFull } from "./hermes-gate.ts";
+import { isPortalEngine } from "../studio/render-engine.ts";
 import { getCapabilities } from "./capabilities.ts";
 import { skillHintsFor } from "../studio/capabilities.ts";
 import { listEndpointHealth } from "./endpoint-health.ts";
@@ -281,6 +282,11 @@ export async function startRun(
     if (input.thinkOnMuse) {
       const refusals = await museStageReadiness();
       if (refusals.length > 0) return { ok: false, error: `Muse cannot do the thinking yet. ${refusals.join(". ")}` };
+      // A style Hermes would render: Muse renders it with the skill from venstudio-styles, so a worker must have it.
+      if (isPortalEngine(entry.pack.engine)) {
+        const render = await museRenderReadiness(entry.pack.id);
+        if (render.refusals.length > 0) return { ok: false, error: `Muse cannot render this style yet. ${render.refusals.join(". ")}` };
+      }
     }
     // The theme defaults to the channel category; an override lives on this run only and never on the channel.
     const built = buildRunConfig(input, { category: (c.category as string | null) ?? "" }, template);

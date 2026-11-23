@@ -10,6 +10,7 @@ import { isResearchRecipe } from "../studio/recipes.ts";
 import { mergeRegistry, packSeedTemplate, parsePack, type OwnerDecision, type RegistryEntry, type StylePack, type TrialGate, type TrialOutcome } from "../studio/style-registry.ts";
 import { packsIndex, type PacksIndex } from "../style-packs-index.ts";
 import { envPacksBundle, type EnvPacksBundle } from "../env-packs.ts";
+import { agentSkillsBundle, type AgentSkillsBundle } from "../agent-skills.ts";
 import { readAdvisory, readRubric } from "../studio/presentation.ts";
 import type { HtmlPackSource, RemotionPackSource } from "../install-bundle.ts";
 import type { Template } from "../studio/templates.ts";
@@ -33,10 +34,24 @@ interface LockPack {
   sha256: string;
   files: Record<string, string>;
 }
+interface LockFolder {
+  id: string;
+  version: string;
+  sha256: string;
+  files: Record<string, string>;
+}
+interface LockSkill extends LockFolder {
+  status: "curated" | "candidate";
+  kit: string | null;
+  packs?: string[];
+}
 interface Lock {
   format: number;
   source: { repo: string; commit: string };
   packs: LockPack[];
+  /** Skills and kits (styles repo skills/README.md); absent before skills were vendored. */
+  skills?: LockSkill[];
+  kits?: LockFolder[];
 }
 
 export interface VendoredStyles {
@@ -245,4 +260,70 @@ export async function listTrialOutcomes(sql: Q = db()): Promise<TrialOutcome[]> 
     FROM style_trial_outcomes ORDER BY created_at DESC LIMIT 2000
   `;
   return rows.map((r) => rowToOutcome(r as Record<string, unknown>));
+}
+
+const SKILL_ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
+
+/** Reads one skill or kit folder, every file checked against lock.json. Null (and a logged reason) when any differs. */
+async function readLockedFolder(base: string, entry: LockFolder): Promise<Map<string, Uint8Array> | null> {
+  const out = new Map<string, Uint8Array>();
+  for (const [rel, want] of Object.entries(entry.files ?? {})) {
+    if (rel.split("/").some((s) => s === ".." || s === "" || s === ".")) {
+      console.error(`skill folder ${entry.id} left out: ${rel} has an unsafe path`);
+      return null;
+    }
+    const body = await readFile(path.join(/*turbopackIgnore: true*/ base, rel)).catch(() => null);
+    if (!body || sha(body) !== want) {
+      console.error(`skill folder ${entry.id} left out: ${rel} ${body ? "differs from" : "is missing, listed in"} lock.json`);
+      return null;
+    }
+    out.set(rel, new Uint8Array(body));
+  }
+  return out;
+}
+
+/**
+ * /install/agent-skills.json: every vendored skill (curated and candidate) and its kit, for the workers that run Muse
+ * agent tasks (worker 0.17.0+). A skill whose kit was left out is left out too.
+ */
+export async function servedAgentSkills(): Promise<AgentSkillsBundle> {
+  const dir = stylesDir();
+  if (!dir) return agentSkillsBundle({ commit: null, kits: [], skills: [] });
+  let lock: Lock;
+  try {
+    lock = JSON.parse(await readFile(path.join(/*turbopackIgnore: true*/ dir, "lock.json"), "utf8")) as Lock;
+  } catch {
+    return agentSkillsBundle({ commit: null, kits: [], skills: [] });
+  }
+  const kits = [];
+  for (const k of lock.kits ?? []) {
+    if (!SKILL_ID_RE.test(k.id)) continue;
+    const files = await readLockedFolder(path.join(/*turbopackIgnore: true*/ dir, "skills", "kits", k.id), k);
+    if (files) kits.push({ id: k.id, version: k.version, sha256: k.sha256, files });
+  }
+  const kitIds = new Set(kits.map((k) => k.id));
+  const skills = [];
+  for (const s of lock.skills ?? []) {
+    if (!SKILL_ID_RE.test(s.id) || (s.status !== "curated" && s.status !== "candidate")) continue;
+    if (s.kit && !kitIds.has(s.kit)) {
+      console.error(`skill ${s.id} left out: its kit ${s.kit} is not available`);
+      continue;
+    }
+    const files = await readLockedFolder(path.join(/*turbopackIgnore: true*/ dir, "skills", s.status, s.id), s);
+    if (files) skills.push({ id: s.id, status: s.status, version: s.version, kit: s.kit ?? null, packs: Array.isArray(s.packs) ? s.packs : [], sha256: s.sha256, files });
+  }
+  return agentSkillsBundle({ commit: typeof lock.source?.commit === "string" ? lock.source.commit : null, kits, skills });
+}
+
+/** The vendored skill a pack is made with (its packs list names the pack), or null. */
+export async function skillForPack(packId: string): Promise<{ id: string; version: string; status: "curated" | "candidate" } | null> {
+  const dir = stylesDir();
+  if (!dir) return null;
+  try {
+    const lock = JSON.parse(await readFile(path.join(/*turbopackIgnore: true*/ dir, "lock.json"), "utf8")) as Lock;
+    const s = (lock.skills ?? []).find((x) => Array.isArray(x.packs) && x.packs.includes(packId));
+    return s ? { id: s.id, version: s.version, status: s.status } : null;
+  } catch {
+    return null;
+  }
 }

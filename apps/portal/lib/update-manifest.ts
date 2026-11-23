@@ -17,7 +17,7 @@ export const MANIFEST_LIFETIME_SECONDS = 600;
  * packs index came with worker 0.9.0: a manifest lists it only for a worker that reports it (even as null), because
  * 0.8.0 refuses a manifest naming a file it does not know (see manifestFilesFor).
  */
-export const UPDATE_FILE_NAMES = ["venstudio-worker.ts", "render-remotion.json", "style-packs.json", "env-packs.json"] as const;
+export const UPDATE_FILE_NAMES = ["venstudio-worker.ts", "render-remotion.json", "style-packs.json", "env-packs.json", "agent-skills.json"] as const;
 export type UpdateFileName = (typeof UPDATE_FILE_NAMES)[number];
 
 export type UpdateMode = "auto" | "approve" | "off";
@@ -182,7 +182,7 @@ export function pendingFiles(served: ServedRelease, worker: WorkerUpdateReport):
     if (f.name === "venstudio-worker.ts") {
       // Without a reported hash (should not happen from 0.8.0 on), compare versions.
       if (have ? have !== f.sha256 : worker.version !== served.version) out.push(f.name);
-    } else if (f.name === "style-packs.json" || f.name === "env-packs.json") {
+    } else if (f.name === "style-packs.json" || f.name === "env-packs.json" || f.name === "agent-skills.json") {
       if (have !== undefined && have !== f.sha256) out.push(f.name);
     } else if (have !== null && have !== undefined && have !== f.sha256) out.push(f.name);
   }

@@ -40,7 +40,7 @@ const ENV = "env:three-svg@1.0.0";
 test("engine command is a catalogue engine, the worker's and the protocol's; the proof pack is in the vendored lock", () => {
   assert.equal(ENGINES.command.capability, "command");
   assert.ok(CAPABILITIES.includes("command"));
-  assert.equal(WORKER_VERSION, "0.16.0");
+  assert.equal(WORKER_VERSION, "0.17.0");
   const lp = lockOf(PROOF);
   assert.ok(lp, "styles/lock.json lists the proof pack");
   assert.equal((lp as unknown as { engine: string }).engine, "command");
@@ -134,9 +134,9 @@ test("the packs index names the environment; the worker reports the pack only on
 });
 
 test("env-packs.json travels in the signed manifest only for workers that report it", () => {
-  assert.deepEqual([...UPDATE_FILE_NAMES], ["venstudio-worker.ts", "render-remotion.json", "style-packs.json", "env-packs.json"]);
+  assert.deepEqual([...UPDATE_FILE_NAMES], ["venstudio-worker.ts", "render-remotion.json", "style-packs.json", "env-packs.json", "agent-skills.json"]);
   const sha = (c: string) => c.repeat(64);
-  const files: ManifestFile[] = UPDATE_FILE_NAMES.map((name, i) => ({ name, sha256: sha("abcd"[i]), bytes: 100 }));
+  const files: ManifestFile[] = UPDATE_FILE_NAMES.map((name, i) => ({ name, sha256: sha("abcde"[i]), bytes: 100 }));
   const s: ServedRelease = { version: "0.12.0", release: releaseOf("0.12.0", files), files };
   const v11 = { version: "0.11.0", files: { "venstudio-worker.ts": sha("f"), "render-remotion.json": null, "style-packs.json": sha("c") } };
   assert.deepEqual(pendingFiles(s, v11), ["venstudio-worker.ts"]);
@@ -146,7 +146,12 @@ test("env-packs.json travels in the signed manifest only for workers that report
   assert.deepEqual(pendingFiles(s, v12), ["env-packs.json"]);
   assert.deepEqual(pendingFiles(s, { ...v12, files: { ...v12.files, "env-packs.json": sha("d") } }), []);
   const forNew = buildManifest({ keyId: "k", workerId: "w", served: s, pinnedVersion: null, now: new Date(0), worker: v12 });
-  assert.deepEqual(forNew.files.map((f) => f.name), [...UPDATE_FILE_NAMES]);
+  // 0.12.0 to 0.16.0 do not know agent-skills.json, so it is never named for them.
+  assert.deepEqual(forNew.files.map((f) => f.name), ["venstudio-worker.ts", "render-remotion.json", "style-packs.json", "env-packs.json"]);
+  const v17 = { version: "0.17.0", files: { ...v12.files, "env-packs.json": sha("d"), "agent-skills.json": null } };
+  assert.deepEqual(pendingFiles(s, v17), ["agent-skills.json"]);
+  assert.deepEqual(pendingFiles(s, { ...v17, files: { ...v17.files, "agent-skills.json": sha("e") } }), []);
+  assert.deepEqual(buildManifest({ keyId: "k", workerId: "w", served: s, pinnedVersion: null, now: new Date(0), worker: v17 }).files.map((f) => f.name), [...UPDATE_FILE_NAMES]);
 });
 
 test("worker environments stored as a JSON string (early 0.12.0 claims) read the same as an array", () => {

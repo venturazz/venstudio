@@ -1,6 +1,6 @@
 import "server-only";
 import { CAPABILITIES, type Capability } from "@venstudio/protocol";
-import { ENV_CAPABILITY_RE, PACK_CAPABILITY_RE, parseWorkerEnvironments, type WorkerEnvironment } from "../studio/style-registry.ts";
+import { ENV_CAPABILITY_RE, SKILL_CAPABILITY_RE, PACK_CAPABILITY_RE, parseWorkerEnvironments, type WorkerEnvironment } from "../studio/style-registry.ts";
 import { db } from "./db.ts";
 import { enrollmentCode, normalizeCode, randomToken, sha256Hex } from "../crypto/tokens.ts";
 
@@ -31,7 +31,7 @@ export const MAX_REPORTED_CAPABILITIES = 100;
 /** Known capabilities, plus pack:<id>@<version> for installed style packs (worker 0.9.0+); anything else is dropped. */
 export function sanitizeCapabilities(input: unknown): Capability[] {
   if (!Array.isArray(input)) return [];
-  const ok = (c: unknown): c is Capability => typeof c === "string" && (CAPABILITIES.includes(c as Capability) || PACK_CAPABILITY_RE.test(c) || ENV_CAPABILITY_RE.test(c));
+  const ok = (c: unknown): c is Capability => typeof c === "string" && (CAPABILITIES.includes(c as Capability) || PACK_CAPABILITY_RE.test(c) || ENV_CAPABILITY_RE.test(c) || SKILL_CAPABILITY_RE.test(c));
   return [...new Set(input.filter(ok))].slice(0, MAX_REPORTED_CAPABILITIES);
 }
 

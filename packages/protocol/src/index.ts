@@ -73,7 +73,12 @@ export type Capability =
    * An environment a style pack's recipe installed on this worker (`env:<id>@<version>`, <home>/envs/<id>@<version>/),
    * reported only after its probe passed here. Worker 0.12.0+.
    */
-  | `env:${string}`;
+  | `env:${string}`
+  /**
+   * An agent skill this worker installed from agent-skills.json (`skill:<id>@<version>`, <home>/agent-skills/), reported
+   * only where the Muse agent takes tasks. Worker 0.17.0+. The portal queues a Muse render of that skill under it.
+   */
+  | `skill:${string}`;
 
 export const CAPABILITIES: readonly Capability[] = [
   "echo",
@@ -127,7 +132,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.16.0";
+export const WORKER_VERSION = "0.17.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
@@ -206,7 +211,7 @@ export interface ApiError {
 // Signed self-update (worker 0.8.0+). See docs/worker-updates.md and apps/portal/lib/update-manifest.ts.
 
 export interface UpdateManifestFile {
-  name: "venstudio-worker.ts" | "render-remotion.json" | "style-packs.json" | "env-packs.json";
+  name: "venstudio-worker.ts" | "render-remotion.json" | "style-packs.json" | "env-packs.json" | "agent-skills.json";
   sha256: string;
   bytes: number;
 }
@@ -228,7 +233,7 @@ export interface UpdateManifest {
 export interface UpdateCheckRequest {
   version: string;
   /** SHA-256 of each file the worker has; the bundle is null without a Remotion project, "unknown" without its marker. */
-  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null; "style-packs.json"?: string | null; "env-packs.json"?: string | null };
+  files: { "venstudio-worker.ts": string; "render-remotion.json": string | null; "style-packs.json"?: string | null; "env-packs.json"?: string | null; "agent-skills.json"?: string | null };
   /** Id of the key this worker pinned, if any. */
   keyId?: string;
 }

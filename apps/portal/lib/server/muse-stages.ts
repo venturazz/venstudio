@@ -3,6 +3,8 @@ import { db } from "./db.ts";
 import { cancelJob, createJob } from "./jobs.ts";
 import { museFlagOn, museWorkerFacts, readArtifactText } from "./muse-tasks.ts";
 import { MUSE_RESULT_MAX_BYTES } from "../studio/muse-task.ts";
+import { skillForPack } from "./style-packs.ts";
+import { skillCapability } from "../agent-skills.ts";
 import { openStored } from "./storage.ts";
 import { checkRenderBytes } from "./executors/hermes-render.ts";
 import { MAX_VIDEO_BYTES, type VideoInfo } from "../studio/image-result.ts";
@@ -15,6 +17,7 @@ import {
   museStagePayloadIssues,
   museStagePoll,
   museRenderPayload,
+  museRenderRefusals,
   museStageRefusals,
   type MuseRenderInput,
   type MuseThinkStage,
@@ -62,12 +65,30 @@ export async function pollMuseStage(jobId: string, _stage: MuseThinkStage): Prom
   return answer.ok ? { kind: "done", value: answer.value } : { kind: "error", error: answer.error };
 }
 
-/** Queues the render of a Hermes-skill video on Muse. Returns the job id. */
+/** Why Muse cannot render this pack's skill now, or []: the worker must have the exact skill version installed. */
+export async function museRenderReadiness(packId: string): Promise<{ refusals: string[]; skill: { id: string; version: string; status: "curated" | "candidate" } | null }> {
+  const flag = museFlagOn() ? [] : ["Set MUSE_AGENT_TASKS=1 on the portal"];
+  const skill = await skillForPack(packId);
+  const rows = await db()`SELECT id, name, status, job_types, version, last_seen_at, capabilities FROM workers WHERE status <> 'revoked'`;
+  const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  const workers = rows.map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    status: String(r.status),
+    jobTypes: strings(r.job_types),
+    capabilities: strings(r.capabilities),
+    version: typeof r.version === "string" ? r.version : null,
+    lastSeenAt: (r.last_seen_at as Date | null) ?? null,
+  }));
+  return { refusals: [...flag, ...museRenderRefusals({ skill, packId, workers })], skill };
+}
+
+/** Queues the render of a Hermes-skill video on Muse, under the skill's capability so only a worker that has it claims it. */
 export async function startMuseRender(i: MuseRenderInput & { channelId: string | null }): Promise<string> {
   const payload = museRenderPayload(i);
   const issues = museStagePayloadIssues(payload);
   if (issues.length > 0) throw new Error(`The Muse render task is not usable: ${issues.join("; ")}`);
-  return createJob({ type: "agent-task", channelId: i.channelId, createdBy: null, payload });
+  return createJob({ type: "agent-task", channelId: i.channelId, createdBy: null, payload, capability: skillCapability(i.skillRef.id, i.skillRef.version) as `skill:${string}` });
 }
 
 export type MuseRenderState =

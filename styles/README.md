@@ -9,3 +9,5 @@ node scripts/sync-styles.mjs --from ../venstudio-styles --commit <commit>
 
 and open a "bump styles to <commit>" PR. `node scripts/sync-styles.mjs --check` (run in CI) fails when a file here
 differs from `lock.json`. This README is venstudio's own and is kept by the sync. See `docs/style-packs.md`.
+
+Skills (`skills/curated/`, `skills/candidate/`, `skills/kits/`) are vendored the same way and listed in `lock.json` (`skills`, `kits`). The portal serves them to workers as `/install/agent-skills.json` (`docs/muse-agent-tasks.md`).

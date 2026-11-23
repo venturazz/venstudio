@@ -11,6 +11,7 @@ import {
   museStagePayloadIssues,
   museOverflowApplies,
   museRenderPayload,
+  museRenderRefusals,
   MUSE_RENDER_TIMEOUT_SEC,
   museStagePoll,
   museStageRefusals,
@@ -173,6 +174,7 @@ test("the parsed answer goes to the caller's own validator: a skill brief is not
 test("the render task: skill, brief, contract and spec as files, the narration as an input, video.mp4 as the one output", () => {
   const p = museRenderPayload({
     runId: "r1",
+    skillRef: { id: "stick-figure", version: "1.0.0", status: "candidate" },
     project: "Rice",
     width: 1080,
     height: 1920,
@@ -189,6 +191,7 @@ test("the render task: skill, brief, contract and spec as files, the narration a
   assert.equal(p.mode, "hold");
   assert.equal(p.stage, "render");
   assert.equal(p.museRender, true);
+  assert.deepEqual(p.skill, { id: "stick-figure", version: "1.0.0", status: "candidate" });
   assert.deepEqual(p.outputs, ["video.mp4"]);
   assert.deepEqual(p.inputs, ["aaaaaaaa-1111-4111-8111-000000000001"]);
   assert.deepEqual(p.inputFiles, [{ assetId: "aaaaaaaa-1111-4111-8111-000000000001", name: "narration.wav" }]);
@@ -205,4 +208,15 @@ test("the render task: skill, brief, contract and spec as files, the narration a
   assert.deepEqual([spec.files[0].name, spec.files[0].width, spec.files[0].durationSec], ["video.mp4", 1080, 42]);
   assert.equal(spec.narration.file, "in/narration.wav");
   assert.deepEqual(museStagePayloadIssues(p), []);
+});
+
+test("a Muse render goes only to a worker that installed exactly the pack's skill", () => {
+  const skill = { id: "stick-figure", version: "1.0.0" };
+  const w = { ...WORKER, version: "0.17.0", capabilities: ["ffmpeg", "skill:stick-figure@1.0.0"] };
+  assert.deepEqual(museRenderRefusals({ skill, packId: "hermes-stick-figure", workers: [w], now: NOW }), []);
+  assert.match(museRenderRefusals({ skill: null, packId: "hermes-x", workers: [w], now: NOW })[0], /names no skill in venstudio-styles/);
+  assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, version: "0.16.0" }], now: NOW })[0], /Update the Muse worker to 0\.17\.0/);
+  assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, capabilities: ["skill:stick-figure@0.9.0"] }], now: NOW })[0], /has \/stick-figure@1\.0\.0 installed yet/);
+  assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, jobTypes: [] }], now: NOW })[0], /reports agent-task/);
+  assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, lastSeenAt: ago(200) }], now: NOW })[0], /last 75 min/);
 });

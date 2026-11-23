@@ -4,7 +4,7 @@ import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
 import { MUSE_POLL_SEC, isMuseThinkStage, runsOnMuse } from "../studio/muse-stage.ts";
-import { museStageReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
+import { museRenderReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
 import { getTemplate } from "./templates.ts";
@@ -1622,9 +1622,10 @@ async function runMuseRender(
     await recordStageError(run.id, st.id, "render", why);
     return;
   }
-  const refusals = await museStageReadiness();
-  if (refusals.length > 0) {
-    await recordStageError(run.id, st.id, "render", `Muse cannot render this video: ${refusals.join(". ")}`);
+  // The skill comes from venstudio-styles skills/ (curated or candidate); only a worker that installed it may render.
+  const ready = await museRenderReadiness(f.pack.id);
+  if (ready.refusals.length > 0 || !ready.skill) {
+    await recordStageError(run.id, st.id, "render", `Muse cannot render this video: ${ready.refusals.join(". ")}`);
     return;
   }
   const [n] = await sql`SELECT content_type FROM assets WHERE id = ${i.narrationId}`;
@@ -1633,6 +1634,7 @@ async function runMuseRender(
   const ownerNote = text(st.output.ownerNote).trim();
   const jobId = await startMuseRender({
     runId: run.id,
+    skillRef: ready.skill,
     channelId: run.channelId,
     project: run.topic || "VenStudio video",
     width: frame.width,

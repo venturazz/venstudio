@@ -410,6 +410,7 @@ export function envCapability(env: Pick<PackEnvironment, "id" | "version">): str
   return `env:${env.id}@${env.version}`;
 }
 
+export const SKILL_CAPABILITY_RE = /^skill:[a-z0-9][a-z0-9-]{1,62}@\d{1,6}\.\d{1,6}\.\d{1,6}$/;
 export const ENV_CAPABILITY_RE = /^env:[a-z0-9][a-z0-9-]{1,62}@\d{1,6}\.\d{1,6}\.\d{1,6}$/;
 
 /** One environment as a worker reported it in its last claim (workers.environments). */

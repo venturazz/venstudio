@@ -180,6 +180,8 @@ export function museOverflowApplies(o: { stage: string; executors: StageExecutor
 
 export interface MuseRenderInput {
   runId: string;
+  /** The installed skill the render runs with (venstudio-styles skills/, worker 0.17.0+). */
+  skillRef: { id: string; version: string; status: "curated" | "candidate" };
   project: string;
   width: number;
   height: number;
@@ -200,7 +202,7 @@ export interface MuseRenderInput {
 export const MUSE_RENDER_TIMEOUT_SEC = 4 * 3600;
 
 const RENDER_PROMPT =
-  "Render this video with the skill named in SKILL.md, the way Hermes would: read SKILL.md, BRIEF.md, CONTRACT.md and SPEC.json, " +
+  "Render this video with the installed skill named in TASK.md (its folder is listed there): read its SKILL.md, then SKILL.md, BRIEF.md, CONTRACT.md and SPEC.json here, " +
   "use in/narration as the timing (the studio adds the sound afterwards and replaces any audio in your file), and save the finished " +
   "video as out/video.mp4. Keep out/PROGRESS.json up to date. Create out/DONE when video.mp4 is complete; if you cannot render it, " +
   "write out/FAILED.json with the reason.";
@@ -270,6 +272,7 @@ export function museRenderPayload(i: MuseRenderInput): Record<string, unknown> {
     runId: i.runId,
     stage: "render",
     museRender: true,
+    skill: { id: i.skillRef.id, version: i.skillRef.version, status: i.skillRef.status },
     project: i.project.slice(0, 120),
     prompt: RENDER_PROMPT,
     deliverable: `video.mp4, ${i.width}x${i.height} H.264 at ${i.fps} fps, about ${sec} s, captions burned in`,
@@ -279,4 +282,34 @@ export function museRenderPayload(i: MuseRenderInput): Record<string, unknown> {
     inputFiles: [{ assetId: i.narration.assetId, name: `narration.${i.narration.ext}` }],
     timeoutSec: MUSE_RENDER_TIMEOUT_SEC,
   };
+}
+
+/** The first worker that installs agent skills and reports skill:<id>@<version> (0.17.0). */
+export const MUSE_SKILL_WORKER_VERSION = "0.17.0";
+
+export interface MuseSkillWorkerFacts extends MuseWorkerFacts {
+  capabilities: readonly string[];
+}
+
+/**
+ * Why Muse cannot render with this skill right now, or []. The render goes only to a worker that installed exactly
+ * this skill version (from venstudio-styles, through the signed update). Pure.
+ */
+export function museRenderRefusals(o: {
+  skill: { id: string; version: string } | null;
+  packId: string;
+  workers: readonly MuseSkillWorkerFacts[];
+  now?: Date;
+}): string[] {
+  if (!o.skill) return [`The style ${o.packId} names no skill in venstudio-styles skills/, so Muse has nothing to render it with. Import the skill there first.`];
+  const cap = `skill:${o.skill.id}@${o.skill.version}`;
+  const now = (o.now ?? new Date()).getTime();
+  const ready = o.workers.filter((w) => w.status === "active" && w.jobTypes.includes("agent-task"));
+  if (ready.length === 0) return ["No Muse worker reports agent-task: set VENSTUDIO_AGENT_TASKS=1 in the hold cron line on Muse"];
+  const current = ready.filter((w) => w.version && !versionBefore(w.version, MUSE_SKILL_WORKER_VERSION));
+  if (current.length === 0) return [`Update the Muse worker to ${MUSE_SKILL_WORKER_VERSION} or later (older workers do not install skills)`];
+  const withSkill = current.filter((w) => w.capabilities.includes(cap));
+  if (withSkill.length === 0) return [`No Muse worker has /${o.skill.id}@${o.skill.version} installed yet; it arrives with the next signed update after the styles are vendored`];
+  if (!withSkill.some((w) => w.lastSeenAt != null && now - new Date(w.lastSeenAt).getTime() < 75 * 60_000)) return [`The Muse worker with /${o.skill.id} has not contacted the portal in the last 75 min`];
+  return [];
 }

@@ -199,6 +199,14 @@ stops at once with the agent's reason when `out/FAILED.json` exists. Neither fil
 `agent-task` with `stage: "render"` the handler accepts `out/video.mp4` (an MP4, at most 200 MB), uploads it as
 `agent-video.mp4`, and honours a timeout of up to four hours. Any other task still refuses a video.
 
+## Worker 0.17.0
+
+0.17.0 (agent skills, `docs/muse-agent-tasks.md` "Where the skill comes from") adds a fifth file to the signed update,
+`agent-skills.json`: every skill (curated and candidate) and kit vendored from venstudio-styles, base64, one digest
+per folder. The manifest names it only for a worker that reports it. The worker checks each folder, installs it to
+`<home>/agent-skills/`, keeps what a kit's setup added next to its files, and where `VENSTUDIO_AGENT_TASKS=1` reports
+`skill:<id>@<version>`. A render task names its skill; a worker without that exact version refuses it at once.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,
