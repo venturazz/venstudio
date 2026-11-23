@@ -36,6 +36,12 @@ export type Capability =
   | "audio-mix"
   /** render-video draws captions with payload.captionStyle (size, outline, shadow, margins, wrap width). Worker 0.7.0+. */
   | "caption-style"
+  /**
+   * render-video runs engine hermes-mux: the run's narration (and its mix) laid on a picture Hermes rendered, with the
+   * shared audio chain; a short picture holds its last frame (tpad). Reported only where ffmpeg has the audio-mix chain
+   * and tpad. Worker 0.13.0+.
+   */
+  | "hermes-mux"
   | "tts-kokoro"
   | "remotion-2d"
   /**
@@ -76,6 +82,7 @@ export const CAPABILITIES: readonly Capability[] = [
   "narration-tempo",
   "audio-mix",
   "caption-style",
+  "hermes-mux",
   "tts-kokoro",
   "remotion-2d",
   "html-capture",
@@ -120,7 +127,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.12.0";
+export const WORKER_VERSION = "0.13.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];

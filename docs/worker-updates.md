@@ -170,6 +170,14 @@ remembered and not tried again. Nothing in it runs on arrival; environments inst
 reported only after their probe. `install.sh` does not fetch it: a new worker gets it with its first signed update
 check, so a worker with automatic updates off has no environments.
 
+## Worker 0.13.0
+
+0.13.0 (render-video engine `hermes-mux`: the run's narration laid on a picture Hermes rendered, `docs/style-packs.md`
+"The run's narration on Hermes's picture") is delivered by this mechanism like any release; no manifest file is added.
+It reports the `hermes-mux` capability only where its ffmpeg has the audio-mix chain and `tpad`, and the portal queues
+hermes-mux jobs under that capability alone, so an older worker never claims one. Until a worker has updated, a hermes
+render of a run with its own narration stops before Hermes is asked, with a stage error that says to update the worker.
+
 ## Tests
 
 - `apps/portal/lib/update-manifest.test.ts`: canonical JSON, signing and verification, expiry, pin, key encryption,
