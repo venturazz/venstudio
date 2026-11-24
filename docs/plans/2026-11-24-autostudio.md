@@ -55,7 +55,7 @@ CREATE TABLE schedules (
   name           text NOT NULL,
   kind           text NOT NULL,          -- 'series' | 'one-off'
   -- the same fields New Video asks for, frozen as a template
-  settings       jsonb NOT NULL,         -- {themeId, styleId, durationSec, language, purposes, subtitles}
+  settings       jsonb NOT NULL,         -- {themeId, styleId, durationSec, language, purposes, subtitles, sound}
   brief          jsonb NOT NULL,         -- {topicSource: 'plan'|'owner'|'series-memory', topic?, mustInclude, mustAvoid}
   -- Days only, no cron parser: 'daily' | 'weekly:mon,thu' | 'every:2'. How many videos in a day is the channel's
   -- decision (channels.videos_per_day), never the schedule's — AutoStudio reads it and fills this many times.
@@ -107,6 +107,10 @@ supaya tidak ada dua tempat yang bisa berbeda:
   durasi render gaya itu pada run terakhir, dikali `videos_per_day`. Kalau belum ada riwayat, sarannya kosong dan UI menulis
   "belum ada riwayat render untuk gaya ini" — bukan angka karangan. Yang dijaga adalah biaya render, bukan jumlah video;
   jumlahnya urusan channel.
+- **Suara** — tiga field yang sama dengan New Video (`sound`: bed, sfx, ambience), dengan satu tambahan untuk jadwal:
+  **rotate**. Bed `rotate` memakai track berbeda tiap slot selama kandidatnya lebih dari satu; series yang memakai satu
+  track dua puluh kali terdengar seperti satu video yang diulang. Gaya yang `musicPolicy`-nya menuntut bed tapi koleksinya
+  kosong ditandai di kartu jadwal, bukan dibiarkan jalan tanpa musik.
 - **Gate** — default kosong (jalan otomatis); pilihan `idea` dan `score` untuk yang mau lebih ketat.
 
 **Satu worker, satu render.** Worker tidak merender paralel, dan satu video bisa memakan satu jam atau lebih. Jadi penjadwal
