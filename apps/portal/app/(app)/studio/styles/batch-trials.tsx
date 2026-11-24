@@ -71,7 +71,6 @@ export function BatchTrials({ channels, styles, defaultDurationSec }: { channels
               <label key={t.id} className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-border p-2 text-sm">
                 <input
                   type="checkbox"
-                  name="batchTemplateIds"
                   value={t.id}
                   checked={batch.includes(t.id)}
                   onChange={(e) => setBatch((b) => (e.target.checked ? [...b.filter((x) => x !== t.id), t.id] : b.filter((x) => x !== t.id)))}
@@ -83,6 +82,11 @@ export function BatchTrials({ channels, styles, defaultDurationSec }: { channels
             ))}
           </div>
         </fieldset>
+        {/* The order the owner ticked, not the order the list happens to render: a native form submits checkboxes in DOM
+            order, so the picks are carried as hidden fields in click order. */}
+        {batch.map((id) => (
+          <input key={id} type="hidden" name="batchTemplateIds" value={id} />
+        ))}
         <Button type="submit" disabled={batch.length < MIN_BATCH_TRIALS} className="min-h-11">
           {batch.length < MIN_BATCH_TRIALS ? `Tick at least ${MIN_BATCH_TRIALS} styles` : `Start ${batch.length} trials`}
         </Button>
