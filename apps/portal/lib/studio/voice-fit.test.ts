@@ -54,9 +54,10 @@ test("voice gate: fails when the shots cannot cover the narration even at maxSho
 });
 
 test("voice gate: fails on the format's limits", () => {
-  const long = voiceAssessment({ ...owner, shotCount: 12, narrationSec: 63, scriptEstimateSec: 60 });
+  // A short video may now run to three minutes, so the limit is 180 s, not 60.
+  const long = voiceAssessment({ ...owner, shotCount: 60, narrationSec: 190, scriptEstimateSec: 186 });
   assert.deepEqual(long.fix.problems, ["format"]);
-  assert.match(long.issues[0], /longer than the 60 s a short video may last/);
+  assert.match(long.issues[0], /longer than the 180 s a short video may last/);
   const short = voiceAssessment({ ...owner, shotCount: 3, narrationSec: 12, scriptEstimateSec: 12 });
   assert.deepEqual(short.fix.problems, ["format"]);
 });

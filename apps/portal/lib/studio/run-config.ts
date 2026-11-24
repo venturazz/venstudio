@@ -23,7 +23,26 @@ export const MAX_SUBTITLES = 20;
  * meant every short was 45 s whatever the owner wanted; the stored default now sits inside a fixed list of choices so
  * the number the script is written to is one the owner picked (docs/plans/2026-11-24-brief-and-duration.md).
  */
-export const DURATION_CHOICES: Record<Format, readonly number[]> = { short: [15, 30, 45, 60], long: [480, 600, 720, 1200] };
+export const DURATION_CHOICES: Record<Format, readonly number[]> = {
+  // Presets, not the limit: the stepper walks the whole range by DURATION_STEP.
+  short: [15, 30, 45, 60, 90, 120, 180],
+  long: [120, 180, 240, 300, 480, 600, 720, 1200],
+};
+
+/** One press of − or +. Short videos step in quarter minutes, long ones in whole minutes. */
+export const DURATION_STEP: Record<Format, number> = { short: 15, long: 60 };
+
+/** Any length snapped to the format's step and clamped to what the format can be. */
+export function clampDuration(format: Format, sec: number): number {
+  const [min, max] = VIDEO_FORMATS[format].durationSec;
+  const step = DURATION_STEP[format];
+  return Math.min(max, Math.max(min, Math.round(sec / step) * step));
+}
+
+/** The nearest allowed length after one press of − or +. */
+export function stepDuration(format: Format, sec: number, direction: 1 | -1): number {
+  return clampDuration(format, sec + direction * DURATION_STEP[format]);
+}
 
 /** "45 s" / "10 min": how a length reads in the chips and in the hint under the picker. */
 export function durationLabel(sec: number): string {

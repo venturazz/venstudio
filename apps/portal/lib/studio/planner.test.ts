@@ -60,7 +60,8 @@ test("an original plan lists the Hermes stages, narration and a render stage tha
   assert.ok(ids.indexOf("render") > ids.indexOf("music"));
   assert.equal(r.plan.stages.find((s) => s.id === "render")?.runnable, false);
   assert.ok(r.plan.warnings.some((w) => w.startsWith("History:")), "theme policy is shown as a warning");
-  assert.equal(r.plan.durationSec[0], 480);
+  // Long videos now start at two minutes, so a 2–3 min video is valid as either format; the plan echoes the range.
+  assert.equal(r.plan.durationSec[0], 120);
 });
 
 test("ambient style has no narration stage", () => {
