@@ -5,7 +5,7 @@ import { useActionState, useRef, useState, useTransition, type FormEvent } from 
 import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.tsx";
 import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Format } from "@/lib/studio/catalog.ts";
 import { suggestStyles } from "@/lib/studio/planner.ts";
-import { defaultThemeFor, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
+import { DURATION_CHOICES, defaultDurationSec, defaultThemeFor, durationLabel, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
 import { MAX_BATCH_TRIALS, MIN_BATCH_TRIALS, TRY_THESE_STYLES, type OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
@@ -76,6 +76,8 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
   const [themeTouched, setThemeTouched] = useState(Boolean(prefill.themeId));
   const [templateId, setTemplateId] = useState(templates.some((t) => t.id === prefill.templateId) ? prefill.templateId : "");
   const [format, setFormat] = useState<Format>(prefill.format);
+  // The length is the owner's: the script is written to it. See docs/plans/2026-11-24-brief-and-duration.md.
+  const [durationSec, setDurationSec] = useState<number>(prefill.durationSec ?? defaultDurationSec(prefill.format));
   const [language, setLanguage] = useState(prefill.language);
   const [purposes, setPurposes] = useState<string[]>(prefill.purposes);
   const [subtitles, setSubtitles] = useState<string[]>(prefill.subtitles);
@@ -211,11 +213,39 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Format" htmlFor="format" hint={VIDEO_FORMATS[format].label}>
-          <Select id="format" name="format" value={format} onChange={(e) => setFormat(e.target.value === "long" ? "long" : "short")}>
-            <option value="short">Short</option>
-            <option value="long">Long</option>
-          </Select>
+        <Field label="Length" htmlFor="format" hint={`${VIDEO_FORMATS[format].label} · ${durationLabel(durationSec)}`}>
+          <div className="space-y-2">
+            <Select
+              id="format"
+              name="format"
+              value={format}
+              onChange={(e) => {
+                const next: Format = e.target.value === "long" ? "long" : "short";
+                setFormat(next);
+                // A length that the new format cannot be falls back to its default instead of being refused on submit.
+                if (!DURATION_CHOICES[next].includes(durationSec)) setDurationSec(defaultDurationSec(next));
+              }}
+            >
+              <option value="short">Short</option>
+              <option value="long">Long</option>
+            </Select>
+            <div className="flex flex-wrap gap-1.5" data-testid="duration-chips" role="group" aria-label="Length in seconds">
+              {DURATION_CHOICES[format].map((sec) => (
+                <Button
+                  key={sec}
+                  type="button"
+                  variant={sec === durationSec ? "primary" : "secondary"}
+                  onClick={() => setDurationSec(sec)}
+                  className="min-h-9 px-3 py-1 text-xs"
+                  aria-pressed={sec === durationSec}
+                  aria-label={`${durationLabel(sec)} long`}
+                >
+                  {durationLabel(sec)}
+                </Button>
+              ))}
+            </div>
+            <input type="hidden" name="durationSec" value={durationSec} />
+          </div>
         </Field>
         <Field label="Theme" htmlFor="themeId" hint="Starts as the channel category. A change here is for this video only.">
           <Select

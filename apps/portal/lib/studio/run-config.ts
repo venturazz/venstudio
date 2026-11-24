@@ -4,7 +4,7 @@
  * No database or network, so it runs under `node --test`. Nothing here writes a channel: the theme default is read
  * from the channel category and an override is stored on the run only.
  */
-import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, type Format, type MusePlacement } from "./catalog.ts";
+import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, VIDEO_FORMATS, type Format, type MusePlacement } from "./catalog.ts";
 import { DEFAULT_DURATION_SEC } from "./engine.ts";
 import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
 import { LAB_TRIAL_BADGE, parseRunStylePack, type RunStylePack } from "./style-registry.ts";
@@ -16,6 +16,24 @@ import { executorsText, museThinkingExecutors, parseStageExecutors, type StageEx
 export const MAX_BRIEF_CHARS = 2000;
 export const MAX_PURPOSES = 7;
 export const MAX_SUBTITLES = 20;
+
+/**
+ * The lengths New Video offers, in seconds, by format. Started as a fixed `DEFAULT_DURATION_SEC` per format, which
+ * meant every short was 45 s whatever the owner wanted; the stored default now sits inside a fixed list of choices so
+ * the number the script is written to is one the owner picked (docs/plans/2026-11-24-brief-and-duration.md).
+ */
+export const DURATION_CHOICES: Record<Format, readonly number[]> = { short: [15, 30, 45, 60], long: [480, 600, 720, 1200] };
+
+/** "45 s" / "10 min": how a length reads in the chips and in the hint under the picker. */
+export function durationLabel(sec: number): string {
+  return sec >= 60 && sec % 60 === 0 ? `${sec / 60} min` : `${sec} s`;
+}
+
+/** The length a format starts on: the one in DURATION_CHOICES that matches DEFAULT_DURATION_SEC. */
+export function defaultDurationSec(format: Format): number {
+  const want = DEFAULT_DURATION_SEC[format];
+  return DURATION_CHOICES[format].includes(want) ? want : DURATION_CHOICES[format][0];
+}
 
 /** Where the run's theme came from: the channel category, an owner override for this run, or nothing. */
 /** Form value for "no theme for this run", which differs from "use the channel category" (empty). */
@@ -130,6 +148,8 @@ export function defaultThemeFor(category: string | null | undefined): string {
 export interface RunRequest {
   format: Format;
   language: string;
+  /** The length the owner picked, in seconds. Absent or out of range: the format's default. */
+  durationSec?: number;
   /** Empty: use the channel category. "none": no theme for this run. Otherwise a theme id. */
   themeId: string;
   purposes: string[];
@@ -153,6 +173,17 @@ export function buildRunConfig(req: RunRequest, channel: { category: string | nu
   const subtitles = [...new Set(req.subtitles)].filter((c) => c !== req.language);
   if (subtitles.length > MAX_SUBTITLES) return { ok: false, error: "Choose fewer subtitle languages." };
   if (subtitles.some((c) => !LANGUAGE_BY_CODE[c])) return { ok: false, error: "Unknown subtitle language." };
+  // The length is the owner's, and it has to sit inside what the format can be: the script is written to it.
+  const range = VIDEO_FORMATS[req.format].durationSec;
+  let durationSec = defaultDurationSec(req.format);
+  if (req.durationSec !== undefined && req.durationSec !== null) {
+    if (!Number.isFinite(req.durationSec)) return { ok: false, error: "Choose a length in whole seconds." };
+    const asked = Math.round(req.durationSec);
+    if (asked < range[0] || asked > range[1]) {
+      return { ok: false, error: `A ${req.format === "short" ? "short" : "long video"} is ${range[0]} to ${range[1]} seconds; pick a length in that range.` };
+    }
+    durationSec = asked;
+  }
   let themeId = "";
   let themeSource: ThemeSource = "none";
   if (req.themeId === NO_THEME) {
@@ -172,7 +203,7 @@ export function buildRunConfig(req: RunRequest, channel: { category: string | nu
     config: {
       format: req.format,
       language: req.language,
-      durationSec: DEFAULT_DURATION_SEC[req.format],
+      durationSec,
       themeId,
       styleId: template.styleId,
       purposes,
@@ -218,6 +249,8 @@ export interface RunFormPrefill {
   language: string;
   subtitles: string[];
   brief: string;
+  /** The length the saved plan used, when it had one. Absent: the format's default. */
+  durationSec?: number;
   /** The saved plan this came from, kept on the run as `production_id`. */
   productionId: string;
   /** A Template Lab study the run is a trial for (from "Start a trial video with the closest pack"), or empty. */
@@ -293,6 +326,7 @@ export function runSettings(config: RunConfig): Array<{ label: string; value: st
   const from = config.themeSource === "owner" ? "chosen for this video" : config.themeSource === "channel" ? "from the channel" : "";
   return [
     { label: "Format", value: config.format === "long" ? "Long" : "Short" },
+    { label: "Length", value: durationLabel(config.durationSec) },
     { label: "Narration", value: lang ? `${lang.label} (${kokoro})` : config.language },
     { label: "Subtitles", value: config.subtitles.map((c) => LANGUAGE_BY_CODE[c]?.label ?? c).join(", ") || "None" },
     { label: "Theme", value: theme ? (from ? `${theme}, ${from}` : theme) : from ? `None, ${from}` : "None" },
