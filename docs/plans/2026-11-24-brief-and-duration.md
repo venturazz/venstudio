@@ -1,6 +1,6 @@
 # Brief and duration: the two decisions Studio does not have
 
-Status: **phases 1–2 built on `feat/brief-and-duration`, phase 3 built on `feat/one-picker`; phase 4 is still a plan.**
+Status: **phase 1 merged (#28); phase 2 in `feat/brief-object`; phase 3 in `feat/one-picker` (stacked on 2); phase 4 is still a plan.**
 Audited against `apps/portal` at `1fd4d48` on 2026-11-24.
 
 ## Ringkasan (Bahasa Indonesia)
@@ -134,8 +134,8 @@ before a trial starts, research styles marked, batch from one brief — is uncha
 
 | Phase | What | Proves |
 | --- | --- | --- |
-| **1. Duration** (built, `feat/brief-and-duration`) | `durationSec` in `RunRequest`, `startSchema`, `buildRunConfig`; chips in the form; range validated | unit tests in `run-config.test.ts`; a 15 s short and a 60 s short store different `config.durationSec` and different script word targets |
-| **2. Brief object** (built, `feat/brief-and-duration`) | `lib/studio/brief.ts` (`briefFromInput`, `freezeBrief`, `parseBrief`, `briefParagraph`); `config.brief` written at start and frozen in `approveStage` when an idea is approved; `topicHint` kept for one release | `brief.test.ts` (7): the owner's words survive, freezing happens once, a run from before the change still reads back |
+| **1. Duration** (merged, #28) | `durationSec` in `RunRequest`, `startSchema`, `buildRunConfig`; chips in the form; range validated | unit tests in `run-config.test.ts`; a 15 s short and a 60 s short store different `config.durationSec` and different script word targets |
+| **2. Brief object** (built, `feat/brief-object`) | `lib/studio/brief.ts` (`briefFromInput`, `freezeBrief`, `parseBrief`, `briefParagraph`); `config.brief` written at start and frozen in `approveStage` when an idea is approved; `topicHint` kept for one release | `brief.test.ts` (7): the owner's words survive, freezing happens once, a run from before the change still reads back |
 | **3. One picker** (built, `feat/one-picker`) | one select, the chosen style's detail (badges, credit, skill path, engine, workflow), research collapsed behind one summary line | `ui-e2e` still drives a video start end to end; no selector asserts a surface that no longer exists |
 | **4. Research page** | batch trials, lab trials and research styles moved out of New Video | a batch of three trials still starts from one brief |
 
