@@ -228,3 +228,18 @@ export function parseScheduleSettings(raw: unknown, fallbackDurationSec = 45): S
     },
   };
 }
+
+/** The zones offered as countries, because an owner picks a country, not a tz database path. IANA names are stored. */
+export const TIMEZONES: ReadonlyArray<{ label: string; zone: string }> = [
+  { label: "Global (UTC)", zone: "UTC" },
+  { label: "Indonesia (Jakarta)", zone: "Asia/Jakarta" },
+  { label: "Indonesia (Bali)", zone: "Asia/Makassar" },
+  { label: "Singapore / Malaysia", zone: "Asia/Singapore" },
+  { label: "India", zone: "Asia/Kolkata" },
+  { label: "Japan", zone: "Asia/Tokyo" },
+  { label: "United Kingdom", zone: "Europe/London" },
+  { label: "Central Europe", zone: "Europe/Berlin" },
+  { label: "US East", zone: "America/New_York" },
+  { label: "US West", zone: "America/Los_Angeles" },
+  { label: "Australia East", zone: "Australia/Sydney" },
+];
