@@ -22,6 +22,8 @@ const startSchema = z.object({
   channelId: z.uuid("Choose a channel"),
   templateId: z.string().min(1, "Choose a style").max(80),
   format: z.enum(["short", "long"]),
+  /** Absent: the format's default. The range is checked in buildRunConfig, against VIDEO_FORMATS. */
+  durationSec: z.number().int().positive().max(7200).optional(),
   language: z.string().max(10).refine((c) => Boolean(LANGUAGE_BY_CODE[c]), "Choose a language from the list"),
   brief: z.string().max(MAX_BRIEF_CHARS),
   themeId: z.string().max(40),
@@ -37,6 +39,14 @@ function all(fd: FormData, key: string): string[] {
   return fd.getAll(key).filter((v): v is string => typeof v === "string");
 }
 
+/** A number field the form leaves empty when it does not apply. */
+function num(fd: FormData, key: string, max: number): number | undefined {
+  const raw = str(fd, key, max).trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.round(n) : undefined;
+}
+
 /** Starts a run and returns at once. Hermes works in the background after the response is sent. */
 export async function startRunAction(_prev: RunFormState, fd: FormData): Promise<RunFormState> {
   const user = await requireUser("editor");
@@ -44,6 +54,7 @@ export async function startRunAction(_prev: RunFormState, fd: FormData): Promise
     channelId: str(fd, "channelId", 40),
     templateId: str(fd, "templateId", 80),
     format: str(fd, "format", 10) || "short",
+    durationSec: num(fd, "durationSec", 6),
     language: str(fd, "language", 10) || "en",
     // Older clients sent a one-line topic; it means the same as the brief.
     brief: str(fd, "brief", MAX_BRIEF_CHARS) || str(fd, "topic", 300),
@@ -89,6 +100,7 @@ export async function startBatchTrialAction(_prev: BatchTrialState, fd: FormData
   const parsed = batchSchema.safeParse({
     channelId: str(fd, "channelId", 40),
     format: str(fd, "format", 10) || "short",
+    durationSec: num(fd, "durationSec", 6),
     language: str(fd, "language", 10) || "en",
     brief: str(fd, "brief", MAX_BRIEF_CHARS),
     themeId: str(fd, "themeId", 40),
