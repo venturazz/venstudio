@@ -59,9 +59,12 @@ CREATE TABLE schedules (
   brief          jsonb NOT NULL,         -- {topicSource: 'plan'|'owner'|'series-memory', topic?, mustInclude, mustAvoid}
   -- Three plain forms, no cron parser: 'daily@07:00' | 'weekly@mon,thu@07:00' | 'every:2@07:00'.
   cadence        text NOT NULL,
-  timezone       text NOT NULL,          -- 'Asia/Jakarta'
+  -- Picked from a country list; 'UTC' is the Global entry. The run fires at this zone's wall clock, wherever the worker is.
+  timezone       text NOT NULL,          -- 'Asia/Jakarta' | 'Europe/London' | 'UTC'
   slots_ahead    int  NOT NULL DEFAULT 1, -- 1 = tomorrow's slot only; the owner asked for daily, not a week ahead
-  gate_stages    text[] NOT NULL,        -- stages AutoStudio may pass without the owner, e.g. {script}
+  gate_stages    text[] NOT NULL,        -- stages AutoStudio may pass without the owner, e.g. {idea}
+  -- Flexible per channel, because a channel has its own home worker (channels.home_worker_id): work is budgeted where
+  -- it is spent. The global cap is a safety net, not the main control.
   budget         jsonb NOT NULL,         -- {maxRunsPerDay, maxWorkerMinutesPerDay}
   stop_rules     jsonb NOT NULL,         -- {afterFailures: 2, onWorkerMissing: 'wait'}
   state          text NOT NULL,          -- 'draft' | 'armed' | 'paused'
@@ -73,6 +76,26 @@ CREATE TABLE schedules (
 -- Idempotency: one run per slot, ever. The unique index is the whole safety story.
 CREATE UNIQUE INDEX ON pipeline_runs (schedule_id, slot_at) WHERE schedule_id IS NOT NULL;
 ```
+
+**Kontrol yang diatur per jadwal, di satu formulir** — semuanya dropdown/stepper, tidak ada yang perlu diketik bebas:
+
+- **Channel** — wajib, satu channel per jadwal (lihat §5). Nama channel, niche, dan *home worker*-nya ditampilkan di
+  sebelah pilihan, karena budget dan kecepatan bergantung pada worker itu.
+- **Gaya** — daftar yang sama dengan New Video (terfilter oleh durasi/format).
+- **Panjang** — stepper yang sama dengan Studio (15 s–3 mnt / 2–20 mnt), ditambah preset.
+- **Bahasa + purposes** — sama dengan Studio.
+- **Irama** — dropdown satu daftar: harian, mingguan (pilih hari), setiap N hari; semuanya dengan jam `HH:MM`.
+- **Zona waktu** — dropdown **negara/wilayah** (Indonesia, Singapura, Malaysia, India, Inggris, AS Timur/Barat, Eropa
+  Tengah, Jepang, Australia Timur, …) plus **Global (UTC)**. Yang disimpan tetap nama zona IANA, jadi tidak ada
+  pergeseran saat suatu negara mengubah aturan DST.
+- **Budget** — dua angka: video/hari dan menit kerja worker/hari, dengan saran otomatis dari panjang video yang dipilih
+  (45 s ≈ 2 mnt, 3 mnt ≈ 8 mnt, 10 mnt ≈ 25 mnt, 20 mnt ≈ 50 mnt). Bisa juga satu paket: "1 video/hari, 15 mnt".
+- **Gate** — default kosong (jalan otomatis); pilihan `idea` dan `score` untuk yang mau lebih ketat.
+
+**Jam jadwal = jam mulai, bukan jam terbit.** Penjadwal mematerialisasi run pada jam itu di zona yang dipilih; render
+berjalan kapan pun worker-nya siap. Jadi jadwal 07:00 Jakarta di worker Frankfurt tetap berbunyi 07:00 Jakarta — yang
+dipindahkan adalah *antrean*, bukan jam kerja worker. Karena itu jam antar-channel sebaiknya di-stagger (§5), dan UI
+menampilkan dua waktu: "07:00 WIB · 01:00 UTC".
 
 Satu *tick* penjadwal (satu menit sekali, advisory lock di Postgres, di proses portal yang sudah ada) melakukan satu
 hal: untuk setiap jadwal `armed` yang slot berikutnya masuk dalam `slots_ahead`, **materialisasi** satu `pipeline_runs`
@@ -132,8 +155,9 @@ jadwal yang mencakup beberapa channel sekaligus. Satu channel gagal tidak boleh 
   Channel yang belum punya jadwal tetap tampil, dengan tombol "Buat jadwal" — supaya channel baru tidak terlupa.
 - **Salin setelan** dari channel lain (satu klik, lalu ubah 2–3 field). Mengetik ulang sepuluh jadwal adalah cara
   tercepat membuat orang berhenti memakai fiturnya.
-- **Budget per channel**, plus satu plafon global untuk semua channel, supaya satu jadwal yang salah setel tidak
-  menghabiskan kuota worker channel lain.
+- **Budget per channel**, karena tiap channel punya home worker sendiri (`channels.home_worker_id`) — jadi kuota kerja
+  dihitung di tempat ia dibelanjakan, dan angka per channel bebas berbeda (channel berat 60 mnt/hari, channel ringan
+  10 mnt/hari). Satu **plafon global** tetap ada sebagai jaring pengaman, bukan sebagai kontrol utama.
 - **Jam di-stagger**: lima channel yang semuanya 07:00 berarti lima render menabrak worker di menit yang sama. Portal
   menyarankan offset (07:00, 07:30, 08:00 …) dan menandai bentrok saat disimpan.
 - Jadwal **ikut berhenti** kalau channel-nya di-`paused` oleh `autonomy.ts` (dua kegagalan berturut), dengan alasannya
@@ -145,19 +169,44 @@ Irama yang didukung, tanpa cron dan tanpa parser baru:
 - `weekly@mon,thu@07:00` — hari tertentu.
 - `every:2@07:00` — setiap N hari.
 
-## 6. Fase
+## 6. QC dua lapis: worker memeriksa alat, Hermes memeriksa isi
+
+Satu pemeriksaan tidak cukup, dan dua pemeriksaan berbeda tugas — bukan dua kali hal yang sama.
+
+**Lapis 1 — worker, teknis, deterministik (sudah ada di `lib/studio/qc.ts`):** resolusi, fps, durasi, ada-tidaknya
+audio, LUFS, clipping, bahasa, provenance aset. Ini yang bisa diukur mesin dan tidak boleh dinegosiasi. Kalau lapis ini
+gagal, **Hermes tidak dipanggil**: tidak ada gunanya menilai naskah dari video yang audionya pecah, dan itu menghemat
+satu panggilan per kegagalan.
+
+**Lapis 2 — Hermes, isi:** satu panggilan yang membaca brief beku + naskah final + daftar shot + angka lapis 1, lalu
+mengembalikan `{verdict: pass|revise, score, issues[]}`. Yang dinilai: apakah video ini menjawab brief (angle, must
+include, must avoid), apakah hook-nya di tiga detik pertama, apakah shot cocok dengan kalimatnya, apakah ada klaim tanpa
+sumber. Skor ini masuk ke run dan ke curation, bukan menggantikan skor pemilik.
+
+| Lapis 1 | Lapis 2 | Hasil |
+| --- | --- | --- |
+| gagal | tidak dipanggil | `revise` sekali (maks 2, `MAX_AUTO_REVISIONS`), lalu ke Review |
+| lulus | `pass` | lanjut; kalau level ≥ 3 dan skor ≥ 85 → siap terbit |
+| lulus | `revise` | yang lebih ketat menang: satu revisi otomatis, lalu ke Review |
+| lulus | gagal memanggil Hermes | **tidak** dilewatkan diam-diam: run menunggu, statusnya "QC Hermes belum jalan" |
+
+Yang harus jujur disebut: Hermes **belum bisa menonton** video. Lapis 2 menilai naskah, struktur, dan angka — bukan
+gambar. Jadi ia menangkap "ceritanya melenceng dari brief" dan "ada klaim tanpa sumber", tapi tidak menangkap "wajahnya
+aneh di detik 12". Itu tetap pekerjaan spot check pemilik, dan itu sebabnya spot check tiap 5 video tidak boleh dimatikan.
+
+## 7. Fase
 
 | Fase | Isi | Bukti yang harus ada |
 | --- | --- | --- |
 | **1. Jadwal + idempotensi** | `schedules` dengan **channel wajib**, tiga bentuk irama, tick, materialisasi slot berikutnya, tiga baris "slot berikutnya", `armed/paused`, salin setelan | dua tick bersamaan tetap menghasilkan **satu** run untuk satu slot; `paused` tidak membuat run baru; budget habis → `skipped: budget` terlihat |
 | **2. Series** | `series` + memori (judul terpakai, episode no, cast) + gaya/durasi terkunci | episode 3 tidak mengulang judul episode 1–2; gaya tidak bisa diganti di tengah series tanpa peringatan |
-| **3. Gate + stop rules** | `gate_stages` dipetakan ke `autonomy.ts`, budget menit worker, auto-pause sesudah N gagal, notifikasi | `idea` tidak di gate → jalan otomatis penuh; spot check video ke-5 tetap ke owner; 2 gagal berturut → `paused` + satu review item |
+| **3. Gate + stop rules + QC dua lapis** | `gate_stages` dipetakan ke `autonomy.ts`, budget menit worker per channel, auto-pause sesudah N gagal, **lapis 2 QC oleh Hermes (§6)**, notifikasi | `idea` tidak di gate → jalan otomatis penuh; spot check video ke-5 tetap ke owner; 2 gagal berturut → `paused` + satu review item |
 | **4. Upload** | target per channel, hanya Listed + skor ≥ 85 + spot check, jejak tiap terbitan | trial/lab tidak pernah punya tombol terbit; spot check tetap memaksa satu video ke kamu tiap 5 |
 
 Saya sarankan fase 1 dan 2 dipisah tegas: fase 1 adalah penjadwalan (mudah diuji dengan waktu palsu), fase 2 adalah
 kesinambungan cerita (mudah diuji dengan membaca brief), dan mencampurnya membuat bug jadwal terlihat seperti bug cerita.
 
-## 7. Yang saya tidak sarankan
+## 8. Yang saya tidak sarankan
 
 - **"Auto" yang berarti tanpa gate sama sekali.** `autonomy.ts` sudah menolak menerbitkan trial dan sudah menurunkan
   channel yang gagal; AutoStudio yang melewati itu akan menghapus satu-satunya jaminan yang kita punya.
@@ -166,11 +215,18 @@ kesinambungan cerita (mudah diuji dengan membaca brief), dan mencampurnya membua
 - **Satu jadwal untuk semua channel.** Tiap channel punya rencana, gaya, dan level otonomi sendiri; jadwal yang
   mencakup banyak channel berarti satu kegagalan mematikan semuanya.
 
-## 8. Pertanyaan untukmu
+## 9. Pertanyaan untukmu
 
 1. Satu video per hari per channel sebagai default — cukup, atau mau 2–3?
 2. Ide dipilih otomatis (skor tertinggi dari tiga usulan) + spot check tiap 5 video: setuju? Alternatifnya, `idea`
    dinyalakan di `gate_stages` supaya kamu tetap memilih tiap hari.
 3. Irama mana yang dipakai lebih dulu: `daily` saja, atau langsung `weekly` (hari tertentu) dan `every:N`?
-4. Zona waktu `Asia/Jakarta` untuk semua channel, atau per channel?
-5. Budget per channel berapa menit kerja worker per hari (patokan: 45 s ≈ 2 menit, 3 menit ≈ 8 menit, 20 menit ≈ 50 menit)?
+4. Zona waktu: `Asia/Jakarta` untuk semua channel, atau per channel? Daftar negara mana yang perlu ada di dropdown
+   (saya usulkan Indonesia, Singapura, Malaysia, India, Jepang, Inggris, Eropa Tengah, AS Timur, AS Barat, Australia
+   Timur, plus Global/UTC)?
+5. Budget per channel: angka awal yang kamu mau (mis. 1 video/hari · 15 menit worker/hari)? Plafon global perlu berapa?
+6. QC lapis 2 (Hermes) berlaku untuk **semua** jadwal, atau hanya jadwal yang kamu tandai "kualitas maksimal"? Satu
+   panggilan Hermes per video itu murah, tapi ia menambah satu titik gagal — dan kegagalan lapis 2 membuat video
+   menunggu Review, bukan terbit.
+7. Kalau lapis 1 lulus dan lapis 2 bilang `revise`, saya usulkan **satu** revisi otomatis lalu ke Review (bukan dua
+   seperti revisi karena alat). Setuju?
