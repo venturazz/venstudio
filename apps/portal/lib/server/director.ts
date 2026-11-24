@@ -19,7 +19,7 @@ import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
 import type { Template } from "../studio/templates.ts";
-import { briefFromInput, briefParagraph, freezeBrief, parseBrief } from "../studio/brief.ts";
+import { briefFromInput, freezeBrief, parseBrief } from "../studio/brief.ts";
 import {
   MAX_NOTE_CHARS,
   type ChatMessage,
@@ -441,8 +441,8 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     purposes: run.config.purposes,
     subtitles: run.config.subtitles,
   };
-  // A frozen brief supersedes the free string: the approved idea's title and angle travel with it into the script.
-  if (run.config.brief?.frozenAt) ctx.topicHint = briefParagraph(run.config.brief);
+  // A frozen brief adds the approved idea to the context; the owner's own words stay in the brief block untouched.
+  if (run.config.brief?.frozenAt) ctx.approvedIdea = { title: run.config.brief.title, angle: run.config.brief.angle };
   // A workflow without pictures tells the prompts that need to know (image-sequence prompts stay as they were).
   const recipe = runRecipeOf(run.config);
   if (recipe !== "image-sequence") ctx.recipe = recipe;
