@@ -19,6 +19,7 @@ import { decideNext, type AutonomyLevel } from "../studio/autonomy.ts";
 import { estimateNarrationSec } from "../studio/voice.ts";
 import { combineGates, scriptGate, storyboardGate, type CombinedQc, type GateId, type GateResult } from "../studio/qc.ts";
 import type { Template } from "../studio/templates.ts";
+import { briefFromInput, briefParagraph, freezeBrief, parseBrief } from "../studio/brief.ts";
 import {
   MAX_NOTE_CHARS,
   type ChatMessage,
@@ -440,6 +441,8 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     purposes: run.config.purposes,
     subtitles: run.config.subtitles,
   };
+  // A frozen brief supersedes the free string: the approved idea's title and angle travel with it into the script.
+  if (run.config.brief?.frozenAt) ctx.topicHint = briefParagraph(run.config.brief);
   // A workflow without pictures tells the prompts that need to know (image-sequence prompts stay as they were).
   const recipe = runRecipeOf(run.config);
   if (recipe !== "image-sequence") ctx.recipe = recipe;
@@ -576,6 +579,14 @@ async function approveStage(tx: Q, runId: string, stageId: string, stage: RunSta
   // The run's own stage list (fixed at start); RUN_STAGES for a run from before workflows.
   const [cfg] = await tx`SELECT config FROM pipeline_runs WHERE id = ${runId}`;
   const stages = runStagesOf(parseRunConfig(cfg?.config));
+  if (stage === "idea" && chosen) {
+    // The owner picked one of the ideas: the brief stops moving here, and the script stage reads the frozen brief
+    // instead of the conversation (docs/plans/2026-11-24-brief-and-duration.md).
+    const stored = parseRunConfig(cfg?.config);
+    const brief = parseBrief(stored.brief) ?? briefFromInput({ topic: stored.topicHint, durationSec: stored.durationSec, language: stored.language });
+    const frozen = freezeBrief(brief, { title: chosen.title, angle: chosen.angle }, new Date().toISOString(), extra.auto === true ? "auto" : "owner");
+    await tx`UPDATE pipeline_runs SET config = jsonb_set(config, '{brief}', ${json(frozen)}::text::jsonb, true) WHERE id = ${runId}`;
+  }
   // Never finish a run because a stage is missing from its list: that is a bug to report, not the last stage.
   if (!stages.includes(stage)) throw new DecisionError(`The ${stageLabel(stage).toLowerCase()} is not a stage of this run's workflow`);
   const following = nextRunStage(stage, stages);
