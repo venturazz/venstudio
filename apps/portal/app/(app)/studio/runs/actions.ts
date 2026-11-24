@@ -33,10 +33,24 @@ const startSchema = z.object({
   labStudyId: z.union([z.uuid(), z.literal("")]),
   labTrialPackId: z.union([z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/), z.literal("")]),
   thinkOnMuse: z.boolean(),
+  /** Bed, accents, ambience (sound.ts). Optional: a caller that does not send it gets the default mix. */
+  sound: z
+    .object({ bed: z.string().max(40), sfx: z.enum(["off", "sparse", "rich"]), ambience: z.boolean() })
+    .optional(),
 });
 
 function all(fd: FormData, key: string): string[] {
   return fd.getAll(key).filter((v): v is string => typeof v === "string");
+}
+
+/** The three sound answers, as the form sends them. Missing fields mean the default: auto bed, sparse accents, ambience on. */
+function soundFrom(fd: FormData): { bed: string; sfx: "off" | "sparse" | "rich"; ambience: boolean } {
+  const mode = str(fd, "sfxMode", 10);
+  return {
+    bed: str(fd, "bedChoice", 40) || "auto",
+    sfx: mode === "off" || mode === "rich" ? mode : "sparse",
+    ambience: str(fd, "ambience", 4) === "on",
+  };
 }
 
 /** A number field the form leaves empty when it does not apply. */
@@ -65,6 +79,7 @@ export async function startRunAction(_prev: RunFormState, fd: FormData): Promise
     labStudyId: str(fd, "labStudyId", 40),
     labTrialPackId: str(fd, "labTrialPackId", 63),
     thinkOnMuse: str(fd, "thinkOnMuse", 4) === "on",
+    sound: soundFrom(fd),
   });
   if (!parsed.success) return fail(fd, parsed.error.issues[0]?.message ?? "Check the form and try again.");
   const { labTrialPackId, ...data } = parsed.data;
@@ -108,6 +123,7 @@ export async function startBatchTrialAction(_prev: BatchTrialState, fd: FormData
     subtitles: all(fd, "subtitles"),
     templateIds: all(fd, "batchTemplateIds"),
     thinkOnMuse: str(fd, "thinkOnMuse", 4) === "on",
+    sound: soundFrom(fd),
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form and try again." };
   const { templateIds, ...data } = parsed.data;

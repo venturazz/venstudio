@@ -8,6 +8,7 @@ import { briefFromInput, parseBrief, type StudioBrief } from "./brief.ts";
 import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, VIDEO_FORMATS, type Format, type MusePlacement } from "./catalog.ts";
 import { DEFAULT_DURATION_SEC } from "./engine.ts";
 import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
+import { parseSound, type SoundRequest } from "./sound.ts";
 import { LAB_TRIAL_BADGE, parseRunStylePack, type RunStylePack } from "./style-registry.ts";
 import { parseTrialBatch, type TrialBatch } from "./trial-batch.ts";
 import { parseRunWorkflow, workflowText, type RunWorkflow } from "./recipes.ts";
@@ -78,6 +79,11 @@ export interface RunConfig {
   brief?: StudioBrief;
   /** Subtitle language codes besides the narration language. */
   subtitles: string[];
+  /**
+   * Which bed, how busy the accents, whether ambience plays (sound.ts). Additive: a run from before sound existed reads
+   * as the default, and the mix falls back exactly as it did.
+   */
+  sound?: SoundRequest;
   themeSource: ThemeSource;
   /**
    * The style pack the run was started with (additive, set by startRun). `trial` marks a research-only run: shown with
@@ -136,6 +142,7 @@ export function parseRunConfig(raw: unknown): RunConfig {
       return brief ? { brief } : {};
     })(),
     subtitles: strings(c.subtitles),
+    sound: parseSound(c.sound),
     themeSource: source,
     ...stylePackOf(c.stylePack, c.workflow),
     ...(typeof c.labStudyId === "string" && STUDY_ID_RE.test(c.labStudyId) ? { labStudyId: c.labStudyId } : {}),
@@ -188,6 +195,8 @@ export interface RunRequest {
   purposes: string[];
   subtitles: string[];
   brief: string;
+  /** Bed, accents and ambience. Absent: auto bed, sparse accents, ambience on. */
+  sound?: SoundRequest;
   /** "Muse does the thinking": idea, research and script go to the Muse agent (the caller checked it is ready). */
   thinkOnMuse?: boolean;
 }
@@ -236,6 +245,7 @@ export function buildRunConfig(req: RunRequest, channel: { category: string | nu
     config: {
       format: req.format,
       language: req.language,
+    sound: parseSound(req.sound),
       durationSec,
       themeId,
       styleId: template.styleId,

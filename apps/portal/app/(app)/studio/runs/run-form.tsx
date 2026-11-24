@@ -7,6 +7,7 @@ import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Form
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { DURATION_CHOICES, clampDuration, defaultDurationSec, defaultThemeFor, durationLabel, engineView, MAX_BRIEF_CHARS, NO_THEME, stepDuration, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
+import { SFX_MODE_LABEL, SFX_MODES } from "@/lib/studio/sound.ts";
 import type { OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
 import { startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
@@ -36,6 +37,8 @@ export interface RunFormOptions {
   prefill: RunFormPrefill;
   /** Whether Muse can do the thinking now; the reasons say what to change when it cannot. */
   muse?: { ready: boolean; reasons: string[] };
+  /** Music tracks in the library that may be a bed. Empty: the library has no music yet. */
+  beds?: Array<{ id: string; title: string }>;
 }
 
 /** A Hermes-rendered style always reads "Hermes render (research only)" first, whatever its pack is named. */
@@ -58,10 +61,14 @@ function themeFor(channel: RunFormChannel | undefined): string {
  * The New video form. Every field is controlled and the form submits through onSubmit and a transition, not a form
  * action: React 19 resets a form after its action runs, which would clear the native selects.
  */
-export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill, muse: museThinking }: RunFormOptions) {
+export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill, muse: museThinking, beds = [] }: RunFormOptions) {
   const templates = [...listed, ...trialTemplates, ...labTemplates];
   const [state, dispatch] = useActionState(startRunAction, undefined);
   const [isPending, startTransition] = useTransition();
+  // Sound: three answers, the same three the run config stores (sound.ts). Auto is the default bed.
+  const [bedChoice, setBedChoice] = useState("auto");
+  const [sfxMode, setSfxMode] = useState("sparse");
+  const [ambience, setAmbience] = useState(true);
   const formRef = useRef<HTMLFormElement>(null);
   // Research styles that name a Hermes skill, by group ("Hermes research styles (from claude-animation-skills)").
   const plainTrials = trialTemplates.filter((t) => !t.group);
@@ -419,6 +426,51 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
           </p>
         )}
       </div>
+
+      <fieldset className="space-y-3" data-testid="sound">
+        <legend className="text-sm font-medium">Sound</legend>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Music bed" htmlFor="bedChoice" hint="Ducked 4:1 under the voice, so both are heard. Mastered to −14 LUFS.">
+            <Select id="bedChoice" name="bedChoice" value={bedChoice} onChange={(e) => setBedChoice(e.target.value)}>
+              <option value="auto">Auto from the library</option>
+              <option value="none">No music</option>
+              {beds.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.title}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Sound effects" htmlFor="sfxMode" hint="Accents sit on shot changes, never closer than three seconds.">
+            <Select id="sfxMode" name="sfxMode" value={sfxMode} onChange={(e) => setSfxMode(e.target.value)}>
+              {SFX_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {SFX_MODE_LABEL[m]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        <label className="flex min-h-11 items-start gap-2 rounded-lg border border-border p-2.5 text-sm">
+          <input
+            type="checkbox"
+            name="ambience"
+            checked={ambience}
+            onChange={(e) => setAmbience(e.target.checked)}
+            className="mt-1 size-4 shrink-0 accent-[var(--vs-accent)]"
+          />
+          <span className="min-w-0">
+            <span className="font-medium">Ambience between beats</span>
+            <span className="block text-xs text-muted">Brown noise, 90–3200 Hz, 26 dB under the voice. Fills the gaps the narration leaves.</span>
+          </span>
+        </label>
+        {beds.length === 0 && (
+          <p className="text-xs text-muted" data-testid="no-music-yet">
+            The library has no music track yet, so &ldquo;Auto&rdquo; will produce no bed and the run will say why. Add a track on Assets, or let an agent
+            find one.
+          </p>
+        )}
+      </fieldset>
 
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">Purpose (optional)</legend>

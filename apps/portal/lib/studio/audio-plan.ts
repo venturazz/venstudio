@@ -76,6 +76,8 @@ export interface AudioPlanInput {
   maxTruePeakDb?: number;
   bed?: { assetId: string; durationSec?: number } | null;
   sfx?: readonly { atSec: number; assetId: string }[];
+  /** Ambience fills the gaps between beats; the owner may turn it off. Default on, as measured. */
+  ambience?: boolean;
 }
 
 export type AudioPlanResult = { ok: true; plan: AudioPlan } | { ok: false; issues: string[] };
@@ -112,7 +114,10 @@ export function buildAudioPlan(i: AudioPlanInput): AudioPlanResult {
               cover: i.bed.durationSec !== undefined && i.bed.durationSec >= i.durationSec ? "trim" : "loop",
             }
           : null,
-      ambient: i.narrated ? { color: AMBIENT_NOISE_COLOR, bandHz: [...AMBIENT_BAND_HZ] as [number, number], gainDb: AMBIENT_GAIN_DB } : null,
+      ambient:
+        i.narrated && (i.ambience ?? true)
+          ? { color: AMBIENT_NOISE_COLOR, bandHz: [...AMBIENT_BAND_HZ] as [number, number], gainDb: AMBIENT_GAIN_DB }
+          : null,
       sfx,
     },
   };
