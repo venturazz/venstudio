@@ -331,6 +331,13 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             .
           </p>
         )}
+        {/* The brief can mark the list, but it never renders a second one: pressing this adds · cocok to the options. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" onClick={suggest} disabled={!brief.trim()} className="min-h-11">
+            Suggest from brief
+          </Button>
+          <span className="text-xs text-muted">With a brief, marks the styles that fit it with · cocok in the list above.</span>
+        </div>
         {/* ONE style, described. Before this block the same choice was offered four times (select, Trial rows, batch grid,
             suggestion buttons); docs/plans/2026-11-24-brief-and-duration.md section 5. */}
         <div className="space-y-2" data-testid="style-detail">
