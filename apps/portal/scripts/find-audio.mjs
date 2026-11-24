@@ -46,10 +46,10 @@ const PRESETS = {
     { q: "horror suspense music", tags: ["mystery", "horror"], minSec: 45, maxSec: 420, take: 3 },
     { q: "upbeat corporate music", tags: ["uplifting"], minSec: 45, maxSec: 420, take: 3 },
     { q: "inspiring piano strings", tags: ["uplifting", "emotional"], minSec: 45, maxSec: 420, take: 3 },
-    { q: "funny quirky background music", tags: ["playful"], minSec: 30, maxSec: 420, take: 3 },
+    { q: "comedy music", tags: ["playful"], minSec: 20, maxSec: 420, take: 3 },
     { q: "lofi hip hop background", tags: ["chill"], minSec: 45, maxSec: 420, take: 3 },
     { q: "epic orchestral trailer", tags: ["epic"], minSec: 20, maxSec: 420, take: 3 },
-    { q: "electronic underscore technology", tags: ["tech"], minSec: 30, maxSec: 420, take: 3 },
+    { q: "electronic background music", tags: ["tech"], minSec: 30, maxSec: 420, take: 3 },
   ],
   sfx: [
     { q: "whoosh transition", tags: ["whoosh"], minSec: 0.2, maxSec: 4, take: 6 },
