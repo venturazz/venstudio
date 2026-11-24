@@ -13,7 +13,7 @@
 //   node scripts/find-audio.mjs                          # dry run: search, filter, report gaps
 //   node scripts/find-audio.mjs --target 80              # aim for 80 assets across all classes
 //   node scripts/find-audio.mjs --class sfx --target 40  # one class
-//   AUDIO_SEED_DIR=... DATABASE_URL=... node scripts/find-audio.mjs --write --target 80
+//   DATABASE_URL=... node scripts/find-audio.mjs --write --target 80
 //
 //   DATABASE_URL=... node scripts/find-audio.mjs --needs            # only what real runs were blocked on
 //   DATABASE_URL=... node scripts/find-audio.mjs --needs --write    # and resolve those needs
@@ -22,7 +22,7 @@
 // riser and found nothing — and looks for exactly those tags, most-blocking first. So the library fills in the order the
 // videos asked, not the order a list of moods was written in.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -241,14 +241,17 @@ console.log("covered:", Object.fromEntries([...covered.entries()].sort((a, b) =>
 if (gaps.length > 0) console.log("GAPS (asked for, nothing found):", gaps.join(", "));
 
 if (!write) {
-  console.log("\ndry run. Add --write (with AUDIO_SEED_DIR and DATABASE_URL) to download and file these.");
+  console.log("\ndry run. Add --write (with DATABASE_URL) to download and file these into the asset library.");
   process.exit(0);
 }
 
-const dir = process.env.AUDIO_SEED_DIR;
+// Files go where the portal expects them, not into a directory of their own: <ARTIFACT_DIR>/assets/<assetId>/<file>.
+// Postgres stores metadata and the path; the bytes live on the volume the portal and its workers already share. Writing
+// anywhere else would produce rows the media route refuses to serve (openStored rejects any path outside ARTIFACT_DIR).
+const dir = path.resolve(process.env.ARTIFACT_DIR ?? "./data/artifacts", "assets");
 const dbUrl = process.env.DATABASE_URL;
-if (!dir || !dbUrl) {
-  console.error("--write needs AUDIO_SEED_DIR and DATABASE_URL.");
+if (!dbUrl) {
+  console.error("--write needs DATABASE_URL (and ARTIFACT_DIR if it is not ./data/artifacts).");
   process.exit(1);
 }
 await mkdir(dir, { recursive: true });
@@ -278,12 +281,15 @@ try {
       continue;
     }
     const ext = p.filetype === "mpeg" ? "mp3" : p.filetype;
-    const file = path.join(dir, `${sha.slice(0, 12)}.${ext}`);
+    const assetId = randomUUID();
+    const slug = p.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "track";
+    const file = path.join(dir, assetId, `${slug}-${sha.slice(0, 8)}.${ext}`);
+    await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, buf);
     await sql`
-      INSERT INTO assets (title, kind, source, license, origin_url, tags, content_type, bytes, sha256, storage_path, metadata)
+      INSERT INTO assets (id, title, kind, source, license, origin_url, tags, content_type, bytes, sha256, storage_path, metadata)
       VALUES (
-        ${p.title}, 'audio', 'licensed', ${`${p.license} (${p.licenseUrl})`}, ${p.originUrl || p.url},
+        ${assetId}, ${p.title}, 'audio', 'licensed', ${`${p.license} (${p.licenseUrl})`}, ${p.originUrl || p.url},
         ${p.tags}::text[], ${`audio/${ext}`}, ${buf.length}, ${sha}, ${file},
         ${JSON.stringify({
           provider: p.provider,
