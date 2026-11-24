@@ -6,7 +6,8 @@ import { listTemplates } from "@/lib/server/templates.ts";
 import { reportedCapabilities, workerEnvironmentRows } from "@/lib/server/workers.ts";
 import { env } from "@/lib/server/env.ts";
 import { listTrialOutcomes, styleRegistry, vendoredStyles } from "@/lib/server/style-packs.ts";
-import { creditOf, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
+import { creditOf, newVideoOffer, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
+import { db } from "@/lib/server/db.ts";
 import {
   HERMES_RENDER_LABEL,
   LAB_TRIAL_BADGE,
@@ -34,6 +35,7 @@ import {
   type WorkerEnvironment,
 } from "@/lib/studio/style-registry.ts";
 import { TrialQueue } from "../trial-queue.tsx";
+import { BatchTrials } from "./batch-trials.tsx";
 import type { Template } from "@/lib/studio/templates.ts";
 
 export const metadata = { title: "Style library" };
@@ -76,6 +78,8 @@ export default async function StyleLibraryPage() {
   let problems: string[] = [];
   let queue: TrialQueueBatch[] = [];
   let envWorkers: Array<{ name: string; capabilities: string[]; environments: WorkerEnvironment[] }> = [];
+  let batchStyles: Array<{ id: string; label: string }> = [];
+  let batchChannels: Array<{ id: string; name: string }> = [];
   let loadError = "";
   try {
     const vendored = await vendoredStyles();
@@ -90,6 +94,17 @@ export default async function StyleLibraryPage() {
       trialQueue(),
       workerEnvironmentRows().catch(() => []),
     ]);
+    // Batch trials: one brief, several trial styles, started from the library rather than from New Video's form. Same
+    // offer New Video reads, so a style that can be picked there can be batched here.
+    const [channelRows, offer] = await Promise.all([
+      db()`SELECT id, name FROM channels ORDER BY name`.catch(() => [] as Array<{ id: string; name: string }>),
+      newVideoOffer().catch((err) => {
+        console.error("styles page: could not read the trial styles for a batch", err);
+        return null;
+      }),
+    ]);
+    batchChannels = channelRows.map((c) => ({ id: c.id as string, name: c.name as string }));
+    batchStyles = (offer?.trial ?? []).map((t) => ({ id: t.id, label: t.label }));
   } catch (err) {
     console.error("styles page: could not load", err);
     loadError = "The style registry could not be loaded.";
@@ -135,6 +150,10 @@ export default async function StyleLibraryPage() {
           <TrialQueue batches={queue} />
         </div>
       )}
+      {/* Its own block, not a footnote to the queue: a batch can be started with no run in flight. */}
+      <div className="mb-6">
+        <BatchTrials channels={batchChannels} styles={batchStyles} defaultDurationSec={45} />
+      </div>
 
       <section className="space-y-3" data-testid="style-packs">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Style packs</h2>

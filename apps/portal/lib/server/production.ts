@@ -53,6 +53,7 @@ import { fitWindow, parseTightenRequest, tempoOf, tightenRequest, type LengthDir
 import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { buildAudioPlan } from "../studio/audio-plan.ts";
+import { DEFAULT_SOUND, pairCues, sfxCues, type BedChoice, type SfxAsset } from "../studio/sound.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
 import { STYLE_BY_ID, VIDEO_FORMATS, type Style } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, isPortalEngine, transitionForWorker } from "../studio/render-engine.ts";
@@ -1107,8 +1108,12 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     : null;
   // Ambience needs no asset. The bed is the one layer that does, and only a track the owner marked as music, with a
   // licence and confirmed terms, qualifies (music-bed.ts). Never the narration, which is saved as audio too.
-  const bedPick = mix.audio && narrationSec > 0 ? await pickRunBed(sql, run, template, asUuid(voiceResult.assetId)) : null;
+  const sound = run.config.sound ?? DEFAULT_SOUND;
+  const bedPick = mix.audio && narrationSec > 0 ? await pickRunBed(sql, run, template, asUuid(voiceResult.assetId), sound.bed) : null;
   const bed = bedPick?.bed ?? null;
+  // Accents sit on shot boundaries: the board already knows where the picture changes, so no second guess is needed.
+  const cues = mix.audio && planShots ? sfxCues(planShots, sound.sfx) : [];
+  const sfx = cues.length > 0 ? pairCues(cues, await pickSfxLibrary(sql)) : [];
   const audio =
     mix.audio && narrationSec > 0
       ? buildAudioPlan({
@@ -1118,6 +1123,8 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
           targetLufs: template.audio.targetLufs,
           maxTruePeakDb: template.audio.maxTruePeakDb,
           bed: bed ? { assetId: bed.id, ...(typeof bed.durationSec === "number" ? { durationSec: bed.durationSec } : {}) } : null,
+          sfx,
+          ambience: sound.ambience,
         })
       : null;
   if (audio && !audio.ok) {
@@ -1772,8 +1779,11 @@ async function queueHermesMux(
     await recordStageError(run.id, st.id, "render", why);
     return;
   }
-  const bedPick = await pickRunBed(sql, run, template, mux.narrationId);
+  const sound = run.config.sound ?? DEFAULT_SOUND;
+  const bedPick = await pickRunBed(sql, run, template, mux.narrationId, sound.bed);
   const bed = bedPick.bed;
+  // The mux path has no shot list of its own — the picture arrived as one rendered clip — so no accents are placed
+  // here. The bed and the ambience are still the owner's choice, and both are mixed.
   const audio = buildAudioPlan({
     policy: template.audio.musicPolicy,
     narrated: template.audio.narrated,
@@ -1781,6 +1791,7 @@ async function queueHermesMux(
     targetLufs: template.audio.targetLufs,
     maxTruePeakDb: template.audio.maxTruePeakDb,
     bed: bed ? { assetId: bed.id, ...(typeof bed.durationSec === "number" ? { durationSec: bed.durationSec } : {}) } : null,
+    ambience: sound.ambience,
   });
   if (!audio.ok) {
     await mergeStageOutput(st.id, { hermesClip: clip });
@@ -1921,7 +1932,10 @@ async function runNarrationIds(q: Q, runId: string, current: string | null): Pro
  * The music bed for a run, by the rule in music-bed.ts. Only rows tagged as music are read; the rest of the rule
  * (never speech, the template's policies, provenance, provider terms, channel) is pure code with its own tests.
  */
-async function pickRunBed(q: Q, run: RunInfo, template: Template, narrationId: string | null): Promise<BedPick> {
+async function pickRunBed(q: Q, run: RunInfo, template: Template, narrationId: string | null, choice: BedChoice = "auto"): Promise<BedPick> {
+  // The owner's word beats the library's: "none" is a decision, and a named track is judged by the same rules as any
+  // other bed (licence, confirmed terms, never the narration) — it just has one candidate instead of fifty.
+  if (choice === "none") return { bed: null, skipped: [{ title: "this run", reason: "the owner chose no music" }] };
   const rows = await q`
     SELECT id, title, kind, source, license, origin_url, tags, channel_id, storage_path IS NOT NULL AS has_file, metadata
     FROM assets
@@ -1948,13 +1962,40 @@ async function pickRunBed(q: Q, run: RunInfo, template: Template, narrationId: s
       durationSec: seconds,
     };
   });
-  return pickMusicBed(candidates, {
+  const pool = choice === "auto" ? candidates : candidates.filter((c) => c.id === choice);
+  if (choice !== "auto" && pool.length === 0) return { bed: null, skipped: [{ title: choice, reason: "the chosen track is not in the library, or has no file" }] };
+  return pickMusicBed(pool, {
     template,
     runId: run.id,
     channelId: run.channelId,
     narrationAssetIds: await runNarrationIds(q, run.id, narrationId),
     providerTerms: await listProviderTerms(),
   });
+}
+
+/** Music tracks the library can offer as a bed, newest first. Stored rows only: the form never waits on a worker. */
+export async function listBedTracks(): Promise<Array<{ id: string; title: string }>> {
+  const rows = await db()`
+    SELECT id, title FROM assets
+    WHERE kind = 'audio' AND 'music' = ANY(tags) AND storage_path IS NOT NULL
+    ORDER BY created_at DESC
+    LIMIT 50
+  `;
+  return rows.map((r) => ({ id: String(r.id), title: String(r.title) }));
+}
+
+/** Accent files the library holds: tagged `sfx`, with a stored file. Cue tags (whoosh, impact, riser) are tags too. */
+async function pickSfxLibrary(q: Q): Promise<SfxAsset[]> {
+  const rows = await q`
+    SELECT id, tags FROM assets
+    WHERE kind = 'audio' AND 'sfx' = ANY(tags) AND storage_path IS NOT NULL
+    ORDER BY created_at DESC
+    LIMIT 200
+  `;
+  return rows.map((r) => ({
+    id: String(r.id),
+    tags: Array.isArray(r.tags) ? (r.tags as unknown[]).filter((t): t is string => typeof t === "string") : [],
+  }));
 }
 
 interface FinishedJob {

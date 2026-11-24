@@ -13,6 +13,14 @@ harus tepat, karena ada dua cara membangunnya dan hanya satu yang tidak menggand
   di tahap idea/script/QC yang sudah ada (`lib/server/director.ts`) dan di pack gaya. AutoStudio menambah tiga hal yang
   memang belum ada: *kapan* (jadwal + idempotensi), *seberapa jauh tanpa kamu* (peta gate per tahap), dan *memori series*.
 
+Soal persetujuan, jawabannya satu kata: **sekali**. `Arm` pada sebuah jadwal adalah persetujuan tetap atas setelannya
+(channel, gaya, durasi, irama, budget) — bukan persetujuan per video. Sesudah itu ide dipilih otomatis dari tiga usulan
+(skor tertinggi), dan yang menjaga mutu adalah **spot check tiap 5 video** plus **auto-pause sesudah dua kegagalan**,
+dua-duanya sudah ada. Yang mau lebih ketat bisa menyalakan `idea` di `gate_stages`.
+
+Iramanya tiga bentuk saja, tanpa cron: `daily@07:00`, `weekly@mon,thu@07:00`, `every:2@07:00`. Yang dimaterialisasi
+hanya slot berikutnya (`slots_ahead: 1`) — harian, bukan cadangan seminggu.
+
 Kabar baiknya: bahan untuk "seberapa jauh tanpa kamu" sudah ada di `lib/studio/autonomy.ts` — level 0–3, auto-publish
 hanya pada skor ≥ 85, spot check tiap 5 video, maksimal 2 revisi otomatis, dan aksi penurun otomatis
 (`pause-channel-autonomy`, `demote-template`, `block-publish`). AutoStudio tidak perlu mekanisme persetujuan baru; ia
@@ -47,13 +55,19 @@ CREATE TABLE schedules (
   name           text NOT NULL,
   kind           text NOT NULL,          -- 'series' | 'one-off'
   -- the same fields New Video asks for, frozen as a template
-  settings       jsonb NOT NULL,         -- {themeId, styleId, durationSec, language, purposes, subtitles}
+  settings       jsonb NOT NULL,         -- {themeId, styleId, durationSec, language, purposes, subtitles, sound}
   brief          jsonb NOT NULL,         -- {topicSource: 'plan'|'owner'|'series-memory', topic?, mustInclude, mustAvoid}
-  cadence        text NOT NULL,          -- 'daily@07:00' | 'weekly@mon,thu@07:00' | cron
-  timezone       text NOT NULL,          -- 'Asia/Jakarta'
-  slots_ahead    int  NOT NULL DEFAULT 1,
-  gate_stages    text[] NOT NULL,        -- stages AutoStudio may pass without the owner, e.g. {script}
-  budget         jsonb NOT NULL,         -- {maxRunsPerDay, maxWorkerMinutesPerDay}
+  -- Days only, no cron parser: 'daily' | 'weekly:mon,thu' | 'every:2'. How many videos in a day is the channel's
+  -- decision (channels.videos_per_day), never the schedule's — AutoStudio reads it and fills this many times.
+  days           text NOT NULL,
+  times_of_day   text[] NOT NULL,        -- {'07:00','19:00'}; length is kept equal to channels.videos_per_day
+  -- Picked from a country list; 'UTC' is the Global entry. The run fires at this zone's wall clock, wherever the worker is.
+  timezone       text NOT NULL,          -- 'Asia/Jakarta' | 'Europe/London' | 'UTC'
+  slots_ahead    int  NOT NULL DEFAULT 1, -- 1 = tomorrow's slot only; the owner asked for daily, not a week ahead
+  gate_stages    text[] NOT NULL,        -- stages AutoStudio may pass without the owner, e.g. {idea}
+  -- A ceiling, not a count: the count is already the channel's videos_per_day. Hours, not minutes, because one render
+  -- can take an hour: a 20-minute video is ~50 worker-minutes, and a Puppet plate costs ~3 s of work per video second.
+  budget         jsonb NOT NULL,         -- {maxWorkerHoursPerDay}
   stop_rules     jsonb NOT NULL,         -- {afterFailures: 2, onWorkerMissing: 'wait'}
   state          text NOT NULL,          -- 'draft' | 'armed' | 'paused'
   series_id      uuid NULL,              -- series only
@@ -64,6 +78,51 @@ CREATE TABLE schedules (
 -- Idempotency: one run per slot, ever. The unique index is the whole safety story.
 CREATE UNIQUE INDEX ON pipeline_runs (schedule_id, slot_at) WHERE schedule_id IS NOT NULL;
 ```
+
+**Yang sudah dijawab channel, tidak ditanyakan lagi.** AutoStudio membaca `channels` dan hanya menampilkan jawabannya,
+supaya tidak ada dua tempat yang bisa berbeda:
+
+- `videos_per_day` → berapa slot per hari, dan berapa jam (`times_of_day`) yang perlu diisi. Kalau channel bilang 2 tapi
+  jadwal baru punya satu jam, UI menawarkan "isi jam kedua" — bukan diam-diam menghasilkan satu video sehari.
+- `home_worker_id` → worker tempat budget menit dibelanjakan; namanya tampil di sebelah pilihan channel.
+- `language`, `format` → default bahasa dan format; jadwal boleh menimpa, tapi tidak wajib memilih ulang.
+- `status` → channel `planning` atau `paused` tidak pernah dijalankan penjadwal (`planning` belum punya gaya/panggung;
+  `paused` sudah dihentikan oleh pemilik atau oleh `autonomy.ts`), dan alasannya terlihat di kartu jadwal.
+
+**Kontrol yang diatur per jadwal, di satu formulir** — semuanya dropdown/stepper, tidak ada yang perlu diketik bebas:
+
+- **Channel** — wajib, satu channel per jadwal (lihat §5). Nama channel, niche, dan *home worker*-nya ditampilkan di
+  sebelah pilihan, karena budget dan kecepatan bergantung pada worker itu.
+- **Gaya** — daftar yang sama dengan New Video (terfilter oleh durasi/format).
+- **Panjang** — stepper yang sama dengan Studio (15 s–3 mnt / 2–20 mnt), ditambah preset.
+- **Bahasa + purposes** — sama dengan Studio.
+- **Irama** — dropdown satu daftar: harian, mingguan (pilih hari), setiap N hari — tanpa jam, karena jumlah videonya
+  sudah ditentukan channel.
+- **Jam** — `times_of_day`, satu baris `HH:MM` per video, terisi otomatis dari `videos_per_day` (mis. 2 video → 07:00 dan
+  19:00) dan bisa digeser per baris.
+- **Zona waktu** — dropdown **negara/wilayah** (Indonesia, Singapura, Malaysia, India, Inggris, AS Timur/Barat, Eropa
+  Tengah, Jepang, Australia Timur, …) plus **Global (UTC)**. Yang disimpan tetap nama zona IANA, jadi tidak ada
+  pergeseran saat suatu negara mengubah aturan DST.
+- **Batas jam worker/hari** — satu angka kasar (1, 2, 4, 6, 8 jam), bukan menit. Sarannya **diukur, bukan ditebak**: median
+  durasi render gaya itu pada run terakhir, dikali `videos_per_day`. Kalau belum ada riwayat, sarannya kosong dan UI menulis
+  "belum ada riwayat render untuk gaya ini" — bukan angka karangan. Yang dijaga adalah biaya render, bukan jumlah video;
+  jumlahnya urusan channel.
+- **Suara** — tiga field yang sama dengan New Video (`sound`: bed, sfx, ambience), dengan satu tambahan untuk jadwal:
+  **rotate**. Bed `rotate` memakai track berbeda tiap slot selama kandidatnya lebih dari satu; series yang memakai satu
+  track dua puluh kali terdengar seperti satu video yang diulang. Gaya yang `musicPolicy`-nya menuntut bed tapi koleksinya
+  kosong ditandai di kartu jadwal, bukan dibiarkan jalan tanpa musik.
+- **Gate** — default kosong (jalan otomatis); pilihan `idea` dan `score` untuk yang mau lebih ketat.
+
+**Satu worker, satu render.** Worker tidak merender paralel, dan satu video bisa memakan satu jam atau lebih. Jadi penjadwal
+tidak pernah menumpuk: kalau worker channel itu masih memegang run yang belum selesai (atau masih ada job `queued` untuknya),
+slot hari itu ditandai `skipped: worker-busy` dan tetap terlihat di daftar — bukan dimasukkan antrean untuk dikerjakan
+berbarengan. Batas jam/hari adalah plafon biaya, bukan target kecepatan: menaikkannya tidak membuat worker lebih cepat,
+hanya membuat lebih banyak video menunggu.
+
+**Jam jadwal = jam mulai, bukan jam terbit.** Penjadwal mematerialisasi run pada jam itu di zona yang dipilih; render
+berjalan kapan pun worker-nya siap. Jadi jadwal 07:00 Jakarta di worker Frankfurt tetap berbunyi 07:00 Jakarta — yang
+dipindahkan adalah *antrean*, bukan jam kerja worker. Karena itu jam antar-channel sebaiknya di-stagger (§5), dan UI
+menampilkan dua waktu: "07:00 WIB · 01:00 UTC".
 
 Satu *tick* penjadwal (satu menit sekali, advisory lock di Postgres, di proses portal yang sudah ada) melakukan satu
 hal: untuk setiap jadwal `armed` yang slot berikutnya masuk dalam `slots_ahead`, **materialisasi** satu `pipeline_runs`
@@ -78,9 +137,13 @@ pernah membuat video ganda.
 2. **AutoStudio tidak punya prompt sendiri.** Ia mengisi `settings` + `brief` yang sama; tahap idea/script tetap milik
    director. Kalau AutoStudio punya prompt sendiri, kualitasnya akan menyimpang dari Studio dan tidak ada yang bisa
    dibandingkan — persis masalah "skill jadi script" yang sudah kita bereskan di pack.
-3. **Gate per tahap, bukan satu saklar "auto".** Default saya: `idea` **tetap** ke kamu (topik adalah keputusan pemilik),
-   `script` boleh otomatis di level ≥ 2, `qc` mengikuti `autonomy.ts` apa adanya. `gate_stages` hanya boleh berisi
-   tahap yang sudah punya jalur auto di `autonomy.ts`; kalau tidak, ditolak dengan alasan.
+3. **Sekali setuju, lalu jalan — dengan satu pemeriksaan paksa.** `Arm` pada jadwal adalah persetujuan tetap atas
+   setelan (channel, gaya, durasi, irama, budget), bukan persetujuan per video. Sesudah itu ide **dipilih otomatis**:
+   `pickIdea` sudah memilih skor tertinggi dari tiga usulan, jadi tidak ada yang perlu diklik tiap hari. Yang menjaga mutu
+   bukan persetujuan harian, tapi dua hal yang sudah ada di `autonomy.ts`: **spot check tiap 5 video** (video ke-5 tetap
+   mampir ke Review walaupun channel di level tertinggi) dan **auto-pause** sesudah dua kegagalan berturut.
+   `gate_stages` hanya boleh berisi tahap yang sudah punya jalur auto di `autonomy.ts`; kalau tidak, ditolak dengan alasan.
+   Yang mau lebih ketat boleh menyalakan `idea` di `gate_stages` — tapi default-nya tidak.
 4. **Budget lebih penting daripada jadwal.** 3 menit video ≈ 8 menit kerja worker (hitungan PR #31), 20 menit long ≈ 50
    menit. Jadi `maxWorkerMinutesPerDay` harus diperiksa **sebelum** materialisasi; kalau habis, slot ditandai
    `skipped: budget` dan muncul di kalender, bukan menghilang diam-diam.
@@ -101,26 +164,77 @@ Keduanya baris di tabel yang sama. Bedanya hanya di `kind` dan di apa yang masuk
 
 ## 4. Kalender, dan tombol yang membuatnya bisa dipercaya
 
-Sebelum `armed`, layar AutoStudio menampilkan **7 slot ke depan**: tanggal+jam, brief/topik (atau "dari rencana channel"),
-gaya, durasi, perkiraan menit worker, dan gate yang akan dilewati. Plus dua tombol: `Materialisasi 1 slot sekarang`
-(uji tanpa menunggu besok) dan `Batalkan slot`. Tanpa preview ini, fitur otomatis selalu terasa seperti taruhan.
+Sebelum `armed`, layar AutoStudio menampilkan **tiga slot berikutnya** sebagai tiga baris, bukan tabel seminggu:
+tanggal+jam, brief/topik (atau "dari rencana channel"), gaya, durasi, perkiraan menit worker. Default `slots_ahead = 1`:
+yang dimaterialisasi hanya slot besok, karena iramanya harian — bukan cadangan seminggu yang tidak diminta. Plus dua
+tombol: `Buat 1 video sekarang` (uji tanpa menunggu besok) dan `Batalkan slot`.
 
 Sesudah jalan: satu daftar run per jadwal dengan status yang sudah ada (menunggu kamu / jalan / selesai / gagal), bukan
 dasbor baru.
 
-## 5. Fase
+## 5. Banyak channel: satu jadwal, satu channel
+
+Studio ini akan punya banyak channel, jadi "channel mana" harus jadi baris pertama tiap jadwal — dan tidak boleh ada
+jadwal yang mencakup beberapa channel sekaligus. Satu channel gagal tidak boleh mematikan yang lain.
+
+- `channel_id` **wajib**, tanpa opsi "semua channel".
+- Halaman Automation dikelompokkan **per channel**: kartu channel (nama, niche, level otonomi) lalu daftar jadwalnya.
+  Channel yang belum punya jadwal tetap tampil, dengan tombol "Buat jadwal" — supaya channel baru tidak terlupa.
+- **Salin setelan** dari channel lain (satu klik, lalu ubah 2–3 field). Mengetik ulang sepuluh jadwal adalah cara
+  tercepat membuat orang berhenti memakai fiturnya.
+- **Jumlah video bukan milik jadwal**, melainkan `channels.videos_per_day` — AutoStudio mengisi jumlah jam itu.
+- **Batas jam worker per channel**, karena tiap channel punya home worker sendiri (`channels.home_worker_id`): kuota biaya
+  dihitung di tempat ia dibelanjakan, dan angkanya bebas berbeda (channel panjang 6 jam/hari, channel pendek 1 jam/hari).
+  Satu **plafon global** tetap ada sebagai jaring pengaman, bukan sebagai kontrol utama.
+- **Jam di-stagger**: lima channel yang semuanya 07:00 berarti lima render menabrak worker di menit yang sama. Portal
+  menyarankan offset (07:00, 07:30, 08:00 …) dan menandai bentrok saat disimpan.
+- Jadwal **ikut berhenti** kalau channel-nya di-`paused` oleh `autonomy.ts` (dua kegagalan berturut), dengan alasannya
+  terlihat — bukan menyuruh pemilik mematikan sepuluh jadwal satu per satu.
+
+Irama yang didukung, tanpa cron dan tanpa parser baru:
+
+- `daily@07:00` — setiap hari.
+- `weekly@mon,thu@07:00` — hari tertentu.
+- `every:2@07:00` — setiap N hari.
+
+## 6. QC dua lapis: worker memeriksa alat, Hermes memeriksa isi
+
+Satu pemeriksaan tidak cukup, dan dua pemeriksaan berbeda tugas — bukan dua kali hal yang sama.
+
+**Lapis 1 — worker, teknis, deterministik (sudah ada di `lib/studio/qc.ts`):** resolusi, fps, durasi, ada-tidaknya
+audio, LUFS, clipping, bahasa, provenance aset. Ini yang bisa diukur mesin dan tidak boleh dinegosiasi. Kalau lapis ini
+gagal, **Hermes tidak dipanggil**: tidak ada gunanya menilai naskah dari video yang audionya pecah, dan itu menghemat
+satu panggilan per kegagalan.
+
+**Lapis 2 — Hermes, isi:** satu panggilan yang membaca brief beku + naskah final + daftar shot + angka lapis 1, lalu
+mengembalikan `{verdict: pass|revise, score, issues[]}`. Yang dinilai: apakah video ini menjawab brief (angle, must
+include, must avoid), apakah hook-nya di tiga detik pertama, apakah shot cocok dengan kalimatnya, apakah ada klaim tanpa
+sumber. Skor ini masuk ke run dan ke curation, bukan menggantikan skor pemilik.
+
+| Lapis 1 | Lapis 2 | Hasil |
+| --- | --- | --- |
+| gagal | tidak dipanggil | `revise` sekali (maks 2, `MAX_AUTO_REVISIONS`), lalu ke Review |
+| lulus | `pass` | lanjut; kalau level ≥ 3 dan skor ≥ 85 → siap terbit |
+| lulus | `revise` | yang lebih ketat menang: satu revisi otomatis, lalu ke Review |
+| lulus | gagal memanggil Hermes | **tidak** dilewatkan diam-diam: run menunggu, statusnya "QC Hermes belum jalan" |
+
+Yang harus jujur disebut: Hermes **belum bisa menonton** video. Lapis 2 menilai naskah, struktur, dan angka — bukan
+gambar. Jadi ia menangkap "ceritanya melenceng dari brief" dan "ada klaim tanpa sumber", tapi tidak menangkap "wajahnya
+aneh di detik 12". Itu tetap pekerjaan spot check pemilik, dan itu sebabnya spot check tiap 5 video tidak boleh dimatikan.
+
+## 7. Fase
 
 | Fase | Isi | Bukti yang harus ada |
 | --- | --- | --- |
-| **1. Jadwal + idempotensi** | `schedules`, tick, materialisasi, kalender 7 slot, `armed/paused`, one-off dulu | dua tick bersamaan tetap menghasilkan **satu** run untuk satu slot; `paused` tidak membuat run baru; budget habis → `skipped: budget` terlihat |
+| **1. Jadwal + idempotensi** | `schedules` dengan **channel wajib** dan slot mengikuti `channels.videos_per_day`, tiga bentuk hari, tick, materialisasi slot berikutnya, tiga baris "slot berikutnya", `armed/paused`, salin setelan | dua tick bersamaan tetap menghasilkan **satu** run untuk satu slot; `paused` tidak membuat run baru; budget habis → `skipped: budget` terlihat |
 | **2. Series** | `series` + memori (judul terpakai, episode no, cast) + gaya/durasi terkunci | episode 3 tidak mengulang judul episode 1–2; gaya tidak bisa diganti di tengah series tanpa peringatan |
-| **3. Gate + stop rules** | `gate_stages` dipetakan ke `autonomy.ts`, budget menit worker, auto-pause sesudah N gagal, notifikasi | level 2 melewati `script` tapi tidak `idea`; 2 gagal berturut → `paused` + satu review item |
+| **3. Gate + stop rules + QC dua lapis** | `gate_stages` dipetakan ke `autonomy.ts`, budget menit worker per channel, auto-pause sesudah N gagal, **lapis 2 QC oleh Hermes (§6)**, notifikasi | `idea` tidak di gate → jalan otomatis penuh; spot check video ke-5 tetap ke owner; 2 gagal berturut → `paused` + satu review item |
 | **4. Upload** | target per channel, hanya Listed + skor ≥ 85 + spot check, jejak tiap terbitan | trial/lab tidak pernah punya tombol terbit; spot check tetap memaksa satu video ke kamu tiap 5 |
 
 Saya sarankan fase 1 dan 2 dipisah tegas: fase 1 adalah penjadwalan (mudah diuji dengan waktu palsu), fase 2 adalah
 kesinambungan cerita (mudah diuji dengan membaca brief), dan mencampurnya membuat bug jadwal terlihat seperti bug cerita.
 
-## 6. Yang saya tidak sarankan
+## 8. Yang saya tidak sarankan
 
 - **"Auto" yang berarti tanpa gate sama sekali.** `autonomy.ts` sudah menolak menerbitkan trial dan sudah menurunkan
   channel yang gagal; AutoStudio yang melewati itu akan menghapus satu-satunya jaminan yang kita punya.
@@ -129,10 +243,19 @@ kesinambungan cerita (mudah diuji dengan membaca brief), dan mencampurnya membua
 - **Satu jadwal untuk semua channel.** Tiap channel punya rencana, gaya, dan level otonomi sendiri; jadwal yang
   mencakup banyak channel berarti satu kegagalan mematikan semuanya.
 
-## 7. Pertanyaan untukmu
+## 9. Pertanyaan untukmu
 
-1. Jadwal per **channel** atau per **series/show**? (Saya condong per channel, dengan series sebagai anak.)
-2. Satu video per hari per channel cukup sebagai default, atau kamu ingin 2–3?
-3. Ide tetap kamu setujui tiap slot, atau boleh "setujui 7 hari sekaligus" di kalender?
-4. Kalau topik tidak diberikan, AutoStudio mengambil dari rencana channel — atau berhenti dan bertanya?
-5. Upload: ke mana dulu (YouTube saja?), dan apakah video yang siap terbit boleh menunggu di antrean tanpa batas?
+1. Jam default: 07:00 untuk channel 1 video/hari, 07:00 + 19:00 untuk 2 video/hari — cocok? (bisa digeser per baris)
+2. Ide dipilih otomatis (skor tertinggi dari tiga usulan) + spot check tiap 5 video: setuju? Alternatifnya, `idea`
+   dinyalakan di `gate_stages` supaya kamu tetap memilih tiap hari.
+3. Irama mana yang dipakai lebih dulu: `daily` saja, atau langsung `weekly` (hari tertentu) dan `every:N`?
+4. Zona waktu: `Asia/Jakarta` untuk semua channel, atau per channel? Daftar negara mana yang perlu ada di dropdown
+   (saya usulkan Indonesia, Singapura, Malaysia, India, Jepang, Inggris, Eropa Tengah, AS Timur, AS Barat, Australia
+   Timur, plus Global/UTC)?
+5. Batas jam worker/hari: ambil dari riwayat render (median per gaya), atau kamu isi sendiri per channel? Plafon global
+   perlu ada atau tidak?
+6. QC lapis 2 (Hermes) berlaku untuk **semua** jadwal, atau hanya jadwal yang kamu tandai "kualitas maksimal"? Satu
+   panggilan Hermes per video itu murah, tapi ia menambah satu titik gagal — dan kegagalan lapis 2 membuat video
+   menunggu Review, bukan terbit.
+7. Kalau lapis 1 lulus dan lapis 2 bilang `revise`, saya usulkan **satu** revisi otomatis lalu ke Review (bukan dua
+   seperti revisi karena alat). Setuju?

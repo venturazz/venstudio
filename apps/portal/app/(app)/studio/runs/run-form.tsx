@@ -7,9 +7,10 @@ import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Form
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { DURATION_CHOICES, clampDuration, defaultDurationSec, defaultThemeFor, durationLabel, engineView, MAX_BRIEF_CHARS, NO_THEME, stepDuration, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
-import { MAX_BATCH_TRIALS, MIN_BATCH_TRIALS, TRY_THESE_STYLES, type OfferedTemplate } from "@/lib/studio/trial-batch.ts";
+import { SFX_MODE_LABEL, SFX_MODES } from "@/lib/studio/sound.ts";
+import type { OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
-import { startBatchTrialAction, startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
+import { startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
 
 export interface RunFormChannel {
   id: string;
@@ -36,6 +37,8 @@ export interface RunFormOptions {
   prefill: RunFormPrefill;
   /** Whether Muse can do the thinking now; the reasons say what to change when it cannot. */
   muse?: { ready: boolean; reasons: string[] };
+  /** Music tracks in the library that may be a bed. Empty: the library has no music yet. */
+  beds?: Array<{ id: string; title: string }>;
 }
 
 /** A Hermes-rendered style always reads "Hermes render (research only)" first, whatever its pack is named. */
@@ -58,13 +61,15 @@ function themeFor(channel: RunFormChannel | undefined): string {
  * The New video form. Every field is controlled and the form submits through onSubmit and a transition, not a form
  * action: React 19 resets a form after its action runs, which would clear the native selects.
  */
-export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill, muse: museThinking }: RunFormOptions) {
+export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill, muse: museThinking, beds = [] }: RunFormOptions) {
   const templates = [...listed, ...trialTemplates, ...labTemplates];
   const [state, dispatch] = useActionState(startRunAction, undefined);
-  const [batchState, dispatchBatch] = useActionState(startBatchTrialAction, undefined);
   const [isPending, startTransition] = useTransition();
+  // Sound: three answers, the same three the run config stores (sound.ts). Auto is the default bed.
+  const [bedChoice, setBedChoice] = useState("auto");
+  const [sfxMode, setSfxMode] = useState("sparse");
+  const [ambience, setAmbience] = useState(true);
   const formRef = useRef<HTMLFormElement>(null);
-  const [batch, setBatch] = useState<string[]>([]);
   // Research styles that name a Hermes skill, by group ("Hermes research styles (from claude-animation-skills)").
   const plainTrials = trialTemplates.filter((t) => !t.group);
   const groups = [...new Set(trialTemplates.flatMap((t) => (t.group ? [t.group] : [])))].map((g) => ({ label: g, items: trialTemplates.filter((t) => t.group === g) }));
@@ -112,21 +117,14 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    fd.delete("batchTemplateIds");
     startTransition(() => dispatch(fd));
   }
-  function startBatch() {
-    if (!formRef.current) return;
-    const fd = new FormData(formRef.current);
-    fd.delete("batchTemplateIds");
-    for (const id of batch) fd.append("batchTemplateIds", id);
-    startTransition(() => dispatchBatch(fd));
-  }
-  function trialRow(t: RunFormTemplate) {
+  /** The chosen style's provenance: what it is, where it came from, what it needs. Read only — the select is the picker. */
+  function styleDetail(t: RunFormTemplate) {
     return (
-      <li key={t.id} className="space-y-1 text-sm" data-testid={`trial-style-${t.styleId}`}>
+      <article className="space-y-1 rounded-lg border border-border p-3 text-sm" data-testid={`trial-style-${t.styleId}`}>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge tone="warn">{TRIAL_BADGE}</Badge>
+          <Badge tone={t.trial ? "warn" : "ok"}>{t.trial ? TRIAL_BADGE : "Listed style"}</Badge>
           {t.research && (
             <Badge tone="warn">
               <span data-testid="hermes-render-label">{HERMES_RENDER_LABEL}</span>
@@ -137,13 +135,10 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
               <span data-testid="html-design-label">{HTML_DESIGN_BADGE}</span>
             </Badge>
           )}
-          <span className="min-w-0 break-words">
+          <span className="min-w-0 break-words font-medium">
             {t.label}
             {t.version ? <span className="text-xs text-muted"> v{t.version}</span> : null}
           </span>
-          <Button type="button" variant={t.id === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(t.id)} className="min-h-11" aria-label={`Use the trial style ${researchLabel(t)}`}>
-            {t.id === templateId ? "Chosen" : "Use for research"}
-          </Button>
         </div>
         {(t.description || t.credit) && (
           <p className="break-words text-xs text-muted" data-testid="trial-style-about">
@@ -151,7 +146,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             {t.credit ? <span data-testid="trial-style-credit"> {t.credit}.</span> : null}
           </p>
         )}
-      </li>
+      </article>
     );
   }
 
@@ -298,7 +293,11 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
       </div>
 
       <div className="space-y-2">
-        <Field label="Style" htmlFor="templateId" hint="Listed styles a worker can render, then Trial styles. Planned styles are on the Styles page.">
+        <Field
+          label="Style"
+          htmlFor="templateId"
+          hint="One list: a worker-rendered style first, then research and lab trials. The chosen style's detail is under it."
+        >
           <Select id="templateId" name="templateId" value={templateId} onChange={(e) => setTemplateId(e.target.value)} required>
             <option value="" disabled>
               {templates.length === 0 ? "No style is available yet" : "Choose a style"}
@@ -309,6 +308,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
                   <option key={t.id} value={t.id}>
                     {t.label}
                     {t.formats.includes(format) ? "" : " (not for this format)"}
+                    {suggested?.some((sg) => sg.templateId === t.id) ? " · cocok" : ""}
                   </option>
                 ))}
               </optgroup>
@@ -319,6 +319,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
                   <option key={t.id} value={t.id}>
                     {researchLabel(t)} (trial)
                     {t.formats.includes(format) ? "" : " (not for this format)"}
+                    {suggested?.some((sg) => sg.templateId === t.id) ? " · cocok" : ""}
                   </option>
                 ))}
               </optgroup>
@@ -329,6 +330,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
                   <option key={t.id} value={t.id}>
                     {researchLabel(t)} (research trial)
                     {t.formats.includes(format) ? "" : " (not for this format)"}
+                    {suggested?.some((sg) => sg.templateId === t.id) ? " · cocok" : ""}
                   </option>
                 ))}
               </optgroup>
@@ -339,6 +341,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
                   <option key={t.id} value={t.id}>
                     {t.label} ({LAB_TRIAL_BADGE})
                     {t.formats.includes(format) ? "" : " (not for this format)"}
+                    {suggested?.some((sg) => sg.templateId === t.id) ? " · cocok" : ""}
                   </option>
                 ))}
               </optgroup>
@@ -354,114 +357,55 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             .
           </p>
         )}
-        {labTrial ? (
-          <Alert tone="warn">
-            <span data-testid="lab-trial-note">
-              {LAB_TRIAL_BADGE}: research only, never published. The pack is not at Trial yet, so this run&apos;s result is recorded on Styles apart from the
-              pack&apos;s promotion counts.
-            </span>
-          </Alert>
-        ) : (
-          (template?.trial || (prefill.labStudyId && template)) && (
+        {/* The brief can mark the list, but it never renders a second one: pressing this adds · cocok to the options. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" onClick={suggest} disabled={!brief.trim()} className="min-h-11">
+            Suggest from brief
+          </Button>
+          <span className="text-xs text-muted">With a brief, marks the styles that fit it with · cocok in the list above.</span>
+        </div>
+        {/* ONE style, described. Before this block the same choice was offered four times (select, Trial rows, batch grid,
+            suggestion buttons); docs/plans/2026-11-24-brief-and-duration.md section 5. */}
+        <div className="space-y-2" data-testid="style-detail">
+          {template ? (
+            styleDetail(template)
+          ) : (
+            <p className="text-xs text-muted">Choose a style to see what it is, where it came from, and what it needs.</p>
+          )}
+          {labTrial ? (
             <Alert tone="warn">
-              <span data-testid="trial-style-note">
-                {TRIAL_BADGE}: research only, not for publishing. The run is marked as a trial and its result is recorded for the style&apos;s curation.
+              <span data-testid="lab-trial-note">
+                {LAB_TRIAL_BADGE}: research only, never published. The pack is not at Trial yet, so this run&apos;s result is recorded on Styles apart from the
+                pack&apos;s promotion counts.
               </span>
             </Alert>
-          )
-        )}
-        {listed.length === 0 && (
-          <p className="text-xs text-muted" data-testid="no-listed-styles">
-            No style is Listed yet. Styles become Listed in the styles repository after their trials pass and the owner approves them.
-          </p>
-        )}
-        <section className="space-y-2 rounded-lg border border-dashed border-warn/60 p-3" data-testid="trial-styles" aria-labelledby="trial-styles-title">
-          <h3 id="trial-styles-title" className="text-sm font-medium">
-            {TRIAL_LABEL}
-          </h3>
-          {trialTemplates.length === 0 ? (
-            <p className="text-xs text-muted">No Trial style can be rendered by a worker right now.</p>
           ) : (
-            plainTrials.length > 0 && <ul className="space-y-2">{plainTrials.map(trialRow)}</ul>
+            template?.trial && (
+              <Alert tone="warn">
+                <span data-testid="trial-style-note">
+                  {TRIAL_BADGE}: research only, not for publishing. The run is marked as a trial and its result is recorded for the style&apos;s curation.
+                </span>
+              </Alert>
+            )
           )}
-          {groups.map((g) => (
-            <div key={g.label} className="space-y-2 border-t border-border pt-2" data-testid="research-group" data-group={g.label}>
-              <h4 className="text-sm font-medium" data-testid="research-group-title">
-                {g.label}
-              </h4>
-              <p className="text-xs text-muted">Hermes renders each one with the named skill. Selectable whenever Hermes is set up; no worker is needed.</p>
-              <ul className="space-y-2">{g.items.map(trialRow)}</ul>
-            </div>
-          ))}
-          {trialTemplates.length >= MIN_BATCH_TRIALS && (
-            <fieldset className="space-y-2 border-t border-border pt-2" data-testid="batch-trial">
-              <legend className="text-sm font-medium">{TRY_THESE_STYLES}</legend>
-              <p className="text-xs text-muted">
-                One brief, one trial run per style you tick (at most {MAX_BATCH_TRIALS}), using the channel, brief, format and language above. Hermes works through
-                them one ask at a time; the queue below shows where each run is.
-              </p>
-              <div className="grid gap-1.5 sm:grid-cols-2">
-                {trialTemplates.map((t) => (
-                  <label key={t.id} className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-border p-2 text-sm">
-                    <input
-                      type="checkbox"
-                      value={t.id}
-                      checked={batch.includes(t.id)}
-                      onChange={(e) => setBatch((b) => (e.target.checked ? [...b.filter((x) => x !== t.id), t.id] : b.filter((x) => x !== t.id)))}
-                      className="size-4 shrink-0 accent-[var(--vs-accent)]"
-                      aria-label={`Try ${t.label}`}
-                    />
-                    <span className="min-w-0 break-words">{t.label}</span>
-                  </label>
-                ))}
-              </div>
-              <Button type="button" onClick={startBatch} disabled={isPending || batch.length < MIN_BATCH_TRIALS || !channelId} className="min-h-11" aria-busy={isPending}>
-                {batch.length < MIN_BATCH_TRIALS ? `Tick at least ${MIN_BATCH_TRIALS} styles` : `Start ${batch.length} trials`}
-              </Button>
-              {batchState?.error && <Alert tone="danger">{batchState.error}</Alert>}
-              {batchState?.ok && (
-                <Alert tone="ok">
-                  <span className="break-words" data-testid="batch-started">
-                    {batchState.ok}
-                  </span>
-                </Alert>
-              )}
-              {batchState?.runs && batchState.runs.length > 0 && (
-                <ol className="space-y-1 text-sm" data-testid="batch-runs">
-                  {batchState.runs.map((r) => (
-                    <li key={r.runId} className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-muted">{r.position}</span>
-                      <Link href={`/studio/runs/${r.runId}`} className="break-words text-accent underline-offset-2 hover:underline" data-testid="batch-run-link">
-                        {r.label}
-                      </Link>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </fieldset>
+          {listed.length === 0 && (
+            <p className="text-xs text-muted" data-testid="no-listed-styles">
+              No style is Listed yet. Styles become Listed in the styles repository after their trials pass and the owner approves them.
+            </p>
           )}
           {waiting.length > 0 && (
             <p className="text-xs text-muted" data-testid="waiting-styles">
               Waiting for a worker that reports the pack (or for Hermes): {waiting.join("; ")}. Workers 0.9.0 and later install packs with their signed updates.
             </p>
           )}
-        </section>
-        <Button type="button" onClick={suggest} disabled={!brief.trim()} className="min-h-11">
-          Suggest from brief
-        </Button>
-        {suggested && suggested.length === 0 && <p className="text-xs text-muted">No style matches that brief for this format. Add detail or pick one from the list.</p>}
-        {suggested && suggested.length > 0 && (
-          <div className="flex flex-wrap gap-2" data-testid="style-suggestions">
-            {suggested.map((s) => (
-              <Button key={s.templateId} type="button" variant={s.templateId === templateId ? "primary" : "secondary"} onClick={() => setTemplateId(s.templateId)} className="h-auto py-2">
-                <span className="text-left">
-                  {s.label}
-                  <span className="block text-xs opacity-80">matched: {s.matched.slice(0, 4).join(", ")}</span>
-                </span>
-              </Button>
-            ))}
-          </div>
-        )}
+          {suggested && (
+            <p className="text-xs text-muted" data-testid="style-suggestions">
+              {suggested.length === 0
+                ? "No style matches that brief for this format. Add detail or pick one from the list."
+                : `${suggested.length} style${suggested.length === 1 ? "" : "s"} match the brief and are marked · cocok in the list.`}
+            </p>
+          )}
+        </div>
         {engine && muse && (
           <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="engine-info">
             <span className="text-muted">Engine: {engine.label}</span>
@@ -482,6 +426,51 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
           </p>
         )}
       </div>
+
+      <fieldset className="space-y-3" data-testid="sound">
+        <legend className="text-sm font-medium">Sound</legend>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Music bed" htmlFor="bedChoice" hint="Ducked 4:1 under the voice, so both are heard. Mastered to −14 LUFS.">
+            <Select id="bedChoice" name="bedChoice" value={bedChoice} onChange={(e) => setBedChoice(e.target.value)}>
+              <option value="auto">Auto from the library</option>
+              <option value="none">No music</option>
+              {beds.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.title}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Sound effects" htmlFor="sfxMode" hint="Accents sit on shot changes, never closer than three seconds.">
+            <Select id="sfxMode" name="sfxMode" value={sfxMode} onChange={(e) => setSfxMode(e.target.value)}>
+              {SFX_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {SFX_MODE_LABEL[m]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        <label className="flex min-h-11 items-start gap-2 rounded-lg border border-border p-2.5 text-sm">
+          <input
+            type="checkbox"
+            name="ambience"
+            checked={ambience}
+            onChange={(e) => setAmbience(e.target.checked)}
+            className="mt-1 size-4 shrink-0 accent-[var(--vs-accent)]"
+          />
+          <span className="min-w-0">
+            <span className="font-medium">Ambience between beats</span>
+            <span className="block text-xs text-muted">Brown noise, 90–3200 Hz, 26 dB under the voice. Fills the gaps the narration leaves.</span>
+          </span>
+        </label>
+        {beds.length === 0 && (
+          <p className="text-xs text-muted" data-testid="no-music-yet">
+            The library has no music track yet, so &ldquo;Auto&rdquo; will produce no bed and the run will say why. Add a track on Assets, or let an agent
+            find one.
+          </p>
+        )}
+      </fieldset>
 
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">Purpose (optional)</legend>

@@ -14,6 +14,7 @@ import { StudioNav } from "../studio-nav.tsx";
 import { TrialQueue } from "../trial-queue.tsx";
 import { museStageReadiness } from "@/lib/server/muse-stages.ts";
 import { getStudy, studyTrialState } from "@/lib/server/lab-studies.ts";
+import { listBedTracks } from "@/lib/server/production.ts";
 
 export const metadata = { title: "New video" };
 export const dynamic = "force-dynamic";
@@ -36,6 +37,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
   let prefill: RunFormPrefill = EMPTY_PREFILL;
   let loadError = "";
   let museReasons: string[] = [];
+  let beds: Array<{ id: string; title: string }> = [];
   let studyNote: { tone: "warn" | "info"; title: string; text: string } | null = null;
   let labNote: { tone: "warn" | "info"; text: string } | null = null;
   try {
@@ -50,6 +52,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
       workerEnvironmentRows().catch(() => []),
       museStageReadiness().catch(() => ["Muse's status could not be read"]),
     ]);
+    beds = await listBedTracks().catch(() => [] as Array<{ id: string; title: string }>);
     museReasons = museRefusals;
     // A pack with an environment: the engine line also says whether a worker has it (stored rows only).
     const withEnv = (t: RunFormTemplate): RunFormTemplate => {
@@ -165,6 +168,7 @@ export default async function NewVideoPage({ searchParams }: { searchParams: Pro
                 key={prefill.productionId || prefill.labTrialPackId || prefill.labStudyId || prefill.templateId || "blank"}
                 channels={channels}
                 templates={templates}
+            beds={beds}
                 trialTemplates={trialTemplates}
                 labTemplates={labTemplates}
                 waiting={waiting}
