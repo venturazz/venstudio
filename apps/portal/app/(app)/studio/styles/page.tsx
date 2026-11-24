@@ -94,6 +94,17 @@ export default async function StyleLibraryPage() {
       trialQueue(),
       workerEnvironmentRows().catch(() => []),
     ]);
+    // Batch trials: one brief, several trial styles, started from the library rather than from New Video's form. Same
+    // offer New Video reads, so a style that can be picked there can be batched here.
+    const [channelRows, offer] = await Promise.all([
+      db()`SELECT id, name FROM channels ORDER BY name`.catch(() => [] as Array<{ id: string; name: string }>),
+      newVideoOffer().catch((err) => {
+        console.error("styles page: could not read the trial styles for a batch", err);
+        return null;
+      }),
+    ]);
+    batchChannels = channelRows.map((c) => ({ id: c.id as string, name: c.name as string }));
+    batchStyles = (offer?.trial ?? []).map((t) => ({ id: t.id, label: t.label }));
   } catch (err) {
     console.error("styles page: could not load", err);
     loadError = "The style registry could not be loaded.";
