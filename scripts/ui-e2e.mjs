@@ -1223,13 +1223,14 @@ try {
   await page.fill("#brief", STUDIO_BRIEF);
   await page.getByRole("button", { name: "Suggest from brief", exact: true }).click();
   await page.getByTestId("style-suggestions").waitFor();
-  // Style packs: every pack is in Trial, so the main list is empty and the research-only section offers them, once the
-  // worker reports the pack. Planned catalogue styles are never options.
-  const trialSection = page.getByTestId("trial-styles");
-  await trialSection.getByRole("heading", { name: "Trial styles (research only, not for publishing)", exact: true }).waitFor();
-  await trialSection.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
+  // One picker: every style is an option, the panel under it describes the chosen one (docs/plans/2026-11-24-brief-and-duration.md section 5).
+  // Style packs: every pack is in Trial, so the main list is empty and the trial group offers them, once the worker
+  // reports the pack. Planned catalogue styles are never options.
+  await page.selectOption("#templateId", "tpl-explainer-flat-vector");
+  await page.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
   // The Hermes research pack is rendered by the portal, so it is offered here (only here) once Hermes is set up.
-  await trialSection.getByTestId("trial-style-hermes-research-explainer").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
+  await page.selectOption("#templateId", "tpl-hermes-research-explainer");
+  await page.getByTestId("trial-style-hermes-research-explainer").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
   await page.getByTestId("no-listed-styles").waitFor();
   const styleOptions = await page.locator("#templateId option").evaluateAll((os) => os.map((o) => o.value));
   for (const planned of ["tpl-kinetic-facts", "tpl-math-explainer", "tpl-blender-3d", "tpl-ai-character-sketch"]) {
@@ -1965,23 +1966,22 @@ async function scoreAndDecide(runId, stars, shown) {
     await page.goto(`${APP}/studio/new`);
     await page.getByTestId("lifecycle").getByText("Research styles (Hermes render) and lab trials are for testing and curating, never for publishing.", { exact: true }).waitFor();
     await page.getByTestId("lifecycle").getByText("Only Listed styles publish.", { exact: true }).waitFor();
-    const group = page.locator(`[data-testid="research-group"][data-group="${RESEARCH_GROUP}"]`);
-    await group.getByTestId("research-group-title").getByText(RESEARCH_GROUP, { exact: true }).waitFor();
-    const rows = group.locator('li[data-testid^="trial-style-hermes-"]');
-    const ids = (await rows.evaluateAll((ls) => ls.map((l) => l.getAttribute("data-testid")))).sort();
-    const want = RESEARCH_SKILLS.map((s) => `trial-style-hermes-${s}`).sort();
-    if (JSON.stringify(ids) !== JSON.stringify(want)) throw new Error(`the research group lists ${ids.join(", ")}, expected ${want.join(", ")}`);
-    for (const s of RESEARCH_SKILLS) {
-      const row = group.getByTestId(`trial-style-hermes-${s}`);
-      await row.getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
-      await row.getByTestId("trial-style-credit").getByText("From claude-animation-skills by Artem Novitckii (MIT).", { exact: true }).waitFor();
-      if (!((await row.getByTestId("trial-style-about").innerText()).includes(`/${s}`))) throw new Error(`the ${s} research style does not name its skill in its description`);
-    }
     const groups = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
     if (!groups.includes(RESEARCH_GROUP)) throw new Error(`no research group in the style list: ${groups.join(", ")}`);
+    const optionIds = (await page.locator(`#templateId optgroup[label="${RESEARCH_GROUP}"] option`).evaluateAll((os) => os.map((o) => o.value))).sort();
+    const want = RESEARCH_SKILLS.map((s) => `tpl-hermes-${s}`).sort();
+    if (JSON.stringify(optionIds) !== JSON.stringify(want)) throw new Error(`the research group offers ${optionIds.join(", ")}, expected ${want.join(", ")}`);
+    // Choosing one shows its provenance in the panel: badged, described with its skill path, credited (MIT).
+    for (const s of RESEARCH_SKILLS) {
+      await page.selectOption("#templateId", `tpl-hermes-${s}`);
+      const panel = page.getByTestId(`trial-style-hermes-${s}`);
+      await panel.getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
+      await panel.getByTestId("trial-style-credit").getByText("From claude-animation-skills by Artem Novitckii (MIT).", { exact: true }).waitFor();
+      if (!((await panel.getByTestId("trial-style-about").innerText()).includes(`/${s}`))) throw new Error(`the ${s} research style does not name its skill in its description`);
+    }
     await shot("28-new-video-research-desktop");
     await m.goto(`${APP}/studio/new`);
-    await m.locator(`[data-testid="research-group"][data-group="${RESEARCH_GROUP}"]`).waitFor();
+    await m.locator("#templateId").waitFor();
     await assertNoOverflow(m, "/studio/new (research styles)");
     await shot("28b-new-video-research-mobile", m);
   }
@@ -1992,6 +1992,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await page.selectOption("#channelId", { label: "Myth Stories" });
     await page.fill("#brief", "Batch trial: one thing that compounds");
     const batchBox = page.getByTestId("batch-trial");
+    await batchBox.locator("summary").click();
     await batchBox.getByRole("checkbox", { name: "Try Line graph (Hermes /graph)", exact: true }).check();
     await batchBox.getByRole("checkbox", { name: "Try Branching line art (Hermes /dan-koe)", exact: true }).check();
     await batchBox.getByRole("button", { name: "Start 2 trials", exact: true }).click();
@@ -2519,7 +2520,8 @@ async function scoreAndDecide(runId, stars, shown) {
     const ver = packVersion("hermes-designed-explainer");
     // New Video offers it only in the Trial section, with its research-only badge.
     await page.goto(`${APP}/studio/new`);
-    const row = page.getByTestId("trial-styles").getByTestId("trial-style-hermes-designed-explainer");
+    await page.selectOption("#templateId", "tpl-hermes-designed-explainer");
+    const row = page.getByTestId("trial-style-hermes-designed-explainer");
     await row.getByTestId("html-design-label").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
     const runId = await startFromNewVideo("tpl-hermes-designed-explainer", brief, "Workflow: Hermes-designed page (research only, no pictures): Idea → Research → Script → HTML design → Preview → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text || ' ' || (config->'stylePack'->>'trial') || ' ' || (config->'stylePack'->>'designed') FROM pipeline_runs WHERE id = '${runId}'`);
