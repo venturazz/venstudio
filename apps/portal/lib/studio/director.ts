@@ -457,6 +457,12 @@ export interface DirectorContext {
   pastTitles?: string[];
   /** The owner's brief for this run. Empty: Hermes picks from the channel plan. */
   topicHint?: string;
+  /**
+   * The idea the owner approved (brief.ts), once the brief is frozen. It rides beside the owner's brief, it does not
+   * replace it: the brief block must stay word-for-word what the owner wrote, so every stage — and anything that reads
+   * the prompt — still sees the same text it saw before the approval.
+   */
+  approvedIdea?: { title?: string; angle?: string };
   /** Purpose ids (catalog PURPOSES) chosen for this run. */
   purposes?: string[];
   /** Subtitle language codes besides the narration language. */
@@ -603,6 +609,11 @@ export function runLines(ctx: DirectorContext, stage: DirectorStage): string[] {
   } else if (brief) {
     lines.push("Keep to the DATA block owner brief where it applies to this step.");
     lines.push(dataBlock("owner brief", brief, MAX_BRIEF_PROMPT_CHARS));
+  }
+  // The approved idea sits beside the owner's brief, never in its place: the brief block above stays word for word.
+  const approved = [ctx.approvedIdea?.title, ctx.approvedIdea?.angle].filter((v): v is string => Boolean(v && v.trim()));
+  if (approved.length && stage !== "idea") {
+    lines.push(dataBlock("approved idea", `${approved.join(" — ")}\nThe owner approved this idea for this video. Work to it; do not re-imagine the video.`, 600));
   }
   return lines;
 }
