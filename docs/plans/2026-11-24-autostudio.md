@@ -57,15 +57,17 @@ CREATE TABLE schedules (
   -- the same fields New Video asks for, frozen as a template
   settings       jsonb NOT NULL,         -- {themeId, styleId, durationSec, language, purposes, subtitles}
   brief          jsonb NOT NULL,         -- {topicSource: 'plan'|'owner'|'series-memory', topic?, mustInclude, mustAvoid}
-  -- Three plain forms, no cron parser: 'daily@07:00' | 'weekly@mon,thu@07:00' | 'every:2@07:00'.
-  cadence        text NOT NULL,
+  -- Days only, no cron parser: 'daily' | 'weekly:mon,thu' | 'every:2'. How many videos in a day is the channel's
+  -- decision (channels.videos_per_day), never the schedule's — AutoStudio reads it and fills this many times.
+  days           text NOT NULL,
+  times_of_day   text[] NOT NULL,        -- {'07:00','19:00'}; length is kept equal to channels.videos_per_day
   -- Picked from a country list; 'UTC' is the Global entry. The run fires at this zone's wall clock, wherever the worker is.
   timezone       text NOT NULL,          -- 'Asia/Jakarta' | 'Europe/London' | 'UTC'
   slots_ahead    int  NOT NULL DEFAULT 1, -- 1 = tomorrow's slot only; the owner asked for daily, not a week ahead
   gate_stages    text[] NOT NULL,        -- stages AutoStudio may pass without the owner, e.g. {idea}
-  -- Flexible per channel, because a channel has its own home worker (channels.home_worker_id): work is budgeted where
-  -- it is spent. The global cap is a safety net, not the main control.
-  budget         jsonb NOT NULL,         -- {maxRunsPerDay, maxWorkerMinutesPerDay}
+  -- A ceiling, not a count: the count is already the channel's videos_per_day. Minutes are budgeted per channel because
+  -- each channel spends them on its own home worker (channels.home_worker_id).
+  budget         jsonb NOT NULL,         -- {maxWorkerMinutesPerDay}
   stop_rules     jsonb NOT NULL,         -- {afterFailures: 2, onWorkerMissing: 'wait'}
   state          text NOT NULL,          -- 'draft' | 'armed' | 'paused'
   series_id      uuid NULL,              -- series only
@@ -77,6 +79,16 @@ CREATE TABLE schedules (
 CREATE UNIQUE INDEX ON pipeline_runs (schedule_id, slot_at) WHERE schedule_id IS NOT NULL;
 ```
 
+**Yang sudah dijawab channel, tidak ditanyakan lagi.** AutoStudio membaca `channels` dan hanya menampilkan jawabannya,
+supaya tidak ada dua tempat yang bisa berbeda:
+
+- `videos_per_day` → berapa slot per hari, dan berapa jam (`times_of_day`) yang perlu diisi. Kalau channel bilang 2 tapi
+  jadwal baru punya satu jam, UI menawarkan "isi jam kedua" — bukan diam-diam menghasilkan satu video sehari.
+- `home_worker_id` → worker tempat budget menit dibelanjakan; namanya tampil di sebelah pilihan channel.
+- `language`, `format` → default bahasa dan format; jadwal boleh menimpa, tapi tidak wajib memilih ulang.
+- `status` → channel `planning` atau `paused` tidak pernah dijalankan penjadwal (`planning` belum punya gaya/panggung;
+  `paused` sudah dihentikan oleh pemilik atau oleh `autonomy.ts`), dan alasannya terlihat di kartu jadwal.
+
 **Kontrol yang diatur per jadwal, di satu formulir** — semuanya dropdown/stepper, tidak ada yang perlu diketik bebas:
 
 - **Channel** — wajib, satu channel per jadwal (lihat §5). Nama channel, niche, dan *home worker*-nya ditampilkan di
@@ -84,12 +96,16 @@ CREATE UNIQUE INDEX ON pipeline_runs (schedule_id, slot_at) WHERE schedule_id IS
 - **Gaya** — daftar yang sama dengan New Video (terfilter oleh durasi/format).
 - **Panjang** — stepper yang sama dengan Studio (15 s–3 mnt / 2–20 mnt), ditambah preset.
 - **Bahasa + purposes** — sama dengan Studio.
-- **Irama** — dropdown satu daftar: harian, mingguan (pilih hari), setiap N hari; semuanya dengan jam `HH:MM`.
+- **Irama** — dropdown satu daftar: harian, mingguan (pilih hari), setiap N hari — tanpa jam, karena jumlah videonya
+  sudah ditentukan channel.
+- **Jam** — `times_of_day`, satu baris `HH:MM` per video, terisi otomatis dari `videos_per_day` (mis. 2 video → 07:00 dan
+  19:00) dan bisa digeser per baris.
 - **Zona waktu** — dropdown **negara/wilayah** (Indonesia, Singapura, Malaysia, India, Inggris, AS Timur/Barat, Eropa
   Tengah, Jepang, Australia Timur, …) plus **Global (UTC)**. Yang disimpan tetap nama zona IANA, jadi tidak ada
   pergeseran saat suatu negara mengubah aturan DST.
-- **Budget** — dua angka: video/hari dan menit kerja worker/hari, dengan saran otomatis dari panjang video yang dipilih
-  (45 s ≈ 2 mnt, 3 mnt ≈ 8 mnt, 10 mnt ≈ 25 mnt, 20 mnt ≈ 50 mnt). Bisa juga satu paket: "1 video/hari, 15 mnt".
+- **Batas menit worker/hari** — satu angka opsional, saran otomatis = `videos_per_day` × perkiraan menit per video
+  (45 s ≈ 2 mnt, 3 mnt ≈ 8 mnt, 10 mnt ≈ 25 mnt, 20 mnt ≈ 50 mnt). Kalau dikosongkan, dipakai saran itu. Yang dijaga
+  adalah biaya render, bukan jumlah video — jumlahnya urusan channel.
 - **Gate** — default kosong (jalan otomatis); pilihan `idea` dan `score` untuk yang mau lebih ketat.
 
 **Jam jadwal = jam mulai, bukan jam terbit.** Penjadwal mematerialisasi run pada jam itu di zona yang dipilih; render
@@ -155,8 +171,9 @@ jadwal yang mencakup beberapa channel sekaligus. Satu channel gagal tidak boleh 
   Channel yang belum punya jadwal tetap tampil, dengan tombol "Buat jadwal" — supaya channel baru tidak terlupa.
 - **Salin setelan** dari channel lain (satu klik, lalu ubah 2–3 field). Mengetik ulang sepuluh jadwal adalah cara
   tercepat membuat orang berhenti memakai fiturnya.
-- **Budget per channel**, karena tiap channel punya home worker sendiri (`channels.home_worker_id`) — jadi kuota kerja
-  dihitung di tempat ia dibelanjakan, dan angka per channel bebas berbeda (channel berat 60 mnt/hari, channel ringan
+- **Jumlah video bukan milik jadwal**, melainkan `channels.videos_per_day` — AutoStudio mengisi jumlah jam itu.
+- **Batas menit worker per channel**, karena tiap channel punya home worker sendiri (`channels.home_worker_id`): kuota
+  biaya dihitung di tempat ia dibelanjakan, dan angkanya bebas berbeda (channel berat 60 mnt/hari, channel ringan
   10 mnt/hari). Satu **plafon global** tetap ada sebagai jaring pengaman, bukan sebagai kontrol utama.
 - **Jam di-stagger**: lima channel yang semuanya 07:00 berarti lima render menabrak worker di menit yang sama. Portal
   menyarankan offset (07:00, 07:30, 08:00 …) dan menandai bentrok saat disimpan.
@@ -198,7 +215,7 @@ aneh di detik 12". Itu tetap pekerjaan spot check pemilik, dan itu sebabnya spot
 
 | Fase | Isi | Bukti yang harus ada |
 | --- | --- | --- |
-| **1. Jadwal + idempotensi** | `schedules` dengan **channel wajib**, tiga bentuk irama, tick, materialisasi slot berikutnya, tiga baris "slot berikutnya", `armed/paused`, salin setelan | dua tick bersamaan tetap menghasilkan **satu** run untuk satu slot; `paused` tidak membuat run baru; budget habis → `skipped: budget` terlihat |
+| **1. Jadwal + idempotensi** | `schedules` dengan **channel wajib** dan slot mengikuti `channels.videos_per_day`, tiga bentuk hari, tick, materialisasi slot berikutnya, tiga baris "slot berikutnya", `armed/paused`, salin setelan | dua tick bersamaan tetap menghasilkan **satu** run untuk satu slot; `paused` tidak membuat run baru; budget habis → `skipped: budget` terlihat |
 | **2. Series** | `series` + memori (judul terpakai, episode no, cast) + gaya/durasi terkunci | episode 3 tidak mengulang judul episode 1–2; gaya tidak bisa diganti di tengah series tanpa peringatan |
 | **3. Gate + stop rules + QC dua lapis** | `gate_stages` dipetakan ke `autonomy.ts`, budget menit worker per channel, auto-pause sesudah N gagal, **lapis 2 QC oleh Hermes (§6)**, notifikasi | `idea` tidak di gate → jalan otomatis penuh; spot check video ke-5 tetap ke owner; 2 gagal berturut → `paused` + satu review item |
 | **4. Upload** | target per channel, hanya Listed + skor ≥ 85 + spot check, jejak tiap terbitan | trial/lab tidak pernah punya tombol terbit; spot check tetap memaksa satu video ke kamu tiap 5 |
@@ -217,14 +234,15 @@ kesinambungan cerita (mudah diuji dengan membaca brief), dan mencampurnya membua
 
 ## 9. Pertanyaan untukmu
 
-1. Satu video per hari per channel sebagai default — cukup, atau mau 2–3?
+1. Jam default: 07:00 untuk channel 1 video/hari, 07:00 + 19:00 untuk 2 video/hari — cocok? (bisa digeser per baris)
 2. Ide dipilih otomatis (skor tertinggi dari tiga usulan) + spot check tiap 5 video: setuju? Alternatifnya, `idea`
    dinyalakan di `gate_stages` supaya kamu tetap memilih tiap hari.
 3. Irama mana yang dipakai lebih dulu: `daily` saja, atau langsung `weekly` (hari tertentu) dan `every:N`?
 4. Zona waktu: `Asia/Jakarta` untuk semua channel, atau per channel? Daftar negara mana yang perlu ada di dropdown
    (saya usulkan Indonesia, Singapura, Malaysia, India, Jepang, Inggris, Eropa Tengah, AS Timur, AS Barat, Australia
    Timur, plus Global/UTC)?
-5. Budget per channel: angka awal yang kamu mau (mis. 1 video/hari · 15 menit worker/hari)? Plafon global perlu berapa?
+5. Batas menit worker/hari: pakai saran otomatis (`videos_per_day` × perkiraan menit), atau kamu mau angka tetap per
+   channel? Plafon global perlu ada atau tidak?
 6. QC lapis 2 (Hermes) berlaku untuk **semua** jadwal, atau hanya jadwal yang kamu tandai "kualitas maksimal"? Satu
    panggilan Hermes per video itu murah, tapi ia menambah satu titik gagal — dan kegagalan lapis 2 membuat video
    menunggu Review, bukan terbit.
