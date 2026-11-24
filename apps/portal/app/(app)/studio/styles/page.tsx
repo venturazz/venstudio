@@ -6,7 +6,8 @@ import { listTemplates } from "@/lib/server/templates.ts";
 import { reportedCapabilities, workerEnvironmentRows } from "@/lib/server/workers.ts";
 import { env } from "@/lib/server/env.ts";
 import { listTrialOutcomes, styleRegistry, vendoredStyles } from "@/lib/server/style-packs.ts";
-import { creditOf, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
+import { creditOf, newVideoOffer, trialQueue, type TrialQueueBatch } from "@/lib/server/trial-queue.ts";
+import { db } from "@/lib/server/db.ts";
 import {
   HERMES_RENDER_LABEL,
   LAB_TRIAL_BADGE,
@@ -34,6 +35,7 @@ import {
   type WorkerEnvironment,
 } from "@/lib/studio/style-registry.ts";
 import { TrialQueue } from "../trial-queue.tsx";
+import { BatchTrials } from "./batch-trials.tsx";
 import type { Template } from "@/lib/studio/templates.ts";
 
 export const metadata = { title: "Style library" };
@@ -76,6 +78,8 @@ export default async function StyleLibraryPage() {
   let problems: string[] = [];
   let queue: TrialQueueBatch[] = [];
   let envWorkers: Array<{ name: string; capabilities: string[]; environments: WorkerEnvironment[] }> = [];
+  let batchStyles: Array<{ id: string; label: string }> = [];
+  let batchChannels: Array<{ id: string; name: string }> = [];
   let loadError = "";
   try {
     const vendored = await vendoredStyles();
@@ -133,6 +137,7 @@ export default async function StyleLibraryPage() {
       {queue.length > 0 && (
         <div className="mb-6">
           <TrialQueue batches={queue} />
+          <BatchTrials channels={batchChannels} styles={batchStyles} defaultDurationSec={45} />
         </div>
       )}
 

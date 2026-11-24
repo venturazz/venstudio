@@ -7,9 +7,9 @@ import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Form
 import { suggestStyles } from "@/lib/studio/planner.ts";
 import { DURATION_CHOICES, clampDuration, defaultDurationSec, defaultThemeFor, durationLabel, engineView, MAX_BRIEF_CHARS, NO_THEME, stepDuration, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
-import { MAX_BATCH_TRIALS, MIN_BATCH_TRIALS, TRY_THESE_STYLES, type OfferedTemplate } from "@/lib/studio/trial-batch.ts";
+import type { OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
-import { startBatchTrialAction, startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
+import { startRunAction, testHermesAction, type HermesTestState } from "./actions.ts";
 
 export interface RunFormChannel {
   id: string;
@@ -61,10 +61,8 @@ function themeFor(channel: RunFormChannel | undefined): string {
 export function RunForm({ channels, templates: listed, trialTemplates = [], waiting = [], labTemplates = [], capabilities, prefill, muse: museThinking }: RunFormOptions) {
   const templates = [...listed, ...trialTemplates, ...labTemplates];
   const [state, dispatch] = useActionState(startRunAction, undefined);
-  const [batchState, dispatchBatch] = useActionState(startBatchTrialAction, undefined);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
-  const [batch, setBatch] = useState<string[]>([]);
   // Research styles that name a Hermes skill, by group ("Hermes research styles (from claude-animation-skills)").
   const plainTrials = trialTemplates.filter((t) => !t.group);
   const groups = [...new Set(trialTemplates.flatMap((t) => (t.group ? [t.group] : [])))].map((g) => ({ label: g, items: trialTemplates.filter((t) => t.group === g) }));
@@ -112,15 +110,7 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    fd.delete("batchTemplateIds");
     startTransition(() => dispatch(fd));
-  }
-  function startBatch() {
-    if (!formRef.current) return;
-    const fd = new FormData(formRef.current);
-    fd.delete("batchTemplateIds");
-    for (const id of batch) fd.append("batchTemplateIds", id);
-    startTransition(() => dispatchBatch(fd));
   }
   /** The chosen style's provenance: what it is, where it came from, what it needs. Read only — the select is the picker. */
   function styleDetail(t: RunFormTemplate) {
@@ -409,56 +399,6 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
             </p>
           )}
         </div>
-        {trialTemplates.length >= MIN_BATCH_TRIALS && (
-          <details className="space-y-2 rounded-lg border border-dashed border-warn/60 p-3" data-testid="batch-trial">
-            <summary className="cursor-pointer text-sm font-medium">{TRY_THESE_STYLES}</summary>
-            <fieldset className="space-y-2 pt-2">
-              <legend className="sr-only">{TRY_THESE_STYLES}</legend>
-              <p className="text-xs text-muted">
-                One brief, one trial run per style you tick (at most {MAX_BATCH_TRIALS}), using the channel, brief, length and language above. Hermes works
-                through them one ask at a time; the queue below shows where each run is.
-              </p>
-              <div className="grid gap-1.5 sm:grid-cols-2">
-                {trialTemplates.map((t) => (
-                  <label key={t.id} className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-border p-2 text-sm">
-                    <input
-                      type="checkbox"
-                      value={t.id}
-                      checked={batch.includes(t.id)}
-                      onChange={(e) => setBatch((b) => (e.target.checked ? [...b.filter((x) => x !== t.id), t.id] : b.filter((x) => x !== t.id)))}
-                      className="size-4 shrink-0 accent-[var(--vs-accent)]"
-                      aria-label={`Try ${t.label}`}
-                    />
-                    <span className="min-w-0 break-words">{t.label}</span>
-                  </label>
-                ))}
-              </div>
-              <Button type="button" onClick={startBatch} disabled={isPending || batch.length < MIN_BATCH_TRIALS || !channelId} className="min-h-11" aria-busy={isPending}>
-                {batch.length < MIN_BATCH_TRIALS ? `Tick at least ${MIN_BATCH_TRIALS} styles` : `Start ${batch.length} trials`}
-              </Button>
-              {batchState?.error && <Alert tone="danger">{batchState.error}</Alert>}
-              {batchState?.ok && (
-                <Alert tone="ok">
-                  <span className="break-words" data-testid="batch-started">
-                    {batchState.ok}
-                  </span>
-                </Alert>
-              )}
-              {batchState?.runs && batchState.runs.length > 0 && (
-                <ol className="space-y-1 text-sm" data-testid="batch-runs">
-                  {batchState.runs.map((r) => (
-                    <li key={r.runId} className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-muted">{r.position}</span>
-                      <Link href={`/studio/runs/${r.runId}`} className="break-words text-accent underline-offset-2 hover:underline" data-testid="batch-run-link">
-                        {r.label}
-                      </Link>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </fieldset>
-          </details>
-        )}
         {engine && muse && (
           <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="engine-info">
             <span className="text-muted">Engine: {engine.label}</span>
