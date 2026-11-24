@@ -1991,8 +1991,8 @@ async function scoreAndDecide(runId, stars, shown) {
     await page.goto(`${APP}/studio/styles`);
     const batchBox = page.getByTestId("batch-trial");
     await batchBox.locator("summary").click();
-    await batchBox.selectOption("#batchChannelId", { label: "Myth Stories" });
-    await batchBox.fill("#batchBrief", "Batch trial: one thing that compounds");
+    await batchBox.locator("#batchChannelId").selectOption({ label: "Myth Stories" });
+    await batchBox.locator("#batchBrief").fill("Batch trial: one thing that compounds");
     await batchBox.getByRole("checkbox", { name: "Try Line graph (Hermes /graph)", exact: true }).check();
     await batchBox.getByRole("checkbox", { name: "Try Branching line art (Hermes /dan-koe)", exact: true }).check();
     await batchBox.getByRole("button", { name: "Start 2 trials", exact: true }).click();
