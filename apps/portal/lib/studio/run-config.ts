@@ -4,6 +4,7 @@
  * No database or network, so it runs under `node --test`. Nothing here writes a channel: the theme default is read
  * from the channel category and an override is stored on the run only.
  */
+import { briefFromInput, parseBrief, type StudioBrief } from "./brief.ts";
 import { ENGINES, LANGUAGE_BY_CODE, PURPOSE_BY_ID, STYLE_BY_ID, THEME_BY_ID, VIDEO_FORMATS, type Format, type MusePlacement } from "./catalog.ts";
 import { DEFAULT_DURATION_SEC } from "./engine.ts";
 import { NON_WORKER_CAPABILITIES, isPortalEngine } from "./render-engine.ts";
@@ -49,8 +50,13 @@ export interface RunConfig {
   themeId: string;
   styleId: string;
   purposes: string[];
-  /** The owner's brief (older runs: the short topic hint). */
+  /** The owner's brief as one string (older runs: the short topic hint). Kept for the prompts and for readers that predate `brief`. */
   topicHint: string;
+  /**
+   * The owner's brief as an object (additive, brief.ts). Written at start (`version: 1`, not frozen) and frozen when the
+   * owner approves an idea. Absent on runs from before the brief had a shape; read those through `parseRunConfig`.
+   */
+  brief?: StudioBrief;
   /** Subtitle language codes besides the narration language. */
   subtitles: string[];
   themeSource: ThemeSource;
@@ -102,6 +108,14 @@ export function parseRunConfig(raw: unknown): RunConfig {
     styleId: typeof c.styleId === "string" ? c.styleId : "",
     purposes: strings(c.purposes),
     topicHint: typeof c.topicHint === "string" ? c.topicHint : "",
+    ...(() => {
+      const brief = parseBrief(c.brief, {
+        topicHint: typeof c.topicHint === "string" ? c.topicHint : "",
+        durationSec: typeof c.durationSec === "number" && c.durationSec > 0 ? c.durationSec : DEFAULT_DURATION_SEC[format],
+        language: typeof c.language === "string" ? c.language : "en",
+      });
+      return brief ? { brief } : {};
+    })(),
     subtitles: strings(c.subtitles),
     themeSource: source,
     ...stylePackOf(c.stylePack, c.workflow),
@@ -208,6 +222,8 @@ export function buildRunConfig(req: RunRequest, channel: { category: string | nu
       styleId: template.styleId,
       purposes,
       topicHint: req.brief.trim().slice(0, MAX_BRIEF_CHARS),
+      // The same brief as an object: the shape every stage reads, frozen when an idea is approved (brief.ts).
+      brief: briefFromInput({ topic: req.brief, durationSec, language: req.language }),
       subtitles,
       themeSource,
       ...(req.thinkOnMuse ? { executors: museThinkingExecutors() } : {}),
