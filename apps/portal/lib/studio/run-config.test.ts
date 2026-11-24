@@ -258,3 +258,18 @@ test("the length is the owner's: kept, defaulted when absent, refused outside th
   assert.equal(stepDuration("short", 59, 1), 75, "an odd length lands on the nearest whole step");
   assert.equal(stepDuration("short", 59, -1), 45);
 });
+
+test("the sound answers ride from the form to the stored config, and an old run reads as the default", () => {
+  const built = buildRunConfig(
+    { format: "short", language: "en", durationSec: 45, themeId: "", purposes: [], subtitles: [], brief: "", sound: { bed: "none", sfx: "rich", ambience: false } },
+    { category: null },
+    { styleId: "flat-vector" },
+  );
+  assert.equal(built.ok, true);
+  if (!built.ok) return;
+  assert.deepEqual(built.config.sound, { bed: "none", sfx: "rich", ambience: false });
+  const back = parseRunConfig(JSON.parse(JSON.stringify(built.config)));
+  assert.deepEqual(back.sound, { bed: "none", sfx: "rich", ambience: false });
+  // A run started before sound existed gets the reference mix, not silence and not a missing field.
+  assert.deepEqual(parseRunConfig({ format: "short" }).sound, { bed: "auto", sfx: "sparse", ambience: true });
+});
