@@ -178,3 +178,53 @@ export function slotGate(i: {
   if (i.workerMinutesUsed >= i.workerMinutesBudget) return { skip: "budget", reason: `the worker has used its ${Math.round(i.workerMinutesBudget)} minutes for today` };
   return { skip: null, reason: "" };
 }
+
+/** How many videos a day becomes which clock times, when the owner has not said otherwise. */
+export function defaultTimesFor(videosPerDay: number): string[] {
+  const n = Math.max(1, Math.min(24, Math.round(videosPerDay) || 1));
+  if (n === 1) return ["07:00"];
+  if (n === 2) return ["07:00", "19:00"];
+  // Spread the rest across a 07:00–21:00 window rather than stacking them at one hour.
+  const span = 14 * 60;
+  return Array.from({ length: n }, (_, i) => {
+    const minutes = 7 * 60 + Math.round((span / (n - 1)) * i);
+    return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  });
+}
+
+/** Said plainly when the channel asks for more videos than the schedule has times — or the other way round. */
+export function timesMismatch(times: readonly string[], videosPerDay: number): string | null {
+  if (times.length === videosPerDay) return null;
+  if (times.length < videosPerDay) return `The channel asks for ${videosPerDay} videos a day; this schedule has ${times.length} time${times.length === 1 ? "" : "s"}. Add ${videosPerDay - times.length} more.`;
+  return `This schedule has ${times.length} times but the channel asks for ${videosPerDay} videos a day; ${times.length - videosPerDay} of them will not be used.`;
+}
+
+/** The settings New Video would have collected, read back from a schedule. Tolerant: a hand-written row still works. */
+export interface ScheduleSettings {
+  styleId: string;
+  durationSec: number;
+  language: string;
+  themeId: string;
+  purposes: string[];
+  subtitles: string[];
+  sound: { bed: string; sfx: "off" | "sparse" | "rich"; ambience: boolean };
+}
+
+export function parseScheduleSettings(raw: unknown, fallbackDurationSec = 45): ScheduleSettings {
+  const o = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const soundIn = o.sound && typeof o.sound === "object" ? (o.sound as Record<string, unknown>) : {};
+  const sfx = soundIn.sfx === "off" || soundIn.sfx === "rich" ? soundIn.sfx : "sparse";
+  return {
+    styleId: typeof o.styleId === "string" ? o.styleId : "",
+    durationSec: typeof o.durationSec === "number" && o.durationSec > 0 ? Math.round(o.durationSec) : fallbackDurationSec,
+    language: typeof o.language === "string" && o.language ? o.language : "en",
+    themeId: typeof o.themeId === "string" ? o.themeId : "",
+    purposes: Array.isArray(o.purposes) ? o.purposes.filter((p): p is string => typeof p === "string") : [],
+    subtitles: Array.isArray(o.subtitles) ? o.subtitles.filter((p): p is string => typeof p === "string") : [],
+    sound: {
+      bed: typeof soundIn.bed === "string" && soundIn.bed ? soundIn.bed : "auto",
+      sfx,
+      ambience: typeof soundIn.ambience === "boolean" ? soundIn.ambience : true,
+    },
+  };
+}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { instantAt, nextSlots, parseCadence, slotGate, zonedParts } from "./schedule.ts";
+import { defaultTimesFor, instantAt, nextSlots, parseCadence, parseScheduleSettings, slotGate, timesMismatch, zonedParts } from "./schedule.ts";
 
 const cadence = (days: string, times: string[]) => {
   const r = parseCadence(days, times);
@@ -92,4 +92,33 @@ test("a slot is skipped, with a reason, when it cannot run — not dropped", () 
   for (const gate of [slotGate({ ...base, workerBusy: true }), slotGate({ ...base, workerMinutesUsed: 99 })]) {
     assert.ok(gate.reason.length > 10);
   }
+});
+test("the channel's count becomes clock times, spread rather than stacked", () => {
+  assert.deepEqual(defaultTimesFor(1), ["07:00"]);
+  assert.deepEqual(defaultTimesFor(2), ["07:00", "19:00"]);
+  const three = defaultTimesFor(3);
+  assert.equal(three.length, 3);
+  assert.equal(three[0], "07:00");
+  assert.equal(three[2], "21:00");
+  for (const t of three) assert.match(t, /^\d{2}:\d{2}$/);
+  // A nonsense count is clamped, never a negative or an empty list.
+  assert.deepEqual(defaultTimesFor(0), ["07:00"]);
+});
+
+test("a mismatch between the channel and the schedule is said out loud, in both directions", () => {
+  assert.equal(timesMismatch(["07:00", "19:00"], 2), null);
+  const fewer = timesMismatch(["07:00"], 2);
+  assert.ok(fewer && fewer.includes("Add 1 more"));
+  const more = timesMismatch(["07:00", "12:00", "19:00"], 2);
+  assert.ok(more && more.includes("will not be used"));
+});
+
+test("a schedule's settings survive a hand-written row, and an empty one is harmless", () => {
+  const s = parseScheduleSettings({ styleId: "flat-vector", durationSec: 120, language: "id", purposes: ["educate"], sound: { bed: "none", sfx: "rich", ambience: false } }, 45);
+  assert.equal(s.styleId, "flat-vector");
+  assert.equal(s.durationSec, 120);
+  assert.deepEqual(s.sound, { bed: "none", sfx: "rich", ambience: false });
+  const empty = parseScheduleSettings(undefined, 90);
+  assert.equal(empty.durationSec, 90);
+  assert.deepEqual(empty.sound, { bed: "auto", sfx: "sparse", ambience: true });
 });
