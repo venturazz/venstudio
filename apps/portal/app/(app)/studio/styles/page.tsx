@@ -137,9 +137,12 @@ export default async function StyleLibraryPage() {
       {queue.length > 0 && (
         <div className="mb-6">
           <TrialQueue batches={queue} />
-          <BatchTrials channels={batchChannels} styles={batchStyles} defaultDurationSec={45} />
         </div>
       )}
+      {/* Its own block, not a footnote to the queue: a batch can be started with no run in flight. */}
+      <div className="mb-6">
+        <BatchTrials channels={batchChannels} styles={batchStyles} defaultDurationSec={45} />
+      </div>
 
       <section className="space-y-3" data-testid="style-packs">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Style packs</h2>
