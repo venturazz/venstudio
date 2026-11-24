@@ -1,6 +1,6 @@
 # Brief and duration: the two decisions Studio does not have
 
-Status: **proposal for the owner. Phase 1 (duration) is built on `feat/brief-and-duration`; phases 2–4 are the plan.**
+Status: **phase 1 merged (#28); phase 2 in `feat/brief-object`; phase 3 in `feat/one-picker` (stacked on 2); phase 4 is still a plan.**
 Audited against `apps/portal` at `1fd4d48` on 2026-11-24.
 
 ## Ringkasan (Bahasa Indonesia)
@@ -123,19 +123,20 @@ What dies, what replaces it:
 
 Selection model stays `templateId` + `batchTemplateIds` in the form, so the server actions do not change.
 
-**Test impact (this is why it is a phase, not a commit).** `scripts/ui-e2e.mjs` runs in CI against a live portal and
-asserts the current structure: `#templateId option` (:1234), `#templateId optgroup` (:1239, :1980),
-`selectOption("#templateId", …)` (:1241, :1253), `style-suggestions` (:1225), `trial-styles` (:1228),
-`research-group` (:1968-1984), `batch-trial` (:1994), `trial-style-hermes-designed-explainer` (:2522). The rewrite has
-to carry those assertions to the new DOM in the same PR, or CI is red for reasons unrelated to the change.
+**Test impact, and what was done with it.** `scripts/ui-e2e.mjs` runs in CI against a live portal and asserted the old
+structure (`trial-styles`, `research-group`, `trial-style-*` rows, `batch-trial`). The rewrite carries every one of those
+checks to the new DOM instead of deleting them: a style is chosen from the select and its panel is then asserted
+(badges, credit, skill path), the research group is asserted by its optgroup and by each option's panel, and the batch
+block is opened by its summary before the boxes are ticked. The requirement each test protected — provenance visible
+before a trial starts, research styles marked, batch from one brief — is unchanged.
 
 ## 6. Phases
 
 | Phase | What | Proves |
 | --- | --- | --- |
-| **1. Duration** (built) | `durationSec` in `RunRequest`, `startSchema`, `buildRunConfig`; chips in the form; range validated | unit tests in `run-config.test.ts`; a 15 s short and a 60 s short store different `config.durationSec` and different script word targets |
-| **2. Brief object** | `lib/studio/brief.ts`, `config.brief`, `topicHint` written alongside for one release, three proposals on Review, `frozenAt` | the idea stage cannot reach the script stage without a frozen brief; an old run still reads back |
-| **3. One picker** | the merge in §5 + the `ui-e2e.mjs` rewrite | `ui-e2e` still drives a video start end to end; no selector asserts a surface that no longer exists |
+| **1. Duration** (merged, #28) | `durationSec` in `RunRequest`, `startSchema`, `buildRunConfig`; chips in the form; range validated | unit tests in `run-config.test.ts`; a 15 s short and a 60 s short store different `config.durationSec` and different script word targets |
+| **2. Brief object** (built, `feat/brief-object`) | `lib/studio/brief.ts` (`briefFromInput`, `freezeBrief`, `parseBrief`, `briefParagraph`); `config.brief` written at start and frozen in `approveStage` when an idea is approved; `topicHint` kept for one release | `brief.test.ts` (7): the owner's words survive, freezing happens once, a run from before the change still reads back |
+| **3. One picker** (built, `feat/one-picker`) | one select, the chosen style's detail (badges, credit, skill path, engine, workflow), research collapsed behind one summary line | `ui-e2e` still drives a video start end to end; no selector asserts a surface that no longer exists |
 | **4. Research page** | batch trials, lab trials and research styles moved out of New Video | a batch of three trials still starts from one brief |
 
 Phases 1 and 2 are additive and can ship separately. Phase 3 is the one that answers "Studio feels ineffective"; it is
