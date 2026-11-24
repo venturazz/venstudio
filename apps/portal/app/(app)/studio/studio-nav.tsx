@@ -1,10 +1,11 @@
 import { LinkButton } from "@/components/ui.tsx";
 
-export type StudioSection = "runs" | "new" | "styles" | "lab" | "templates" | "test-render";
+export type StudioSection = "runs" | "new" | "styles" | "automation" | "lab" | "templates" | "test-render";
 
 const LINKS: Array<{ id: StudioSection; href: string; label: string }> = [
   { id: "runs", href: "/studio", label: "Runs" },
   { id: "styles", href: "/studio/styles", label: "Styles" },
+  { id: "automation", href: "/studio/automation", label: "AutoStudio" },
   { id: "lab", href: "/studio/lab", label: "Lab" },
   { id: "templates", href: "/studio/templates", label: "Templates" },
   { id: "test-render", href: "/studio/test-render", label: "Test render" },
