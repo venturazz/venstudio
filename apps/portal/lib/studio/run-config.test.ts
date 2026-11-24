@@ -16,7 +16,7 @@ import {
 } from "./run-config.ts";
 import { ideaPrompt, researchPrompt, scriptPrompt, storyboardPrompt, type ChatMessage, type DirectorContext } from "./director.ts";
 import { seedTemplates } from "./templates.ts";
-import { DURATION_CHOICES, defaultDurationSec, durationLabel } from "./run-config.ts";
+import { DURATION_CHOICES, defaultDurationSec, durationLabel, stepDuration } from "./run-config.ts";
 
 const base: RunRequest = { format: "short", language: "en", themeId: "", purposes: [], subtitles: [], brief: "" };
 const tpl = { styleId: "explainer-flat-vector" };
@@ -208,9 +208,9 @@ test("the length is the owner's: kept, defaulted when absent, refused outside th
 
   const tooShort = short(12);
   assert.ok(!tooShort.ok);
-  assert.match(tooShort.error, /15 to 60 seconds/, "a short below the format's range is refused, not rounded");
+  assert.match(tooShort.error, /15 to 180 seconds/, "a short below the format's range is refused, not rounded");
 
-  const tooLong = short(90);
+  const tooLong = short(240);
   assert.ok(!tooLong.ok);
 
   const long = buildRunConfig({ ...base, format: "long", durationSec: 720 }, { category: "history" }, tpl);
@@ -218,11 +218,31 @@ test("the length is the owner's: kept, defaulted when absent, refused outside th
   assert.equal(long.config.durationSec, 720);
 
   // The chips are the range the format declares, so a choice can never be one the validator then refuses.
-  assert.deepEqual([...DURATION_CHOICES.short], [15, 30, 45, 60]);
+  assert.deepEqual([...DURATION_CHOICES.short], [15, 30, 45, 60, 90, 120, 180]);
+  // Shorts run to three minutes (what a vertical platform accepts) and long videos start at two, so a 2–3 min video is
+  // valid as either format and the length is what the owner picked.
+  const twoMinShort = short(120);
+  assert.ok(twoMinShort.ok);
+  assert.equal(twoMinShort.config.durationSec, 120);
+  const threeMinShort = short(180);
+  assert.ok(threeMinShort.ok);
+  const fiveMinLong = buildRunConfig({ ...base, format: "long", durationSec: 240 }, { category: "" }, tpl);
+  assert.ok(fiveMinLong.ok);
+  const ninetyLong = buildRunConfig({ ...base, format: "long", durationSec: 90 }, { category: "" }, tpl);
+  assert.ok(!ninetyLong.ok, "a long video under two minutes is refused");
+  assert.match(ninetyLong.error, /120 to 1200 seconds/);
   for (const fmt of ["short", "long"] as const) for (const sec of DURATION_CHOICES[fmt]) assert.ok(short_choice_ok(fmt, sec), `${fmt} ${sec}`);
   function short_choice_ok(fmt: "short" | "long", sec: number) {
     return buildRunConfig({ ...base, format: fmt, durationSec: sec }, { category: "" }, tpl).ok;
   }
   assert.equal(durationLabel(45), "45 s");
   assert.equal(durationLabel(720), "12 min");
+  // The stepper never leaves the format, and it lands on whole steps.
+  assert.equal(stepDuration("short", 60, 1), 75);
+  assert.equal(stepDuration("short", 15, -1), 15, "the floor is the format's minimum");
+  assert.equal(stepDuration("short", 180, 1), 180, "the ceiling is the format's maximum");
+  assert.equal(stepDuration("long", 120, -1), 120);
+  assert.equal(stepDuration("long", 1200, 1), 1200);
+  assert.equal(stepDuration("short", 59, 1), 75, "an odd length lands on the nearest whole step");
+  assert.equal(stepDuration("short", 59, -1), 45);
 });

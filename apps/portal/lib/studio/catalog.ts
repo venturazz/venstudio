@@ -71,8 +71,10 @@ export const FAMILY_LABELS: Record<Family, string> = {
 };
 
 export const VIDEO_FORMATS: Record<Format, { label: string; width: number; height: number; fps: number; durationSec: [number, number] }> = {
-  short: { label: "Short (vertical 9:16)", width: 1080, height: 1920, fps: 30, durationSec: [15, 60] },
-  long: { label: "Long video (16:9)", width: 1920, height: 1080, fps: 30, durationSec: [480, 1200] },
+  // Shorts go to three minutes because that is what the platforms accept for a vertical video; long videos start at two
+  // minutes, so the two overlap in 2–3 min and the length, not the format, is what the owner actually picks.
+  short: { label: "Short (vertical 9:16)", width: 1080, height: 1920, fps: 30, durationSec: [15, 180] },
+  long: { label: "Long video (16:9)", width: 1920, height: 1080, fps: 30, durationSec: [120, 1200] },
 };
 
 /** The frame a format actually produces, so a style's natural frame can be compared against it. */

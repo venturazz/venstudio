@@ -5,7 +5,7 @@ import { useActionState, useRef, useState, useTransition, type FormEvent } from 
 import { Alert, Badge, Button, Field, Select, Textarea } from "@/components/ui.tsx";
 import { LANGUAGES, LANGUAGE_BY_CODE, PURPOSES, THEMES, VIDEO_FORMATS, type Format } from "@/lib/studio/catalog.ts";
 import { suggestStyles } from "@/lib/studio/planner.ts";
-import { DURATION_CHOICES, defaultDurationSec, defaultThemeFor, durationLabel, engineView, MAX_BRIEF_CHARS, NO_THEME, type RunFormPrefill } from "@/lib/studio/run-config.ts";
+import { DURATION_CHOICES, clampDuration, defaultDurationSec, defaultThemeFor, durationLabel, engineView, MAX_BRIEF_CHARS, NO_THEME, stepDuration, type RunFormPrefill } from "@/lib/studio/run-config.ts";
 import { HERMES_RENDER_LABEL, HTML_DESIGN_BADGE, LAB_TRIAL_BADGE, TRIAL_BADGE, TRIAL_LABEL } from "@/lib/studio/style-registry.ts";
 import { MAX_BATCH_TRIALS, MIN_BATCH_TRIALS, TRY_THESE_STYLES, type OfferedTemplate } from "@/lib/studio/trial-batch.ts";
 import { MUSE } from "../studio-form.tsx";
@@ -222,14 +222,43 @@ export function RunForm({ channels, templates: listed, trialTemplates = [], wait
               onChange={(e) => {
                 const next: Format = e.target.value === "long" ? "long" : "short";
                 setFormat(next);
-                // A length that the new format cannot be falls back to its default instead of being refused on submit.
-                if (!DURATION_CHOICES[next].includes(durationSec)) setDurationSec(defaultDurationSec(next));
+                // A length the new format cannot be (or that is not on its step) is snapped instead of staying invalid.
+                setDurationSec((d) => clampDuration(next, d));
               }}
             >
               <option value="short">Short</option>
               <option value="long">Long</option>
             </Select>
-            <div className="flex flex-wrap gap-1.5" data-testid="duration-chips" role="group" aria-label="Length in seconds">
+            {/* The stepper walks the whole range; the presets are the lengths a video is usually cut to. */}
+            <div className="flex items-stretch gap-2" data-testid="duration-stepper">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setDurationSec(stepDuration(format, durationSec, -1))}
+                disabled={durationSec <= VIDEO_FORMATS[format].durationSec[0]}
+                className="min-h-10 w-12 text-lg leading-none"
+                aria-label="Shorter"
+                data-testid="duration-shorter"
+              >
+                −
+              </Button>
+              <div className="flex min-h-10 flex-1 flex-wrap items-center justify-center gap-x-2 rounded-lg border border-border px-3 text-sm font-medium tabular-nums" aria-live="polite" data-testid="duration-value">
+                {durationLabel(durationSec)}
+                <span className="text-xs font-normal text-muted">{durationSec} s</span>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setDurationSec(stepDuration(format, durationSec, 1))}
+                disabled={durationSec >= VIDEO_FORMATS[format].durationSec[1]}
+                className="min-h-10 w-12 text-lg leading-none"
+                aria-label="Longer"
+                data-testid="duration-longer"
+              >
+                +
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-1.5" data-testid="duration-chips" role="group" aria-label="Common lengths">
               {DURATION_CHOICES[format].map((sec) => (
                 <Button
                   key={sec}
