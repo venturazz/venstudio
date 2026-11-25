@@ -2017,8 +2017,8 @@ async function scoreAndDecide(runId, stars, shown) {
     await batchBox.locator("summary").click();
     await batchBox.locator("#batchChannelId").selectOption({ label: "Myth Stories" });
     await batchBox.locator("#batchBrief").fill("Batch trial: one thing that compounds");
-    await batchBox.getByRole("checkbox", { name: "Try Exploded View (Hermes /breakdown)", exact: true }).check();
-    await batchBox.getByRole("checkbox", { name: "Try Branching line art (Hermes /dan-koe)", exact: true }).check();
+    await batchBox.getByRole("checkbox", { name: "Try Exploded View", exact: true }).check();
+    await batchBox.getByRole("checkbox", { name: "Try Dan Koe", exact: true }).check();
     await batchBox.getByRole("button", { name: "Start 2 trials", exact: true }).click();
     await batchBox.getByTestId("batch-started").getByText(/^2 trial runs started from one brief\. Hermes works through them one ask at a time\.$/).waitFor();
     const hrefs = await batchBox.getByTestId("batch-run-link").evaluateAll((as) => as.map((a) => a.getAttribute("href")));
