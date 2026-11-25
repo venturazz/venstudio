@@ -1229,7 +1229,7 @@ try {
   await page.selectOption("#templateId", "tpl-explainer-flat-vector");
   await page.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
   // The Hermes research pack is rendered by the portal, so it is offered here (only here) once Hermes is set up.
-  await page.selectOption("#templateId", "tpl-hermes-research-explainer");
+  await page.selectOption("#templateId", "tpl-research-render");
   await page.getByTestId("trial-style-hermes-research-explainer").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
   await page.getByTestId("no-listed-styles").waitFor();
   const styleOptions = await page.locator("#templateId option").evaluateAll((os) => os.map((o) => o.value));
@@ -1773,7 +1773,7 @@ try {
     // only the render, the quality check and the review run again. It is a trial of the Hermes research pack.
     const hermesRunId = prodRunId
       ? dbExec(`INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, state)
-          SELECT channel_id, 'tpl-hermes-research-explainer', (SELECT current_version FROM templates WHERE id = 'tpl-hermes-research-explainer'),
+          SELECT channel_id, 'tpl-research-render', (SELECT current_version FROM templates WHERE id = 'tpl-research-render'),
                  topic || ' (Hermes render)', autonomy_level,
                  jsonb_set(jsonb_set(config, '{styleId}', '"research-render"'), '{stylePack}',
                    '{"id":"research-render","version":"0.2.0","status":"trial","trial":true,"engine":"hermes"}'), 'running'
@@ -2364,7 +2364,7 @@ async function scoreAndDecide(runId, stars, shown) {
     } else {
       const researchMs = Math.max(1000, Math.round(600_000 * scale));
       const within = researchMs >= 60_000 ? `${Math.round(researchMs / 60_000)} min` : `${Math.round(researchMs / 1000)} s`;
-      const runId = await startFromNewVideo("tpl-animated-line-graph", `${SLOW_RESEARCH}: how solar capacity grew`, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
+      const runId = await startFromNewVideo("tpl-line-graph", `${SLOW_RESEARCH}: how solar capacity grew`, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
       const runHref = `/studio/runs/${runId}`;
       const researchRow = () => dbValue(`SELECT state || ' ' || attempt || ' ' || coalesce(output->'hermesWait'->>'reason', '-') || ' ' || (not_before IS NOT NULL)::text FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'research' ORDER BY attempt DESC LIMIT 1`) ?? "";
       // The idea: approve one on this run's card.
@@ -2443,7 +2443,7 @@ async function scoreAndDecide(runId, stars, shown) {
     const imagesBefore = imageAskTotal();
     const specAsksBefore = fakeStats.sceneSpecAsks;
     const dataAsksBefore = fakeStats.researchDataAsks;
-    const runId = await startFromNewVideo("tpl-animated-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'scene-spec ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"] ["scene-spec", "preview"]') throw new Error(`the scene-spec run stored the workflow "${flow}"`);
     let specCard = false;
@@ -2520,10 +2520,10 @@ async function scoreAndDecide(runId, stars, shown) {
     const ver = packVersion("designed-explainer");
     // New Video offers it only in the Trial section, with its research-only badge.
     await page.goto(`${APP}/studio/new`);
-    await page.selectOption("#templateId", "tpl-hermes-designed-explainer");
-    const row = page.getByTestId("trial-style-hermes-designed-explainer");
+    await page.selectOption("#templateId", "tpl-designed-explainer");
+    const row = page.getByTestId("trial-style-designed-explainer");
     await row.getByTestId("html-design-label").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
-    const runId = await startFromNewVideo("tpl-hermes-designed-explainer", brief, "Workflow: Hermes-designed page (research only, no pictures): Idea → Research → Script → HTML design → Preview → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-designed-explainer", brief, "Workflow: Hermes-designed page (research only, no pictures): Idea → Research → Script → HTML design → Preview → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text || ' ' || (config->'stylePack'->>'trial') || ' ' || (config->'stylePack'->>'designed') FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'html-design ["idea", "research", "script", "html-design", "preview", "voice", "render", "qc"] ["html-design", "preview"] true true') throw new Error(`the html-design run stored "${flow}"`);
     let designCard = false;
@@ -2598,7 +2598,7 @@ async function scoreAndDecide(runId, stars, shown) {
     const brief = "Skill brief trial: money that compounds";
     const imagesBefore = imageAskTotal();
     const rendersBefore = fakeStats.renderRequests.length;
-    const runId = await startFromNewVideo("tpl-hermes-graph", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-line-graph-skill", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'hermes-skill ["idea", "research", "script", "skill-brief", "voice", "render", "qc"]') throw new Error(`the hermes-skill run stored the workflow "${flow}"`);
     let briefCard = false;
