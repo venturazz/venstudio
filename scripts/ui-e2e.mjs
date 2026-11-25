@@ -1850,7 +1850,7 @@ try {
         if (logged && / (approved|rejected) /.test(logged)) break;
         await m.waitForTimeout(1000);
       }
-      if (!/^research-render@0\.2\.0 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
+      if (!/^research-render@\d+\.\d+\.\d+ hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
         await dumpPipeline(m, hermesHref, "the Hermes render's trial outcome was not recorded");
         throw new Error(`the Hermes render's curation entry is "${logged}"`);
       }
@@ -1859,7 +1859,7 @@ try {
       await page.goto(`${APP}/studio/styles`);
       const hermesPack = page.getByTestId("style-pack-research-render");
       await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
-      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.2: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
+      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v\d+\.\d+\.\d+: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
       await shot("15c-styles-hermes-desktop");
     }
   }
@@ -1867,7 +1867,19 @@ try {
   // Research styles and lab trials (docs/style-packs.md, "Research styles and lab trials"). Runs below reuse the finished
   // production's approved script, storyboard, pictures and narration (copied rows), so only the render, the quality
   // check and the review run again.
-  const RESEARCH_SKILLS = ["breakdown", "dan-koe", "graph", "kurzgesagt", "low-poly", "map-route", "minecraft", "minimalistic-graphics", "stick-figure", "zach-d-films"];
+  // The research styles, by the id each look has now and the skill Hermes runs behind it. The Graph, minimal-line-art
+  // and Minecraft variants are retired: a worker renders those looks itself, so they are no longer offered here.
+  const RESEARCH = [
+    ["exploded-view", "breakdown"],
+    ["branching-lines", "dan-koe"],
+    ["flat-space", "kurzgesagt"],
+    ["map-route", "map-route"],
+    ["ps1-low-poly", "low-poly"],
+    ["stick-figure", "stick-figure"],
+    ["what-if-3d", "zach-d-films"],
+  ];
+  const RETIRED_RESEARCH = ["line-graph-skill", "step-line-art-skill", "voxel-build-skill"];
+  const researchIdOf = (skill) => RESEARCH.find(([, s]) => s === skill)?.[0] ?? null;
   const RESEARCH_GROUP = "Hermes research styles (from claude-animation-skills)";
   const prodRunIdForTrials = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
   /** Points a freshly started run at the production's approved stages, with only the render left to do. */
@@ -1969,12 +1981,16 @@ async function scoreAndDecide(runId, stars, shown) {
     const groups = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
     if (!groups.includes(RESEARCH_GROUP)) throw new Error(`no research group in the style list: ${groups.join(", ")}`);
     const optionIds = (await page.locator(`#templateId optgroup[label="${RESEARCH_GROUP}"] option`).evaluateAll((os) => os.map((o) => o.value))).sort();
-    const want = RESEARCH_SKILLS.map((s) => `tpl-hermes-${s}`).sort();
+    // The seven research looks and the generic Hermes render share the group (styleGroup says so for all eight).
+    const want = [...RESEARCH.map(([id]) => id), "research-render"].map((id) => `tpl-${id}`).sort();
     if (JSON.stringify(optionIds) !== JSON.stringify(want)) throw new Error(`the research group offers ${optionIds.join(", ")}, expected ${want.join(", ")}`);
     // Choosing one shows its provenance in the panel: badged, described with its skill path, credited (MIT).
-    for (const s of RESEARCH_SKILLS) {
-      await page.selectOption("#templateId", `tpl-hermes-${s}`);
-      const panel = page.getByTestId(`trial-style-hermes-${s}`);
+    for (const id of RETIRED_RESEARCH) {
+      if (optionIds.includes(`tpl-${id}`)) throw new Error(`the retired variant ${id} is still offered in the style list`);
+    }
+    for (const [id, s] of RESEARCH) {
+      await page.selectOption("#templateId", `tpl-${id}`);
+      const panel = page.getByTestId(`trial-style-${id}`);
       await panel.getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
       await panel.getByTestId("trial-style-credit").getByText("From claude-animation-skills by Artem Novitckii (MIT).", { exact: true }).waitFor();
       if (!((await panel.getByTestId("trial-style-about").innerText()).includes(`/${s}`))) throw new Error(`the ${s} research style does not name its skill in its description`);
@@ -2120,7 +2136,8 @@ async function scoreAndDecide(runId, stars, shown) {
     const ciOn = process.env.CI === "true" || process.env.CI === "1";
     if (!prodRunIdForTrials || dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset) or no finished production: the async render step is skipped");
     else {
-      const packId = `hermes-${ASYNC_RENDER_SKILL.slice(1)}`;
+      const packId = researchIdOf(ASYNC_RENDER_SKILL.slice(1));
+      if (!packId) throw new Error(`no research style runs ${ASYNC_RENDER_SKILL} any more`);
       // The run reuses the finished production's approved stages (copied rows), like the Hermes render step above; only
       // the render, the quality check and the review run again. A trial of a research pack whose narration is the run's.
       const asyncRunId = dbExec(`INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, state)
