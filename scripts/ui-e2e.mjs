@@ -1859,6 +1859,7 @@ try {
       await page.goto(`${APP}/studio/styles`);
       const hermesPack = page.getByTestId("style-pack-research-render");
       await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
+      console.log(`   research-render curated entry: ${logged}`);
       const recordText = await hermesPack.getByTestId("trial-record").innerText();
       console.log(`   research-render trial record: ${recordText}`);
       await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v\d+\.\d+\.\d+: \d+ .*mean presentation 75 \(1 scored\)/).waitFor();
