@@ -12,6 +12,8 @@ import { totp } from "../apps/portal/lib/crypto/totp.ts";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 /** A pack's version as vendored in styles/lock.json, so the checks follow pack bumps instead of hard-coding them. */
 const LOCK = JSON.parse(readFileSync(path.join(ROOT, "styles", "lock.json"), "utf8"));
+// The research pack's own version, so the fabricated Hermes run matches the pack the Styles page shows.
+const RESEARCH_PACK_VERSION = JSON.parse(readFileSync(path.join(ROOT, "styles", "packs", "research-render", "style.json"), "utf8")).version;
 function packVersion(id) {
   const p = (LOCK.packs ?? []).find((x) => x.id === id);
   if (!p) throw new Error(`styles/lock.json has no pack ${id}`);
@@ -1776,7 +1778,7 @@ try {
           SELECT channel_id, 'tpl-research-render', (SELECT current_version FROM templates WHERE id = 'tpl-research-render'),
                  topic || ' (Hermes render)', autonomy_level,
                  jsonb_set(jsonb_set(config, '{styleId}', '"research-render"'), '{stylePack}',
-                   '{"id":"research-render","version":"0.2.0","status":"trial","trial":true,"engine":"hermes"}'), 'running'
+                   '{"id":"research-render","version":"${RESEARCH_PACK_VERSION}","status":"trial","trial":true,"engine":"hermes"}'), 'running'
           FROM pipeline_runs WHERE id = '${prodRunId}' RETURNING id`)
       : null;
     if (!hermesRunId) console.log("   no database access (UI_DB unset): the Hermes render run is skipped");
