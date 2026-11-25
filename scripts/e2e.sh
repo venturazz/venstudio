@@ -644,7 +644,7 @@ grep -qF "pack:documentary@$(pack_version documentary)" <<<"$(q "SELECT array_to
 
 echo "== env packs travel through the signed update; the worker installs the proof pack's environment and reports env: and pack: only after its probe"
 # Read from the vendored copy, so this follows pack and environment bumps (the proof pack: docs/hermes-handover.md).
-EP=three-low-poly
+EP=low-poly-shapes
 EPV=$(pack_version "$EP") || fail "styles/lock.json has no version for $EP"
 ENVKEY=$(node -e 'const e=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).environment; console.log(`${e.id}@${e.version}`)' "$ROOT/styles/packs/$EP/style.json") || fail "no environment in $EP"
 curl -fsS "$APP_URL/install/env-packs.json" -o "$WORK/env-packs.json" || fail "env-packs.json not served"
