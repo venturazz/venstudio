@@ -1048,7 +1048,7 @@ try {
   step("studio: queue a test render from Test render, let the worker run it, see the video");
   await page.getByRole("navigation", { name: "Studio" }).getByRole("link", { name: "Test render", exact: true }).click();
   await page.waitForURL(/\/studio\/test-render$/);
-  await page.selectOption("#test-style", "documentary-stills");
+  await page.selectOption("#test-style", "documentary");
   await page.selectOption("#test-format", "short");
   await page.getByRole("button", { name: "Queue test render", exact: true }).click();
   await page.waitForURL(/\/jobs\/[0-9a-f-]{36}$/);
