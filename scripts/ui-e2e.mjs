@@ -2009,7 +2009,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await batchBox.locator("summary").click();
     await batchBox.locator("#batchChannelId").selectOption({ label: "Myth Stories" });
     await batchBox.locator("#batchBrief").fill("Batch trial: one thing that compounds");
-    await batchBox.getByRole("checkbox", { name: "Try Line graph (Hermes /graph)", exact: true }).check();
+    await batchBox.getByRole("checkbox", { name: "Try Exploded View (Hermes /breakdown)", exact: true }).check();
     await batchBox.getByRole("checkbox", { name: "Try Branching line art (Hermes /dan-koe)", exact: true }).check();
     await batchBox.getByRole("button", { name: "Start 2 trials", exact: true }).click();
     await batchBox.getByTestId("batch-started").getByText(/^2 trial runs started from one brief\. Hermes works through them one ask at a time\.$/).waitFor();
@@ -2017,7 +2017,7 @@ async function scoreAndDecide(runId, stars, shown) {
     const batchIds = hrefs.map((h) => /([0-9a-f-]{36})$/.exec(h ?? "")?.[1]).filter(Boolean);
     if (batchIds.length !== 2) throw new Error(`the batch started ${batchIds.length} run(s): ${hrefs.join(", ")}`);
     const stored = dbValue(`SELECT string_agg((config->'stylePack'->>'id') || ':' || (config->'stylePack'->>'trial') || ':' || (config->'trialBatch'->>'index') || '/' || (config->'trialBatch'->>'total'), ' ' ORDER BY (config->'trialBatch'->>'index')) FROM pipeline_runs WHERE id IN ('${batchIds.join("','")}')`);
-    if (stored !== null && stored !== "line-graph-skill:true:1/2 branching-lines:true:2/2") throw new Error(`the batch runs are stored as "${stored}"`);
+    if (stored !== null && stored !== "exploded-view:true:1/2 branching-lines:true:2/2") throw new Error(`the batch runs are stored as "${stored}"`);
     // The queue shows both runs, in batch order.
     await page.goto(`${APP}/studio/styles`);
     const queue = page.getByTestId("trial-queue");
@@ -2027,27 +2027,27 @@ async function scoreAndDecide(runId, stars, shown) {
     if (!prodRunIdForTrials || stored === null) console.log("   no database access (UI_DB unset) or no finished production: the batch renders are skipped");
     else {
       const before = fakeStats.hermesSkills.length;
-      // Approve anyway: the /graph trial's final check is made to fail one check the owner may waive. Its template's
+      // Approve anyway: the /breakdown trial's final check is made to fail one check the owner may waive. Its template's
       // hook window (read only by the quality check, never by the render) is set to 1 ms while the two runs are rendered
       // and checked, then put back. The /dan-koe run has its own template and is not touched.
       const waiveRun = batchIds[0];
       const waiveTpl = dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${waiveRun}'`) ?? "";
-      if (!waiveTpl || waiveTpl === dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${batchIds[1]}'`)) throw new Error(`the /graph batch run's template "${waiveTpl}" is not its own`);
-      if (dbValue(`SELECT coalesce(config->>'format', 'short') FROM pipeline_runs WHERE id = '${waiveRun}'`) !== "short") throw new Error("the /graph batch run is not a short: the hook window does not apply");
+      if (!waiveTpl || waiveTpl === dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${batchIds[1]}'`)) throw new Error(`the /breakdown batch run's template "${waiveTpl}" is not its own`);
+      if (dbValue(`SELECT coalesce(config->>'format', 'short') FROM pipeline_runs WHERE id = '${waiveRun}'`) !== "short") throw new Error("the /breakdown batch run is not a short: the hook window does not apply");
       const tplVersion = `FROM templates t WHERE t.id = v.template_id AND v.version = t.current_version AND t.id = '${waiveTpl}'`;
       const hookBefore = dbValue(`SELECT coalesce(v.spec->'pacing'->>'hookByMs', '') FROM template_versions v, templates t WHERE t.id = v.template_id AND v.version = t.current_version AND t.id = '${waiveTpl}'`) ?? "";
       if (!/^\d+$/.test(hookBefore)) throw new Error(`the ${waiveTpl} template has no hook window ("${hookBefore}")`);
       dbExec(`UPDATE template_versions v SET spec = jsonb_set(v.spec, '{pacing,hookByMs}', '1'::jsonb) ${tplVersion}`);
       try {
-        await reuseProduction(batchIds[0], "batch trial /graph");
+        await reuseProduction(batchIds[0], "batch trial /breakdown");
         await reuseProduction(batchIds[1], "batch trial /dan-koe");
         await driveToQc(batchIds, "batch trial");
       } finally {
         dbExec(`UPDATE template_versions v SET spec = jsonb_set(v.spec, '{pacing,hookByMs}', '${hookBefore}'::jsonb) ${tplVersion}`);
       }
       const skills = fakeStats.hermesSkills.slice(before).sort();
-      if (JSON.stringify(skills) !== JSON.stringify(["/dan-koe", "/graph"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /graph and /dan-koe`);
-      for (const [id, skill] of [[batchIds[0], "graph"], [batchIds[1], "dan-koe"]]) {
+      if (JSON.stringify(skills) !== JSON.stringify(["/breakdown", "/dan-koe"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /breakdown and /dan-koe`);
+      for (const [id, skill] of [[batchIds[0], "breakdown"], [batchIds[1], "dan-koe"]]) {
         const prov = hermesMuxFacts(id, `the ${skill} render`).pictureSkill;
         if (!new RegExp(`^hermes-render capcut /${skill} http://127\\.0\\.0\\.1:\\d+/clip/${skill}-\\d+\\.mp4$`).test(prov)) throw new Error(`the ${skill} render's picture provenance is "${prov}"`);
         const card = cardOf(id, "qc").first();
@@ -2059,13 +2059,13 @@ async function scoreAndDecide(runId, stars, shown) {
         // waived: its card has no plain Approve, says why, and offers the owner Approve anyway naming the failed check.
         const techIssues = dbValue(`SELECT details->'issues' FROM qc_reports WHERE run_id = '${waiveRun}' AND gate = 'G-technical' ORDER BY created_at DESC LIMIT 1`) ?? "";
         if (!/hook window/.test(techIssues) || /audio is silent|no audio stream|commercial-use terms|cannot be published/.test(techIssues)) {
-          await dumpPipeline(m, `/studio/runs/${waiveRun}`, "the /graph trial's quality check did not fail only waivable checks");
-          throw new Error(`the /graph trial's G-technical issues are ${techIssues}`);
+          await dumpPipeline(m, `/studio/runs/${waiveRun}`, "the /breakdown trial's quality check did not fail only waivable checks");
+          throw new Error(`the /breakdown trial's G-technical issues are ${techIssues}`);
         }
         await m.goto(`${APP}/review`);
         const card = cardOf(waiveRun, "qc").first();
-        if ((await card.getAttribute("data-kind")) !== "gate-failure") throw new Error(`the /graph trial's final card is "${await card.getAttribute("data-kind")}", not a failed check`);
-        if ((await checkQcChoices(waiveRun, card, "the /graph trial (waived)")) !== "fail") throw new Error("the /graph trial's gates did not fail");
+        if ((await card.getAttribute("data-kind")) !== "gate-failure") throw new Error(`the /breakdown trial's final card is "${await card.getAttribute("data-kind")}", not a failed check`);
+        if ((await checkQcChoices(waiveRun, card, "the /breakdown trial (waived)")) !== "fail") throw new Error("the /breakdown trial's gates did not fail");
         await card
           .getByTestId("qc-failure-note")
           .getByText(/^The quality check failed: (.+, )?hook window(, .+)?\. You can approve anyway; it is recorded\. Save your score first; the curation record marks the check as waived\.$/)
@@ -2101,10 +2101,10 @@ async function scoreAndDecide(runId, stars, shown) {
         }
         if (waivedRow !== "done approved true approved true true false 75") {
           await dumpPipeline(m, `/studio/runs/${waiveRun}`, "Approve anyway was not recorded as a waived approval");
-          throw new Error(`after Approve anyway the /graph trial reads "${waivedRow}", expected "done approved true approved true true false 75"`);
+          throw new Error(`after Approve anyway the /breakdown trial reads "${waivedRow}", expected "done approved true approved true true false 75"`);
         }
         const audited = dbValue(`SELECT count(*) FROM audit_log WHERE action = 'review.override' AND target = '${reviewId}' AND detail->>'waived' = 'quality check' AND detail->>'runId' = '${waiveRun}'`);
-        if (audited !== "1") throw new Error(`Approve anyway on the /graph trial has ${audited} audit row(s)`);
+        if (audited !== "1") throw new Error(`Approve anyway on the /breakdown trial has ${audited} audit row(s)`);
       }
       await scoreAndDecide(batchIds[1], { hook: 5, pacing: 5, legibility: 5, polish: 5, audio: 5 }, "100/100 by the owner");
       await shot("29b-review-batch-scored-mobile", m);
@@ -2112,13 +2112,13 @@ async function scoreAndDecide(runId, stars, shown) {
       await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
       const research = page.getByTestId("style-group-research");
       // The /graph trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
-      const graphRecord = research.getByTestId("style-pack-line-graph-skill").getByTestId("trial-record");
+      const graphRecord = research.getByTestId("style-pack-exploded-view").getByTestId("trial-record");
       await graphRecord.getByText(/^Trial runs of v0\.2\.0: 1 · technical pass 0% \(1 waived by the owner, not counted as a pass\) · mean presentation 75 \(1 scored\) · owner approved 1, rejected 0$/).waitFor();
       await graphRecord.getByTestId("trial-waived").waitFor();
       await graphRecord.getByTestId("promotion-issues").getByText("1 of 1 trial run(s) were approved with the quality check waived; a waived check never counts as a technical pass", { exact: true }).waitFor();
-      await research.getByTestId("style-pack-line-graph-skill").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
+      await research.getByTestId("style-pack-exploded-view").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
       await research.getByTestId("style-pack-branching-lines").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
-      await research.getByTestId("style-pack-line-graph-skill").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
+      await research.getByTestId("style-pack-exploded-view").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/breakdown, a quick skill from a small spec/).waitFor();
       await shot("29c-styles-research-scored-desktop");
       // Nothing from these runs is publishable: research only, never an upload or publish step.
       for (const id of batchIds) {
@@ -2270,7 +2270,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await shot("30-styles-lab-trial-desktop");
     await tryIt.click();
     await page.waitForURL(/\/studio\/new\?lab=probe-line-graph$/);
-    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Probe: line graph \(html-capture\) 0\.1\.1 is lab\./).waitFor();
+    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Line Graph \(Probe\) 0\.1\.1 is lab\./).waitFor();
     if ((await page.locator("#templateId").inputValue()) !== "tpl-probe-line-graph") throw new Error("New Video is not pre-filled with the lab pack");
     await page.getByTestId("lab-trial-note").waitFor();
     await page.selectOption("#channelId", { label: "Myth Stories" });
@@ -2609,13 +2609,13 @@ async function scoreAndDecide(runId, stars, shown) {
     console.log(`   html-design: ${[...seen].join(", ")} approved; page asked ${fakeStats.htmlDesignAsks[tag]} times (the fetch page refused); 6 stills; rendered by html-capture`);
   }
 
-  step("hermes-skill research run: /graph from New Video goes idea → research → script → skill brief → voice → Hermes render → qc; no assets stage, no image asks, the brief reaches Hermes");
+  step("hermes-skill research run: /dan-koe from New Video goes idea → research → script → skill brief → voice → Hermes render → qc; no assets stage, no image asks, the brief reaches Hermes");
   if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the hermes-skill run is skipped");
   else {
     const brief = "Skill brief trial: money that compounds";
     const imagesBefore = imageAskTotal();
     const rendersBefore = fakeStats.renderRequests.length;
-    const runId = await startFromNewVideo("tpl-line-graph-skill", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-branching-lines", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'hermes-skill ["idea", "research", "script", "skill-brief", "voice", "render", "qc"]') throw new Error(`the hermes-skill run stored the workflow "${flow}"`);
     let briefCard = false;
@@ -2625,12 +2625,12 @@ async function scoreAndDecide(runId, stars, shown) {
       await card.getByTestId("skill-brief-card").waitFor();
       const lines = await card.getByTestId("skill-brief-list").getByTestId("plan-line").allInnerTexts();
       if (lines.length < 3 || !lines.every((l) => / Spec: \{"label":"Savings"/.test(l))) throw new Error(`the skill brief card does not list a spec per shot: ${lines.join(" | ")}`);
-      await card.getByTestId("plan-note").getByText(/^For \/graph, one spec per shot; the run's narration is the audio\./).waitFor();
+      await card.getByTestId("plan-note").getByText(/^For \/dan-koe, one spec per shot; the run's narration is the audio\./).waitFor();
       if (await card.getByTestId("asset-grid").count()) throw new Error("the skill brief card shows an image grid");
     });
     if (!briefCard) throw new Error(`the skill brief never asked the owner (cards seen: ${[...seen].join(", ")}), though the pack's workflow reviews it every time`);
-    // The render request of this run: the only /graph render with a brief (the earlier /graph batch runs reused a storyboard).
-    const asked = fakeStats.renderRequests.slice(rendersBefore).filter((r) => r.skill === "/graph" && r.briefShots > 0);
+    // The render request of this run: the only /dan-koe render with a brief (the earlier batch runs reused a storyboard).
+    const asked = fakeStats.renderRequests.slice(rendersBefore).filter((r) => r.skill === "/dan-koe" && r.briefShots > 0);
     if (asked.length !== 1 || asked[0].briefShots < 3 || !asked[0].briefMarker || asked[0].pictures !== 0 || !asked[0].noPictureLine) {
       throw new Error(`the Hermes render of the hermes-skill run did not carry its brief: ${JSON.stringify(fakeStats.renderRequests.slice(rendersBefore))}`);
     }
