@@ -1986,9 +1986,12 @@ async function scoreAndDecide(runId, stars, shown) {
     const groups = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
     if (!groups.includes(RESEARCH_GROUP)) throw new Error(`no research group in the style list: ${groups.join(", ")}`);
     const optionIds = (await page.locator(`#templateId optgroup[label="${RESEARCH_GROUP}"] option`).evaluateAll((os) => os.map((o) => o.value))).sort();
-    // The seven research looks and the generic Hermes render share the group (styleGroup says so for all eight).
-    const want = [...RESEARCH.map(([id]) => id), "research-render"].map((id) => `tpl-${id}`).sort();
+    // The seven research looks share the group; the generic Hermes render has no skill behind it, so it sits in the
+    // plain trial group below (style-registry researchGroupOf needs pack.hermes).
+    const want = RESEARCH.map(([id]) => id).map((id) => `tpl-${id}`).sort();
     if (JSON.stringify(optionIds) !== JSON.stringify(want)) throw new Error(`the research group offers ${optionIds.join(", ")}, expected ${want.join(", ")}`);
+    const plainTrials = await page.locator(`#templateId optgroup[label="Trial styles (research only, not for publishing)"] option`).evaluateAll((os) => os.map((o) => o.value));
+    if (!plainTrials.includes("tpl-research-render")) throw new Error(`the plain trial group does not offer tpl-research-render: ${plainTrials.join(", ")}`);
     // Choosing one shows its provenance in the panel: badged, described with its skill path, credited (MIT).
     for (const id of RETIRED_RESEARCH) {
       if (optionIds.includes(`tpl-${id}`)) throw new Error(`the retired variant ${id} is still offered in the style list`);
