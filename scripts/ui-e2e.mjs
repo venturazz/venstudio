@@ -1059,7 +1059,7 @@ try {
   await page.locator("video").first().waitFor();
   await shot("13b-test-render-desktop");
   await page.goto(`${APP}/studio/test-render`);
-  await page.getByTestId("saved-production").filter({ hasText: "Test render: Narrated documentary with stills" }).first().waitFor();
+  await page.getByTestId("saved-production").filter({ hasText: "Test render: Documentary" }).first().waitFor();
 
   step("assets: upload a reference video with its licence");
   const refPath = path.join(OUT, "reference.mp4");
