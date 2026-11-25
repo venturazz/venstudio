@@ -2655,7 +2655,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
     const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
-    if (logged !== `line-graph-skill@${packVersion("line-graph-skill")} hermes`) throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
+    if (logged !== `branching-lines@${packVersion("branching-lines")} hermes`) throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
     await page.goto(`${APP}/studio/runs/${runId}`);
     await page.locator('[data-testid="run-workflow"][data-recipe="hermes-skill"]').locator('[data-testid="workflow-step-skill-brief"][data-state="passed"]').waitFor();
     if (await page.getByTestId("stage-assets").count()) throw new Error("the hermes-skill run page shows an assets stage");
