@@ -213,7 +213,7 @@ test("the render task: skill, brief, contract and spec as files, the narration a
 test("a Muse render goes only to a worker that installed exactly the pack's skill", () => {
   const skill = { id: "stick-figure", version: "1.0.0" };
   const w = { ...WORKER, version: "0.17.0", capabilities: ["ffmpeg", "skill:stick-figure@1.0.0"] };
-  assert.deepEqual(museRenderRefusals({ skill, packId: "hermes-stick-figure", workers: [w], now: NOW }), []);
+  assert.deepEqual(museRenderRefusals({ skill, packId: "stick-figure", workers: [w], now: NOW }), []);
   assert.match(museRenderRefusals({ skill: null, packId: "hermes-x", workers: [w], now: NOW })[0], /names no skill in venstudio-styles/);
   assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, version: "0.16.0" }], now: NOW })[0], /Update the Muse worker to 0\.17\.0/);
   assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, capabilities: ["skill:stick-figure@0.9.0"] }], now: NOW })[0], /has \/stick-figure@1\.0\.0 installed yet/);

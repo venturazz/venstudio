@@ -14,7 +14,7 @@ import { planReview, SCENE_SPEC_PREVIEW_NOTE } from "./plan-review.ts";
 
 const STYLES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../styles");
 const lock = JSON.parse(readFileSync(path.join(STYLES_DIR, "lock.json"), "utf8")) as { packs: Array<{ id: string; sha256: string }> };
-const graph = parsePack(JSON.parse(readFileSync(path.join(STYLES_DIR, "packs/animated-line-graph/style.json"), "utf8")), lock.packs.find((p) => p.id === "animated-line-graph")!.sha256)!;
+const graph = parsePack(JSON.parse(readFileSync(path.join(STYLES_DIR, "packs/line-graph/style.json"), "utf8")), lock.packs.find((p) => p.id === "line-graph")!.sha256)!;
 const template = packSeedTemplate(graph);
 const CONTRACT: SpecContract = { name: graph.name, elements: graph.plan!.elements!, motionTokens: graph.plan!.motionTokens! };
 
@@ -41,7 +41,7 @@ test("the validator checks the shape against the pack's contract: elements, moti
     return r.ok ? [] : r.issues;
   };
   assert.deepEqual(CONTRACT.elements, ["heading", "counter", "bar"]);
-  assert.ok(with_((s) => (s.scenes[0].elements = [{ kind: "plate" }])).some((i) => /Scene 1 element 1 is a plate, which Animated line graph \(html-capture\) does not draw\. Use heading, counter, bar\./.test(i)), "an element the page does not draw");
+  assert.ok(with_((s) => (s.scenes[0].elements = [{ kind: "plate" }])).some((i) => /Scene 1 element 1 is a plate, which Line Graph does not draw\. Use heading, counter, bar\./.test(i)), "an element the page does not draw");
   assert.ok(with_((s) => (s.scenes[0].elements = [{ kind: "sparkle" }])).some((i) => /kind must be one of/.test(i)));
   assert.ok(with_((s) => (s.scenes[0].tokens = ["whip"])).some((i) => /Scene 1 tokens may only be draw, counter, dim/.test(i)), "a motion token outside the contract");
   assert.ok(with_((s) => (s.scenes[0].tokens = [])).some((i) => /Scene 1 needs a motion token/.test(i)));
@@ -105,7 +105,7 @@ test("the spec feeds the scene plan and the render payload directly: no picture,
   const plan = buildScenePlan({ styleId: graph.id, format: "short", shots, transitionSec: 0, style: styleFromPack(graph) });
   assert.ok(plan.ok, plan.ok ? "" : plan.issues.join("; "));
   assert.equal(plan.plan.engine, "html-capture");
-  assert.equal(plan.plan.template, "animated-line-graph");
+  assert.equal(plan.plan.template, "line-graph");
   assert.deepEqual(plan.plan.scenes[2].elements, [{ kind: "counter", text: "GW in 2023", value: 1200 }]);
   assert.deepEqual(plan.plan.scenes[1].tokens, ["draw", "counter"]);
   const plate = "00000000-0000-4000-8000-0000000000aa";

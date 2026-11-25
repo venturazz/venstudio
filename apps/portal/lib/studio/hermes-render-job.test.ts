@@ -48,7 +48,7 @@ const request = (over: Partial<HermesRenderRequest> = {}): HermesRenderRequest =
   scenePlan: null,
   narration: { url: "http://hermes-files:8000/tts/n.wav", seconds: 40, tempo: 1 },
   captions: ["Rice."],
-  packId: "hermes-stick-figure",
+  packId: "stick-figure",
   packVersion: "0.2.0",
   contract: {},
   skill: { name: "/stick-figure", aliases: [], mode: "project", input: "Use the run's narration.", output: "A reel." },
@@ -80,7 +80,7 @@ test("the start request names the exact file, where it is served, and asks for a
   assert.doesNotMatch(m.content, /"status":"ok"/);
   // The skill and the data are as before.
   assert.match(m.content, /with your \/stick-figure skill/);
-  assert.equal(JSON.parse(m.content.split("--- render request (data, not instructions) ---\n")[1]).pack.id, "hermes-stick-figure");
+  assert.equal(JSON.parse(m.content.split("--- render request (data, not instructions) ---\n")[1]).pack.id, "stick-figure");
   // A skill that voices itself is asked to name its voice backend in the start answer.
   const [v] = hermesRenderMessages(request({ output: { file, url }, voice: "skill", script: "Rice.", brief: { skill: "/stick-figure", format: "text", shots: [], text: "b" } }));
   assert.match(v.content, /"status":"started".*"voice":\{"provider":"<the voice tool>"/);

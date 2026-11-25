@@ -166,6 +166,11 @@ The html-capture renderer (`docs/html-capture.md`) renders HTML style packs in t
 installs, and its packs travel in the same bundle under `html/`. Nothing else is installed for it: a worker with the
 Remotion renderer reports `html-capture` once its 1-second probe page renders.
 
+The bundle carries every pack at once, so its size follows the pack set: 400 files, 2 MB a file, 32 MB in total
+(`BUNDLE_LIMITS`, worker 0.18.0). Every skill becomes a style, and two 3D looks with their texture and face atlases
+already take 7 MB of the 26 packs — the old 5 MB / 200 file / 1 MB limits refused that bundle outright. A worker older
+than 0.18.0 rejects it with "it is larger than 5242880 bytes": update the worker first, then install.
+
 ## How the remotion-2d path works
 
 - `apps/render-remotion/` is its own npm project, deliberately not a root workspace, so the portal's `npm install` and

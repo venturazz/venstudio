@@ -195,7 +195,7 @@ test("the timeline: queued, claimed, TASK.md written, DONE seen, uploaded, finis
 test("picture fallback context: PLAN.md with this shot marked, CONTRACT.md, SPEC.json; within the worker's limits", () => {
   const plan = planMarkdown({
     topic: "Roman roads",
-    styleId: "documentary-stills",
+    styleId: "documentary",
     script: "Romans built roads.",
     shots: [
       { beatRole: "hook", seconds: 3, description: "A road", imagePrompt: "Old road at dawn" },
@@ -206,7 +206,7 @@ test("picture fallback context: PLAN.md with this shot marked, CONTRACT.md, SPEC
   });
   assert.ok(plan.includes("Romans built roads.") && plan.includes("1. [hook, 3 s] A road") && plan.includes("   Picture: Old road at dawn") && plan.includes("2. [body, 4 s] <- THIS SHOT Builders"));
   assert.ok(planMarkdown({ topic: "", styleId: "", script: null, shots: null, shotRef: "s1", shotIndex: null }).includes("(no approved shot list yet)"));
-  const contract = contractMarkdown({ styleId: "documentary-stills", packId: "documentary-stills", contract: { pacing: { minShotSec: 2 } } });
+  const contract = contractMarkdown({ styleId: "documentary", packId: "documentary", contract: { pacing: { minShotSec: 2 } } });
   assert.ok(contract.includes('"minShotSec": 2'));
   assert.match(contractMarkdown({ styleId: "x", contract: null }), /No pack contract/);
   const c = pictureFallbackContext({ shotRef: "s02", prompt: "Builders laying stones", format: "short", width: 1080, height: 1920, plan, contract });

@@ -156,9 +156,9 @@ test("the server guard: Approve anyway on the final card is the owner's, a trial
 test("trial, research and lab runs: the guard only stops automatic approval and publishing, never the owner's Approve", () => {
   const packs: RunStylePack[] = [
     { id: "explainer-flat-vector", version: "1.0.1", status: "trial", trial: true },
-    { id: "hermes-graph", version: "0.2.0", status: "trial", trial: true, engine: "hermes" },
+    { id: "line-graph-skill", version: "0.2.0", status: "trial", trial: true, engine: "hermes" },
     { id: "probe-line-graph", version: "0.1.1", status: "lab", trial: true, lab: true },
-    { id: "hermes-designed-explainer", version: "0.1.0", status: "trial", trial: true, designed: true },
+    { id: "designed-explainer", version: "0.1.0", status: "trial", trial: true, designed: true },
   ];
   for (const p of packs) {
     assert.ok(publishRefusal(p), `${p.id} is never published`);

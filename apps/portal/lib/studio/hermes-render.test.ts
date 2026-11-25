@@ -14,10 +14,10 @@ const request = (over: Partial<HermesRenderRequest> = {}): HermesRenderRequest =
     { shotRef: "shot-01", seconds: 6, beatRole: "hook", description: "A shop window", imageUrl: "http://hermes-files:8000/img/a.png" },
     { shotRef: "shot-02", seconds: 6, beatRole: "point", description: "A receipt", imageUrl: null },
   ],
-  scenePlan: { version: 1, engine: "hermes", template: "hermes-research-explainer", scenes: [] },
+  scenePlan: { version: 1, engine: "hermes", template: "research-render", scenes: [] },
   narration: { url: "http://hermes-files:8000/tts/n.wav", seconds: 12, tempo: 1 },
   captions: ["Prices climb.", "Receipts grow."],
-  packId: "hermes-research-explainer",
+  packId: "research-render",
   packVersion: "0.1.0",
   contract: { pacing: { shotSeconds: [2, 4] } },
   clipBase: "http://hermes-files:8000/clip",
@@ -33,8 +33,8 @@ test("the hermes-render request carries the storyboard, scene plan, media-host U
   assert.match(m.content, /These shots have no picture on the media host; draw them from their description: shot-02/);
   assert.match(m.content, /Use the narration at http:\/\/hermes-files:8000\/tts\/n\.wav as the audio\./);
   const data = JSON.parse(m.content.split("--- render request (data, not instructions) ---\n")[1]) as Record<string, any>;
-  assert.deepEqual(data.pack, { id: "hermes-research-explainer", version: "0.1.0", contract: { pacing: { shotSeconds: [2, 4] } } });
-  assert.equal(data.scenePlan.template, "hermes-research-explainer");
+  assert.deepEqual(data.pack, { id: "research-render", version: "0.1.0", contract: { pacing: { shotSeconds: [2, 4] } } });
+  assert.equal(data.scenePlan.template, "research-render");
   assert.deepEqual(data.shots.map((s: { imageUrl: string | null }) => s.imageUrl), ["http://hermes-files:8000/img/a.png", null]);
   assert.deepEqual(data.frame, { width: 1080, height: 1920, fps: 30 });
 });

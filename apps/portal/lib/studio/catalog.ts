@@ -405,12 +405,17 @@ export interface Style {
   cautions: string[];
   /** Where the research for this style came from. */
   sources: string[];
+  /**
+   * The ids this style used to have, before a rename. They resolve through STYLE_BY_ID so a run, a saved brief or a
+   * review link written before the rename still finds the style; the picker shows the current id only.
+   */
+  wasIds?: string[];
 }
 
 export const STYLES: Style[] = [
   {
     id: "explainer-flat-vector",
-    label: "Flat-vector explainer",
+    label: "Flat Vector",
     family: "explainer",
     description: "A calm narrator over flat illustrated scenes that build one argument step by step.",
     formats: ["short", "long"],
@@ -490,8 +495,9 @@ export const STYLES: Style[] = [
     sources: [],
   },
   {
-    id: "documentary-stills",
-    label: "Narrated documentary with stills",
+    id: "documentary",
+    wasIds: ["documentary-stills"],
+    label: "Documentary",
     family: "documentary",
     description: "Narration over stills with slow camera moves and a clear timeline.",
     formats: ["short", "long"],
@@ -506,7 +512,7 @@ export const STYLES: Style[] = [
   },
   {
     id: "mystery-narration",
-    label: "Mystery narration with atmosphere",
+    label: "Mystery Story",
     family: "narrative",
     description: "Atmospheric stills and a slow, suspenseful narration.",
     formats: ["short", "long"],
@@ -520,8 +526,9 @@ export const STYLES: Style[] = [
     sources: ["https://www.seedance.tv/blog/faceless-youtube-channel-ideas"],
   },
   {
-    id: "horror-story",
-    label: "Original horror story",
+    id: "horror-narration",
+    wasIds: ["horror-story"],
+    label: "Horror Story",
     family: "narrative",
     description: "A fictional story told over dark stills with sound design.",
     formats: ["short", "long"],
@@ -626,7 +633,7 @@ export const STYLES: Style[] = [
   },
   {
     id: "ambient-loop",
-    label: "Relaxing ambience loop",
+    label: "Ambient Loop",
     family: "ambient",
     description: "Long, calm shots with ambient sound and no narration.",
     formats: ["short", "long"],
@@ -641,7 +648,7 @@ export const STYLES: Style[] = [
   },
   {
     id: "travel-documentary",
-    label: "Travel documentary (own or generated scenery)",
+    label: "Travel Doc",
     family: "documentary",
     description: "Narrated journey through places, using your photos or licensed generated scenery.",
     formats: ["short", "long"],
@@ -686,7 +693,7 @@ export const STYLES: Style[] = [
   },
   {
     id: "story-read-aloud",
-    label: "Story read-aloud (adapted, original)",
+    label: "Read-Aloud",
     family: "narrative",
     description: "A first-person story rewritten as original narration over stills.",
     formats: ["short"],
@@ -717,7 +724,8 @@ export const STYLES: Style[] = [
   {
     // Research only (owner decision): Hermes renders the whole video with its own tools. Its pack can never go above
     // Trial and every run of it is a trial (style-registry.ts), so the planner's keywords stay deliberately narrow.
-    id: "hermes-research-explainer",
+    id: "research-render",
+    wasIds: ["hermes-research-explainer"],
     label: "Hermes render (research only)",
     family: "explainer",
     description: "Hermes renders the whole video with its own tools from a skill brief it writes from the approved script. For trials and research, never for publishing.",
@@ -734,4 +742,6 @@ export const STYLES: Style[] = [
   },
 ];
 
-export const STYLE_BY_ID: Record<string, Style> = Object.fromEntries(STYLES.map((s) => [s.id, s]));
+export const STYLE_BY_ID: Record<string, Style> = Object.fromEntries(
+  STYLES.flatMap((s) => [[s.id, s] as const, ...(s.wasIds ?? []).map((old) => [old, s] as const)]),
+);

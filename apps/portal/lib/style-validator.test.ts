@@ -24,10 +24,16 @@ const has = (issues: string[], re: RegExp) => issues.some((i) => re.test(i));
 test("the vendored packs are valid", () => {
   const { packs, issues } = V.validateRepo(STYLES);
   assert.deepEqual(issues, []);
-  // 13 packs (the html-design pack and the first engine command pack among them), plus one Hermes research pack per
-  // claude-animation-skills skill (ten; zach-3d-films is an alias).
-  assert.equal(packs.length, 23);
-  assert.equal(packs.filter((p: { id: string }) => p.id.startsWith("hermes-") && !["hermes-research-explainer", "hermes-designed-explainer"].includes(p.id)).length, 10);
+  // 26 packs: the worker looks, the four retired skill-driven variants (the old hermes-* ids, kept so history
+  // resolves) and the Hermes research packs that still name a claude-animation-skills skill.
+  assert.equal(packs.length, 26);
+  const reported = packs as Array<{ id: string; engine: string; status: string }>;
+  const hermes = reported.filter((p) => p.engine === "hermes");
+  assert.equal(hermes.length, 11);
+  assert.deepEqual(
+    hermes.filter((p) => p.status === "retired").map((p) => p.id),
+    ["line-graph-skill", "step-line-art-skill", "voxel-build-skill"],
+  );
 });
 
 test("every required field is required", () => {
@@ -41,12 +47,12 @@ test("every required field is required", () => {
 });
 
 test("a bad status is refused", () => {
-  assert.ok(has(V.validateStyle({ ...load("horror-story"), status: "published" }), /status must be one of draft, lab, trial, proven, listed, retired/));
-  assert.ok(has(V.validateStyle({ ...load("horror-story"), status: "listed" }), /owner-approved PR/), "listed needs the owner's approval");
+  assert.ok(has(V.validateStyle({ ...load("horror-narration"), status: "published" }), /status must be one of draft, lab, trial, proven, listed, retired/));
+  assert.ok(has(V.validateStyle({ ...load("horror-narration"), status: "listed" }), /owner-approved PR/), "listed needs the owner's approval");
 });
 
 test("a bad renderer is refused", () => {
-  const s = load("documentary-stills");
+  const s = load("documentary");
   assert.ok(has(V.validateStyle({ ...s, renderer: { ...s.renderer, engine: "premiere" } }), /renderer.engine must be one of/));
   assert.ok(has(V.validateStyle({ ...s, renderer: { ...s.renderer, engine: "remotion-2d" } }), /renderer.composition must name/));
   assert.ok(has(V.validateStyle({ ...s, renderer: { ...s.renderer, engine: "godot-2d" } }), /no worker can run godot-2d yet/));

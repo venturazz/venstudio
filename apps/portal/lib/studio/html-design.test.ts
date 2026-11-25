@@ -46,7 +46,7 @@ const STYLES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const lock = JSON.parse(readFileSync(path.join(STYLES_DIR, "lock.json"), "utf8")) as { packs: Array<{ id: string; version: string; sha256: string; files: Record<string, string> }> };
 const lockPack = (id: string) => lock.packs.find((p) => p.id === id)!;
 const rawStyle = (id: string) => JSON.parse(readFileSync(path.join(STYLES_DIR, "packs", id, "style.json"), "utf8")) as Record<string, unknown>;
-const DESIGNED = "hermes-designed-explainer";
+const DESIGNED = "designed-explainer";
 const designedPack = parsePack(rawStyle(DESIGNED), lockPack(DESIGNED).sha256) as StylePack;
 const VENDORED = Object.keys(lockPack(DESIGNED).files).filter((f) => f.startsWith("render/") && f !== "render/index.html").map((f) => f.slice("render/".length));
 const REFERENCE = readFileSync(path.join(STYLES_DIR, "packs", DESIGNED, "render/index.html"), "utf8");
@@ -287,7 +287,7 @@ test("preview: the stills' times, the worker states and the fallback, the payloa
   assert.deepEqual(sceneStartsOf({ shots: [{ seconds: 3 }, { seconds: 4 }, { seconds: 4 }] as never, transitionSec: 0 }), [0, 3, 7]);
   assert.deepEqual(sceneStartsOf({ shots: [{ seconds: 3 }, { seconds: 4 }] as never, transitionSec: 0.5 }), [0, 2.5]);
   // Which workers can take them (stored rows only).
-  const cap = `pack:animated-line-graph@0.1.2`;
+  const cap = `pack:line-graph@0.1.2`;
   assert.equal(previewWorkers([["ffmpeg", "html-capture", cap]], cap), "no-worker", "a 0.10.0 worker reports no preview-frames");
   assert.equal(previewWorkers(null, cap), "no-worker");
   assert.equal(previewWorkers([["preview-frames", "html-capture"]], cap), "waiting-pack");

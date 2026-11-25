@@ -69,13 +69,13 @@ test("the sync copies the commit, not the working tree, and --check catches a ha
   const { repo, commit } = scratchRepo(t);
   const target = mkdtempSync(path.join(os.tmpdir(), "vs-styles-target-"));
   t.after(() => rmSync(target, { recursive: true, force: true }));
-  const readme = path.join(repo, "packs", "horror-story", "README.md");
+  const readme = path.join(repo, "packs", "horror-narration", "README.md");
   writeFileSync(readme, readFileSync(readme, "utf8") + "\nuncommitted\n");
   await S.syncStyles({ from: repo, commit, target });
-  assert.ok(!readFileSync(path.join(target, "packs", "horror-story", "README.md"), "utf8").includes("uncommitted"));
-  writeFileSync(path.join(target, "packs", "horror-story", "README.md"), "edited by hand ".repeat(30) + "\n## Provenance\n## Status\n");
+  assert.ok(!readFileSync(path.join(target, "packs", "horror-narration", "README.md"), "utf8").includes("uncommitted"));
+  writeFileSync(path.join(target, "packs", "horror-narration", "README.md"), "edited by hand ".repeat(30) + "\n## Provenance\n## Status\n");
   const issues = await S.checkStyles(target);
-  assert.ok(issues.some((i) => /styles\/packs\/horror-story differs from lock.json/.test(i)), issues.join("\n"));
+  assert.ok(issues.some((i) => /styles\/packs\/horror-narration differs from lock.json/.test(i)), issues.join("\n"));
 });
 
 test("a commit whose packs do not validate is refused and changes nothing", async (t) => {

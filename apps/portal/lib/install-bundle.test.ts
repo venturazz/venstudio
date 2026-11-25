@@ -95,10 +95,10 @@ test("html-capture packs travel in the same bundle as html/<id>/ with html/packs
     assert.equal(b.files.find((f) => f.path === `html/probe-line-graph/${rel}`)?.content, readFileSync(path.join(STYLES, "packs/probe-line-graph/render", rel), "utf8"), rel);
   }
   const list = JSON.parse(b.files.find((f) => f.path === HTML_PACK_LIST_FILE)!.content) as Array<{ id: string; version: string; drawsCaptions: boolean; designed?: boolean; sha256: string }>;
-  assert.deepEqual(list.map((p) => p.id), ["animated-line-graph", "hermes-designed-explainer", "minimal-line-art", "probe-line-graph"]);
-  assert.deepEqual(list.map((p) => p.drawsCaptions), [false, false, true, false]);
+  assert.deepEqual(list.map((p) => p.id), ["blocky-story", "designed-explainer", "line-graph", "minimal-line-art", "probe-line-graph", "voxel-build"]);
+  assert.deepEqual(list.map((p) => p.drawsCaptions), [true, false, false, true, false, true]);
   // Only the html-design pack is marked designed (worker 0.11.0 renders only a page uploaded with the job for it).
-  assert.deepEqual(list.map((p) => p.designed ?? false), [false, true, false, false]);
+  assert.deepEqual(list.map((p) => p.designed ?? false), [false, true, false, false, false, false]);
   // The digest is the styles validator's renderDigest over the lock's hashes, so a worker can check what it installed.
   const lock = JSON.parse(readFileSync(path.join(STYLES, "lock.json"), "utf8")) as { packs: Array<{ id: string; version: string; files: Record<string, string> }> };
   const lp = lock.packs.find((p) => p.id === "probe-line-graph")!;
@@ -118,7 +118,7 @@ test("html-capture packs travel in the same bundle as html/<id>/ with html/packs
   assert.deepEqual(got.problems, []);
   const htmlLock = (lock.packs as Array<{ id: string; version: string; engine?: string }>).filter((p) => p.engine === "html-capture").sort((x, y) => (x.id < y.id ? -1 : 1));
   assert.deepEqual(got.packs.map((p) => `${p.id}@${p.version}`), htmlLock.map((p) => `${p.id}@${p.version}`));
-  assert.deepEqual(got.packs.filter((p) => p.designed).map((p) => p.id), ["hermes-designed-explainer"], "the worker reads the designed mark");
+  assert.deepEqual(got.packs.filter((p) => p.designed).map((p) => p.id), ["designed-explainer"], "the worker reads the designed mark");
 });
 
 test("the portal's html list and digest are the styles assembler's, byte for byte", async () => {

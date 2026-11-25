@@ -35,7 +35,7 @@ function folder(files: Record<string, string | Uint8Array>) {
 
 function sample() {
   const kit = { id: "claude-animation-skills", version: "1.0.0", ...folder({ "setup.sh": "#!/bin/sh\necho kit\n", "fonts/a.woff2": new Uint8Array([0, 1, 2, 255]) }) };
-  const sf = { id: "stick-figure", status: "candidate" as const, version: "1.0.0", kit: kit.id, packs: ["hermes-stick-figure"], ...folder({ "skill.json": "{}", "files/SKILL.md": "---\nname: stick-figure\n---\n" }) };
+  const sf = { id: "stick-figure", status: "candidate" as const, version: "1.0.0", kit: kit.id, packs: ["stick-figure"], ...folder({ "skill.json": "{}", "files/SKILL.md": "---\nname: stick-figure\n---\n" }) };
   const graph = { id: "graph", status: "curated" as const, version: "1.2.0", kit: null, packs: [], ...folder({ "files/SKILL.md": "---\nname: graph\n---\n" }) };
   return agentSkillsBundle({ commit: "c".repeat(40), kits: [kit], skills: [sf, graph] });
 }
@@ -100,7 +100,7 @@ test("the vendored styles' skills build a bundle the worker accepts, within the 
   const text = agentSkillsText(b);
   assert.ok(Buffer.byteLength(text) < 10 * 1024 * 1024, `${Buffer.byteLength(text)} bytes`);
   const parsed = parseAgentSkillsBundle(JSON.parse(text));
-  assert.ok(parsed.skills.some((s) => s.id === "stick-figure" && s.packs.includes("hermes-stick-figure")));
+  assert.ok(parsed.skills.some((s) => s.id === "stick-figure" && s.packs.includes("stick-figure")));
 });
 
 test("TASK.md names the installed skill and its kit for a render task, and only then allows running its tools", () => {

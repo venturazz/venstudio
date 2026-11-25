@@ -42,7 +42,7 @@ const bundle = (files: Record<string, unknown>) => ({ format: 1, kind: PAGE_BUND
 const INDEX = "<!doctype html><script>window.VENSTUDIO={init(p){return p},renderFrame(){}}</script>";
 
 test("worker 0.11.0+ runs preview-frames, and names the job type in a claim only once its still probe passed", () => {
-  assert.equal(VERSION, "0.17.0");
+  assert.equal(VERSION, "0.18.0");
   assert.ok(advertisedJobTypes({}).includes("preview-frames"));
   assert.ok(!claimJobTypes(advertisedJobTypes({}), ["ffmpeg", "html-capture", "pack:probe-line-graph@0.1.1"]).includes("preview-frames"));
   assert.ok(claimJobTypes(advertisedJobTypes({}), ["ffmpeg", "html-capture", "preview-frames"]).includes("preview-frames"));
@@ -110,13 +110,13 @@ test("the page guard refuses fetch, XHR, workers, window.open and frames, and re
 });
 
 test("an html-design pack renders only a page uploaded with the job, and an uploaded page only with such a pack", () => {
-  const designed = { id: "hermes-designed-explainer", version: "0.1.0", drawsCaptions: false, designed: true, sha256: "0".repeat(64), dir: "/x" } as InstalledHtmlPack;
+  const designed = { id: "designed-explainer", version: "0.1.0", drawsCaptions: false, designed: true, sha256: "0".repeat(64), dir: "/x" } as InstalledHtmlPack;
   const plain = { id: "probe-line-graph", version: "0.1.1", drawsCaptions: false, sha256: "0".repeat(64), dir: "/y" } as InstalledHtmlPack;
   assert.equal(htmlPageModeFor({ page: { assetId: PAGE } }, designed), designed);
   assert.equal(htmlPageModeFor({}, plain), plain);
   assert.throws(() => htmlPageModeFor({}, designed), /draws a page Hermes writes for each run, and this job carries none/);
   assert.throws(() => htmlPageModeFor({ page: { assetId: PAGE } }, plain), /not an html-design pack/);
-  assert.deepEqual(parseHtmlPacks([{ id: "hermes-designed-explainer", version: "0.1.0", drawsCaptions: false, designed: true, sha256: "a".repeat(64) }])[0].designed, true);
+  assert.deepEqual(parseHtmlPacks([{ id: "designed-explainer", version: "0.1.0", drawsCaptions: false, designed: true, sha256: "a".repeat(64) }])[0].designed, true);
   assert.equal(parseHtmlPacks([{ id: "probe-line-graph", version: "0.1.1", drawsCaptions: false, sha256: "a".repeat(64) }])[0].designed, undefined);
 });
 
@@ -146,7 +146,7 @@ function previewPayload(extra: Record<string, unknown> = {}) {
     targetLufs: -14,
     fontAssetId: FONT,
     inputs: [PLATE, FONT, PAGE],
-    scenePlan: scenePlan("hermes-designed-explainer"),
+    scenePlan: scenePlan("designed-explainer"),
     runId: "eeeeeeee-5555-4555-8555-0000000000ee",
     preview: { times: [1, 3, 5, 5.01], page: PAGE },
     ...extra,
