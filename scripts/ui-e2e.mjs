@@ -171,7 +171,7 @@ function directorReply(messages) {
     });
   }
   // Renderer hermes (research only): Hermes renders the whole video and publishes it under /clip/ on its media host.
-  // A research pack names its Hermes skill (claude-animation-skills, e.g. /graph): the fake records which skill arrived
+  // A research pack names its Hermes skill (claude-animation-skills, e.g. /dan-koe): the fake records which skill arrived
   // and answers with a real clip made for that skill.
   if (stage === "hermes-render") {
     fakeStats.hermesRenders++;
@@ -2063,7 +2063,7 @@ async function scoreAndDecide(runId, stars, shown) {
         await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
       }
       {
-        // The /graph trial's final check failed the hook window (a check the owner may waive) and nothing that is never
+        // The /breakdown trial's final check failed the hook window (a check the owner may waive) and nothing that is never
         // waived: its card has no plain Approve, says why, and offers the owner Approve anyway naming the failed check.
         const techIssues = dbValue(`SELECT details->'issues' FROM qc_reports WHERE run_id = '${waiveRun}' AND gate = 'G-technical' ORDER BY created_at DESC LIMIT 1`) ?? "";
         if (!/hook window/.test(techIssues) || /audio is silent|no audio stream|commercial-use terms|cannot be published/.test(techIssues)) {
@@ -2119,7 +2119,7 @@ async function scoreAndDecide(runId, stars, shown) {
       await page.goto(`${APP}/studio/styles`);
       await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
       const research = page.getByTestId("style-group-research");
-      // The /graph trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
+      // The /breakdown trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
       const graphRecord = research.getByTestId("style-pack-exploded-view").getByTestId("trial-record");
       await graphRecord.getByText(/^Trial runs of v0\.2\.0: 1 · technical pass 0% \(1 waived by the owner, not counted as a pass\) · mean presentation 75 \(1 scored\) · owner approved 1, rejected 0$/).waitFor();
       await graphRecord.getByTestId("trial-waived").waitFor();
@@ -2650,7 +2650,7 @@ async function scoreAndDecide(runId, stars, shown) {
     if (fakeStats.imageAsksByBrief[tag] || fakeStats.storyboardAsksByBrief[tag]) throw new Error(`the hermes-skill run asked for ${fakeStats.imageAsksByBrief[tag] ?? 0} image(s) and ${fakeStats.storyboardAsksByBrief[tag] ?? 0} storyboard(s)`);
     console.log(`   image asks while the hermes-skill run ran, any run: ${imageAskTotal() - imagesBefore}`);
     const prov = hermesMuxFacts(runId, "the hermes-skill render").pictureLicense;
-    if (!/^hermes-render \/graph .*from this run's skill brief and narration\. Research only/.test(prov)) throw new Error(`the hermes-skill render's picture provenance is "${prov}"`);
+    if (!/^hermes-render \/dan-koe .*from this run's skill brief and narration\. Research only/.test(prov)) throw new Error(`the hermes-skill render's picture provenance is "${prov}"`);
     const card = cardOf(runId, "qc").first();
     await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
