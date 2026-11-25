@@ -1230,7 +1230,7 @@ try {
   await page.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
   // The Hermes research pack is rendered by the portal, so it is offered here (only here) once Hermes is set up.
   await page.selectOption("#templateId", "tpl-research-render");
-  await page.getByTestId("trial-style-hermes-research-explainer").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
+  await page.getByTestId("trial-style-research-render").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
   await page.getByTestId("no-listed-styles").waitFor();
   const styleOptions = await page.locator("#templateId option").evaluateAll((os) => os.map((o) => o.value));
   for (const planned of ["tpl-kinetic-facts", "tpl-math-explainer", "tpl-blender-3d", "tpl-ai-character-sketch"]) {
@@ -1857,7 +1857,7 @@ try {
       await page.goto(`${APP}${hermesHref}`);
       await page.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
       await page.goto(`${APP}/studio/styles`);
-      const hermesPack = page.getByTestId("style-pack-hermes-research-explainer");
+      const hermesPack = page.getByTestId("style-pack-research-render");
       await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
       await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
       await shot("15c-styles-hermes-desktop");
@@ -2096,13 +2096,13 @@ async function scoreAndDecide(runId, stars, shown) {
       await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
       const research = page.getByTestId("style-group-research");
       // The /graph trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
-      const graphRecord = research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record");
+      const graphRecord = research.getByTestId("style-pack-line-graph-skill").getByTestId("trial-record");
       await graphRecord.getByText(/^Trial runs of v0\.2\.0: 1 · technical pass 0% \(1 waived by the owner, not counted as a pass\) · mean presentation 75 \(1 scored\) · owner approved 1, rejected 0$/).waitFor();
       await graphRecord.getByTestId("trial-waived").waitFor();
       await graphRecord.getByTestId("promotion-issues").getByText("1 of 1 trial run(s) were approved with the quality check waived; a waived check never counts as a technical pass", { exact: true }).waitFor();
-      await research.getByTestId("style-pack-hermes-graph").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
-      await research.getByTestId("style-pack-hermes-dan-koe").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
-      await research.getByTestId("style-pack-hermes-graph").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
+      await research.getByTestId("style-pack-line-graph-skill").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
+      await research.getByTestId("style-pack-branching-lines").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
+      await research.getByTestId("style-pack-line-graph-skill").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
       await shot("29c-styles-research-scored-desktop");
       // Nothing from these runs is publishable: research only, never an upload or publish step.
       for (const id of batchIds) {
