@@ -225,3 +225,15 @@ remotion studio src/index.ts`; then `npx tsc -p tsconfig.json` and `node scripts
 every composition listed in the generated `src/packs/packs.json`, and the worker maps a scene plan's template to its
 composition from that list. A new runtime file goes into `REMOTION_RUNTIME_FILES` in
 `apps/portal/lib/install-bundle.ts` (a unit test fails until it does) and into the styles repo's runtime copy.
+
+## Preview stills are bounded
+
+The still-frame preview (stage `preview`) is a check, not a render: the worker draws frames from 0 and stops at
+`STILL_DRAW_BUDGET_MS` (3 min) or `STILL_MAX_FRAMES` (600), keeping the stills it got, and the Review card says why
+fewer arrived. A heavy WebGL page (`voxel-build` under llvmpipe) costs seconds per frame, so without that bound a
+six-still preview of a 45 s video would draw a thousand frames to prove the look is right.
+
+`Page.captureScreenshot` gets its own, longer budget on a pack page (`PACK_SHOT_TIMEOUT_MS`, 90 s): the capture waits
+for a composited surface, which on a slow software rasterizer can outlast the 30 s a frame gets even when the page is
+fine. Removing the preview is not the fix — it is the cheap gate that catches a broken page before the voice and the
+render spend ten minutes finding out.

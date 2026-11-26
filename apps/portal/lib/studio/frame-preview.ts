@@ -97,6 +97,10 @@ export interface PreviewResult {
   blocked: string[];
   page: "uploaded" | "pack";
   drawsCaptions: boolean;
+  /** Set when the worker stopped drawing before the last asked still (a heavy page, a bounded preview). */
+  stopped: string | null;
+  /** How many stills the preview asked for, when the worker stopped early. */
+  planned: number | null;
 }
 
 /** Reads a preview-frames job result (worker 0.11.0), keeping plain values within limits. */
@@ -109,7 +113,15 @@ export function parsePreviewResult(raw: unknown): PreviewResult {
         return typeof o.name === "string" && /^still-\d{2}\.jpg$/.test(o.name) && typeof o.atSec === "number" && Number.isFinite(o.atSec) ? [{ name: o.name, atSec: o.atSec }] : [];
       })
     : [];
-  return { stills: stills.slice(0, MAX_PREVIEW_STILLS), consoleErrors: texts(r.consoleErrors), blocked: texts(r.blocked), page: r.page === "uploaded" ? "uploaded" : "pack", drawsCaptions: r.drawsCaptions === true };
+  return {
+    stills: stills.slice(0, MAX_PREVIEW_STILLS),
+    consoleErrors: texts(r.consoleErrors),
+    blocked: texts(r.blocked),
+    page: r.page === "uploaded" ? "uploaded" : "pack",
+    drawsCaptions: r.drawsCaptions === true,
+    stopped: typeof r.stopped === "string" && r.stopped ? r.stopped.slice(0, 300) : null,
+    planned: typeof r.planned === "number" && Number.isFinite(r.planned) ? r.planned : null,
+  };
 }
 
 /** The note on the preview card. */

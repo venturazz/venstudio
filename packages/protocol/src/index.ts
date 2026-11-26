@@ -132,7 +132,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.18.0";
+export const WORKER_VERSION = "0.19.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
@@ -247,6 +247,11 @@ export interface UpdateCheckResponse {
 export interface UpdateInfoResponse {
   keyId: string;
   mode: "auto" | "approve" | "off";
+  /**
+   * Worker 0.19.0+: the sha256 of the install.sh this portal serves, so a worker that has no Remotion project can run
+   * that installer itself and check the file it fetched against this. Absent from older portals.
+   */
+  installSha256?: string;
 }
 
 export interface UpdateReportRequest {

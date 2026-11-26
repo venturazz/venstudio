@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.18.0";
+export const VERSION = "0.19.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -4632,6 +4632,20 @@ export const HTML_PACKS_FILE = "packs.json";
 /** Size of one captured frame we accept from the browser, and the per-frame and init limits. */
 export const HTML_CAPTURE_LIMITS = { frameBytes: 16 * 1024 * 1024, frameTimeoutMs: 30_000, initTimeoutMs: 60_000, loadTimeoutMs: 30_000 } as const;
 
+/**
+ * The screenshot itself gets longer than a frame does: `Page.captureScreenshot` waits for a composited surface, and on a
+ * heavy WebGL page rendered in software (voxel-build under llvmpipe) that wait can outlast the frame's 30 s even though
+ * the page is fine. A still that takes longer than this is a real problem, not a slow one.
+ */
+export const PACK_SHOT_TIMEOUT_MS = 90_000;
+
+/**
+ * Stills are drawn frame by frame from 0 (pages accumulate state), which costs seconds per frame on a heavy 3D page. A
+ * preview is a check, not a render: it stops drawing at this budget and keeps the stills it got.
+ */
+export const STILL_DRAW_BUDGET_MS = 3 * 60_000;
+export const STILL_MAX_FRAMES = 600;
+
 /** An entry of html/packs.json, written by the portal's bundle builder (apps/portal/lib/install-bundle.ts). */
 export interface HtmlPackRef {
   id: string;
@@ -5308,6 +5322,10 @@ export interface HtmlCaptureResult {
   consoleErrors: string[];
   /** True when Chromium ran with its own process sandbox (page mode, where the machine supports it). */
   sandboxed: boolean;
+  /** Stills only: how many were asked for, and how far the page was drawn before the budget stopped it (absent if all). */
+  planned?: number;
+  drawn?: number;
+  stopped?: string;
 }
 
 const sandboxProbes = new Map<string, Promise<boolean>>();
@@ -5524,22 +5542,50 @@ export async function captureHtml(o: HtmlCaptureOptions): Promise<HtmlCaptureRes
     if (issue) throw new NonRetryableError(pageMode ? issue.replace(/^The template/, who) : issue);
 
     if (stillFrames && o.stills) {
-      // Stills: every frame up to the last asked one is drawn in order; only the asked ones are captured.
+      // Stills: every frame up to the last asked one is drawn in order (pages accumulate state); only the asked ones are
+      // captured. Bounded on purpose — a heavy 3D page costs seconds per frame, and a preview must not hold the worker
+      // for half an hour to prove the look is right.
       const last = stillFrames[stillFrames.length - 1];
+      const shotTimeout = pageMode ? limits.frameTimeoutMs : PACK_SHOT_TIMEOUT_MS;
+      const drawing = Date.now();
       let k = 0;
+      let drawn = 0;
+      let stopped = "";
       for (let f = 0; f <= last; f++) {
+        if (Date.now() - drawing > STILL_DRAW_BUDGET_MS) {
+          stopped = `stopped drawing after ${Math.round(STILL_DRAW_BUDGET_MS / 1000)} s at frame ${drawn} of ${last}`;
+          break;
+        }
+        if (f >= STILL_MAX_FRAMES) {
+          stopped = `stopped at the ${STILL_MAX_FRAMES}-frame budget, the last still asked for was frame ${last}`;
+          break;
+        }
         await evaluate(`window.__venstudio.frame(${f}, ${o.fps})`, limits.frameTimeoutMs, `renderFrame(${f})`);
+        drawn = f;
         checkViolations();
         if (f !== stillFrames[k]) continue;
-        const shot = (await page("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true, captureBeyondViewport: false }, limits.frameTimeoutMs)) as { data?: string };
+        const shot = (await page(
+          "Page.captureScreenshot",
+          { format: "jpeg", quality: 90, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true },
+          shotTimeout,
+        )) as { data?: string };
         checkViolations();
         if (typeof shot.data !== "string" || shot.data.length === 0 || shot.data.length > (HTML_CAPTURE_LIMITS.frameBytes * 4) / 3) throw new Error(`still ${f} came back empty or too large`);
         await o.stills.onStill(k, f, Buffer.from(shot.data, "base64"));
         k++;
         o.onProgress?.(k / stillFrames.length);
       }
+      if (stopped) log(`still frames: ${stopped}; kept ${k} of ${stillFrames.length}`);
       await domCheck();
-      return { frames: stillFrames.length, violations, consoleErrors, sandboxed: sandbox };
+      return {
+        frames: k,
+        planned: stillFrames.length,
+        drawn,
+        ...(stopped ? { stopped } : {}),
+        violations,
+        consoleErrors,
+        sandboxed: sandbox,
+      };
     }
 
     const ff = spawn(ffmpegPath(), htmlCaptureFfmpegArgs({ fps: o.fps, frames: o.totalFrames, output: o.output, burn: o.burn }), { cwd: o.cwd, stdio: ["pipe", "ignore", "pipe"] });
@@ -6352,6 +6398,7 @@ async function previewFramesHandler(ctx: JobContext): Promise<Record<string, unk
     drawsCaptions: pack.drawsCaptions,
     consoleErrors: got.consoleErrors,
     blocked: got.violations,
+    ...(got.stopped ? { stopped: got.stopped, planned: got.planned } : {}),
     ...(pageRoot ? { sandboxed: got.sandboxed } : {}),
   };
 }
@@ -7689,6 +7736,152 @@ export async function pinUpdateKey(home: string, key: string): Promise<"pinned" 
   return had ? "replaced" : "pinned";
 }
 
+/** `<home>/app/provision-state.json`: attempts at installing the renderer from the portal, and why the last failed. */
+interface ProvisionState {
+  attempts: number;
+  lastAt: string | null;
+  lastError: string | null;
+}
+
+export const PROVISION_MAX_ATTEMPTS = 3;
+export const PROVISION_RETRY_MS = 6 * 60 * 60_000;
+
+/** Pure: may this worker try the installer now? No within six hours of the last attempt, and not after three. */
+export function provisionDue(state: ProvisionState, now: number): boolean {
+  if (state.attempts >= PROVISION_MAX_ATTEMPTS) return false;
+  const last = state.lastAt ? Date.parse(state.lastAt) : NaN;
+  if (!Number.isFinite(last)) return true;
+  return now - last >= PROVISION_RETRY_MS;
+}
+
+async function readProvisionState(home: string): Promise<ProvisionState> {
+  try {
+    const raw = JSON.parse(await readFile(path.join(home, "app", "provision-state.json"), "utf8")) as Partial<ProvisionState>;
+    return {
+      attempts: Number.isFinite(raw.attempts) ? Number(raw.attempts) : 0,
+      lastAt: typeof raw.lastAt === "string" ? raw.lastAt : null,
+      lastError: typeof raw.lastError === "string" ? raw.lastError : null,
+    };
+  } catch {
+    return { attempts: 0, lastAt: null, lastError: null };
+  }
+}
+
+async function writeProvisionState(home: string, state: ProvisionState): Promise<void> {
+  await writeFile(path.join(home, "app", "provision-state.json"), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+/**
+ * Runs the portal's own installer as this account, so a worker that is missing the renderer (or an environment) fills
+ * the gap without anyone typing a command: this is the same install.sh the owner would run, fetched over the enrolled
+ * connection and checked against the sha256 the portal named for it. Never root, so environments install where they
+ * are allowed to; the root-only step (Chromium's system libraries) is reported, not attempted.
+ */
+export async function runProvisioner(opts: {
+  home: string;
+  portalUrl: string;
+  mode: WorkerMode;
+  expectedSha256: string;
+  /** Injected in tests. */
+  run?: (file: string, args: string[], cwd: string, onOutput: (line: string) => void) => Promise<{ code: number | null; reason?: string }>;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const url = `${opts.portalUrl.replace(/\/+$/, "")}/install/install.sh`;
+  let body: Buffer;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) return { ok: false, reason: `install.sh: HTTP ${res.status}` };
+    body = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    return { ok: false, reason: `install.sh: ${(err as Error).message}` };
+  }
+  const got = createHash("sha256").update(body).digest("hex");
+  if (got !== opts.expectedSha256) return { ok: false, reason: `install.sh changed while fetching (${got.slice(0, 12)}, the portal named ${opts.expectedSha256.slice(0, 12)})` };
+
+  const file = path.join(opts.home, "app", "install-provision.sh");
+  await writeFile(file, body, { mode: 0o700 });
+  const args = [file, "--portal", opts.portalUrl, "--mode", opts.mode, "--home", opts.home, "--with-remotion"];
+  const run = opts.run ?? defaultProvisionRun;
+  const r = await run(file, args, opts.home, (line) => log(`  ${line}`));
+  if (r.code === 0) return { ok: true };
+  return { ok: false, reason: r.reason ?? `installer exited ${String(r.code)}` };
+}
+
+function defaultProvisionRun(
+  _file: string,
+  args: string[],
+  cwd: string,
+  onOutput: (line: string) => void,
+): Promise<{ code: number | null; reason?: string }> {
+  return new Promise((resolve) => {
+    // --no-warnings keeps the installer's own output readable; it prints what it installs, line by line.
+    const child = spawn("bash", args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, VENSTUDIO_PROVISION: "1" } });
+    let tail = "";
+    const keep = (c: Buffer) => {
+      for (const line of c.toString("utf8").split("\n")) {
+        if (!line.trim()) continue;
+        tail = (tail + "\n" + line).slice(-1200);
+        onOutput(line);
+      }
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+    const timer = setTimeout(() => child.kill("SIGTERM"), 45 * 60_000);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ code: null, reason: err.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? { code } : { code, reason: tail.trim().split("\n").slice(-3).join(" | ").slice(0, 400) });
+    });
+  });
+}
+
+/**
+ * Called once at the start of a run, before any claim: if this worker cannot render html or 3D because no Remotion
+ * project is installed, it installs one from the portal. Bounded (three attempts, six hours apart) and quiet on
+ * success, so a box where Remotion genuinely cannot run stops instead of retrying every hour.
+ */
+async function provisionRenderer(opts: {
+  home: string;
+  cfg: { portalUrl: string; token: string };
+  mode: WorkerMode;
+  /** Recomputes the capabilities this run advertises, after a successful install. */
+  refresh: () => Promise<void>;
+}): Promise<void> {
+  if (process.env.VENSTUDIO_NO_PROVISION === "1") return;
+  const state = await readProvisionState(opts.home);
+  if (!provisionDue(state, Date.now())) {
+    if (state.attempts >= PROVISION_MAX_ATTEMPTS) {
+      log(
+        `no Remotion renderer here and ${PROVISION_MAX_ATTEMPTS} installs from the portal have failed (${state.lastError ?? "no reason recorded"}); ` +
+          `this worker can only take the stills jobs. Run the installer once as root on this machine to install Chromium's system libraries.`,
+      );
+    }
+    return;
+  }
+  // The portal names the installer it serves; that hash is what makes running it safe, not the file lying around.
+  const info = await new PortalClient(opts.cfg.portalUrl, opts.cfg.token)
+    .json<{ installSha256?: string }>("GET", "/api/worker/update", undefined, 2)
+    .catch(() => null);
+  if (!info?.installSha256) return;
+
+  state.attempts += 1;
+  state.lastAt = new Date().toISOString();
+  await writeProvisionState(opts.home, state);
+  log(`no Remotion renderer here: running the portal's installer as ${process.env.USER ?? "this account"} (attempt ${state.attempts} of ${PROVISION_MAX_ATTEMPTS}); this takes a few minutes`);
+  const r = await runProvisioner({ home: opts.home, portalUrl: opts.cfg.portalUrl, mode: opts.mode, expectedSha256: info.installSha256 });
+  if (r.ok) {
+    log("installer finished: re-reading capabilities and environments");
+    await opts.refresh();
+    await writeProvisionState(opts.home, { ...state, lastError: null });
+    return;
+  }
+  state.lastError = r.reason;
+  await writeProvisionState(opts.home, state);
+  log(`could not install the renderer: ${r.reason}`);
+}
+
 async function reportUpdate(client: PortalClient, body: UpdateReportRequest): Promise<void> {
   try {
     await client.json("POST", "/api/worker/update/report", { ...body, detail: body.detail.slice(0, 500) }, 2);
@@ -8115,6 +8308,22 @@ export async function loop(opts: {
     await refreshEnvironments();
     const budget = opts.mode === "daemon" ? "" : `, budget ${opts.maxMinutes} min`;
     log(`${cfg.name} v${VERSION} ${opts.mode} mode${budget}, capabilities: ${capabilities.join(", ")}`);
+
+    // No Remotion project means no html or 3D looks on this worker. Before claiming anything, install one from the
+    // portal: the same install.sh the owner would run, as this account, bounded (see provisionRenderer).
+    if (!capabilities.includes("remotion-2d")) {
+      await provisionRenderer({
+        home: opts.home,
+        cfg,
+        mode: opts.mode,
+        refresh: async () => {
+          clearRemotionProbeCache();
+          capabilities = await detectCapabilities(opts.home);
+          await refreshEnvironments();
+          log(`provisioned; capabilities now: ${capabilities.join(", ")}`);
+        },
+      });
+    }
 
     // Self-update bookkeeping: are we a freshly installed version, or was one just rolled back?
     const self = fileURLToPath(import.meta.url);

@@ -1391,7 +1391,12 @@ async function completePreview(jobId: string): Promise<boolean> {
     gate: null,
     extra: { jobId },
     media: { stills },
-    notes: previewNotes({ consoleErrors: r.consoleErrors, blocked: [] }),
+    notes: [
+      ...previewNotes({ consoleErrors: r.consoleErrors, blocked: [] }),
+      ...(r.stopped
+        ? [`The worker stopped drawing frames early (${r.stopped}), so this card shows ${stills.length} of ${r.planned ?? stills.length} stills. The final render still draws every frame.`]
+        : []),
+    ],
     ...(plan ? { plan: { ...plan, note: previewNote({ stills: stills.length, drawsCaptions: r.drawsCaptions, designed }) } } : {}),
     ...(issues.length > 0 ? { qc: PREVIEW_FAILED, issues } : {}),
   });
