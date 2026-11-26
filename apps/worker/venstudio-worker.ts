@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.19.0";
+export const VERSION = "0.19.1";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -5653,6 +5653,12 @@ export async function captureHtml(o: HtmlCaptureOptions): Promise<HtmlCaptureRes
 /** Why the template's init() reply does not match the job, or null. Pure. One frame of rounding is allowed. */
 export function htmlInitIssue(meta: Record<string, unknown> | null, want: { width: number; height: number; fps: number; totalFrames: number }): string | null {
   if (!meta) return "The template's init(props) returned nothing; it must resolve to { totalFrames, fps, width, height }";
+  // A page that could not get its context still answers the job's shape and writes only its text. Capturing that would
+  // hand back a caption on a blank plate as if it were the look, and a preview on one machine would then disagree with
+  // a render on another; the page says so and the job stops here instead.
+  if (meta.degraded === true) {
+    return "The page drew nothing: it could not get a WebGL context on this machine, so it has only its text. Nothing was rendered — a worker with working WebGL must take this job.";
+  }
   const bad: string[] = [];
   if (meta.width !== want.width || meta.height !== want.height) bad.push(`it is ${String(meta.width)}x${String(meta.height)}, the job is ${want.width}x${want.height}`);
   if (meta.fps !== want.fps) bad.push(`it runs at ${String(meta.fps)} fps, the job at ${want.fps}`);

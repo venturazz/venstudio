@@ -238,6 +238,23 @@ for a composited surface, which on a slow software rasterizer can outlast the 30
 fine. Removing the preview is not the fix — it is the cheap gate that catches a broken page before the voice and the
 render spend ten minutes finding out.
 
+## A page that drew nothing never becomes the look (0.19.1)
+
+A 3D pack page answers `init(props)` with the job's four numbers (`totalFrames`, `fps`, `width`, `height`) even when it
+could not get a WebGL context; in that case it draws only its text. Captured, that is a caption on a blank plate — and
+because the preview and the render are separate jobs, it could be captured by one machine and not the other, which is
+how a video can disagree with its own preview.
+
+The page now reports `degraded: true` in that state and the worker refuses the job: *"The page drew nothing: it could not
+get a WebGL context on this machine... a worker with working WebGL must take this job."* `voxel-build@0.3.3` and
+`blocky-story@0.1.2` report it.
+
+## The render is drawn by the machine that drew the preview (0.19.1)
+
+The stills are a promise about the look, so the render-video job is queued with the preview job's worker as its
+`preferred_worker_id` — when that worker is still active and still reports the run's pack version. If it is gone, the
+job is not pinned and the render stage records `previewWorkerNote`: another worker draws it and the picture can differ.
+
 ## A worker installs the renderer itself (0.19.0)
 
 A worker without `remotion-2d` installs it on its first run: it asks the portal for its own `/api/worker/update`, takes

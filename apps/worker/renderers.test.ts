@@ -211,6 +211,9 @@ test("frames are encoded to muted H.264 yuv420p with faststart; a shared burn ru
 test("init's reply must match the job; one frame of rounding is allowed", () => {
   const want = { width: 1080, height: 1920, fps: 30, totalFrames: 720 };
   assert.equal(htmlInitIssue({ ...want }, want), null);
+  // A page that could not get its WebGL context answers with the same four numbers and draws only text; capturing that
+  // would report a caption on a blank plate as the look.
+  assert.match(htmlInitIssue({ ...want, degraded: true }, want) ?? "", /drew nothing/);
   assert.equal(htmlInitIssue({ ...want, totalFrames: 721 }, want), null);
   assert.match(htmlInitIssue({ ...want, totalFrames: 700 }, want) as string, /700 frames, the job 720/);
   assert.match(htmlInitIssue({ ...want, width: 1920, height: 1080 }, want) as string, /1920x1080/);
