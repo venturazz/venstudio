@@ -2,10 +2,10 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "d49e7bf7f8a1cc239d479445a080b85eeb4a1b1b"
+    "commit": "8575f0a78c211f78e227fe6595756d47302dfb6f"
   },
   "files": {
-    "FORMAT.md": "b41e2aa9cce72d42aaa992582842cd0498a87bfbdcc6668e38bcb029e10a6a5b",
+    "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
     "schema/style.schema.json": "61df9bee75d6ad15669e4ab95cfa0c6c6f8ae06c0748cef072582e4cd1799595",
     "tools/assemble-remotion.mjs": "a505d58c69435cfb520aa0b0f7db380a8e937e86b6f3582a01cd4a54241b141b",
     "tools/bundle-blocky-page.mjs": "eef1ec5fcfbfb2baa0e5cefd4eb7c8821270cc281d5e9f4bb121ba3b05ae8dc5",
@@ -20,8 +20,8 @@
     "tools/skills.test.mjs": "5e43c8b8a9d85d091616652d54125c80c617436f12ae173088d7fa7fea9b83c3",
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
-    "tools/validate.mjs": "b47c60de87385e9944ff1f93a81ef8cf01782fbd281d1dd9da2515b074142efa",
-    "tools/validate.test.mjs": "efa73cccf833be7cbb1307844a070edaa72fa86558988b54d5a7fa7e78c2dc74"
+    "tools/validate.mjs": "702d9a8b6a9a958f4085dfaef6cd7b692d5cea8203494c9916ab4810ef6f0845",
+    "tools/validate.test.mjs": "c3c3132c27ba1e9f9b1b6fbbf063571be509b3af80d1a0730602a07574533160"
   },
   "packs": [
     {
@@ -40,11 +40,11 @@
     },
     {
       "id": "blocky-story",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "status": "lab",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "2142b408d458d423b83fa130ebda6997767cad74f1354ccabb664b895306a4f1",
+      "sha256": "674e31976d8df39875e4982d633c31e3c35b40085969ba9b1b6165e82402c552",
       "files": {
         "README.md": "c8bc09c59dde1007580bdf11809bb2ba4adf78dd7bc6cdfc63ae28da50b7136a",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -69,7 +69,7 @@
         "render/cast.js": "0e03d341d942c4d3a436820624cb3045ee0a83d03e46222d82286de667458825",
         "render/index.html": "3fe8246f6e83e3bb906ba02516fa829061ff01d23ad6162d2348b5e5cc20e0d5",
         "render/page.js": "98dbe0fb98c82dcd474cc474033d3cfc0475172a70b97dc51bacf2e6a7409dc6",
-        "style.json": "5a36320b694d542508096cd49644a9b14d6e8ffe04f501499709b0df63f6aece"
+        "style.json": "f5bc4402b97ce8a2faf784e7c3de3a38eb288175623646235bc8d5c19503ae6b"
       }
     },
     {
@@ -403,11 +403,11 @@
     },
     {
       "id": "voxel-build",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "status": "lab",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "317c96b3dcd176a70e4473d02d8bb0d88616368ac9b1f65a4a03753a86f61d85",
+      "sha256": "3bd5b23dd5101f8f62dc39afde92f884fa3d9d5b7dd73ac26c62005c9fd38592",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -439,7 +439,7 @@
         "render/index.html": "0301e6c55002345ce060200ea82b2186c7419bf54437c70117cada14a202978f",
         "render/page.js": "ec5f4a4a8945bcc135ed5657c2d1914ddccfcb46d5f59dc87121b487303e72de",
         "render/voxel.js": "02842cfb2e9db666f6aaa2d16e70ad2c4dbb5d88d41564dc1b8c795942b00688",
-        "style.json": "1f52e0773cb8f779f1caa7235f1c680e30652fc8920da7bd5109f006bc10274d"
+        "style.json": "de8bf0b40b594634f8d0a79feb95371b40d2918a55fd287f6fb752343237dc4a"
       }
     },
     {

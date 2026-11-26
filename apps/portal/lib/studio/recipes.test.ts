@@ -45,6 +45,8 @@ const V = (await import(pathToFileURL(path.join(STYLES_DIR, "tools/validate.mjs"
 
 const IMAGE: RunStage[] = ["idea", "research", "script", "storyboard", "assets", "voice", "render", "qc"];
 const SCENE: RunStage[] = ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"];
+/** scene-spec without the still-frame preview (a page too heavy to photograph: workflow.skip ["preview"]). */
+const SCENE_NO_PREVIEW: RunStage[] = ["idea", "research", "script", "scene-spec", "voice", "render", "qc"];
 /** A scene-spec run started before the still-frame preview: its stored list is still read back. */
 const SCENE_LEGACY: RunStage[] = ["idea", "research", "script", "scene-spec", "voice", "render", "qc"];
 const HTML: RunStage[] = ["idea", "research", "script", "html-design", "preview", "voice", "render", "qc"];
@@ -77,8 +79,9 @@ test("stage list per vendored pack: stills and the explainer image-sequence, dat
     "low-poly-shapes": IMAGE,
     "full-frame": IMAGE,
     "line-graph": SCENE,
-    "blocky-story": SCENE,
-    "voxel-build": SCENE,
+    // A 3D page costs seconds per frame to photograph, so these two run without the still-frame preview.
+    "blocky-story": SCENE_NO_PREVIEW,
+    "voxel-build": SCENE_NO_PREVIEW,
     "minimal-line-art": SCENE,
     "probe-line-graph": SCENE,
     "designed-explainer": HTML,
@@ -118,15 +121,15 @@ test("a pack without workflow gets the recipe its engine and asset model imply; 
   assert.equal(inferRecipe("html-capture", "image-per-shot"), "image-sequence");
   assert.equal(inferRecipe("remotion-2d", "plates-and-diagrams"), "image-sequence");
   assert.equal(inferRecipe("ffmpeg-stills", undefined), "image-sequence");
-  const reserved = workflowForPack({ engine: "godot-2d", workflow: { recipe: "engine-project", review: [] } });
+  const reserved = workflowForPack({ engine: "godot-2d", workflow: { recipe: "engine-project", review: [], skip: [] } });
   assert.equal(reserved.ok, false);
   assert.match(!reserved.ok ? reserved.error : "", /^This style needs a workflow that isn't built yet: engine-project\. /);
   // html-design is built, for html-capture only; its review points are the page and the stills whatever a pack says.
-  const designed = workflowForPack({ engine: "html-capture", workflow: { recipe: "html-design", review: [] } });
+  const designed = workflowForPack({ engine: "html-capture", workflow: { recipe: "html-design", review: [], skip: [] } });
   assert.deepEqual(designed, { ok: true, workflow: { recipe: "html-design", stages: HTML, review: ["html-design", "preview"] } });
-  const wrongEngine = workflowForPack({ engine: "remotion-2d", workflow: { recipe: "html-design", review: [] } });
+  const wrongEngine = workflowForPack({ engine: "remotion-2d", workflow: { recipe: "html-design", review: [], skip: [] } });
   assert.match(!wrongEngine.ok ? wrongEngine.error : "", /captured by html-capture only/);
-  assert.deepEqual(parsePackWorkflow({ recipe: "scene-spec", review: ["scene-spec", "approval", "scene-spec"] }), { recipe: "scene-spec", review: ["scene-spec"] });
+  assert.deepEqual(parsePackWorkflow({ recipe: "scene-spec", review: ["scene-spec", "approval", "scene-spec"] }), { recipe: "scene-spec", review: ["scene-spec"], skip: [] });
   assert.equal(parsePackWorkflow({ recipe: "slideshow" }), null);
   assert.equal(parsePackWorkflow(undefined), null);
 });
@@ -148,7 +151,7 @@ test("old runs keep RUN_STAGES; a stored workflow is read back only when it is a
   assert.deepEqual(parseRunWorkflow({ recipe: "scene-spec", stages: SCENE_LEGACY, review: ["scene-spec"] })?.stages, SCENE_LEGACY);
   assert.deepEqual(parseRunWorkflow({ recipe: "html-design", stages: HTML, review: ["html-design", "preview"] })?.stages, HTML);
   // The voice may only be left out where the recipe allows it, and nothing may be reordered or invented.
-  assert.deepEqual(parseRunWorkflow({ recipe: "hermes-skill", stages: SKILL_VOICED, review: [] })?.stages, SKILL_VOICED);
+  assert.deepEqual(parseRunWorkflow({ recipe: "hermes-skill", stages: SKILL_VOICED, review: [], skip: [] })?.stages, SKILL_VOICED);
   assert.equal(parseRunWorkflow({ recipe: "scene-spec", stages: SCENE.filter((s) => s !== "voice") }), null);
   assert.equal(parseRunWorkflow({ recipe: "scene-spec", stages: [...SCENE].reverse() }), null);
   assert.equal(parseRunWorkflow({ recipe: "image-sequence", stages: [...IMAGE, "upload"] }), null);
@@ -246,4 +249,23 @@ test("the studio's voice for a skill that could voice itself: the voice stage co
   if (graph.ok) assert.equal(withStudioVoice(graph.workflow), graph.workflow);
   const stills = workflowForPack(pack("documentary"));
   if (stills.ok) assert.equal(withStudioVoice(stills.workflow), stills.workflow);
+});
+
+test("a pack whose page is too heavy to photograph drops the still-frame preview", () => {
+  const base = { engine: "html-capture", plan: { assetModel: "plates-and-diagrams" } };
+  const w = workflowForPack({ ...base, workflow: { recipe: "scene-spec", review: ["scene-spec"], skip: ["preview"] } });
+  assert.ok(w.ok);
+  assert.deepEqual([...w.workflow.stages], ["idea", "research", "script", "scene-spec", "voice", "render", "qc"]);
+  assert.deepEqual([...w.workflow.review], ["scene-spec"], "a skipped stage cannot be a review point");
+  // The stored list is one the recipe lists as its own, so the run reads it back.
+  assert.deepEqual(parseRunWorkflow({ recipe: "scene-spec", stages: [...w.workflow.stages], review: ["scene-spec"] })?.stages, [...w.workflow.stages]);
+  // A light page keeps the preview: it is the cheap gate before the voice and the render.
+  const light = workflowForPack({ ...base, workflow: { recipe: "scene-spec", review: ["scene-spec"], skip: [] } });
+  assert.ok(light.ok && light.workflow.stages.includes("preview"));
+  // Only a stage the recipe calls optional can be dropped; anything else is ignored, never obeyed.
+  assert.ok(!RECIPES["scene-spec"].optional.includes("qc" as RunStage));
+  const bad = workflowForPack({ ...base, workflow: { recipe: "scene-spec", review: [], skip: ["qc" as RunStage] } });
+  assert.ok(bad.ok && bad.workflow.stages.includes("qc"));
+  assert.deepEqual([...parsePackWorkflow({ recipe: "scene-spec", skip: ["qc"] })!.skip], [], "the parser drops a skip the recipe does not allow");
+  assert.deepEqual([...parsePackWorkflow({ recipe: "scene-spec", skip: ["preview"] })!.skip], ["preview"]);
 });

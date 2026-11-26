@@ -60,7 +60,8 @@ export const RECIPES: Record<RecipeId, Recipe> = {
     label: "Scene spec (data-driven, no pictures)",
     implemented: true,
     stages: ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"],
-    optional: [],
+    // Two of the scene-spec packs draw a 3D scene per frame; photographing one costs seconds, so they drop the preview.
+    optional: ["preview"],
     // Runs started before the still-frame preview keep their list (no preview stage).
     legacy: [["idea", "research", "script", "scene-spec", "voice", "render", "qc"]],
     summary: "Data-driven: Hermes writes a scene spec (seconds, beat, on-screen elements with sourced numbers, motion tokens, captions) that the page renders directly, and the owner sees still frames of the page before the voice and the render. No pictures are generated.",
@@ -112,6 +113,8 @@ export interface PackWorkflow {
   recipe: RecipeId;
   /** Stages where the owner always reviews, whatever the autonomy level. */
   review: RunStage[];
+  /** Stages this pack leaves out (style.json workflow.skip): only ever a stage the recipe calls optional. */
+  skip: RunStage[];
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -120,7 +123,9 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 export function parsePackWorkflow(raw: unknown): PackWorkflow | null {
   if (!isRecord(raw) || !isRecipeId(raw.recipe)) return null;
   const review = Array.isArray(raw.review) ? raw.review.filter((k): k is RunStage => typeof k === "string" && isRunStage(k)) : [];
-  return { recipe: raw.recipe, review: [...new Set(review)] };
+  const optional = RECIPES[raw.recipe].optional;
+  const skip = Array.isArray(raw.skip) ? raw.skip.filter((k): k is RunStage => typeof k === "string" && isRunStage(k) && optional.includes(k)) : [];
+  return { recipe: raw.recipe, review: [...new Set(review)], skip: [...new Set(skip)] };
 }
 
 /** The recipe a pack without `workflow` gets, from its engine and asset model (the styles validator infers the same). */
@@ -154,7 +159,8 @@ export function workflowForPack(p: WorkflowSource): { ok: true; workflow: RunWor
   const recipe = RECIPES[id];
   if (!isBuiltRecipe(id) || !recipe.implemented) return { ok: false, error: `This style needs a workflow that isn't built yet: ${id}. ${recipe.summary}` };
   const skillVoice = id === "hermes-skill" && p.hermes?.voice === "skill";
-  const stages = recipe.stages.filter((k): k is RunStage => isRunStage(k) && !(skillVoice && k === "voice"));
+  const skip = (p.workflow?.skip ?? []).filter((k) => recipe.optional.includes(k));
+  const stages = recipe.stages.filter((k): k is RunStage => isRunStage(k) && !(skillVoice && k === "voice") && !skip.includes(k));
   // The owner-only stages are review points of every list that has them, whatever the pack names.
   const review = [...new Set([...(p.workflow?.review ?? []), ...OWNER_ONLY_STAGES])].filter((k) => stages.includes(k));
   if (id === "html-design" && p.engine !== "html-capture") return { ok: false, error: `This style names the html-design workflow but renders with ${p.engine}; a page Hermes writes is captured by html-capture only.` };
