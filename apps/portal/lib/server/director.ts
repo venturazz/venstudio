@@ -503,7 +503,13 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
   if (st.stage === "scene-spec") {
     // The page draws the spec: its contract decides the elements and motion tokens Hermes may use.
     const pack = (await registryEntry(template.styleId).catch(() => undefined))?.pack;
-    const contract = { name: pack?.name ?? template.label, elements: pack?.plan?.elements ?? [], motionTokens: pack?.plan?.motionTokens ?? [] };
+    const contract = {
+      name: pack?.name ?? template.label,
+      elements: pack?.plan?.elements ?? [],
+      motionTokens: pack?.plan?.motionTokens ?? [],
+      // A look with a vocabulary (contract.story) is asked which of its own words each scene uses, and checked on it.
+      ...(pack?.plan?.story ? { story: pack.plan.story } : {}),
+    };
     if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
     const r = await think(run, st, "scene-spec", sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }));
     if (!r.ok) return r;

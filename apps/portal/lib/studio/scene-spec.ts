@@ -68,6 +68,8 @@ export interface SpecScene {
   tokens: string[];
   /** The narration spoken during the scene, shown on Review. */
   caption: string;
+  /** contract.story filled in: the words this scene uses, e.g. { structure: "church", action: "damage" }. */
+  intent?: Record<string, string>;
 }
 
 export interface SceneSpec {
@@ -79,6 +81,8 @@ export interface SpecContract {
   name: string;
   elements: readonly ElementKind[];
   motionTokens: readonly string[];
+  /** style.json contract.story: the words the page understands, slot -> values. Absent: this look takes no intent. */
+  story?: Record<string, readonly string[]>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -96,6 +100,8 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
   const minScenes = Math.ceil((narrationSec * 1.15) / maxShot);
   const list = notes.map((n, i) => `${i + 1}. ${n.claim} (${n.sourced && n.sourceUrl ? `source: ${n.sourceUrl}` : "no source"}): ${n.summary}`).join("\n");
   const tokens = contract.motionTokens.length > 0 ? contract.motionTokens.join(", ") : "none";
+  // A pack with a story vocabulary is a look that draws a script's own world: the scene must say which words it uses.
+  const storyLines = storyPrompt(contract.story);
   return [
     system(`Turn the script into a scene spec for the ${contract.name} page.`),
     {
@@ -107,12 +113,13 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
         `No scene may be longer than ${maxShot} seconds. beat must be one of ${BEATS.join(", ")}.`,
         `On-screen elements this style allows: ${contract.elements.join(", ")}. Use no other kind. Each scene has 1 to ${MAX_ELEMENTS} elements.`,
         `Motion tokens this style allows: ${tokens}. Each scene names 1 to ${MAX_ELEMENT_TOKENS} of them.`,
+        ...storyLines,
         `A counter, gauge or tally shows value; a bar plots series (1 to ${MAX_ELEMENT_SERIES} numbers, oldest first) with labels, one per value. text is a short label (at most ${MAX_ELEMENT_TEXT} characters).`,
         "Every number on screen (value, series, and any digit in text) must come from the research notes, exactly as a note gives it. Put that note's number in source. Use only notes that have a source. Never invent data: when the notes have no number for a scene, show no number in it.",
         `caption is the part of the narration spoken during the scene (at most ${MAX_CAPTION_CHARS} characters), in script order.`,
         ...channelLines(ctx),
         ...templateLines(ctx),
-        'Schema: {"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string],"caption":string}]}',
+        `Schema: {"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string]${storySchema(contract.story)},"caption":string}]}`,
         dataBlock("script", script, MAX_SCRIPT_CHARS),
         dataBlock("research notes", list, MAX_RESEARCH_PROMPT_CHARS),
         ...runLines(ctx, "storyboard"),
@@ -122,6 +129,28 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
         .join("\n"),
     },
   ];
+}
+
+/**
+ * The lines that tell the writer which words this look understands, or nothing at all for a look without a vocabulary.
+ * Each slot is a closed list: an unknown value is refused with the list, never quietly swapped for a default.
+ */
+function storyPrompt(story: Record<string, readonly string[]> | undefined): string[] {
+  const slots = story ? Object.entries(story) : [];
+  if (slots.length === 0) return [];
+  const described = slots.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ");
+  return [
+    `This style builds what the script is about, so every scene must say which of its own words it uses in "intent". Fill every slot: ${described}.`,
+    "Names in intent are not free text: use exactly one of the listed values per slot, and nothing else. If the script asks for something this list does not have, choose the closest listed value and let the caption carry the difference.",
+  ];
+}
+
+/** The intent part of the schema line, so the shape Hermes is asked for and the shape checked are the same one. */
+function storySchema(story: Record<string, readonly string[]> | undefined): string {
+  if (!story) return "";
+  const slots = Object.keys(story);
+  if (slots.length === 0) return "";
+  return `,"intent":{${slots.map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`).join(",")}}`;
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {
@@ -218,9 +247,61 @@ export function validateSceneSpec(value: unknown, check: SceneSpecCheck): Valida
     else if (tokens.length !== rawTokens.length) issues.push(`Scene ${n} tokens may only be ${check.contract.motionTokens.join(", ") || "(none)"}`);
     else if (rawTokens.length > MAX_ELEMENT_TOKENS) issues.push(`Scene ${n} names ${rawTokens.length} tokens, more than ${MAX_ELEMENT_TOKENS}`);
     else if (tokens.length === 0 && check.contract.motionTokens.length > 0 && !check.readBack) issues.push(`Scene ${n} needs a motion token (${check.contract.motionTokens.join(", ")}), or it renders as a still`);
-    scenes.push({ seconds, beat: beat ?? "body", elements, tokens: [...new Set(tokens)], caption });
+    const intent = storyIntent(r.intent, check, n, issues);
+    scenes.push({ seconds, beat: beat ?? "body", elements, tokens: [...new Set(tokens)], caption, ...(intent ? { intent } : {}) });
   });
   return issues.length > 0 ? { ok: false, issues } : { ok: true, value: { scenes } };
+}
+
+/**
+ * The story words of one scene, checked against what the pack can draw. A look with a vocabulary demands every slot,
+ * because a missing structure would leave the page guessing; a look without one takes no intent at all, and a scene
+ * that offers one is refused rather than silently dropped.
+ */
+function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: string[]): Record<string, string> | undefined {
+  const story = check.contract.story;
+  if (!story || Object.keys(story).length === 0) {
+    // A stored spec read back with no vocabulary at hand: keep the words the owner approved, sanitized, so the page
+    // still draws the story that was reviewed. A live spec against a look with no vocabulary is refused by name.
+    if (check.readBack) return storyIntentReadBack(raw);
+    if (raw !== undefined) issues.push(`Scene ${n} names an intent, but ${check.contract.name} takes no story vocabulary`);
+    return undefined;
+  }
+  if (!isRecord(raw)) {
+    // Reading a stored spec back: an older spec has no intent, and the page falls back to its own rotation.
+    if (!check.readBack) issues.push(`Scene ${n} needs intent with ${Object.keys(story).join(", ")}`);
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [slot, values] of Object.entries(story)) {
+    const given = raw[slot];
+    if (typeof given !== "string" || given.trim() === "") {
+      issues.push(`Scene ${n} intent is missing ${slot}`);
+      continue;
+    }
+    const v = given.trim();
+    if (!values.includes(v)) {
+      issues.push(`Scene ${n} intent.${slot} is "${v}", which ${check.contract.name} cannot draw. It can draw: ${values.join(", ")}.`);
+      continue;
+    }
+    out[slot] = v;
+  }
+  for (const slot of Object.keys(raw)) if (!(slot in story)) issues.push(`Scene ${n} intent names "${slot}", which ${check.contract.name} does not know`);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A stored intent read back with no vocabulary at hand: slot -> short lowercase value, at most twelve slots. Pure. */
+const INTENT_SLOT = /^[a-z][a-z0-9-]{0,23}$/;
+function storyIntentReadBack(raw: unknown): Record<string, string> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [slot, value] of Object.entries(raw)) {
+    if (!INTENT_SLOT.test(slot) || typeof value !== "string") continue;
+    const v = value.trim();
+    if (v && v.length <= 32) out[slot] = v;
+    if (Object.keys(out).length >= 12) break;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** A number as written: 1,234,567.5 (thousands separated by commas) or 1234.5; a dash after a word or digit is a range, not a sign. */
@@ -325,6 +406,8 @@ export function sceneSpecShots(spec: SceneSpec): Shot[] {
       })),
       ...(s.tokens.length > 0 ? { tokens: [...s.tokens] } : {}),
     },
+    // The story words travel with the shot: the pack's page draws them (voxel-build: structure, action, focus).
+    ...(s.intent ? { intent: { ...s.intent } } : {}),
   }));
 }
 
@@ -338,7 +421,8 @@ export function sceneSpecLines(spec: SceneSpec): string[] {
         return `${e.kind}${e.text ? ` "${e.text}"` : ""}${nums ? ` ${nums}` : ""}${nums ? src : ""}`;
       })
       .join("; ");
-    return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}. Caption: ${s.caption}`;
+    const story = s.intent ? Object.entries(s.intent).map(([k, v]) => `${k}: ${v}`).join(", ") : "";
+    return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""} Caption: ${s.caption}`;
   });
 }
 

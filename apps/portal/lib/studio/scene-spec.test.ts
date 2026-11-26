@@ -167,3 +167,76 @@ test("a scene-spec script is on screen as captions: digits in it must be sourced
   ], "note 2 says 90 percent but has no source link");
   assert.deepEqual(scriptNumberIssues("It grew thirty times.", NOTES), [], "numbers in words are not read");
 });
+
+// The story vocabulary: a look that builds what the script is about (voxel-build) names the words it can draw, and the
+// spec must fill every slot from that list. docs/style-families.md, "contract.story".
+const voxel = parsePack(JSON.parse(readFileSync(path.join(STYLES_DIR, "packs/voxel-build/style.json"), "utf8")), lock.packs.find((p) => p.id === "voxel-build")!.sha256)!;
+const STORY: SpecContract = {
+  name: voxel.name,
+  elements: voxel.plan!.elements!,
+  motionTokens: voxel.plan!.motionTokens!,
+  story: voxel.plan!.story!,
+};
+const storySpec = () => ({
+  scenes: [
+    { seconds: 4, beat: "hook", elements: [{ kind: "heading", text: "The church burns" }], tokens: ["pop"], caption: "The village woke to smoke.", intent: { structure: "church", action: "build", focus: "structure" } },
+    { seconds: 4, beat: "body", elements: [{ kind: "heading", text: "Ruined" }], tokens: ["pull"], caption: "By noon the roof was gone.", intent: { structure: "church", action: "damage", focus: "villager" } },
+  ],
+});
+
+test("a pack with a vocabulary: every scene must fill the slots, from the list the pack can draw", () => {
+  const ok = validateSceneSpec(storySpec(), { contract: STORY, noteCount: NOTES.length });
+  assert.ok(ok.ok, ok.ok ? "" : ok.issues.join("; "));
+  assert.deepEqual(ok.value.scenes[0].intent, { structure: "church", action: "build", focus: "structure" });
+  const with_ = (edit: (s: any) => void) => {
+    const s = storySpec() as any;
+    edit(s);
+    const r = validateSceneSpec(s, { contract: STORY, noteCount: NOTES.length });
+    return r.ok ? [] : r.issues;
+  };
+  // A word the look cannot draw is refused with the list, not quietly swapped for a default.
+  assert.ok(with_((s) => (s.scenes[0].intent.structure = "spaceship")).some((i) => /Scene 1 intent\.structure is "spaceship", which .* cannot draw\. It can draw: well, farm/.test(i)));
+  assert.ok(with_((s) => (s.scenes[1].intent.action = "explode")).some((i) => /It can draw: build, damage, idle/.test(i)));
+  // Every slot is required: a missing one would leave the page guessing.
+  assert.ok(with_((s) => delete s.scenes[0].intent.action).some((i) => /Scene 1 intent is missing action/.test(i)));
+  assert.ok(with_((s) => delete s.scenes[0].intent).some((i) => /Scene 1 needs intent with structure, action, focus/.test(i)));
+  // A slot the pack never declared is refused too, or the vocabulary would mean nothing.
+  assert.ok(with_((s) => (s.scenes[0].intent.weather = "rain")).some((i) => /Scene 1 intent names "weather", which .* does not know/.test(i)));
+});
+
+test("a look without a vocabulary takes no intent, and the prompt asks for none", () => {
+  const issues = validateSceneSpec({ scenes: [{ ...goodSpec().scenes[0], intent: { structure: "church" } }] }, { contract: CONTRACT, noteCount: NOTES.length });
+  assert.ok(!issues.ok && issues.issues.some((i) => /Scene 1 names an intent, but Line Graph takes no story vocabulary/.test(i)));
+  const plain = sceneSpecPrompt({} as DirectorContext, "Solar power grew.", NOTES, CONTRACT).map((m) => m.content).join("\n");
+  assert.ok(!/intent/.test(plain), "no vocabulary, no intent in the ask");
+  const withStory = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, STORY).map((m) => m.content).join("\n");
+  assert.match(withStory, /every scene must say which of its own words it uses in "intent"\. Fill every slot: structure \(well, farm/);
+  assert.match(withStory, /use exactly one of the listed values per slot/);
+  assert.match(withStory, /"intent":\{"structure":"<one of well\|farm/);
+});
+
+test("the story words reach the shot, the review card and the render payload; a stored spec keeps them", () => {
+  const shots = sceneSpecShots(storySpec() as never);
+  assert.deepEqual(shots[0].intent, { structure: "church", action: "build", focus: "structure" });
+  assert.match(sceneSpecLines(storySpec() as never)[1], /Story: structure: church, action: damage, focus: villager\./);
+  const back = readSceneSpec(JSON.parse(JSON.stringify(storySpec())));
+  assert.deepEqual(back?.scenes[0].intent, { structure: "church", action: "build", focus: "structure" });
+  // A stored spec from before the vocabulary has no intent, and is still readable.
+  const old = readSceneSpec({ scenes: [{ seconds: 4, beat: "body", elements: [{ kind: "heading", text: "Village" }], tokens: ["pop"], caption: "Once." }] });
+  assert.equal(old?.scenes[0].intent, undefined);
+  const plan = buildRenderPayload({
+    fontAssetId: null,
+    format: "short",
+    shots: sceneSpecShots(storySpec() as never).map((s) => ({ shotRef: "s", seconds: s.seconds, ...(s.intent ? { intent: s.intent } : {}) })),
+    shotAssets: { s: "00000000-0000-4000-8000-000000000001" },
+    narrationAssetId: "00000000-0000-4000-8000-000000000002",
+    narrationSec: 8,
+    captions: [],
+    targetLufs: -14,
+    maxShotSeconds: 6,
+    engine: "html-capture",
+    transitionSec: 0,
+  });
+  assert.ok(plan.ok, plan.ok ? "" : plan.issues.join("; "));
+  assert.deepEqual(plan.payload.shots[0].intent, { structure: "church", action: "build", focus: "structure" });
+});

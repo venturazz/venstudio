@@ -1066,7 +1066,13 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
-  const shotSpecs = workOrdersFromStoryboard(planShots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
+  // The story words of each shot ride along with its length: the pack's page draws them, and a look without a
+  // vocabulary simply never has any (planShots and the work orders are one list in the same order).
+  const shotSpecs = workOrdersFromStoryboard(planShots).map((w, i) => ({
+    shotRef: w.shotRef,
+    seconds: w.spec.seconds,
+    ...(planShots[i]?.intent ? { intent: { ...planShots[i]?.intent } as Record<string, string> } : {}),
+  }));
   // A pack the catalogue does not know (an html-capture adaptation, a research pack) plans and renders from its own
   // contract (styleFromPack), never as stills by default.
   const packStyle = await packStyleFor(template.styleId);

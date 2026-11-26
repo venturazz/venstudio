@@ -481,3 +481,25 @@ test("a quality check the owner waived (Approve anyway) is recorded as waived an
   const lab = labTrialCounts([outcome(6, { labTrial: true, qcWaived: true, qcPassed: false, gates: failedTech })]);
   assert.equal(lab.waived, 1);
 });
+
+test("a pack's story vocabulary is read from its style.json, and a look without one has none", () => {
+  const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../styles/packs");
+  const load = (id: string) => {
+    const raw = JSON.parse(readFileSync(path.join(dir, id, "style.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(path.resolve(dir, "../lock.json"), "utf8")) as { packs: Array<{ id: string; sha256: string }> };
+    return parsePack(raw, lock.packs.find((p) => p.id === id)!.sha256)!;
+  };
+  const voxel = load("voxel-build");
+  assert.deepEqual(Object.keys(voxel.plan!.story!), ["structure", "action", "focus"]);
+  assert.deepEqual(voxel.plan!.story!.action, ["build", "damage", "idle"]);
+  assert.equal(voxel.plan!.story!.structure.length, 8);
+  // A look that takes no intent has no vocabulary at all.
+  assert.equal(load("line-graph").plan!.story, undefined);
+  // A slot with no values is dropped rather than half-honoured: keeping it would want every scene to fill a slot nothing
+  // can satisfy. The vendored validator refuses such a pack before it is ever signed (tools/validate.test.mjs).
+  const raw = JSON.parse(readFileSync(path.join(dir, "voxel-build/style.json"), "utf8"));
+  const half = parsePack({ ...raw, contract: { ...raw.contract, story: { structure: [], action: ["build"] } } }, "0".repeat(64))!;
+  assert.deepEqual(half.plan!.story, { action: ["build"] });
+  const none = parsePack({ ...raw, contract: { ...raw.contract, story: { structure: [] } } }, "0".repeat(64))!;
+  assert.equal(none.plan!.story, undefined);
+});

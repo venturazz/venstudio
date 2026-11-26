@@ -360,6 +360,20 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   shows 1200 but cites no research note. Numbers must come from the research notes; never invent data." The script of
   a scene-spec run is burned in as captions, so its script gate also fails a number written in digits that no sourced
   note contains (numbers spelled out in words are not read).
+- **`contract.story` — the pack's own vocabulary.** A look that builds what the script is about declares the words it can
+  draw, one list per slot: `voxel-build` ships `structure` (the eight kit buildings), `action` (`build`, `damage`,
+  `idle`) and `focus` (`structure`, `villager`). The slots are the pack's business — a chart look could declare `chart`
+  and `palette` — and `tools/validate.mjs` checks the contract (slot names, 1 to 24 values, no duplicates) so a pack
+  cannot promise a word it cannot draw. When a pack has a vocabulary, every scene of the spec must carry `intent`
+  filling **every** slot from that list, the prompt names the lists and the schema, and the validator refuses anything
+  else by name, with the alternatives: *Scene 2 intent.structure is "spaceship", which Minecraft Village (Muse) cannot
+  draw. It can draw: well, farm, medium_house, blacksmith, church, tavern, large_house, library.* A look without a
+  vocabulary takes no `intent`, and a scene that offers one is refused rather than silently dropped. The intent travels
+  shot → payload → page untouched (`RenderShotInput.intent`, `buildHtmlCaptureProps`), and a page that does not know the
+  slot ignores it: the worker contract gains one optional field, so old payloads and old pages render as before.
+- A pack's page draws what its story asks for, and falls back to its own default when a shot names nothing: `voxel.js`
+  uses `intent.structure` when the kit knows it, otherwise the fixed `ROTATION[i % 8]` it always used, so runs recorded
+  before the vocabulary existed are unchanged.
 - The spec becomes the scene plan and the render payload directly (`sceneSpecShots` → `buildScenePlan` →
   `buildRenderPayload`): the worker contract is unchanged, so no worker bump. The render contract carries a picture per
   shot, so the portal draws one plain-colour plate per run (`lib/studio/plate.ts`, source `generated`, executor

@@ -29,6 +29,8 @@ export const NARRATION_ESTIMATE_TOLERANCE = 0.1;
 export interface RenderShotInput {
   shotRef: string;
   seconds: number;
+  /** The pack's own story words for this shot (contract.story), carried to the page untouched. */
+  intent?: Record<string, string>;
 }
 
 export interface CaptionCue {
@@ -48,7 +50,7 @@ export interface RenderPayload {
   transitionSec: number;
   /** Scene plan, for engines that animate elements. Absent when the stills engine has enough. */
   scenePlan?: ScenePlan;
-  shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion }>;
+  shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion; intent?: Record<string, string> }>;
   narrationAssetId: string;
   /** Length of the narration as it plays (after narrationTempo). */
   narrationSec: number;
@@ -199,7 +201,14 @@ export function buildRenderPayload(i: RenderInput): RenderPlan {
     };
   }
   const f = VIDEO_FORMATS[i.format];
-  const shots = i.shots.map((s, idx) => ({ shotRef: s.shotRef, assetId: i.shotAssets[s.shotRef] as string, seconds: secs[idx], motion: motionFor(idx) }));
+  const shots = i.shots.map((s, idx) => ({
+    shotRef: s.shotRef,
+    assetId: i.shotAssets[s.shotRef] as string,
+    seconds: secs[idx],
+    motion: motionFor(idx),
+    // The story words the pack's page draws. Absent for every look without a vocabulary, so old payloads are unchanged.
+    ...(s.intent ? { intent: { ...s.intent } } : {}),
+  }));
   const fontAssetId = i.fontAssetId || i.captionSpec?.fontAssetId || null;
   const audioInputs = [...(i.audioPlan?.bed ? [i.audioPlan.bed.assetId] : []), ...(i.audioPlan?.sfx.map((s) => s.assetId) ?? [])];
   const inputs = Array.from(new Set([...shots.map((s) => s.assetId), i.narrationAssetId as string, ...(fontAssetId ? [fontAssetId] : []), ...audioInputs]));
