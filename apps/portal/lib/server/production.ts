@@ -1218,10 +1218,13 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     capability: renderJobCapability(plan.payload.engine, plan.payload.transitionSec, stylePack),
   });
   const music = bedPick ? bedNote(bedPick, template.audio.musicPolicy) : null;
+  const starts = payloadSceneStarts(plan.payload);
   await mergeStageOutput(st.id, {
     jobId,
     shots: plan.payload.shots.length,
     narrationSec: plan.payload.narrationSec,
+    // Where each scene sits in the video that was rendered: the qc stage compares the approved stills against these.
+    timeline: starts.map((start, i) => ({ start, seconds: plan.payload.shots[i]?.seconds ?? 0 })),
     ...(music ? { music } : {}),
     ...(mix.note ? { mixNote: mix.note } : {}),
     ...(stylePack ? { stylePack } : {}),
@@ -2359,6 +2362,48 @@ async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promi
 // ---------------------------------------------------------------------------------------------------------------
 // Quality check
 
+/**
+ * The approved stills, each with the time its own scene has in the video that was just rendered. The preview runs before
+ * the voice, so its seconds are the planned ones; the video's are fitted to the narration. Both name the same scenes, so
+ * a still maps to the middle of its scene in the render's timeline, which is where the picture must still match.
+ */
+async function previewStillChecks(
+  run: RunInfo,
+  renderResult: Record<string, unknown>,
+): Promise<Array<{ assetId: string; atSec: number }>> {
+  const sql = db();
+  const preview = toObject((await latestPassedOutput(sql, run.id, "preview"))?.result);
+  const stills = Array.isArray(preview.stills) ? (preview.stills as unknown[]) : [];
+  const timelineRaw = Array.isArray(renderResult.timeline) ? (renderResult.timeline as unknown[]) : [];
+  const timeline = timelineRaw.flatMap((raw) => {
+    const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    return typeof o.start === "number" && typeof o.seconds === "number" && o.seconds > 0 ? [{ start: o.start, seconds: o.seconds }] : [];
+  });
+  if (stills.length === 0 || timeline.length === 0) return [];
+  // Which scene each still belongs to: the scene it falls inside on the planned timeline the preview drew.
+  const previewJob = asUuid(preview.jobId) ? await loadJob(asUuid(preview.jobId) as string) : null;
+  const plannedShots = Array.isArray(previewJob?.payload.shots) ? (previewJob.payload.shots as Array<{ seconds: number }>) : [];
+  const plannedFade = plannedShots.length > 1 ? Number(previewJob?.payload.transitionSec) || 0 : 0;
+  const plannedStarts: number[] = [];
+  for (let i = 0, at = 0; i < plannedShots.length; i++) {
+    plannedStarts.push(at);
+    at += (Number(plannedShots[i].seconds) || 0) - plannedFade;
+  }
+  const out: Array<{ assetId: string; atSec: number }> = [];
+  for (const raw of stills) {
+    const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    const assetId = asUuid(o.artifactId);
+    const at = typeof o.atSec === "number" && Number.isFinite(o.atSec) ? o.atSec : null;
+    if (!assetId || at === null) continue;
+    let shot = -1;
+    for (const [i, start] of plannedStarts.entries()) if (at + 1e-6 >= start) shot = i;
+    if (shot < 0 || shot >= timeline.length) continue;
+    const atSec = Math.round((timeline[shot].start + timeline[shot].seconds / 2) * 100) / 100;
+    out.push({ assetId, atSec });
+  }
+  return out.slice(0, 6);
+}
+
 async function runQcStage(run: RunInfo, st: StageRow): Promise<void> {
   const existing = asUuid(st.output.jobId);
   if (existing) {
@@ -2381,11 +2426,18 @@ async function runQcStage(run: RunInfo, st: StageRow): Promise<void> {
     ? (renderResult.sceneStarts as unknown[]).filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0).slice(0, 500)
     : [];
   const sampleFrames = advisoryFrameCount();
+  const compareStills = await previewStillChecks(run, renderResult);
   const jobId = await createJob({
     type: "qc-video",
     // sampleFrames: a few stills for Hermes's presentation advisory (worker 0.10.0+; older workers ignore it). Only
     // when Hermes is set up, since nothing else looks at them.
-    payload: { inputs: [assetId], runId: run.id, ...(plannedCuts.length > 0 ? { plannedCuts } : {}), ...(sampleFrames > 0 ? { sampleFrames } : {}) },
+    payload: {
+      inputs: [assetId],
+      runId: run.id,
+      ...(plannedCuts.length > 0 ? { plannedCuts } : {}),
+      ...(sampleFrames > 0 ? { sampleFrames } : {}),
+      ...(compareStills.length > 0 ? { compareStills } : {}),
+    },
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,

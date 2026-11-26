@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { measureFromQcResult, technicalReportFor, withPlannedCuts } from "./qc-result.ts";
+import { measureFromQcResult, previewDrift, technicalReportFor, withPlannedCuts } from "./qc-result.ts";
 import { seedTemplates } from "./templates.ts";
 
 const good = {
@@ -59,6 +59,19 @@ test("a failed job, an unreadable result and a missing template each give a fail
   assert.match(missing.gate.issues[0], /tpl-x was not found/);
   assert.ok(missing.measure);
   assert.equal(technicalReportFor({ status: "succeeded", result: good }, t, "short", t.id).gate.executor, "worker qc-video");
+});
+
+test("a video that does not match the approved still fails the technical gate", () => {
+  const t = seedTemplates()[0];
+  assert.deepEqual(previewDrift({ ...good, previewMatch: [{ atSec: 3.8, ssim: 0.97 }] }), [], "the same picture at the same moment");
+  assert.deepEqual(previewDrift({ ...good }), [], "nothing to compare when the run had no preview");
+  const drift = previewDrift({ ...good, previewMatch: [{ atSec: 3.8, ssim: 0.41 }, { atSec: 9.2, ssim: null }] });
+  assert.equal(drift.length, 2);
+  assert.match(drift[0], /3\.8 s does not look like the approved still \(similarity 0\.41\)/);
+  assert.match(drift[1], /9\.2 s could not be compared/);
+  const report = technicalReportFor({ status: "succeeded", result: { ...good, previewMatch: [{ atSec: 3.8, ssim: 0.41 }] } }, t, "short", t.id);
+  assert.equal(report.gate.passed, false, "the gate is the thing that stops the run");
+  assert.ok(report.gate.issues.some((i) => /approved still/.test(i)));
 });
 
 test("planned scene starts are added to the detected cuts: inside the video only, sorted, no near-duplicates", () => {

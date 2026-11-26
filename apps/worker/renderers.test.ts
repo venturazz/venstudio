@@ -31,6 +31,8 @@ import {
   handlers,
   htmlCaptureFfmpegArgs,
   htmlInitIssue,
+  parseSsim,
+  ssimArgs,
   htmlPackFor,
   installedHtmlPacks,
   packCapabilitiesFor,
@@ -219,6 +221,12 @@ test("init's reply must match the job; one frame of rounding is allowed", () => 
   assert.match(htmlInitIssue({ ...want, width: 1920, height: 1080 }, want) as string, /1920x1080/);
   assert.match(htmlInitIssue({ ...want, fps: 25 }, want) as string, /25 fps/);
   assert.match(htmlInitIssue(null, want) as string, /returned nothing/);
+});
+
+test("the still comparison scales both pictures and reads ffmpeg's own number", () => {
+  assert.ok(ssimArgs("a.jpg", "b.png").includes("[0:v]scale=320:-2,format=gray[x];[1:v]scale=320:-2,format=gray[y];[x][y]ssim"));
+  assert.equal(parseSsim("... SSIM ... All:0.98765 (1.00000)"), 0.988);
+  assert.equal(parseSsim("nothing here"), null);
 });
 
 /** A context that stands in for the page: the globals the clock replaces, plus a document with animations. */

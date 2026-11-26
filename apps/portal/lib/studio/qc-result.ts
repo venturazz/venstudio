@@ -77,6 +77,30 @@ const failedTechnical = (issue: string): GateResult => ({ gate: "G-technical", p
  * The G-technical report for one finished qc-video job. A failed job, an unreadable result and a missing
  * template each give a failed report, never "no report", so a production always ends with a QC record.
  */
+/**
+ * The lowest similarity a render may have with the still the owner approved: the preview is a promise about the look,
+ * so a video that does not keep it fails the technical gate instead of passing quietly. 0.85 is loose enough for a JPEG
+ * still against a video frame of the same moment (identical pictures score above 0.98) and far above what a different
+ * scene, a different machine or a rescaled timeline scores.
+ */
+export const PREVIEW_MATCH_MIN_SSIM = 0.85;
+
+/** The stills whose frame in the finished video does not look like the approved preview, as gate issues. */
+export function previewDrift(result: unknown): string[] {
+  const r = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : {};
+  if (!Array.isArray(r.previewMatch)) return [];
+  const out: string[] = [];
+  for (const raw of r.previewMatch.slice(0, 6)) {
+    const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    const at = typeof o.atSec === "number" && Number.isFinite(o.atSec) ? Math.round(o.atSec * 10) / 10 : null;
+    if (at === null) continue;
+    const ssim = typeof o.ssim === "number" && Number.isFinite(o.ssim) ? o.ssim : null;
+    if (ssim === null) out.push(`The frame at ${at} s could not be compared with the approved still`);
+    else if (ssim < PREVIEW_MATCH_MIN_SSIM) out.push(`The video at ${at} s does not look like the approved still (similarity ${ssim.toFixed(2)})`);
+  }
+  return out;
+}
+
 export function technicalReportFor(
   job: { status: string; error?: unknown; result?: unknown },
   template: Template | null,
@@ -95,5 +119,8 @@ export function technicalReportFor(
   const measure = read ? withPlannedCuts(read, plannedCuts) : null;
   if (!measure) return { gate: failedTechnical("The quality check result could not be read"), measure: null };
   if (!template) return { gate: failedTechnical(`Template ${templateId} was not found, so the video could not be checked`), measure };
-  return { gate: { ...technicalGate(measure, template, format), executor: QC_EXECUTOR }, measure };
+  const gate = { ...technicalGate(measure, template, format), executor: QC_EXECUTOR };
+  const drift = previewDrift(job.result);
+  if (drift.length === 0) return { gate, measure };
+  return { gate: { ...gate, passed: false, issues: [...gate.issues, ...drift] }, measure };
 }
