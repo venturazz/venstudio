@@ -86,7 +86,9 @@ q "INSERT INTO enrollment_codes (code_hash, label, host, channel_id, created_by,
    VALUES (encode(sha256('$CODE'::bytea),'hex'), 'E2E worker', 'local', '$CHANNEL', '$OWNER', now() + interval '30 minutes')" >/dev/null
 
 echo "== install + enroll worker via install.sh"
-curl -fsSL "$APP_URL/install/install.sh" | bash -s -- --portal "$APP_URL" --code "$CODE" --name "E2E worker" --mode tick --home "$WORK/worker"
+# --no-provision: this worker stands for a machine without the renderer. A worker that lacks it installs it from the
+# portal on its first run (0.19.0), which would make every assertion below see a worker that has Remotion after all.
+curl -fsSL "$APP_URL/install/install.sh" | bash -s -- --portal "$APP_URL" --code "$CODE" --name "E2E worker" --mode tick --home "$WORK/worker" --no-provision
 [ -f "$WORK/worker/config.json" ] || fail "worker config not written"
 cmp -s "$WORK/worker/styles/style-packs.json" "$WORK/style-packs.json" || fail "install.sh did not install the served style packs index"
 [ "$(stat -c '%a' "$WORK/worker/config.json")" = "600" ] || fail "config.json not chmod 600"
