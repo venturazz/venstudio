@@ -30,7 +30,7 @@ this worker yet"):
    cd /home/hatch/venstudio
    curl -fsSL https://studio.example.com/install/install.sh -o install.sh
    sha256sum install.sh
-   bash install.sh --portal https://studio.example.com --mode hold
+   sudo bash install.sh --portal https://studio.example.com --mode hold
 
    The sha256 should be <64 hex characters shown on the Workers page>. If it's different, stop and tell me and run
    nothing.

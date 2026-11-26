@@ -86,7 +86,9 @@ q "INSERT INTO enrollment_codes (code_hash, label, host, channel_id, created_by,
    VALUES (encode(sha256('$CODE'::bytea),'hex'), 'E2E worker', 'local', '$CHANNEL', '$OWNER', now() + interval '30 minutes')" >/dev/null
 
 echo "== install + enroll worker via install.sh"
-curl -fsSL "$APP_URL/install/install.sh" | bash -s -- --portal "$APP_URL" --code "$CODE" --name "E2E worker" --mode tick --home "$WORK/worker"
+# --no-provision: this worker stands for a machine without the renderer. A worker that lacks it installs it from the
+# portal on its first run (0.19.0), which would make every assertion below see a worker that has Remotion after all.
+curl -fsSL "$APP_URL/install/install.sh" | bash -s -- --portal "$APP_URL" --code "$CODE" --name "E2E worker" --mode tick --home "$WORK/worker" --no-provision
 [ -f "$WORK/worker/config.json" ] || fail "worker config not written"
 cmp -s "$WORK/worker/styles/style-packs.json" "$WORK/style-packs.json" || fail "install.sh did not install the served style packs index"
 [ "$(stat -c '%a' "$WORK/worker/config.json")" = "600" ] || fail "config.json not chmod 600"
@@ -100,7 +102,9 @@ WORKER=$(q "SELECT id FROM workers WHERE name = 'E2E worker'")
 echo "== queue jobs and run one tick"
 ECHO_JOB=$(q "INSERT INTO jobs (type, capability, payload, channel_id, preferred_worker_id) VALUES ('echo','echo','{\"e2e\":true}', '$CHANNEL', '$WORKER') RETURNING id")
 SMOKE_JOB=$(q "INSERT INTO jobs (type, capability, payload) VALUES ('smoke-test','ffmpeg','{\"seconds\":3,\"width\":540,\"height\":960,\"fps\":30}') RETURNING id")
-"$WORK/worker/run.sh" tick || { cat "$WORK/worker/logs/worker.log"; fail "tick exited non-zero"; }
+# VENSTUDIO_NO_PROVISION: a worker that lacks the renderer installs it from the portal on its first run (0.19.0). This
+# one is here to stand for a machine without it, so the assertions below still see a worker that reports only its stills.
+VENSTUDIO_NO_PROVISION=1 "$WORK/worker/run.sh" tick || { cat "$WORK/worker/logs/worker.log"; fail "tick exited non-zero"; }
 cat "$WORK/worker/logs/worker.log"
 
 [ "$(q "SELECT status FROM jobs WHERE id = '$ECHO_JOB'")" = "succeeded" ] || fail "echo job not succeeded"

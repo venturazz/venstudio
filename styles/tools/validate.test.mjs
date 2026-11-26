@@ -162,8 +162,10 @@ test("one research pack per claude-animation-skills skill, pinned, credited and 
     "stick-figure": "stick-figure",
     "zach-d-films": "what-if-3d",
   };
-  // Two of them are superseded by a worker pack that renders the same look, so they sit at retired; the rest are live trials.
-  const RETIRED = ["graph", "minimalistic-graphics", "minecraft"];
+  // Two of them are superseded by a worker pack that renders the same look, so they sit at retired. /minecraft stays a
+  // live trial: the Muse pack draws a village of kit structures, not the cottage this skill builds, so it is a different
+  // look rather than a replacement (the owner picks one or the other).
+  const RETIRED = ["graph", "minimalistic-graphics"];
   for (const [skill, id] of Object.entries(PACKS)) {
     const s = load(id);
     const status = RETIRED.includes(skill) ? "retired" : "trial";
@@ -467,4 +469,34 @@ test("html-design: research only, html-capture only, at most trial, the owner re
   assert.ok(has(V.validateRepo(gsap).issues, /GSAP is not available to html-design pages until the owner approves its licence/));
   // research-source still never stands in for other packs' CI render.
   assert.ok(has(V.validateStyle({ ...clone(load("probe-line-graph")), curation: [{ date: "2026-11-22", kind: "research-source", ref: "x", result: "pass", notes: "" }] }), /research-source is evidence for hermes packs \(and html-design packs\) only/));
+});
+
+test("workflow.skip drops only a stage the recipe calls optional", () => {
+  const voxel = load("voxel-build");
+  // The 3D page costs seconds per frame to photograph, so this pack runs without the still-frame preview.
+  assert.deepEqual(V.workflowStages(voxel), ["idea", "research", "script", "scene-spec", "voice", "render", "qc"]);
+  assert.deepEqual(V.validateStyle(voxel), []);
+  // A pack that skips a stage its recipe needs is refused by name.
+  assert.ok(
+    has(V.validateStyle({ ...clone(voxel), workflow: { recipe: "scene-spec", skip: ["qc"] } }), /workflow\.skip: qc is not optional in scene-spec/),
+  );
+  // Skipping and reviewing the same stage is a contradiction.
+  assert.ok(
+    has(
+      V.validateStyle({ ...clone(voxel), workflow: { recipe: "scene-spec", review: ["preview"], skip: ["preview"] } }),
+      /workflow\.skip: preview is also in workflow\.review/,
+    ),
+  );
+  // The preview stays for every pack that does not ask to drop it.
+  assert.ok(V.workflowStages(load("line-graph")).includes("preview"));
+  assert.deepEqual(V.workflowStages({ ...clone(voxel), workflow: undefined, renderer: voxel.renderer }), [
+    "idea",
+    "research",
+    "script",
+    "scene-spec",
+    "preview",
+    "voice",
+    "render",
+    "qc",
+  ]);
 });

@@ -2,10 +2,10 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "d49e7bf7f8a1cc239d479445a080b85eeb4a1b1b"
+    "commit": "4e67f80e3e4a57a0b2d82692fc4ac9af39dbf8ae"
   },
   "files": {
-    "FORMAT.md": "b41e2aa9cce72d42aaa992582842cd0498a87bfbdcc6668e38bcb029e10a6a5b",
+    "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
     "schema/style.schema.json": "61df9bee75d6ad15669e4ab95cfa0c6c6f8ae06c0748cef072582e4cd1799595",
     "tools/assemble-remotion.mjs": "a505d58c69435cfb520aa0b0f7db380a8e937e86b6f3582a01cd4a54241b141b",
     "tools/bundle-blocky-page.mjs": "eef1ec5fcfbfb2baa0e5cefd4eb7c8821270cc281d5e9f4bb121ba3b05ae8dc5",
@@ -20,8 +20,8 @@
     "tools/skills.test.mjs": "5e43c8b8a9d85d091616652d54125c80c617436f12ae173088d7fa7fea9b83c3",
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
-    "tools/validate.mjs": "b47c60de87385e9944ff1f93a81ef8cf01782fbd281d1dd9da2515b074142efa",
-    "tools/validate.test.mjs": "efa73cccf833be7cbb1307844a070edaa72fa86558988b54d5a7fa7e78c2dc74"
+    "tools/validate.mjs": "702d9a8b6a9a958f4085dfaef6cd7b692d5cea8203494c9916ab4810ef6f0845",
+    "tools/validate.test.mjs": "b6fc0090ffaa31235f3973c255b55d8f50e7b498e0bdf118575ead006f84d249"
   },
   "packs": [
     {
@@ -40,16 +40,16 @@
     },
     {
       "id": "blocky-story",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "status": "lab",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "2142b408d458d423b83fa130ebda6997767cad74f1354ccabb664b895306a4f1",
+      "sha256": "075700dbfb6038e640975c931f5f2b84c9540bb9307d527f9e4ffd1cf2ef3091",
       "files": {
         "README.md": "c8bc09c59dde1007580bdf11809bb2ba4adf78dd7bc6cdfc63ae28da50b7136a",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
         "fixtures/payload.json": "5cc65ee3d0ae56433688900c098583477c64e0e1c2e50f6fb971ffe2b5b84b2b",
-        "render/adapter.js": "e77b9866f67e621838be587bbcedb7e4f19d631d958cca192a6d6614ab0f4fa1",
+        "render/adapter.js": "2fd0f415e213ef547633517d1dd5e8c187be5d5a6551058aeece141f1b02e5b8",
         "render/assets/char-hero.json": "70c9830e4637bf541a3e1f86cdfb36d649faaeddb99d42657d58ab2c989ced79",
         "render/assets/engine/acting.js": "48312e748bf43237e497f115c05b2b5588862e651313efad74b58eab884c1718",
         "render/assets/engine/chars.js": "40528a0eb421c5fe96ba2a8cb23b34e1152f7c0e00e90c188ed97bd7f17becc5",
@@ -69,7 +69,7 @@
         "render/cast.js": "0e03d341d942c4d3a436820624cb3045ee0a83d03e46222d82286de667458825",
         "render/index.html": "3fe8246f6e83e3bb906ba02516fa829061ff01d23ad6162d2348b5e5cc20e0d5",
         "render/page.js": "98dbe0fb98c82dcd474cc474033d3cfc0475172a70b97dc51bacf2e6a7409dc6",
-        "style.json": "5a36320b694d542508096cd49644a9b14d6e8ffe04f501499709b0df63f6aece"
+        "style.json": "27521049ae30339c632429092bad48d356c2e8b52fa18b5bef4a13984f531c1c"
       }
     },
     {
@@ -403,11 +403,11 @@
     },
     {
       "id": "voxel-build",
-      "version": "0.3.0",
-      "status": "lab",
+      "version": "0.3.3",
+      "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "317c96b3dcd176a70e4473d02d8bb0d88616368ac9b1f65a4a03753a86f61d85",
+      "sha256": "c0c9ae16be5b22dcf0c06808a10578c341f5f11a63ccf7d67a4ac0b2ee8fd886",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -438,22 +438,22 @@
         "render/assets/vendor/villager.json": "17e91b80bdf6f38d63e18e2e0fa3b05c354d7b8be7126d7d1aad1358367d2b3d",
         "render/index.html": "0301e6c55002345ce060200ea82b2186c7419bf54437c70117cada14a202978f",
         "render/page.js": "ec5f4a4a8945bcc135ed5657c2d1914ddccfcb46d5f59dc87121b487303e72de",
-        "render/voxel.js": "02842cfb2e9db666f6aaa2d16e70ad2c4dbb5d88d41564dc1b8c795942b00688",
-        "style.json": "1f52e0773cb8f779f1caa7235f1c680e30652fc8920da7bd5109f006bc10274d"
+        "render/voxel.js": "e3ac8375e3b199c1d55bfeae6972441ba7af48cb01c50869b7197c867cbbc0c7",
+        "style.json": "f4383cacdfee103a51982ac186d1049141172639a682fc418539d05c29c7e16c"
       }
     },
     {
       "id": "voxel-build-skill",
-      "version": "0.2.0",
-      "status": "retired",
+      "version": "0.3.0",
+      "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "ff38e6dcbeb3213259b90138d93d2e0504f8a2136a91f99682ed60910fbcaae9",
+      "sha256": "5a84cea63a0d16bd81ab6fecee829226e8b72817fd40e2902fe07f9af9a1efca",
       "files": {
         "README.md": "d90257c30da1caed7f1b548df1d6768578bff7ca8203a500d712e1231752f115",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "6fe950c0992fdc64af7c9d4d1f954db19e91e9859032014844cea55636866896",
-        "style.json": "0293cc62c8f40e9b11e34e4decfe67541eb52d84c7912cf09541a635b6bf3b3b"
+        "style.json": "997a0d179c945dacbd6931250e169976e0c01e24a2e517f7c511e9b94748d2eb"
       }
     },
     {

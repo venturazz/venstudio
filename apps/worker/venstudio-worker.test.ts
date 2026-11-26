@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -8,6 +8,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import {
+  ffmpegPath,
   AlreadyRunningError,
   advertisedJobTypes,
   buildRenderArgs,
@@ -506,7 +507,8 @@ test("render-preview renders placeholder cards and uploads preview.mp4", { skip:
 });
 
 const DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-const hasDrawtext = hasFfmpeg && spawnSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8" }).stdout.includes(" drawtext ");
+// The binary the worker itself uses: a static fallback build can lack drawtext while the system ffmpeg has it.
+const hasDrawtext = hasFfmpeg && spawnSync(ffmpegPath(), ["-hide_banner", "-filters"], { encoding: "utf8" }).stdout.includes(" drawtext ");
 test("render-preview draws the text when a font asset is supplied and ffmpeg has drawtext", { skip: !hasDrawtext || !existsSync(DEJAVU) ? "needs ffmpeg with drawtext and DejaVu Sans" : false }, async (t) => {
   const portal = fakePortal();
   const base = await portal.start();

@@ -45,11 +45,39 @@ On each Muse VM (or in the Muse agent's terminal), from `/home/hatch/venstudio`:
 cd /home/hatch/venstudio
 curl -fsSL https://<portal>/install/install.sh -o install.sh
 sha256sum install.sh        # compare with Workers → Add a worker in the portal
-bash install.sh --portal https://<portal> --mode hold --with-remotion
+sudo bash install.sh --portal https://<portal> --mode hold --with-remotion
 ```
 
-No `--code`: the enrollment is kept. Without `--with-remotion` the worker updates to 0.5.0 and renders stills and
+No `--code`: the enrollment is kept. Without `--with-remotion` the worker updates to 0.18.0 and renders stills and
 cross-fades only.
+
+### The account and the system libraries
+
+`install.sh` is meant to be **started as root and finished as an ordinary account**, and does that by itself:
+
+1. as root it installs the machine-level pieces once — the system libraries headless Chromium needs
+   (`npx playwright install-deps chromium`, with the plain `apt-get` list as a fallback, old and `t64` package names);
+2. it hands `/home/hatch/venstudio` to an ordinary account and re-fetches itself to continue **as that account**: the
+   account that already owns the directory when there is one, otherwise a new `venstudio` (`--user NAME` picks another,
+   `--stay-root` opts out). An older root install therefore keeps its owner and its crontab, and only the root part
+   changes.
+
+That hand-off is not cosmetic. An environment recipe downloads a binary and runs `pip install`; the worker refuses that
+as root on purpose, because pack code is not trusted. A worker that stays root reports no `env:*` capabilities, so
+`pack:full-frame` and `pack:low-poly-shapes` never appear and those looks can never be rendered on it. Running the
+installer as root and starting the worker as root is exactly how a worker ends up with only `ffmpeg` plus the stills
+packs while its twin has `remotion-2d` and the html packs.
+
+`run.sh` applies the same rule: started as root it hands off to `VENSTUDIO_SERVICE_USER` (default `venstudio`) before
+running the worker, so an older root crontab keeps its capabilities after the installer has created the account. If the
+account is missing, it says so in `logs/worker.log` instead of silently dropping them.
+
+Check which account actually runs the worker:
+
+```bash
+ps -o user= -C node | sort -u      # must not print root
+ls -ld /home/hatch/venstudio /home/hatch/venstudio/envs
+```
 
 `--with-remotion` puts everything under `/home/hatch/venstudio/remotion` (the only path that survives a recycle) and
 is safe to run again; run it after every portal update so the templates match the portal's:
@@ -197,3 +225,54 @@ remotion studio src/index.ts`; then `npx tsc -p tsconfig.json` and `node scripts
 every composition listed in the generated `src/packs/packs.json`, and the worker maps a scene plan's template to its
 composition from that list. A new runtime file goes into `REMOTION_RUNTIME_FILES` in
 `apps/portal/lib/install-bundle.ts` (a unit test fails until it does) and into the styles repo's runtime copy.
+
+## Preview stills are bounded
+
+The still-frame preview (stage `preview`) is a check, not a render: the worker draws frames from 0 and stops at
+`STILL_DRAW_BUDGET_MS` (3 min), keeping the stills it got, and the Review card says why
+fewer arrived. A heavy WebGL page (`voxel-build` under llvmpipe) costs seconds per frame, so without that bound a
+six-still preview of a 45 s video would draw a thousand frames to prove the look is right.
+
+`Page.captureScreenshot` gets its own, longer budget on a pack page (`PACK_SHOT_TIMEOUT_MS`, 90 s): the capture waits
+for a composited surface, which on a slow software rasterizer can outlast the 30 s a frame gets even when the page is
+fine. Removing the preview is not the fix — it is the cheap gate that catches a broken page before the voice and the
+render spend ten minutes finding out.
+
+## A page that drew nothing never becomes the look (0.19.1)
+
+A 3D pack page answers `init(props)` with the job's four numbers (`totalFrames`, `fps`, `width`, `height`) even when it
+could not get a WebGL context; in that case it draws only its text. Captured, that is a caption on a blank plate — and
+because the preview and the render are separate jobs, it could be captured by one machine and not the other, which is
+how a video can disagree with its own preview.
+
+The page now reports `degraded: true` in that state and the worker refuses the job: *"The page drew nothing: it could not
+get a WebGL context on this machine... a worker with working WebGL must take this job."* `voxel-build@0.3.3` and
+`blocky-story@0.1.2` report it.
+
+## The finished video is checked against the still it was approved with (0.19.1)
+
+The preview runs before the voice, so its seconds are the planned ones and the video's are fitted to the narration; both
+name the same scenes. The qc job therefore carries each approved still with the time its scene's middle has in *that*
+video, and the worker measures the two pictures with ffmpeg's ssim. Below 0.85 the technical gate fails by name, e.g.
+*"The video at 12.4 s does not look like the approved still (similarity 0.41)"*.
+
+Measured on `voxel-build@0.3.3`, 540x960: still against the video frame of the same moment 0.978, against another
+scene 0.44-0.51 — the threshold sits in that gap, so encoding noise passes and a drifted render does not.
+
+## The render is drawn by the machine that drew the preview (0.19.1)
+
+The stills are a promise about the look, so the render-video job is queued with the preview job's worker as its
+`preferred_worker_id` — when that worker is still active and still reports the run's pack version. If it is gone, the
+job is not pinned and the render stage records `previewWorkerNote`: another worker draws it and the picture can differ.
+
+## A worker installs the renderer itself (0.19.0)
+
+A worker without `remotion-2d` installs it on its first run: it asks the portal for its own `/api/worker/update`, takes
+the `installSha256` the portal names, downloads that `install.sh` and runs it as its own account (never root, so the
+pack environments install too). Three attempts, six hours apart; after that it stops and logs why, so a box that cannot
+run Remotion does not retry every hour. The capabilities and environments are re-read afterwards, and the next claim
+reports `remotion-2d`, `html-capture`, `preview-frames` and the packs.
+
+Turn it off with `install.sh --no-provision` (it writes `VENSTUDIO_NO_PROVISION=1` into `run.sh`) or with
+`VENSTUDIO_NO_PROVISION=1` in the environment of one run. Use it on a machine that must never install a browser, and
+in a test that stands for a worker without the renderer (`scripts/e2e.sh` does).

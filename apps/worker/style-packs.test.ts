@@ -101,9 +101,9 @@ test("what the worker reports is what the portal's New Video counts as available
   const trialIds = packs.filter((p) => p.status === "trial").map((p) => p.id);
   assert.deepEqual(offer.waiting.map((e) => e.id).sort(), trialIds.filter((id) => !reported.includes(id)).sort());
   // A worker never reports the Hermes packs: with Hermes set up they join the Trial section, and the research styles
-  // (the seven claude-animation-skills looks and the generic render) are offered there too.
+  // (the eight claude-animation-skills looks and the generic render) are offered there too.
   const hermesTrial = packs.filter((p) => p.engine === "hermes" && p.status === "trial").map((p) => p.id);
-  assert.equal(hermesTrial.length, 8);
+  assert.equal(hermesTrial.length, 9, "eight research looks (the /minecraft cottage among them) plus the generic render");
   assert.deepEqual(
     newVideoStyles(mergeRegistry(STYLES, packs), caps, { hermes: true }).trial.map((e) => e.id).sort(),
     [...reported, ...hermesTrial].sort(),

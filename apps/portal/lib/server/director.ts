@@ -724,6 +724,12 @@ export interface StageConclusion {
   plan?: ReviewPayload["plan"];
   /** The final quality check: which gates failed and whether the style is narrated (payload.qc). */
   qcFacts?: QcFacts;
+  /**
+   * A step whose failure stops the run instead of asking the owner to approve anyway: the still-frame preview, where
+   * a page that cannot be photographed would fail the render the same way. The stage is stored failed and the run
+   * parks with a stage-error card whose only ways forward are Retry or Reject.
+   */
+  block?: string;
 }
 
 /** What concludeStage decided, worked out before any write. */
@@ -752,6 +758,24 @@ function planConclusion(run: RunInfo, st: StageRow, template: Template, outcome:
     videosSincePublishSpotCheck: 0,
     attempts: autoRevisions,
   };
+  if (outcome.block) {
+    // Stops here whatever the level: no voice, no render, no publishing until the cause is fixed.
+    return {
+      decision: { action: "block", reason: outcome.block },
+      base: { result: outcome.result, feedback, autoRevisions, ...(outcome.extra ?? {}) },
+      summary: outcome.block,
+      issues: outcome.issues ?? [outcome.block],
+      reason: outcome.block,
+      detail: {
+        ...(outcome.checks ? { checks: outcome.checks } : {}),
+        ...(outcome.media ? { media: outcome.media } : {}),
+        ...(outcome.notes && outcome.notes.length > 0 ? { notes: outcome.notes } : {}),
+        ...(outcome.plan ? { plan: outcome.plan } : {}),
+      },
+      autoRevisions,
+      result: outcome.result,
+    };
+  }
   const raw = outcome.final ? decideNext({ ...common, point: "final" }) : decideNext({ ...common, point: "stage", stage });
   // A revision cannot fix a provider terms or render problem, so production stages ask the owner instead.
   const staged = isProductionStage(stage) ? productionDecision(raw) : raw;

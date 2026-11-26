@@ -48,10 +48,11 @@ const pack = (id: string, over: Partial<StylePack> = {}): StylePack => {
 const REGISTRY = mergeRegistry(STYLES, vendored);
 const entry = (id: string, reg = REGISTRY) => reg.find((e) => e.id === id)!;
 // The claude-animation-skills research styles, by the id each one has now: the look is the id, not "hermes-<skill>".
-const TRIAL_RESEARCH = ["branching-lines", "exploded-view", "flat-space", "map-route", "ps1-low-poly", "stick-figure", "what-if-3d"];
-// The skill-driven variants of the looks a worker now renders itself (line graph, minimal line art, voxel build) and
-// the generic Hermes render are retired: the worker pack replaced them.
-const RETIRED_RESEARCH = ["line-graph-skill", "step-line-art-skill", "voxel-build-skill"];
+const TRIAL_RESEARCH = ["branching-lines", "exploded-view", "flat-space", "map-route", "ps1-low-poly", "stick-figure", "voxel-build-skill", "what-if-3d"];
+// The skill-driven variants of the looks a worker now renders itself (line graph, minimal line art) are retired: the
+// worker pack replaced them. /minecraft does not belong here: its cottage is not the Muse pack's village, so it keeps
+// its own live trial and the owner picks between the two.
+const RETIRED_RESEARCH = ["line-graph-skill", "step-line-art-skill"];
 const GROUP = "Hermes research styles (from claude-animation-skills)";
 
 test("registry grouping: research styles, trial, lab (draft and lab), listed and planned", () => {

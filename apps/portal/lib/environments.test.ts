@@ -40,7 +40,7 @@ const ENV = "env:three-svg@1.0.0";
 test("engine command is a catalogue engine, the worker's and the protocol's; the proof pack is in the vendored lock", () => {
   assert.equal(ENGINES.command.capability, "command");
   assert.ok(CAPABILITIES.includes("command"));
-  assert.equal(WORKER_VERSION, "0.18.0");
+  assert.equal(WORKER_VERSION, "0.19.1");
   const lp = lockOf(PROOF);
   assert.ok(lp, "styles/lock.json lists the proof pack");
   assert.equal((lp as unknown as { engine: string }).engine, "command");

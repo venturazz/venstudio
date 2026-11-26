@@ -125,7 +125,7 @@ import {
   previewWorkers,
   sceneStartsOf as payloadSceneStarts,
 } from "../studio/frame-preview.ts";
-import type { CombinedQc } from "../studio/qc.ts";
+
 
 /**
  * Phase 4 stage drivers. Each work order is claimed on its own (FOR UPDATE SKIP LOCKED), so a crash loses at most
@@ -683,6 +683,29 @@ function voiceConclusionFrom(i: {
 }
 
 /** Each non-revoked worker's reported capabilities, mapped from postgres rows. Null when the read fails. */
+/**
+ * The machine that drew the approved stills, when it can still take the render. The preview is a promise about the
+ * look, so the video is drawn by the same worker: two machines can differ in what they can render (a browser without
+ * WebGL draws only text), and that difference must not show up as a video that disagrees with its own preview.
+ */
+async function previewWorkerPin(q: Q, runId: string, packCapability: string | null): Promise<{ workerId: string | null; hadPreview: boolean }> {
+  try {
+    const rows = await q`
+      SELECT j.worker_id, w.status, w.capabilities
+      FROM jobs j JOIN workers w ON w.id = j.worker_id
+      WHERE j.type = 'preview-frames' AND j.worker_id IS NOT NULL AND j.payload->>'runId' = ${runId}
+      ORDER BY j.created_at DESC LIMIT 1`;
+    const r = rows[0] as { worker_id?: unknown; status?: unknown; capabilities?: unknown } | undefined;
+    if (!r || typeof r.worker_id !== "string") return { workerId: null, hadPreview: false };
+    if (r.status === "revoked") return { workerId: null, hadPreview: true };
+    const caps = Array.isArray(r.capabilities) ? (r.capabilities as unknown[]).map((c) => String(c)) : [];
+    if (packCapability && !caps.includes(packCapability)) return { workerId: null, hadPreview: true };
+    return { workerId: r.worker_id, hadPreview: true };
+  } catch {
+    return { workerId: null, hadPreview: false };
+  }
+}
+
 async function workerCapabilityLists(q: Q): Promise<string[][] | null> {
   try {
     const rows = await q`SELECT capabilities FROM workers WHERE status <> 'revoked'`;
@@ -1179,23 +1202,36 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
     SELECT ${run.id}::uuid, 'draft', 'skipped', 1, ${json({ reason: "No animatic in Phase 4" })}::text::jsonb, now()
     WHERE NOT EXISTS (SELECT 1 FROM pipeline_stages WHERE run_id = ${run.id} AND stage = 'draft')
   `;
+  const packCap = stylePack ? `pack:${stylePack.id}@${stylePack.version}` : null;
+  const preview = await previewWorkerPin(sql, run.id, packCap);
+  const pin = preview.workerId;
   const jobId = await createJob({
     type: "render-video",
     payload: { ...plan.payload },
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,
+    // The machine that drew the approved stills takes the render, so the look the owner approved is the look that
+    // ships; a machine that went away is not pinned and the card says the render may be drawn elsewhere.
+    ...(pin ? { preferredWorkerId: pin } : {}),
     // Queued under the pack's capability (or, for runs without a pack, the engine's), so only a worker that can run it claims it.
     capability: renderJobCapability(plan.payload.engine, plan.payload.transitionSec, stylePack),
   });
   const music = bedPick ? bedNote(bedPick, template.audio.musicPolicy) : null;
+  const starts = payloadSceneStarts(plan.payload);
   await mergeStageOutput(st.id, {
     jobId,
     shots: plan.payload.shots.length,
     narrationSec: plan.payload.narrationSec,
+    // Where each scene sits in the video that was rendered: the qc stage compares the approved stills against these.
+    timeline: starts.map((start, i) => ({ start, seconds: plan.payload.shots[i]?.seconds ?? 0 })),
     ...(music ? { music } : {}),
     ...(mix.note ? { mixNote: mix.note } : {}),
     ...(stylePack ? { stylePack } : {}),
+    ...(pin ? { previewWorker: pin } : {}),
+    ...(preview.hadPreview && !pin
+      ? { previewWorkerNote: "The stills came from a machine that is no longer taking work, so another worker draws this render; its picture can differ from the preview." }
+      : {}),
     ...(packNote ? { packNote } : {}),
   });
 }
@@ -1221,7 +1257,6 @@ async function previewPlanOf(q: Q, run: RunInfo): Promise<{ shots: Shot[]; plan:
 }
 
 /** A failed check that only the owner decides on (production stages are never revised automatically). */
-const PREVIEW_FAILED: CombinedQc = { passed: false, missingGates: [], score: 0, failedGates: [], blocking: false };
 
 /**
  * The preview stage: still frames of the run's html-capture page with its real render props (the narration's length
@@ -1365,14 +1400,16 @@ async function completePreview(jobId: string): Promise<boolean> {
   const plan = shown?.plan;
   if (job.status !== "succeeded") {
     const why = job.status === "cancelled" ? "the job was cancelled" : job.error || "the worker gave no reason";
-    // A page that tried the network or threw fails by name; the owner sends a note back to the page or tries again.
+    // Preview stops the run, it does not ask the owner to approve anyway: a page that cannot be photographed here
+    // fails the render the same way, and the render costs ten minutes to find out. Retry, or a note back to the plan.
+    const issue = `The still frames could not be taken: ${why}`.slice(0, 600);
     await concludeStage(run, st, template, {
       result: { jobId, stills: [], failed: why.slice(0, 500) },
       gate: null,
       extra: { jobId },
-      qc: PREVIEW_FAILED,
-      issues: [`The still frames could not be taken: ${why}`.slice(0, 600)],
-      ...(plan ? { plan: { ...plan, note: designed ? "Send a note back to the page (Send revision), or try again." : "Send a note back to the scene spec, or try again." } } : {}),
+      issues: [issue],
+      block: `${issue}. The run does not go on to the voice and the video. Retry the preview, or send a note back to the ${designed ? "page" : "scene spec"}.`,
+      ...(plan ? { plan: { ...plan, note: "Retry the preview, or send a note back to this plan and the stills are taken again." } } : {}),
     });
     return true;
   }
@@ -1386,14 +1423,21 @@ async function completePreview(jobId: string): Promise<boolean> {
     ...(stills.length === 0 ? ["The worker finished but sent no still frames back"] : []),
     ...r.blocked.slice(0, 5).map((b) => `The page tried something the sandbox blocks: ${b}. The render would fail.`),
   ];
+  // No still, or a page that tried what the sandbox blocks: the render would fail, so the run stops here.
+  const block = issues.length > 0 ? `${issues.join(" ")} The run does not go on to the voice and the video. Retry the preview, or send a note back to the ${designed ? "page" : "scene spec"}.` : null;
   await concludeStage(run, st, template, {
     result: { jobId, stills, page: r.page, consoleErrors: r.consoleErrors, blocked: r.blocked, ...(toObject(job.payload.preview).page ? { pageAssetId: toObject(job.payload.preview).page } : {}) },
     gate: null,
     extra: { jobId },
     media: { stills },
-    notes: previewNotes({ consoleErrors: r.consoleErrors, blocked: [] }),
+    notes: [
+      ...previewNotes({ consoleErrors: r.consoleErrors, blocked: [] }),
+      ...(r.stopped
+        ? [`The worker stopped drawing frames early (${r.stopped}), so this card shows ${stills.length} of ${r.planned ?? stills.length} stills. The final render still draws every frame.`]
+        : []),
+    ],
     ...(plan ? { plan: { ...plan, note: previewNote({ stills: stills.length, drawsCaptions: r.drawsCaptions, designed }) } } : {}),
-    ...(issues.length > 0 ? { qc: PREVIEW_FAILED, issues } : {}),
+    ...(block ? { issues, block } : {}),
   });
   return true;
 }
@@ -2318,6 +2362,48 @@ async function completeHermesMux(job: FinishedJob, waiting: RunningStage): Promi
 // ---------------------------------------------------------------------------------------------------------------
 // Quality check
 
+/**
+ * The approved stills, each with the time its own scene has in the video that was just rendered. The preview runs before
+ * the voice, so its seconds are the planned ones; the video's are fitted to the narration. Both name the same scenes, so
+ * a still maps to the middle of its scene in the render's timeline, which is where the picture must still match.
+ */
+async function previewStillChecks(
+  run: RunInfo,
+  renderResult: Record<string, unknown>,
+): Promise<Array<{ assetId: string; atSec: number }>> {
+  const sql = db();
+  const preview = toObject((await latestPassedOutput(sql, run.id, "preview"))?.result);
+  const stills = Array.isArray(preview.stills) ? (preview.stills as unknown[]) : [];
+  const timelineRaw = Array.isArray(renderResult.timeline) ? (renderResult.timeline as unknown[]) : [];
+  const timeline = timelineRaw.flatMap((raw) => {
+    const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    return typeof o.start === "number" && typeof o.seconds === "number" && o.seconds > 0 ? [{ start: o.start, seconds: o.seconds }] : [];
+  });
+  if (stills.length === 0 || timeline.length === 0) return [];
+  // Which scene each still belongs to: the scene it falls inside on the planned timeline the preview drew.
+  const previewJob = asUuid(preview.jobId) ? await loadJob(asUuid(preview.jobId) as string) : null;
+  const plannedShots = Array.isArray(previewJob?.payload.shots) ? (previewJob.payload.shots as Array<{ seconds: number }>) : [];
+  const plannedFade = plannedShots.length > 1 ? Number(previewJob?.payload.transitionSec) || 0 : 0;
+  const plannedStarts: number[] = [];
+  for (let i = 0, at = 0; i < plannedShots.length; i++) {
+    plannedStarts.push(at);
+    at += (Number(plannedShots[i].seconds) || 0) - plannedFade;
+  }
+  const out: Array<{ assetId: string; atSec: number }> = [];
+  for (const raw of stills) {
+    const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+    const assetId = asUuid(o.artifactId);
+    const at = typeof o.atSec === "number" && Number.isFinite(o.atSec) ? o.atSec : null;
+    if (!assetId || at === null) continue;
+    let shot = -1;
+    for (const [i, start] of plannedStarts.entries()) if (at + 1e-6 >= start) shot = i;
+    if (shot < 0 || shot >= timeline.length) continue;
+    const atSec = Math.round((timeline[shot].start + timeline[shot].seconds / 2) * 100) / 100;
+    out.push({ assetId, atSec });
+  }
+  return out.slice(0, 6);
+}
+
 async function runQcStage(run: RunInfo, st: StageRow): Promise<void> {
   const existing = asUuid(st.output.jobId);
   if (existing) {
@@ -2340,11 +2426,18 @@ async function runQcStage(run: RunInfo, st: StageRow): Promise<void> {
     ? (renderResult.sceneStarts as unknown[]).filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0).slice(0, 500)
     : [];
   const sampleFrames = advisoryFrameCount();
+  const compareStills = await previewStillChecks(run, renderResult);
   const jobId = await createJob({
     type: "qc-video",
     // sampleFrames: a few stills for Hermes's presentation advisory (worker 0.10.0+; older workers ignore it). Only
     // when Hermes is set up, since nothing else looks at them.
-    payload: { inputs: [assetId], runId: run.id, ...(plannedCuts.length > 0 ? { plannedCuts } : {}), ...(sampleFrames > 0 ? { sampleFrames } : {}) },
+    payload: {
+      inputs: [assetId],
+      runId: run.id,
+      ...(plannedCuts.length > 0 ? { plannedCuts } : {}),
+      ...(sampleFrames > 0 ? { sampleFrames } : {}),
+      ...(compareStills.length > 0 ? { compareStills } : {}),
+    },
     channelId: run.channelId,
     priority: URGENT_PRIORITY,
     createdBy: null,

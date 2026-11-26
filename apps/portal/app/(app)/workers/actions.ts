@@ -19,6 +19,9 @@ const enrollSchema = z.object({
   label: z.string().min(1, "Give the worker a name, e.g. Muse 01").max(80),
   host: z.enum(["muse", "vps", "local"]),
   channelId: z.union([z.uuid(), z.literal("")]),
+  // On unless the box was cleared: the 3D and html looks need the Remotion renderer, and a worker without it is offered
+  // far fewer jobs.
+  withRemotion: z.boolean(),
 });
 
 export async function createEnrollment(_prev: EnrollState, fd: FormData): Promise<EnrollState> {
@@ -27,6 +30,7 @@ export async function createEnrollment(_prev: EnrollState, fd: FormData): Promis
     label: str(fd, "label", 80),
     host: str(fd, "host", 10) || "muse",
     channelId: str(fd, "channelId", 40),
+    withRemotion: str(fd, "withRemotion", 4) === "on",
   });
   if (!p.success) return { error: p.error.issues[0]?.message ?? "Invalid input" };
   const { code, expiresAt } = await createEnrollmentCode({
@@ -42,6 +46,10 @@ export async function createEnrollment(_prev: EnrollState, fd: FormData): Promis
   const installSha256 = (await installFileSha256("install.sh")) ?? "";
   // Written as the owner's own request with every command spelled out, so the Muse agent can review exactly
   // what it runs. Muse rightly refuses to follow instructions from a fetched web page.
+  // The renderer the 3D and html looks need. A worker without Remotion reports only ffmpeg and the stills packs, so it is
+  // offered far fewer jobs; the box is ticked unless the owner clears it.
+  const remotion = p.data.withRemotion ? " --with-remotion" : "";
+  const serviceUser = "venstudio";
   const prompt = [
     `I'm setting up a render worker for my own video production portal (${url}) on this VM. ` +
       `It's a small Node.js program that asks my portal for render jobs over HTTPS and renders them with ffmpeg. ` +
@@ -50,14 +58,19 @@ export async function createEnrollment(_prev: EnrollState, fd: FormData): Promis
     `mkdir -p /home/hatch/venstudio && cd /home/hatch/venstudio`,
     `curl -fsSL ${url}/install/install.sh -o install.sh`,
     `sha256sum install.sh`,
-    `bash install.sh --portal ${url} --code ${code} --name "${name}" --mode hold`,
+    `sudo bash install.sh --portal ${url} --code ${code} --name "${name}" --mode hold${remotion}`,
     ``,
     `The sha256 should be ${installSha256}. If it's different, stop and tell me. ` +
       `The script downloads Node.js from nodejs.org and ffmpeg from johnvansickle.com if they're missing, and checks their checksums. ` +
       `${code} is a one-time code from my portal, valid for ${ENROLLMENT_MINUTES} minutes.`,
     ``,
+    `Run it with sudo on purpose: as root the script installs the system libraries headless Chromium needs, hands ` +
+      `/home/hatch/venstudio to an ordinary account (the one that already owns it, or ${serviceUser} on a fresh install) and ` +
+      `then continues as that account. Environments refuse to install as root, so full-frame and low-poly-shapes only work ` +
+      `when the worker runs as it.`,
+    ``,
     `Then create a recurring scheduled task named "VenStudio worker" that runs every hour and does this: ` +
-      `run /home/hatch/venstudio/run.sh hold in the foreground and wait for it to finish (it stays online up to about 55 minutes, ` +
+      `run sudo /home/hatch/venstudio/run.sh hold in the foreground and wait for it to finish (started as root it hands off to that account itself; it stays online up to about 55 minutes, ` +
       `then exits by itself), then read the last 5 lines of /home/hatch/venstudio/logs/worker.log. ` +
       `Only message me if those lines contain "fatal"; "already running" is normal.`,
     ``,
@@ -65,7 +78,7 @@ export async function createEnrollment(_prev: EnrollState, fd: FormData): Promis
   ].join("\n");
   const command =
     `curl -fsSL ${url}/install/install.sh -o install.sh && sha256sum install.sh && ` +
-    `bash install.sh --portal ${url} --code ${code} --name "${name}" --mode daemon`;
+    `sudo bash install.sh --portal ${url} --code ${code} --name "${name}" --mode daemon${remotion}`;
   return { code, expiresAt: expiresAt.toISOString(), prompt, command, installSha256 };
 }
 

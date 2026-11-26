@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { UpdateCheckResponse, UpdateInfoResponse } from "@venstudio/protocol";
 import { parseJson, withWorker } from "@/lib/server/worker-api.ts";
+import { installFileSha256 } from "@/lib/server/install-files.ts";
 import { publicSigningKey } from "@/lib/server/update-key.ts";
 import { updateOfferFor, updateSettings } from "@/lib/server/updates.ts";
 
@@ -28,8 +29,12 @@ const schema = z.object({
 /** The worker's self-test: proves the token works and names the key and mode, without offering anything. */
 export async function GET(req: Request) {
   return withWorker(req, async () => {
-    const [key, settings] = await Promise.all([publicSigningKey(), updateSettings()]);
-    return Response.json({ keyId: key.keyId, mode: settings.mode } satisfies UpdateInfoResponse, { headers: NO_STORE });
+    const [key, settings, installSha256] = await Promise.all([publicSigningKey(), updateSettings(), installFileSha256("install.sh")]);
+    // The hash lets a worker without a Remotion project run that installer itself and check the file it fetched (0.19.0+).
+    return Response.json(
+      { keyId: key.keyId, mode: settings.mode, ...(installSha256 ? { installSha256 } : {}) } satisfies UpdateInfoResponse,
+      { headers: NO_STORE },
+    );
   });
 }
 

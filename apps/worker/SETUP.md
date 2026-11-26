@@ -21,7 +21,7 @@ The owner can revoke the token at any time in the portal under **Workers**.
 mkdir -p /home/hatch/venstudio && cd /home/hatch/venstudio
 curl -fsSL {{PORTAL_URL}}/install/install.sh -o install.sh
 sha256sum install.sh      # compare with the value shown in the portal
-bash install.sh --portal {{PORTAL_URL}} --code VS-XXXX-XXXX-XXXX --name "Muse 01" --mode hold
+sudo bash install.sh --portal {{PORTAL_URL}} --code VS-XXXX-XXXX-XXXX --name "Muse 01" --mode hold --with-remotion
 ```
 
 `install.sh` (readable before running) installs Node.js 24 from nodejs.org and a static ffmpeg build from
@@ -34,7 +34,7 @@ Animated styles such as the flat-vector explainer render with Remotion, not with
 run them, add `--with-remotion` (on a first install or on an update):
 
 ```bash
-bash install.sh --portal {{PORTAL_URL}} --mode hold --with-remotion
+sudo bash install.sh --portal {{PORTAL_URL}} --mode hold --with-remotion
 ```
 
 It downloads the templates from {{PORTAL_URL}}/install/render-remotion.json into `/home/hatch/venstudio/remotion`,

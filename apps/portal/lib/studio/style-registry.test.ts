@@ -57,14 +57,18 @@ const RESEARCH: Array<[string, string, string]> = [
   ["map-route", "/map-route", "spec"],
   ["ps1-low-poly", "/low-poly", "spec"],
   ["stick-figure", "/stick-figure", "project"],
+  // The cottage look: Hermes draws one building, which is not the Muse pack's village, so it stays a live trial.
+  ["voxel-build-skill", "/minecraft", "spec"],
   ["what-if-3d", "/zach-d-films", "project"],
 ];
 const RESEARCH_IDS = RESEARCH.map(([id]) => id);
 /** The skill-driven variants of the looks a worker renders itself now, kept for history only. */
-const RETIRED_SKILL_IDS = ["voxel-build-skill", "line-graph-skill", "step-line-art-skill"];
-const LAB_IDS = ["blocky-story", "probe-line-graph", "voxel-build"];
+const RETIRED_SKILL_IDS = ["line-graph-skill", "step-line-art-skill"];
+const LAB_IDS = ["blocky-story", "probe-line-graph"];
+/** Trial because the owner rendered it to the end on a Muse worker (it was lab); a village, not the /minecraft cottage. */
+const TRIAL_PACK_ONLY = ["voxel-build"];
 /** Every pack the lock has, by id: the catalogue styles first, then the looks only a pack describes. */
-const VENDORED_IDS = [...PACK_IDS, ...RESEARCH_IDS, ...RETIRED_SKILL_IDS, ...LAB_IDS, "research-render", "line-graph", "minimal-line-art", "designed-explainer", "low-poly-shapes", "full-frame"];
+const VENDORED_IDS = [...PACK_IDS, ...RESEARCH_IDS, ...RETIRED_SKILL_IDS, ...LAB_IDS, ...TRIAL_PACK_ONLY, "research-render", "line-graph", "minimal-line-art", "designed-explainer", "low-poly-shapes", "full-frame"];
 
 test("the vendored packs: the explainer and the six stills styles (Trial 1.0.1), the html-capture probe (Lab), the two claude-animation-skills adaptations (Trial 0.1.2), the Hermes research pack and one Hermes research pack per claude-animation-skills skill (Trial)", () => {
   assert.deepEqual(vendored.map((p) => p.id).sort(), [...VENDORED_IDS].sort());
@@ -198,9 +202,9 @@ test("New Video: Listed packs a worker reports; Trial packs in their own list; p
   // No worker at all: nothing is selectable, the Trial packs wait.
   const none = newVideoStyles(mergeRegistry(STYLES, vendored), []);
   assert.equal(none.listed.length + none.trial.length, 0);
-  // Every Trial pack waits for a worker or for Hermes: the eight catalogue looks, the seven research styles, the two
+  // Every Trial pack waits for a worker or for Hermes: the eight catalogue looks, the eight research styles, the two
   // html-capture adaptations, the html-design pack and the generic Hermes render. Retired, Lab and planned never show.
-  assert.equal(none.waiting.length, 8 + RESEARCH_IDS.length + 3);
+  assert.equal(none.waiting.length, 8 + RESEARCH_IDS.length + 3 + TRIAL_PACK_ONLY.length, "the village waits for its pack too");
   assert.ok(!none.waiting.some((e) => e.id === "probe-line-graph"));
   const avail = availabilityOf(mergeRegistry(STYLES, vendored).find((e) => e.id === "travel-documentary")!, ["ffmpeg"]);
   assert.deepEqual(avail, { renderer: true, pack: false, capability: "pack:travel-documentary@1.0.1" });
