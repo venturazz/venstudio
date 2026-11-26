@@ -7,7 +7,9 @@ import { installFileSha256, portalUrl } from "@/lib/server/install-files.ts";
 import { publicSigningKey } from "@/lib/server/update-key.ts";
 import { servedRelease, updateSettings, type UpdateSettings } from "@/lib/server/updates.ts";
 import { needsAttention, presence, RUN_NOW_MESSAGE } from "@/lib/server/workers.ts";
-import { parseWorkerEnvironments, workerEnvironmentLabel } from "@/lib/studio/style-registry.ts";
+import { packCapability, parseWorkerEnvironments, workerEnvironmentLabel } from "@/lib/studio/style-registry.ts";
+import { isPortalEngine } from "@/lib/studio/render-engine.ts";
+import { vendoredStyles } from "@/lib/server/style-packs.ts";
 import { compareVersions, describeUpdateResult, UPDATE_MODE_LABEL, UPDATE_MODES, type ServedRelease } from "@/lib/update-manifest.ts";
 import { manualUpdateMessage } from "@/lib/worker-update-message.ts";
 import { Alert, Badge, Card, CardBody, CardHeader, EmptyState, PageHeader, timeAgo } from "@/components/ui.tsx";
@@ -93,6 +95,9 @@ export default async function WorkersPage() {
   ]);
   const isOwner = user.role === "owner";
   const APP_URL = portalUrl();
+  // What a worker is actually worth in the queue: one style = one pack capability, and the capability only exists once
+  // that pack is installed and its probe passed. Portal engines (hermes) are not worker-rendered and are left out.
+  const stylesForWorkers = (await vendoredStyles()).packs.filter((p) => !isPortalEngine(p.engine));
   const facts = await updateFacts();
   const latest = facts.served?.version ?? WORKER_VERSION;
   const mode = facts.settings.mode;
@@ -155,6 +160,19 @@ export default async function WorkersPage() {
                           ))
                         )}
                       </div>
+                      {(() => {
+                        const caps = w.capabilities as string[];
+                        const takes = stylesForWorkers.filter((p) => caps.includes(packCapability(p.id, p.version))).length;
+                        const noRenderer = !caps.includes("remotion-2d");
+                        return (
+                          <p className="pt-1 text-xs text-muted" data-testid={`worker-coverage-${String(w.name)}`}>
+                            Takes {takes} of {stylesForWorkers.length} worker-rendered styles
+                            {noRenderer
+                              ? " — it has no Remotion renderer, so the 3D and html looks can never reach it. Re-run the installer with --with-remotion."
+                              : "."}
+                          </p>
+                        );
+                      })()}
                       {parseWorkerEnvironments(w.environments).length > 0 && (
                         <ul className="space-y-1 pt-1 text-xs" data-testid={`worker-environments-${String(w.name)}`}>
                           {parseWorkerEnvironments(w.environments).map((e) => {
@@ -166,6 +184,13 @@ export default async function WorkersPage() {
                             );
                           })}
                         </ul>
+                      )}
+                      {parseWorkerEnvironments(w.environments).some((e) => e.detail.includes("refused to install as root")) && (
+                        <p className="pt-1 text-xs text-danger" data-testid={`worker-root-hint-${String(w.name)}`}>
+                          Runs as root, so this worker refuses every environment install and full-frame / low-poly-shapes stay
+                          unavailable. Re-run the installer with sudo — it installs the Chromium libraries, creates the
+                          venstudio account and continues as it — then start run.sh again; it hands off to that account by itself.
+                        </p>
                       )}
                     </div>
                     {isOwner && (

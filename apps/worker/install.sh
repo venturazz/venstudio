@@ -16,6 +16,12 @@
 #                  also install the Remotion renderer for the remotion-2d engine into <home>/remotion: the templates
 #                  from this portal, their npm packages and Remotion's own headless Chromium (about 400 MB, a few
 #                  minutes). Safe to repeat; run it again after a portal update to refresh the templates.
+#   --user NAME    the account the worker runs as (default venstudio). Started as root, this script installs the
+#                  machine-level pieces first (Chromium's system libraries, the account, ownership) and then runs the
+#                  rest as NAME. Environments refuse to install as root, so this is what makes full-frame and
+#                  low-poly-shapes possible with no manual step.
+#   --stay-root    keep running as root. The worker then refuses every environment install; only use it where the
+#                  worker deliberately has no environments.
 set -euo pipefail
 
 PORTAL="{{PORTAL_URL}}"
@@ -27,9 +33,14 @@ NAME="$(hostname)"
 MODE=""
 HOME_DIR=""
 WITH_REMOTION=0
+# The worker runs as this account whenever the script is started as root (see "run as a normal user" below).
+AS_USER="venstudio"
+STAY_ROOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-remotion) WITH_REMOTION=1; shift ;;
+    --user) AS_USER="${2:-}"; shift 2 ;;
+    --stay-root) STAY_ROOT=1; shift ;;
     --portal) PORTAL="$2"; shift 2 ;;
     --code) CODE="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
@@ -47,6 +58,88 @@ else
   MODE="${MODE:-daemon}"
 fi
 case "$MODE" in tick|hold|daemon) ;; *) echo "--mode must be hold, tick or daemon" >&2; exit 2 ;; esac
+
+say0() { printf '[venstudio] %s\n' "$*"; }
+
+# --- run as a normal user -------------------------------------------------------------------
+# An environment recipe downloads a binary and runs pip install; the worker refuses that as root on purpose, because
+# pack code is not trusted. A root install therefore prepares the machine and then continues as the service account,
+# which is exactly what a manual non-root install does. This is the supported path, not a workaround.
+if [ "$(id -u)" -eq 0 ] && [ "$STAY_ROOT" = 0 ]; then
+  AS_USER="${AS_USER:-venstudio}"
+  case "$AS_USER" in ""|*[!a-z0-9_-]*) echo "--user must be a plain account name" >&2; exit 2 ;; esac
+
+  # System libraries headless Chromium needs (and a system ffmpeg) belong to the machine, not to the account: install
+  # them once, as root, before dropping privileges. Best effort: a missing library fails the Remotion probe later,
+  # never the install.
+  install_system_deps() {
+    say0 "system libraries for headless Chromium (once, as root)"
+    if command -v npx >/dev/null 2>&1 && npx -y playwright@1.65.1 install-deps chromium >/dev/null 2>&1; then
+      say0 "chromium system libraries: installed (playwright install-deps)"
+      return 0
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null 2>&1 || true
+      # Debian 12 and Ubuntu 24.04 renamed some packages (t64); try the old names, then the new ones.
+      if apt-get install -y -qq --no-install-recommends \
+        libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libasound2 \
+        libpangocairo-1.0-0 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+        libpango-1.0-0 libcairo2 libatspi2.0-0 fonts-liberation fonts-dejavu-core >/dev/null 2>&1; then
+        say0 "chromium system libraries: installed (apt)"
+        return 0
+      fi
+      if apt-get install -y -qq --no-install-recommends \
+        libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libasound2t64 \
+        libpangocairo-1.0-0 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+        libpango-1.0-0 libcairo2 libatspi2.0-0t64 fonts-liberation fonts-dejavu-core >/dev/null 2>&1; then
+        say0 "chromium system libraries: installed (apt, t64 names)"
+        return 0
+      fi
+      echo "warning: could not install the Chromium system libraries; --with-remotion may fail its probe (install them by hand: npx playwright install-deps chromium)" >&2
+      return 1
+    fi
+    echo "warning: no npx or apt-get here; install the Chromium system libraries by hand for --with-remotion" >&2
+    return 1
+  }
+
+  if ! id -u "$AS_USER" >/dev/null 2>&1; then
+    say0 "creating the service account $AS_USER (environments never install as root)"
+    if ! useradd -m -s /bin/bash "$AS_USER"; then
+      echo "could not create $AS_USER; pass --user <account> or --stay-root" >&2
+      exit 2
+    fi
+  fi
+  AS_HOME="$(getent passwd "$AS_USER" | cut -d: -f6)"
+  [ -n "$AS_HOME" ] || AS_HOME="/home/$AS_USER"
+
+  if [ "$WITH_REMOTION" = 1 ]; then install_system_deps || true; fi
+
+  mkdir -p "$HOME_DIR"
+  # The worker's files, its logs and the environments all belong to the account that runs it.
+  chown -R "$AS_USER": "$HOME_DIR" 2>/dev/null || chown -R "$AS_USER" "$HOME_DIR"
+  chmod 700 "$HOME_DIR" 2>/dev/null || true
+
+  # Fetch this same script again and run it as the account: a piped script ($0 is the shell) cannot re-exec itself.
+  _tmp="$(mktemp -d)"
+  if curl -fsSL -o "$_tmp/install.sh" "$PORTAL/install/install.sh"; then
+    chown -R "$AS_USER": "$_tmp" 2>/dev/null || true
+    _args=(--portal "$PORTAL" --name "$NAME" --mode "$MODE" --home "$HOME_DIR")
+    [ -n "$CODE" ] && _args+=(--code "$CODE")
+    [ "$WITH_REMOTION" = 1 ] && _args+=(--with-remotion)
+    say0 "continuing as $AS_USER"
+    if command -v runuser >/dev/null 2>&1; then
+      exec runuser -u "$AS_USER" -- env HOME="$AS_HOME" VENSTUDIO_SERVICE_USER="$AS_USER" bash "$_tmp/install.sh" "${_args[@]}"
+    fi
+    exec su -s /bin/bash "$AS_USER" -c "HOME='$AS_HOME' VENSTUDIO_SERVICE_USER='$AS_USER' bash $(printf '%q ' "$_tmp/install.sh" "${_args[@]}")"
+  fi
+  rm -rf "$_tmp"
+  echo "could not fetch install.sh from $PORTAL as $AS_USER; run this script again" >&2
+  exit 1
+elif [ "$(id -u)" -eq 0 ]; then
+  echo "warning: --stay-root: the worker will refuse every environment install (full-frame and low-poly-shapes stay unavailable)" >&2
+fi
+SERVICE_USER="$(id -un)"
 
 mkdir -p "$HOME_DIR/app" "$HOME_DIR/bin" "$HOME_DIR/logs"
 chmod 700 "$HOME_DIR"
@@ -131,6 +224,17 @@ APP="$HOME_DIR/app"
 LOG="$HOME_DIR/logs/worker.log"
 # Keep the log under ~2 MB.
 if [ -f "\$LOG" ] && [ "\$(wc -c < "\$LOG")" -gt 2000000 ]; then mv "\$LOG" "\$LOG.1"; fi
+# Environments refuse to install as root, so a root start hands off to the service account instead of quietly losing
+# capabilities. Started as a normal user this does nothing.
+if [ "\$(id -u)" -eq 0 ]; then
+  SVC="\${VENSTUDIO_SERVICE_USER:-$SERVICE_USER}"
+  if id -u "\$SVC" >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+    H="\$(getent passwd "\$SVC" 2>/dev/null | cut -d: -f6)"
+    [ -n "\$H" ] || H="/home/\$SVC"
+    exec runuser -u "\$SVC" -- env HOME="\$H" VENSTUDIO_SERVICE_USER="\$SVC" bash "\$0" "\$@"
+  fi
+  echo "\$(date -u +%Y-%m-%dT%H:%M:%SZ) started as root and there is no service account '\$SVC' to hand off to; environments (full-frame, low-poly-shapes) will be refused — re-run install.sh" >> "\$LOG"
+fi
 CMD="\${1:-$MODE}"
 [ \$# -gt 0 ] && shift
 "$NODE_BIN" --no-warnings "\$APP/venstudio-worker.ts" "\$CMD" "\$@" >> "\$LOG" 2>&1

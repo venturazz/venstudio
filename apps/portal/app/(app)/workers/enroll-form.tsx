@@ -66,6 +66,16 @@ export function EnrollForm({ channels }: { channels: Array<{ id: string; name: s
           ))}
         </Select>
       </Field>
+      <label className="flex items-start gap-2 rounded-lg border border-border bg-surface-2 p-3 text-sm">
+        <input type="checkbox" name="withRemotion" defaultChecked className="mt-0.5 size-4 accent-[var(--vs-accent)]" />
+        <span>
+          <span className="font-medium">Install the Remotion renderer</span>
+          <span className="block text-xs text-muted">
+            The 3D and html looks (voxel-build, blocky-story, explainer-flat-vector) and every lab trial. About 400 MB.
+            Without it the worker only takes the ffmpeg stills jobs.
+          </span>
+        </span>
+      </label>
       <SubmitButton variant="primary" className="w-full" pendingLabel="Creating…">
         Create enrollment code
       </SubmitButton>

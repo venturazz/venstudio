@@ -45,11 +45,37 @@ On each Muse VM (or in the Muse agent's terminal), from `/home/hatch/venstudio`:
 cd /home/hatch/venstudio
 curl -fsSL https://<portal>/install/install.sh -o install.sh
 sha256sum install.sh        # compare with Workers → Add a worker in the portal
-bash install.sh --portal https://<portal> --mode hold --with-remotion
+sudo bash install.sh --portal https://<portal> --mode hold --with-remotion
 ```
 
-No `--code`: the enrollment is kept. Without `--with-remotion` the worker updates to 0.5.0 and renders stills and
+No `--code`: the enrollment is kept. Without `--with-remotion` the worker updates to 0.18.0 and renders stills and
 cross-fades only.
+
+### The account and the system libraries
+
+`install.sh` is meant to be **started as root and finished as an ordinary account**, and does that by itself:
+
+1. as root it installs the machine-level pieces once — the system libraries headless Chromium needs
+   (`npx playwright install-deps chromium`, with the plain `apt-get` list as a fallback, old and `t64` package names);
+2. it creates the account `venstudio` when it is missing (`--user NAME` picks another, `--stay-root` opts out), hands
+   `/home/hatch/venstudio` to it with `chown`, and re-fetches itself to continue **as that account**.
+
+That hand-off is not cosmetic. An environment recipe downloads a binary and runs `pip install`; the worker refuses that
+as root on purpose, because pack code is not trusted. A worker that stays root reports no `env:*` capabilities, so
+`pack:full-frame` and `pack:low-poly-shapes` never appear and those looks can never be rendered on it. Running the
+installer as root and starting the worker as root is exactly how a worker ends up with only `ffmpeg` plus the stills
+packs while its twin has `remotion-2d` and the html packs.
+
+`run.sh` applies the same rule: started as root it hands off to `VENSTUDIO_SERVICE_USER` (default `venstudio`) before
+running the worker, so an older root crontab keeps its capabilities after the installer has created the account. If the
+account is missing, it says so in `logs/worker.log` instead of silently dropping them.
+
+Check which account actually runs the worker:
+
+```bash
+ps -o user= -C node | sort -u      # must not print root
+ls -ld /home/hatch/venstudio /home/hatch/venstudio/envs
+```
 
 `--with-remotion` puts everything under `/home/hatch/venstudio/remotion` (the only path that survives a recycle) and
 is safe to run again; run it after every portal update so the templates match the portal's:
