@@ -1881,9 +1881,11 @@ try {
     ["map-route", "map-route"],
     ["ps1-low-poly", "low-poly"],
     ["stick-figure", "stick-figure"],
+    // The cottage look stays a live trial: it is not the Muse pack's village, so the owner picks between the two.
+    ["voxel-build-skill", "minecraft"],
     ["what-if-3d", "zach-d-films"],
   ];
-  const RETIRED_RESEARCH = ["line-graph-skill", "step-line-art-skill", "voxel-build-skill"];
+  const RETIRED_RESEARCH = ["line-graph-skill", "step-line-art-skill"];
   const researchIdOf = (skill) => RESEARCH.find(([, s]) => s === skill)?.[0] ?? null;
   const RESEARCH_GROUP = "Hermes research styles (from claude-animation-skills)";
   const prodRunIdForTrials = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
@@ -1986,7 +1988,7 @@ async function scoreAndDecide(runId, stars, shown) {
     const groups = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
     if (!groups.includes(RESEARCH_GROUP)) throw new Error(`no research group in the style list: ${groups.join(", ")}`);
     const optionIds = (await page.locator(`#templateId optgroup[label="${RESEARCH_GROUP}"] option`).evaluateAll((os) => os.map((o) => o.value))).sort();
-    // The seven research looks share the group; the generic Hermes render has no skill behind it, so it sits in the
+    // The eight research looks share the group; the generic Hermes render has no skill behind it, so it sits in the
     // plain trial group below (style-registry researchGroupOf needs pack.hermes).
     const want = RESEARCH.map(([id]) => id).map((id) => `tpl-${id}`).sort();
     if (JSON.stringify(optionIds) !== JSON.stringify(want)) throw new Error(`the research group offers ${optionIds.join(", ")}, expected ${want.join(", ")}`);

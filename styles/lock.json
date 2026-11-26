@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "8575f0a78c211f78e227fe6595756d47302dfb6f"
+    "commit": "f49baf0d1897b3ca989b578ed6d2a75aff51b486"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -21,7 +21,7 @@
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
     "tools/validate.mjs": "702d9a8b6a9a958f4085dfaef6cd7b692d5cea8203494c9916ab4810ef6f0845",
-    "tools/validate.test.mjs": "c3c3132c27ba1e9f9b1b6fbbf063571be509b3af80d1a0730602a07574533160"
+    "tools/validate.test.mjs": "b6fc0090ffaa31235f3973c255b55d8f50e7b498e0bdf118575ead006f84d249"
   },
   "packs": [
     {
@@ -403,11 +403,11 @@
     },
     {
       "id": "voxel-build",
-      "version": "0.3.1",
-      "status": "lab",
+      "version": "0.3.2",
+      "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "3bd5b23dd5101f8f62dc39afde92f884fa3d9d5b7dd73ac26c62005c9fd38592",
+      "sha256": "51626cad28b4c731418c5f32bb35454952fddc809c2661f3e3409e13b345004f",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -439,21 +439,21 @@
         "render/index.html": "0301e6c55002345ce060200ea82b2186c7419bf54437c70117cada14a202978f",
         "render/page.js": "ec5f4a4a8945bcc135ed5657c2d1914ddccfcb46d5f59dc87121b487303e72de",
         "render/voxel.js": "02842cfb2e9db666f6aaa2d16e70ad2c4dbb5d88d41564dc1b8c795942b00688",
-        "style.json": "de8bf0b40b594634f8d0a79feb95371b40d2918a55fd287f6fb752343237dc4a"
+        "style.json": "778fd599042026e42672b7afab68e03983aa471a12cc1c0d57310795e5653f1a"
       }
     },
     {
       "id": "voxel-build-skill",
-      "version": "0.2.0",
-      "status": "retired",
+      "version": "0.3.0",
+      "status": "trial",
       "engine": "hermes",
       "composition": null,
-      "sha256": "ff38e6dcbeb3213259b90138d93d2e0504f8a2136a91f99682ed60910fbcaae9",
+      "sha256": "5a84cea63a0d16bd81ab6fecee829226e8b72817fd40e2902fe07f9af9a1efca",
       "files": {
         "README.md": "d90257c30da1caed7f1b548df1d6768578bff7ca8203a500d712e1231752f115",
         "fixtures/expect.json": "09e5b8a0ee1943a52616df3ce692a7ecef39dd4d3ae4d082fcfdb84e47ea4a82",
         "fixtures/payload.json": "6fe950c0992fdc64af7c9d4d1f954db19e91e9859032014844cea55636866896",
-        "style.json": "0293cc62c8f40e9b11e34e4decfe67541eb52d84c7912cf09541a635b6bf3b3b"
+        "style.json": "997a0d179c945dacbd6931250e169976e0c01e24a2e517f7c511e9b94748d2eb"
       }
     },
     {

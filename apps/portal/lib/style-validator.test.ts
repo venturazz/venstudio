@@ -32,7 +32,8 @@ test("the vendored packs are valid", () => {
   assert.equal(hermes.length, 11);
   assert.deepEqual(
     hermes.filter((p) => p.status === "retired").map((p) => p.id),
-    ["line-graph-skill", "step-line-art-skill", "voxel-build-skill"],
+    ["line-graph-skill", "step-line-art-skill"],
+    "/minecraft is not retired: its cottage is a different look from the Muse village",
   );
 });
 
