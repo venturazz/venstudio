@@ -184,6 +184,16 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                     </span>
                   </div>
                   {summary && <p className="break-words text-xs text-muted">{summary}</p>}
+                  {typeof s.output.renderNote === "string" && (
+                    <p className="break-words text-xs text-muted" data-testid={`stage-${s.stage}-note`}>
+                      {s.output.renderNote}
+                    </p>
+                  )}
+                  {typeof s.output.previewWorkerNote === "string" && (
+                    <p className="break-words text-xs text-muted" data-testid={`stage-${s.stage}-note`}>
+                      {s.output.previewWorkerNote}
+                    </p>
+                  )}
                   {s.state === "pending" && s.notBefore && run.state === "running" && (
                     <p className="break-words text-xs text-muted">{stageWaitText(s.output.hermesWait, s.notBefore.getTime(), now)}</p>
                   )}

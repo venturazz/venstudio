@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
-import { MUSE_POLL_SEC, isMuseThinkStage, runsOnMuse } from "../studio/muse-stage.ts";
+import { MUSE_POLL_SEC, isMuseThinkStage, renderExecutor, renderRoute, runsOnMuse } from "../studio/muse-stage.ts";
 import { museRenderReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
@@ -1506,10 +1506,18 @@ async function runHermesRenderStage(
   const mux = skillVoice ? null : narrationId && narrationSec > 0 ? { narrationId, narrationSec, tempo } : null;
   const scale = hermesTimeoutScale(process.env);
   const fin: RenderFinish = { run, st, template, pack, frame, durationSec, skill: skill?.name ?? null, brief, skillVoice, mux };
-  // "Muse does the work": the Muse agent renders with the same skill and brief; the run's narration is laid on after.
-  if (runsOnMuse(run.config.executors, "render")) {
-    await runMuseRender(fin, { skill, brief, captions: i.captions, script: i.script ?? "", narrationId, narrationSec });
-    return;
+  // Worker first: a Muse worker draws this video, whatever the run asked for. The portal keeps the render only when
+  // the owner said so (executors.render = "hermes", research only) or when no Muse renderer is ready — and then the
+  // stage says so in its own words, instead of quietly rendering in the portal as it used to.
+  const choice = renderExecutor(run.config.executors);
+  if (choice !== "hermes") {
+    const ready = choice === "muse" ? null : await museRenderReadiness(pack.id);
+    const route = renderRoute(run.config.executors, ready ? { skill: ready.skill !== null, refusals: ready.refusals } : null);
+    if (route.route === "muse") {
+      await runMuseRender(fin, { skill, brief, captions: i.captions, script: i.script ?? "", narrationId, narrationSec });
+      return;
+    }
+    if (route.note) await mergeStageOutput(st.id, { renderNote: route.note });
   }
   let job = readRenderJob(st.output.hermesRender);
   // Started (the start ask was sent): never ask again, wait for the file. Also after a restart or a reaper resume.

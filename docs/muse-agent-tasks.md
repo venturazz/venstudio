@@ -65,8 +65,21 @@ retry starts again with Hermes. Set `MUSE_OVERFLOW=0` to always wait for Hermes.
 
 ## Render on Muse (worker 0.16.0, skills 0.17.0)
 
-A run started with **Muse does the work** also sends the render of a Hermes-skill style (engine `hermes`, for example
-`hermes-stick-figure`) to the Muse agent. Styles with another engine already render on workers.
+The render of a Hermes-skill style (engine `hermes`, for example `hermes-stick-figure`) goes to a Muse worker **by
+default**, whether or not the run ticked **Muse does the work**. Styles with another engine already render on workers,
+so no video the studio produces is drawn by the portal unless the owner asks for it.
+
+The render stage decides in one place (`renderRoute()` in `apps/portal/lib/studio/muse-stage.ts`):
+
+| `config.executors.render` | A Muse worker is ready | Where the video is drawn |
+|---|---|---|
+| absent | yes | the Muse worker (`agent-task`) |
+| absent | no | the portal, and the stage keeps a note saying why (research only, never published) |
+| `"muse"` | — | the Muse worker; if it cannot take it, the stage stops with the reason |
+| `"hermes"` | — | the portal, by the owner's explicit choice (research only) |
+
+A run keeps `render: "hermes"` across retries and revisions; **Retry on Muse** on a failed video card sets it back to
+Muse when the run has its own voice stage and a worker has the skill.
 
 1. The render stage needs the run's narration (the voice stage; see `SKILL_VOICE` in `docs/style-packs.md`) and a
    worker that reports `hermes-mux`. Without either it stops with the fix, before anything is queued.
