@@ -125,7 +125,7 @@ import {
   previewWorkers,
   sceneStartsOf as payloadSceneStarts,
 } from "../studio/frame-preview.ts";
-import type { CombinedQc } from "../studio/qc.ts";
+
 
 /**
  * Phase 4 stage drivers. Each work order is claimed on its own (FOR UPDATE SKIP LOCKED), so a crash loses at most
@@ -1221,7 +1221,6 @@ async function previewPlanOf(q: Q, run: RunInfo): Promise<{ shots: Shot[]; plan:
 }
 
 /** A failed check that only the owner decides on (production stages are never revised automatically). */
-const PREVIEW_FAILED: CombinedQc = { passed: false, missingGates: [], score: 0, failedGates: [], blocking: false };
 
 /**
  * The preview stage: still frames of the run's html-capture page with its real render props (the narration's length
@@ -1365,14 +1364,16 @@ async function completePreview(jobId: string): Promise<boolean> {
   const plan = shown?.plan;
   if (job.status !== "succeeded") {
     const why = job.status === "cancelled" ? "the job was cancelled" : job.error || "the worker gave no reason";
-    // A page that tried the network or threw fails by name; the owner sends a note back to the page or tries again.
+    // Preview stops the run, it does not ask the owner to approve anyway: a page that cannot be photographed here
+    // fails the render the same way, and the render costs ten minutes to find out. Retry, or a note back to the plan.
+    const issue = `The still frames could not be taken: ${why}`.slice(0, 600);
     await concludeStage(run, st, template, {
       result: { jobId, stills: [], failed: why.slice(0, 500) },
       gate: null,
       extra: { jobId },
-      qc: PREVIEW_FAILED,
-      issues: [`The still frames could not be taken: ${why}`.slice(0, 600)],
-      ...(plan ? { plan: { ...plan, note: designed ? "Send a note back to the page (Send revision), or try again." : "Send a note back to the scene spec, or try again." } } : {}),
+      issues: [issue],
+      block: `${issue}. The run does not go on to the voice and the video. Retry the preview, or send a note back to the ${designed ? "page" : "scene spec"}.`,
+      ...(plan ? { plan: { ...plan, note: "Retry the preview, or send a note back to this plan and the stills are taken again." } } : {}),
     });
     return true;
   }
@@ -1386,6 +1387,8 @@ async function completePreview(jobId: string): Promise<boolean> {
     ...(stills.length === 0 ? ["The worker finished but sent no still frames back"] : []),
     ...r.blocked.slice(0, 5).map((b) => `The page tried something the sandbox blocks: ${b}. The render would fail.`),
   ];
+  // No still, or a page that tried what the sandbox blocks: the render would fail, so the run stops here.
+  const block = issues.length > 0 ? `${issues.join(" ")} The run does not go on to the voice and the video. Retry the preview, or send a note back to the ${designed ? "page" : "scene spec"}.` : null;
   await concludeStage(run, st, template, {
     result: { jobId, stills, page: r.page, consoleErrors: r.consoleErrors, blocked: r.blocked, ...(toObject(job.payload.preview).page ? { pageAssetId: toObject(job.payload.preview).page } : {}) },
     gate: null,
@@ -1398,7 +1401,7 @@ async function completePreview(jobId: string): Promise<boolean> {
         : []),
     ],
     ...(plan ? { plan: { ...plan, note: previewNote({ stills: stills.length, drawsCaptions: r.drawsCaptions, designed }) } } : {}),
-    ...(issues.length > 0 ? { qc: PREVIEW_FAILED, issues } : {}),
+    ...(block ? { issues, block } : {}),
   });
   return true;
 }
