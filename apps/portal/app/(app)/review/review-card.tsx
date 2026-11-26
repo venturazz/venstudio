@@ -301,7 +301,7 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
               </span>
             )}
             {item.hermesRender && (
-              <span data-testid="hermes-render-badge" title="Hermes renders this video with its own tools; it is never published">
+              <span data-testid="hermes-render-badge" title="A Hermes-skill style: research only, never published, whoever draws it">
                 <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
               </span>
             )}

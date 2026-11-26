@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
-import { MUSE_POLL_SEC, isMuseThinkStage, renderExecutor, renderRoute, runsOnMuse } from "../studio/muse-stage.ts";
+import { MUSE_POLL_SEC, isMuseThinkStage, renderExecutor, renderRoute } from "../studio/muse-stage.ts";
 import { museRenderReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";

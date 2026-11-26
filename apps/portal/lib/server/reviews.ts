@@ -129,9 +129,12 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name,
       coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false)
         OR coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) AS trial,
-      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render,
-      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AND coalesce(r.config->'workflow'->'stages' ? 'voice', false)
-        AND coalesce(r.config->'executors'->>'render', '') <> 'muse' AS muse_render,
+      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_engine,
+      exists (
+        SELECT 1 FROM pipeline_stages ps
+        WHERE ps.run_id = r.id AND ps.stage = 'render' AND ps.output ? 'museJobId'
+      ) AS muse_drawn,
+      coalesce(r.config->'executors'->>'render', '') AS render_exec,
       coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial,
       coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) OR coalesce((r.config->'stylePack'->>'designed')::boolean, false) AS designed,
       (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures,
@@ -157,8 +160,9 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     channelName: (r.channel_name as string | null) ?? "",
     gates: gates.get(r.run_id as string) ?? [],
     trial: r.trial === true,
-    hermesRender: r.hermes_render === true,
-    museRender: r.muse_render === true,
+    // The badge follows the engine (the publish policy does), and the Muse flag follows who actually drew the video.
+    hermesRender: r.hermes_engine === true,
+    museRender: r.muse_drawn === true || (r.hermes_engine === true && r.voiced !== false && r.render_exec !== "hermes"),
     labTrial: r.lab_trial === true,
     designed: r.designed === true,
     pictures: r.pictures !== false,
