@@ -237,7 +237,7 @@ export NODE_USE_ENV_PROXY=1
 export VENSTUDIO_SERVICE_USER="\${VENSTUDIO_SERVICE_USER:-$SERVICE_USER}"
 # A worker that lacks the renderer installs it from the portal on its first run. --no-provision keeps that off this
 # machine (a box that must never install a browser, or a test that stands for one).
-export VENSTUDIO_NO_PROVISION="${NO_PROVISION}"
+export VENSTUDIO_NO_PROVISION="\${VENSTUDIO_NO_PROVISION:-$NO_PROVISION}"
 APP="$HOME_DIR/app"
 LOG="$HOME_DIR/logs/worker.log"
 # Keep the log under ~2 MB.

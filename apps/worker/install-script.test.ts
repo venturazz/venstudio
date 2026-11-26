@@ -135,7 +135,8 @@ test("started as root on an existing directory: keeps the account that already o
 
 test("--no-provision reaches the worker through the generated run.sh", () => {
   assert.match(SCRIPT, /--no-provision\) NO_PROVISION=1/);
-  assert.match(SCRIPT, /export VENSTUDIO_NO_PROVISION="\$\{NO_PROVISION\}"/);
+  // The generated value is the default, so a caller that says VENSTUDIO_NO_PROVISION=1 for one run keeps it.
+  assert.match(SCRIPT, /export VENSTUDIO_NO_PROVISION="\\\$\{VENSTUDIO_NO_PROVISION:-\$NO_PROVISION\}"/);
   assert.match(SCRIPT, /\[ "\$NO_PROVISION" = 1 \] && _args\+=\(--no-provision\)/, "a root hand-off keeps the flag");
 });
 
@@ -151,6 +152,7 @@ test("the generated run.sh hands a root start off to the service account", () =>
     .replaceAll("$MODE", "hold")
     .replaceAll("$SERVICE_USER", "vstest")
     .replaceAll("${NO_PROVISION}", "0")
+    .replaceAll("$NO_PROVISION", "0")
     .replaceAll("\\$", "$");
 
   mkdirSync(path.join(box.home, "logs"), { recursive: true });
