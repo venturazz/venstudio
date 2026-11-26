@@ -4691,7 +4691,12 @@ export const PACK_SHOT_TIMEOUT_MS = 90_000;
  * preview is a check, not a render: it stops drawing at this budget and keeps the stills it got.
  */
 export const STILL_DRAW_BUDGET_MS = 3 * 60_000;
-export const STILL_MAX_FRAMES = 600;
+/**
+ * The frame a preview refuses to walk to (6.7 minutes at 30 fps): a guard against an absurd ask, not a budget. A light
+ * page draws a thousand frames in seconds, and stopping at a flat 600 silently dropped the last stills of any video
+ * longer than 20 s; the time budget is what actually bounds a heavy page.
+ */
+export const STILL_FRAME_CEILING = 12_000;
 
 /** An entry of html/packs.json, written by the portal's bundle builder (apps/portal/lib/install-bundle.ts). */
 export interface HtmlPackRef {
@@ -5593,6 +5598,11 @@ export async function captureHtml(o: HtmlCaptureOptions): Promise<HtmlCaptureRes
       // captured. Bounded on purpose — a heavy 3D page costs seconds per frame, and a preview must not hold the worker
       // for half an hour to prove the look is right.
       const last = stillFrames[stillFrames.length - 1];
+      if (last > STILL_FRAME_CEILING) {
+        throw new NonRetryableError(
+          `The last still is at frame ${last}, past the ${STILL_FRAME_CEILING}-frame ceiling for a preview; ask for stills inside the first ${Math.round(STILL_FRAME_CEILING / o.fps)} s.`,
+        );
+      }
       const shotTimeout = pageMode ? limits.frameTimeoutMs : PACK_SHOT_TIMEOUT_MS;
       const drawing = Date.now();
       let k = 0;
@@ -5601,10 +5611,6 @@ export async function captureHtml(o: HtmlCaptureOptions): Promise<HtmlCaptureRes
       for (let f = 0; f <= last; f++) {
         if (Date.now() - drawing > STILL_DRAW_BUDGET_MS) {
           stopped = `stopped drawing after ${Math.round(STILL_DRAW_BUDGET_MS / 1000)} s at frame ${drawn} of ${last}`;
-          break;
-        }
-        if (f >= STILL_MAX_FRAMES) {
-          stopped = `stopped at the ${STILL_MAX_FRAMES}-frame budget, the last still asked for was frame ${last}`;
           break;
         }
         await evaluate(`window.__venstudio.frame(${f}, ${o.fps})`, limits.frameTimeoutMs, `renderFrame(${f})`);

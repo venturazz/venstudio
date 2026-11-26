@@ -229,7 +229,7 @@ composition from that list. A new runtime file goes into `REMOTION_RUNTIME_FILES
 ## Preview stills are bounded
 
 The still-frame preview (stage `preview`) is a check, not a render: the worker draws frames from 0 and stops at
-`STILL_DRAW_BUDGET_MS` (3 min) or `STILL_MAX_FRAMES` (600), keeping the stills it got, and the Review card says why
+`STILL_DRAW_BUDGET_MS` (3 min), keeping the stills it got, and the Review card says why
 fewer arrived. A heavy WebGL page (`voxel-build` under llvmpipe) costs seconds per frame, so without that bound a
 six-still preview of a 45 s video would draw a thousand frames to prove the look is right.
 
