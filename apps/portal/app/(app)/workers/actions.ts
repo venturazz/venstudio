@@ -64,12 +64,13 @@ export async function createEnrollment(_prev: EnrollState, fd: FormData): Promis
       `The script downloads Node.js from nodejs.org and ffmpeg from johnvansickle.com if they're missing, and checks their checksums. ` +
       `${code} is a one-time code from my portal, valid for ${ENROLLMENT_MINUTES} minutes.`,
     ``,
-    `Run it with sudo on purpose: as root the script installs the system libraries headless Chromium needs, creates the ` +
-      `account ${serviceUser}, hands the worker directory to it, and then continues as that account. Environments refuse to ` +
-      `install as root, so full-frame and low-poly-shapes only work when the worker runs as ${serviceUser}.`,
+    `Run it with sudo on purpose: as root the script installs the system libraries headless Chromium needs, hands ` +
+      `/home/hatch/venstudio to an ordinary account (the one that already owns it, or ${serviceUser} on a fresh install) and ` +
+      `then continues as that account. Environments refuse to install as root, so full-frame and low-poly-shapes only work ` +
+      `when the worker runs as it.`,
     ``,
     `Then create a recurring scheduled task named "VenStudio worker" that runs every hour and does this: ` +
-      `run sudo -u ${serviceUser} /home/hatch/venstudio/run.sh hold in the foreground and wait for it to finish (it stays online up to about 55 minutes, ` +
+      `run sudo /home/hatch/venstudio/run.sh hold in the foreground and wait for it to finish (started as root it hands off to that account itself; it stays online up to about 55 minutes, ` +
       `then exits by itself), then read the last 5 lines of /home/hatch/venstudio/logs/worker.log. ` +
       `Only message me if those lines contain "fatal"; "already running" is normal.`,
     ``,

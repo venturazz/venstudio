@@ -35,11 +35,12 @@ HOME_DIR=""
 WITH_REMOTION=0
 # The worker runs as this account whenever the script is started as root (see "run as a normal user" below).
 AS_USER="venstudio"
+AS_USER_SET=0
 STAY_ROOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-remotion) WITH_REMOTION=1; shift ;;
-    --user) AS_USER="${2:-}"; shift 2 ;;
+    --user) AS_USER="${2:-}"; AS_USER_SET=1; shift 2 ;;
     --stay-root) STAY_ROOT=1; shift ;;
     --portal) PORTAL="$2"; shift 2 ;;
     --code) CODE="$2"; shift 2 ;;
@@ -67,6 +68,12 @@ say0() { printf '[venstudio] %s\n' "$*"; }
 # which is exactly what a manual non-root install does. This is the supported path, not a workaround.
 if [ "$(id -u)" -eq 0 ] && [ "$STAY_ROOT" = 0 ]; then
   AS_USER="${AS_USER:-venstudio}"
+  # An existing install already has an owner; use it unless --user says otherwise, so its crontab keeps working and only
+  # the root part changes.
+  if [ "$AS_USER_SET" = 0 ] && [ -d "$HOME_DIR" ]; then
+    _owner="$(stat -c %U "$HOME_DIR" 2>/dev/null || echo root)"
+    if [ -n "$_owner" ] && [ "$_owner" != root ] && id -u "$_owner" >/dev/null 2>&1; then AS_USER="$_owner"; fi
+  fi
   case "$AS_USER" in ""|*[!a-z0-9_-]*) echo "--user must be a plain account name" >&2; exit 2 ;; esac
 
   # System libraries headless Chromium needs (and a system ffmpeg) belong to the machine, not to the account: install
@@ -220,6 +227,8 @@ export VENSTUDIO_HOME="$HOME_DIR"
 export FFMPEG_PATH="$FFMPEG_BIN"
 export PATH="$HOME_DIR/bin:$(dirname "$NODE_BIN"):\$PATH"
 export NODE_USE_ENV_PROXY=1
+# The account install.sh provisioned for (it hands off to it when started as root).
+export VENSTUDIO_SERVICE_USER="\${VENSTUDIO_SERVICE_USER:-$SERVICE_USER}"
 APP="$HOME_DIR/app"
 LOG="$HOME_DIR/logs/worker.log"
 # Keep the log under ~2 MB.

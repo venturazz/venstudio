@@ -23,7 +23,7 @@ after(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-function sandbox(opts: { noUser?: boolean } = {}) {
+function sandbox(opts: { noUser?: boolean; owner?: string } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "vs-install-"));
   dirs.push(root);
   const stubs = path.join(root, "stubs");
@@ -45,6 +45,7 @@ function sandbox(opts: { noUser?: boolean } = {}) {
   stub(stubs, "useradd", 'echo "useradd $*" >> "$ACTIONS"\n');
   stub(stubs, "chown", 'echo "chown $*" >> "$ACTIONS"\n');
   stub(stubs, "npx", "exit 0\n");
+  stub(stubs, "stat", 'if [ "$1" = "-c" ] && [ "$2" = "%U" ]; then echo "${STUB_OWNER:-root}"; exit 0; fi\nexec /usr/bin/stat "$@"\n');
   // The hand-off itself: log it, then run the command with a PATH whose id reports an ordinary account, so a script that
   // hands off again would loop here instead of passing silently.
   stub(
@@ -74,6 +75,7 @@ function sandbox(opts: { noUser?: boolean } = {}) {
     NONROOT: asUser,
     VSHOME: home,
     ...(opts.noUser ? { STUB_NO_USER: "1" } : {}),
+    ...(opts.owner ? { STUB_OWNER: opts.owner } : {}),
   };
   return {
     root,
@@ -117,6 +119,18 @@ test("started as root: creates the account, hands over the worker directory and 
   assert.match(r.stdout, /MARKER .*--mode tick/);
   assert.match(r.stdout, /MARKER service-user=vstest/);
   assert.match(r.stdout, new RegExp(`MARKER home=${box.home}`));
+});
+
+test("started as root on an existing directory: keeps the account that already owns it", async () => {
+  const box = sandbox({ owner: "hatch" });
+  writeFileSync(path.join(box.root, "install.sh"), SCRIPT);
+  mkdirSync(box.home, { recursive: true });
+  const r = await box.install(["--with-remotion", "--mode", "hold", "--code", "C2"]);
+  assert.match(r.stdout, /continuing as hatch/);
+  assert.doesNotMatch(r.actions, /useradd/, "an existing install must not get a second account");
+  assert.match(r.actions, /chown -R hatch: /);
+  assert.match(r.actions, /runuser -u hatch -- env HOME=/);
+  assert.match(r.stdout, /MARKER service-user=hatch/);
 });
 
 test("the generated run.sh hands a root start off to the service account", () => {

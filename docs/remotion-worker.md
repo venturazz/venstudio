@@ -57,8 +57,10 @@ cross-fades only.
 
 1. as root it installs the machine-level pieces once — the system libraries headless Chromium needs
    (`npx playwright install-deps chromium`, with the plain `apt-get` list as a fallback, old and `t64` package names);
-2. it creates the account `venstudio` when it is missing (`--user NAME` picks another, `--stay-root` opts out), hands
-   `/home/hatch/venstudio` to it with `chown`, and re-fetches itself to continue **as that account**.
+2. it hands `/home/hatch/venstudio` to an ordinary account and re-fetches itself to continue **as that account**: the
+   account that already owns the directory when there is one, otherwise a new `venstudio` (`--user NAME` picks another,
+   `--stay-root` opts out). An older root install therefore keeps its owner and its crontab, and only the root part
+   changes.
 
 That hand-off is not cosmetic. An environment recipe downloads a binary and runs `pip install`; the worker refuses that
 as root on purpose, because pack code is not trusted. A worker that stays root reports no `env:*` capabilities, so
