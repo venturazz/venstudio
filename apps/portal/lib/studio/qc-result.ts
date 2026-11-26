@@ -79,9 +79,9 @@ const failedTechnical = (issue: string): GateResult => ({ gate: "G-technical", p
  */
 /**
  * The lowest similarity a render may have with the still the owner approved: the preview is a promise about the look,
- * so a video that does not keep it fails the technical gate instead of passing quietly. 0.85 is loose enough for a JPEG
- * still against a video frame of the same moment (identical pictures score above 0.98) and far above what a different
- * scene, a different machine or a rescaled timeline scores.
+ * so a video that does not keep it fails the technical gate instead of passing quietly. Measured on the voxel page:
+ * the same moment scores 0.978 (a JPEG still against an H.264 frame), a different scene of the same video 0.44-0.51.
+ * 0.85 sits in the gap, so a real drift fails and encoding noise does not.
  */
 export const PREVIEW_MATCH_MIN_SSIM = 0.85;
 

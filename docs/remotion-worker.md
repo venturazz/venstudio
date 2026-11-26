@@ -249,6 +249,16 @@ The page now reports `degraded: true` in that state and the worker refuses the j
 get a WebGL context on this machine... a worker with working WebGL must take this job."* `voxel-build@0.3.3` and
 `blocky-story@0.1.2` report it.
 
+## The finished video is checked against the still it was approved with (0.19.1)
+
+The preview runs before the voice, so its seconds are the planned ones and the video's are fitted to the narration; both
+name the same scenes. The qc job therefore carries each approved still with the time its scene's middle has in *that*
+video, and the worker measures the two pictures with ffmpeg's ssim. Below 0.85 the technical gate fails by name, e.g.
+*"The video at 12.4 s does not look like the approved still (similarity 0.41)"*.
+
+Measured on `voxel-build@0.3.3`, 540x960: still against the video frame of the same moment 0.978, against another
+scene 0.44-0.51 — the threshold sits in that gap, so encoding noise passes and a drifted render does not.
+
 ## The render is drawn by the machine that drew the preview (0.19.1)
 
 The stills are a promise about the look, so the render-video job is queued with the preview job's worker as its
