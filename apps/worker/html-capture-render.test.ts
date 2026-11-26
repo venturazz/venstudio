@@ -254,7 +254,7 @@ function previewOf(raw: Record<string, unknown>, times: number[], page: string |
   return { ...rest, inputs: [...p.inputs.filter((i) => i !== narrationAssetId), ...(page ? [page] : [])], preview: { times, ...(page ? { page } : {}) } };
 }
 
-for (const id of ["probe-line-graph", "hermes-designed-explainer"]) {
+for (const id of ["probe-line-graph", "designed-explainer"]) {
   test(`preview-frames takes 6 real stills of ${id} (${id === "probe-line-graph" ? "the pack's own page, scene-spec" : "an uploaded page, html-design"}) with the run's props`, { skip: why ?? false, timeout: 5 * 60_000 }, async (t) => {
     const lockPack = HTML_PACKS.find((p) => p.id === id);
     assert.ok(lockPack, `${id} is vendored`);
@@ -273,7 +273,7 @@ for (const id of ["probe-line-graph", "hermes-designed-explainer"]) {
     assert.ok(font);
     files.set(placeholderUuid("asset-font"), font);
     let page: string | null = null;
-    if (id === "hermes-designed-explainer") {
+    if (id === "designed-explainer") {
       page = "ffffffff-6666-4666-8666-0000000000f2";
       const dir = await referencePageDir(path.join(DIR as string, "html", id), path.join(home, "hermes-page"));
       files.set(page, await pageBundleFile(dir, path.join(home, "page.json")));

@@ -74,7 +74,7 @@ test("parsePacksIndex refuses anything but format 1 with well-formed entries", (
 
 test("pack capabilities: reported only for packs whose probe passes here, at their exact version", () => {
   const idx = parsePacksIndex(JSON.parse(served));
-  const stills = ["ambient-loop", "documentary-stills", "horror-story", "mystery-narration", "story-read-aloud", "travel-documentary"].map((id) => `pack:${id}@1.0.1`);
+  const stills = ["ambient-loop", "documentary", "horror-narration", "mystery-narration", "story-read-aloud", "travel-documentary"].map((id) => `pack:${id}@1.0.1`);
   const probed = [{ id: "explainer-flat-vector", version: "1.0.1", composition: "flat-vector-explainer" }];
   assert.deepEqual(packCapabilitiesFor(idx, ["echo", "ffmpeg", "xfade"], []), stills, "stills need ffmpeg with xfade");
   assert.deepEqual(packCapabilitiesFor(idx, ["echo", "ffmpeg"], []), [], "no xfade, no stills pack");
@@ -94,31 +94,37 @@ test("what the worker reports is what the portal's New Video counts as available
   const idx = parsePacksIndex(JSON.parse(served));
   const caps = ["echo", "ffmpeg", "xfade", "remotion-2d", ...packCapabilitiesFor(idx, ["ffmpeg", "xfade", "remotion-2d"], [{ id: "explainer-flat-vector", version: "1.0.1", composition: "flat-vector-explainer" }])];
   const offer = newVideoStyles(mergeRegistry(STYLES, packs), caps);
-  assert.equal(offer.trial.length, 7);
-  // The Hermes research packs (the generic one and one per claude-animation-skills skill) are never reported by a
-  // worker: they wait for Hermes, and are offered once Hermes is set up. The two html-capture adaptations (Trial) wait
-  // for a worker with html-capture.
-  const hermesIds = packs.filter((p) => p.engine === "hermes").map((p) => p.id);
-  assert.equal(hermesIds.length, 11);
-  assert.deepEqual(offer.waiting.map((e) => e.id).sort(), [...hermesIds, "animated-line-graph", "minimal-line-art", "hermes-designed-explainer"].sort());
-  assert.equal(newVideoStyles(mergeRegistry(STYLES, packs), caps, { hermes: true }).trial.length, 7 + 11);
+  // The worker has the Remotion explainer and the stills renderer here; every other Trial style waits, whether it
+  // waits for a worker with html-capture or for Hermes.
+  const reported = ["explainer-flat-vector", "documentary", "mystery-narration", "horror-narration", "ambient-loop", "travel-documentary", "story-read-aloud"];
+  assert.deepEqual(offer.trial.map((e) => e.id), reported);
+  const trialIds = packs.filter((p) => p.status === "trial").map((p) => p.id);
+  assert.deepEqual(offer.waiting.map((e) => e.id).sort(), trialIds.filter((id) => !reported.includes(id)).sort());
+  // A worker never reports the Hermes packs: with Hermes set up they join the Trial section, and the research styles
+  // (the seven claude-animation-skills looks and the generic render) are offered there too.
+  const hermesTrial = packs.filter((p) => p.engine === "hermes" && p.status === "trial").map((p) => p.id);
+  assert.equal(hermesTrial.length, 8);
+  assert.deepEqual(
+    newVideoStyles(mergeRegistry(STYLES, packs), caps, { hermes: true }).trial.map((e) => e.id).sort(),
+    [...reported, ...hermesTrial].sort(),
+  );
   // The html-capture probe is reported once installed and probed, but it is Lab: never offered.
   const html = packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], "0.10.0", [{ id: "probe-line-graph", version: "0.1.1", drawsCaptions: false, sha256: "0".repeat(64) }]);
   assert.ok(html.includes("pack:probe-line-graph@0.1.1"));
-  assert.ok(!html.some((c) => c.startsWith("pack:hermes-research-explainer")), "no worker reports the hermes pack");
+  assert.ok(!html.some((c) => c.startsWith("pack:research-render")), "no worker reports the hermes pack");
   const withProbe = newVideoStyles(mergeRegistry(STYLES, packs), [...caps, ...html]);
   assert.ok(![...withProbe.listed, ...withProbe.trial, ...withProbe.waiting].some((e) => e.id === "probe-line-graph"));
   // The html-design pack needs worker 0.11.0 (an uploaded page under its CSP, preview-frames): a 0.10.0 worker with the
   // pack installed never reports it, a 0.11.0 one does; it is then offered in the Trial section only.
-  const designed = idx.packs.find((p) => p.id === "hermes-designed-explainer");
+  const designed = idx.packs.find((p) => p.id === "designed-explainer");
   assert.ok(designed);
   const ref = [{ id: designed.id, version: designed.version, drawsCaptions: false, designed: true, sha256: "0".repeat(64) }];
-  const designedCaps = (version: string) => packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], version, ref).filter((c) => c.startsWith("pack:hermes-designed-explainer@"));
+  const designedCaps = (version: string) => packCapabilitiesFor(idx, ["ffmpeg", "xfade", "html-capture"], [], version, ref).filter((c) => c.startsWith("pack:designed-explainer@"));
   assert.deepEqual(designedCaps("0.10.0"), []);
   const v11 = designedCaps("0.11.0");
-  assert.deepEqual(v11, [`pack:hermes-designed-explainer@${designed.version}`]);
+  assert.deepEqual(v11, [`pack:designed-explainer@${designed.version}`]);
   const offered = newVideoStyles(mergeRegistry(STYLES, packs), [...caps, ...v11]);
-  assert.ok(offered.trial.some((e) => e.id === "hermes-designed-explainer") && !offered.listed.some((e) => e.id === "hermes-designed-explainer"));
+  assert.ok(offered.trial.some((e) => e.id === "designed-explainer") && !offered.listed.some((e) => e.id === "designed-explainer"));
 });
 
 test("probedPacksOf keeps only well-formed entries of the probe's output", () => {
@@ -134,10 +140,10 @@ test("installPacksIndex writes the index atomically, and nothing when it does no
   await assert.rejects(installPacksIndex(home, Buffer.from('{"format":2,"packs":[]}')), /unknown format/);
   assert.equal(await installedPacksSha(home), null, "a refused index is not written");
   const idx = await installPacksIndex(home, Buffer.from(served));
-  assert.equal(idx.packs.length, 23);
+  assert.equal(idx.packs.length, 26);
   assert.equal(await readFile(stylePacksPath(home), "utf8"), served);
   assert.equal(await installedPacksSha(home), sha(served));
-  assert.equal((await readInstalledPacks(home))?.packs.length, 23);
+  assert.equal((await readInstalledPacks(home))?.packs.length, 26);
   await writeFile(stylePacksPath(home), "not json");
   assert.equal(await readInstalledPacks(home), null, "a damaged file reports no packs");
 });
@@ -184,6 +190,6 @@ test("detectCapabilities reports the installed stills packs on a machine with ff
   assert.ok(!before.some((c) => c.startsWith("pack:")), "no index, no pack capability");
   await installPacksIndex(home, Buffer.from(served));
   const caps = await detectCapabilities(home);
-  if (caps.includes("xfade")) assert.ok(caps.includes("pack:documentary-stills@1.0.1" as never), caps.join(","));
+  if (caps.includes("xfade")) assert.ok(caps.includes("pack:documentary@1.0.1" as never), caps.join(","));
   assert.ok(!caps.includes("pack:explainer-flat-vector@1.0.1" as never) || caps.includes("remotion-2d"), "the Remotion pack only with its renderer");
 });

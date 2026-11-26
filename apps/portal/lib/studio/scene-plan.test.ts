@@ -46,7 +46,7 @@ test("an animating style gets motion tokens and elements", () => {
 });
 
 test("a stills style is given a camera move instead of element tokens", () => {
-  const r = buildScenePlan({ styleId: "documentary-stills", format: "short", shots: animated });
+  const r = buildScenePlan({ styleId: "documentary", format: "short", shots: animated });
   assert.ok(r.ok);
   if (!r.ok) return;
   assert.equal(r.plan.engine, "ffmpeg-stills");
@@ -176,7 +176,7 @@ test("renderParamsForStyle answers for a style and null for an unknown one", () 
     assert.equal(p.elementAnimation, true);
     assert.ok(p.transitionSec > 0);
   }
-  const stills = renderParamsForStyle("documentary-stills");
+  const stills = renderParamsForStyle("documentary");
   assert.equal(stills?.elementAnimation, false);
   assert.equal(renderParamsForStyle("nope"), null);
 });
@@ -198,7 +198,7 @@ test("a declared on-screen spec outranks what the prose suggests", () => {
 test("a stills engine keeps the declared content but drops its motion", () => {
   const s = shot("body", 5, "A bar rises.");
   s.onScreen = { elements: [{ kind: "bar", series: [1, 2] }], tokens: ["bar"] };
-  const r = buildScenePlan({ styleId: "documentary-stills", format: "short", shots: [s] });
+  const r = buildScenePlan({ styleId: "documentary", format: "short", shots: [s] });
   assert.ok(r.ok);
   if (!r.ok) return;
   assert.deepEqual(r.plan.scenes[0].elements, [{ kind: "bar", series: [1, 2] }]);

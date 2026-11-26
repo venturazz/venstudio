@@ -29,7 +29,7 @@ test("render gate per renderer: pack plus renderer for workers, the portal for h
   assert.deepEqual(renderRoute("html-capture", 0, pack), { by: "worker", renderer: "html-capture", capability: "pack:probe-line-graph@0.1.0" });
   assert.deepEqual(renderRoute("remotion-2d", 0.5, { id: "explainer-flat-vector", version: "1.0.0" }), { by: "worker", renderer: "remotion-2d", capability: "pack:explainer-flat-vector@1.0.0" });
   // hermes never becomes a worker job, with or without a pack.
-  assert.deepEqual(renderRoute("hermes", 0, { id: "hermes-research-explainer", version: "0.1.0" }), { by: "portal", renderer: "hermes" });
+  assert.deepEqual(renderRoute("hermes", 0, { id: "research-render", version: "0.1.0" }), { by: "portal", renderer: "hermes" });
   assert.throws(() => renderJobCapability("hermes"), /rendered by the portal/);
   assert.throws(() => renderRoute("godot-9d"), /Unknown render engine "godot-9d"/);
   // The capability names workers already report are unchanged, so routing of older runs does not move.

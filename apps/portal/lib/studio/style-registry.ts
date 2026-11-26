@@ -157,6 +157,13 @@ export interface StylePack {
   design?: PackDesign | null;
   /** style.json `environment` (required for engine command, worker 0.12.0+), or null. */
   environment?: PackEnvironment | null;
+  /**
+   * style.json `formerly`: the ids this pack used to have. They resolve to this pack (history, saved briefs, old
+   * links); the picker still shows one entry, under `id`.
+   */
+  formerIds?: string[];
+  /** style.json `upgradedTo` on a retired pack: the live pack that replaced it, or null. */
+  upgradedTo?: string | null;
 }
 
 /** What the portal shows of a pack's environment recipe (the styles validator and the worker check the rest). */
@@ -296,6 +303,8 @@ export function parsePack(raw: unknown, sha256: string): StylePack | null {
     workflow: flow,
     design: flow && isResearchRecipe(flow.recipe) ? designOf(raw.design) : null,
     environment: isResearchEngine(engine) ? null : environment,
+    formerIds: strs(raw.formerly, 8).filter((x) => ID_RE.test(x) && x !== id),
+    upgradedTo: typeof raw.upgradedTo === "string" && ID_RE.test(raw.upgradedTo) && raw.upgradedTo !== id ? raw.upgradedTo : null,
   };
 }
 
@@ -507,6 +516,9 @@ export interface RegistryEntry {
  */
 export function mergeRegistry(styles: readonly Style[], packs: readonly StylePack[]): RegistryEntry[] {
   const byId = new Map(packs.map((p) => [p.id, p]));
+  // A rename keeps the catalogue entry and the history: the pack answers to the ids it used to have as well.
+  const byOldId = new Map<string, StylePack>();
+  for (const p of packs) for (const old of p.formerIds ?? []) if (!byId.has(old)) byOldId.set(old, p);
   const fromPack = (p: StylePack, s: Style | null): RegistryEntry => ({
     id: p.id,
     label: p.name,
@@ -519,13 +531,20 @@ export function mergeRegistry(styles: readonly Style[], packs: readonly StylePac
     style: s ?? styleFromPack(p),
     catalogued: s !== null,
   });
-  const out = styles.map((s): RegistryEntry => {
-    const p = byId.get(s.id);
-    if (p) return fromPack(p, s);
-    return { id: s.id, label: s.label, description: s.description, family: s.family, engine: s.engine, formats: [...s.formats], status: "planned", pack: null, style: s, catalogued: true };
-  });
-  const known = new Set(styles.map((s) => s.id));
-  for (const p of [...packs].sort((a, b) => (a.id < b.id ? -1 : 1))) if (!known.has(p.id)) out.push(fromPack(p, null));
+  const seen = new Set<StylePack>();
+  const out: RegistryEntry[] = [];
+  for (const s of styles) {
+    const p = byId.get(s.id) ?? byOldId.get(s.id);
+    if (!p) {
+      out.push({ id: s.id, label: s.label, description: s.description, family: s.family, engine: s.engine, formats: [...s.formats], status: "planned", pack: null, style: s, catalogued: true });
+      continue;
+    }
+    // The pack's id is the style id now: the entry (and the planner's style) must not keep the old one.
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(fromPack(p, { ...s, id: p.id }));
+  }
+  for (const p of [...packs].sort((a, b) => (a.id < b.id ? -1 : 1))) if (!seen.has(p)) out.push(fromPack(p, null));
   return out;
 }
 

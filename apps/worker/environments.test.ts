@@ -65,7 +65,7 @@ import {
 } from "./venstudio-worker.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PROOF = path.join(ROOT, "styles", "packs", "three-low-poly");
+const PROOF = path.join(ROOT, "styles", "packs", "low-poly-shapes");
 const proofStyle = async () => JSON.parse(await readFile(path.join(PROOF, "style.json"), "utf8")) as Record<string, any>;
 const V = (await import(path.join(ROOT, "styles", "tools", "validate.mjs"))) as Record<string, any>;
 const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
@@ -510,7 +510,7 @@ if (e2e === "required" && e2eSkip) throw new Error(`the environment e2e test is 
 test("the proof pack's environment installs from its recipe and renders its fixture", { skip: e2eSkip, timeout: 900_000 }, async (t) => {
   const { envInstallCli, renderCommandFixture } = await import("./venstudio-worker.ts");
   const envs = await tmp(t, "proof-envs");
-  const out = path.join(envs, "three-low-poly.mp4");
+  const out = path.join(envs, "low-poly-shapes.mp4");
   const installed = await envInstallCli({ pack: PROOF, envs });
   assert.equal(installed.environment, "env:three-svg@1.0.0");
   assert.match(String(installed.probe), /^ok three r183 resvg 0\.44\.0/);

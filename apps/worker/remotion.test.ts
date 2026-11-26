@@ -217,5 +217,5 @@ test("the portal's install bundle unpacks into a project the worker can probe, a
   }
   await assert.rejects(writeProjectBundle({ files: [] }, dir), /no files/);
   await assert.rejects(writeProjectBundle({ files: [{ path: "src/a.ts", content: 5 }] }, dir), /no content/);
-  await assert.rejects(writeProjectBundle({ files: [{ path: "src/a.ts", content: "x".repeat(1024 * 1024 + 1) }] }, dir), /larger than/);
+  await assert.rejects(writeProjectBundle({ files: [{ path: "src/a.ts", content: "x".repeat(2 * 1024 * 1024 + 1) }] }, dir), /larger than/);
 });

@@ -54,6 +54,7 @@ import type { Template } from "../studio/templates.ts";
 import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { DEFAULT_SOUND, pairCues, sfxCues, type BedChoice, type SfxAsset } from "../studio/sound.ts";
+import { recordNeeds } from "./asset-needs.ts";
 import { captionSpecFor } from "../studio/caption-spec.ts";
 import { STYLE_BY_ID, VIDEO_FORMATS, type Style } from "../studio/catalog.ts";
 import { DEFAULT_RENDER_ENGINE, isPortalEngine, transitionForWorker } from "../studio/render-engine.ts";
@@ -1113,7 +1114,9 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const bed = bedPick?.bed ?? null;
   // Accents sit on shot boundaries: the board already knows where the picture changes, so no second guess is needed.
   const cues = mix.audio && planShots ? sfxCues(planShots, sound.sfx) : [];
-  const sfx = cues.length > 0 ? pairCues(cues, await pickSfxLibrary(sql)) : [];
+  const sfxAssets = cues.length > 0 ? await pickSfxLibrary(sql) : [];
+  const sfx = cues.length > 0 ? pairCues(cues, sfxAssets) : [];
+  await noteMissingSound(recordNeeds, { bed, bedChoice: sound.bed, cues, sfxAssets, ambience: sound.ambience }).catch(() => undefined);
   const audio =
     mix.audio && narrationSec > 0
       ? buildAudioPlan({
@@ -1982,6 +1985,37 @@ export async function listBedTracks(): Promise<Array<{ id: string; title: string
     LIMIT 50
   `;
   return rows.map((r) => ({ id: String(r.id), title: String(r.title) }));
+}
+
+
+/**
+ * Bookkeeping for the library, and nothing else. A run that asked for a bed and found none, or for a riser the library has
+ * never had, leaves a need behind so the next find run looks for that — which is how the collection grows with use instead
+ * of by guesswork. Never throws: a render does not fail because its bookkeeping did.
+ */
+async function noteMissingSound(
+  record: typeof recordNeeds,
+  i: {
+    bed: unknown;
+    bedChoice: string;
+    cues: ReadonlyArray<{ tag: string }>;
+    sfxAssets: ReadonlyArray<SfxAsset>;
+    ambience: boolean | string;
+  },
+): Promise<void> {
+  const needs: Array<{ assetClass: "music" | "sfx" | "ambience"; tag: string; reason: string }> = [];
+  if (!i.bed && i.bedChoice === "auto") {
+    needs.push({ assetClass: "music", tag: "bed", reason: "A run asked for a bed and the library had no music track it could use." });
+  }
+  const tags = [...new Set(i.cues.map((c) => c.tag))];
+  for (const tag of tags) {
+    const covered = i.sfxAssets.some((a) => a.tags.includes(tag));
+    if (!covered) needs.push({ assetClass: "sfx", tag, reason: `A cue needed a ${tag} and the library had none, so it was dropped.` });
+  }
+  if (i.ambience && typeof i.ambience === "string") {
+    needs.push({ assetClass: "ambience", tag: i.ambience, reason: `A scene asked for ${i.ambience} atmosphere and the library had none.` });
+  }
+  if (needs.length > 0) await record(needs);
 }
 
 /** Accent files the library holds: tagged `sfx`, with a stored file. Cue tags (whoosh, impact, riser) are tags too. */

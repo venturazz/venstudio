@@ -31,7 +31,7 @@ test("phrase matching is whole-word and ignores punctuation", () => {
 
 test("a history brief suggests a documentary first for long videos", () => {
   const top = suggestStyles("A history documentary about the Roman roads", "long");
-  assert.equal(top[0].style.id, "documentary-stills");
+  assert.equal(top[0].style.id, "documentary");
   assert.deepEqual(top[0].matched.sort(), ["documentary", "history"]);
 });
 
@@ -51,7 +51,7 @@ test("theme detection and theme-based ranking", () => {
 });
 
 test("an original plan lists the Hermes stages, narration and a render stage that is not runnable yet", () => {
-  const r = buildPlan({ brief: "The rise of Rome", format: "long", styleId: "documentary-stills", themeId: "history" });
+  const r = buildPlan({ brief: "The rise of Rome", format: "long", styleId: "documentary", themeId: "history" });
   assert.equal(r.ok, true);
   if (!r.ok) return;
   const ids = r.plan.stages.map((s) => s.id);
@@ -186,7 +186,7 @@ test("series purpose adds a series bible before the script", () => {
 });
 
 test("non-English narration adds translation and localized metadata stages", () => {
-  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary-stills", language: "es" });
+  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary", language: "es" });
   assert.equal(r.ok, true);
   if (!r.ok) return;
   const ids = r.plan.stages.map((s) => s.id);
@@ -197,14 +197,14 @@ test("non-English narration adds translation and localized metadata stages", () 
 });
 
 test("a language outside Kokoro's list gets a voice-provider warning", () => {
-  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary-stills", language: "id" });
+  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary", language: "id" });
   assert.equal(r.ok, true);
   if (!r.ok) return;
   assert.ok(r.plan.warnings.some((w) => w.startsWith("Narration in Indonesian:") && w.includes("another voice provider")));
 });
 
 test("subtitles add a subtitles stage; the narration language is never repeated as a subtitle", () => {
-  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary-stills", subtitles: ["en", "id", "ja", "id"] });
+  const r = buildPlan({ brief: "the rise of Rome", format: "long", styleId: "documentary", subtitles: ["en", "id", "ja", "id"] });
   assert.equal(r.ok, true);
   if (!r.ok) return;
   assert.deepEqual(r.plan.subtitles.map((x) => x.code), ["id", "ja"]);

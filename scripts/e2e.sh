@@ -65,10 +65,10 @@ HTML_LIST=$(cat "$WORK/remotion-unpacked/html/packs.json")
 grep -q '"id": "probe-line-graph"' <<<"$HTML_LIST" || fail "html/packs.json does not list probe-line-graph"
 # html-design (worker 0.11.0): the Hermes-designed pack travels with its reference page and vendored fonts, marked designed,
 # so a worker renders only a page uploaded with the job for it.
-node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const d=l.filter((p)=>p.designed===true).map((p)=>p.id).join(","); if(d!=="hermes-designed-explainer"){console.error("designed: "+d); process.exit(1)}' "$WORK/remotion-unpacked/html/packs.json" || fail "html/packs.json does not mark exactly hermes-designed-explainer as designed"
-[ -f "$WORK/remotion-unpacked/html/hermes-designed-explainer/fonts/fonts.css" ] || fail "the html-design pack's vendored fonts are not in the served bundle"
+node -e 'const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const d=l.filter((p)=>p.designed===true).map((p)=>p.id).join(","); if(d!=="designed-explainer"){console.error("designed: "+d); process.exit(1)}' "$WORK/remotion-unpacked/html/packs.json" || fail "html/packs.json does not mark exactly designed-explainer as designed"
+[ -f "$WORK/remotion-unpacked/html/designed-explainer/fonts/fonts.css" ] || fail "the html-design pack's vendored fonts are not in the served bundle"
 curl -fsS "$APP_URL/install/style-packs.json" -o "$WORK/style-packs.json" || fail "style-packs.json not served"
-for P in explainer-flat-vector documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud probe-line-graph hermes-research-explainer hermes-designed-explainer; do
+for P in explainer-flat-vector documentary mystery-narration horror-narration ambient-loop travel-documentary story-read-aloud probe-line-graph research-render designed-explainer; do
   grep -q "\"id\": \"$P\"" "$WORK/style-packs.json" || fail "style-packs.json does not list $P"
 done
 grep -q "\"commit\": \"$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).source.commit)' "$ROOT/styles/lock.json")\"" "$WORK/style-packs.json" || fail "style-packs.json does not name the vendored styles commit"
@@ -115,14 +115,14 @@ q "SELECT result FROM jobs WHERE id = '$SMOKE_JOB'"
 
 echo "== the worker reports each installed stills pack once its probe (ffmpeg with xfade) passes, and no Remotion pack without Remotion"
 CAPS=$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")
-for P in documentary-stills mystery-narration horror-story ambient-loop travel-documentary story-read-aloud; do
+for P in documentary mystery-narration horror-narration ambient-loop travel-documentary story-read-aloud; do
   PV=$(pack_version "$P") || fail "styles/lock.json has no version for $P"
   grep -qF "pack:$P@$PV" <<<"$CAPS" || fail "the worker does not report pack:$P@$PV (capabilities: $CAPS)"
 done
 if grep -qF "pack:explainer-flat-vector@" <<<"$CAPS"; then fail "a worker without Remotion reports the Remotion pack"; fi
 # preview-frames (0.11.0) needs html-capture's browser: a worker without the Remotion project never reports it, nor the html-design pack.
 if grep -qF "preview-frames" <<<"$CAPS"; then fail "a worker without html-capture reports preview-frames (capabilities: $CAPS)"; fi
-if grep -qF "pack:hermes-designed-explainer@" <<<"$CAPS"; then fail "a worker without html-capture reports the html-design pack"; fi
+if grep -qF "pack:designed-explainer@" <<<"$CAPS"; then fail "a worker without html-capture reports the html-design pack"; fi
 # ...and does not even name the preview-frames job type in its claims, so it never takes a preview queued under a pack.
 [ "$(q "SELECT 'preview-frames' = ANY(job_types) FROM workers WHERE id = '$WORKER'")" = "f" ] || fail "a worker without the still probe names the preview-frames job type in its claims"
 # hermes-mux (0.13.0) lays a run's narration on Hermes's picture: reported exactly where the audio-mix chain and tpad exist.
@@ -144,10 +144,10 @@ for col in run_id pack_id pack_version qc_passed qc_gates presentation_score own
   [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'style_trial_outcomes' AND column_name = '$col'")" = "1" ] || fail "column style_trial_outcomes.$col missing after migration 0015"
 done
 [ "$(q "SELECT count(*) FROM style_trial_outcomes")" = "0" ] || fail "style_trial_outcomes should start empty"
-TRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e trial', '{\"styleId\":\"documentary-stills\",\"stylePack\":{\"id\":\"documentary-stills\",\"version\":\"1.0.0\",\"status\":\"trial\",\"trial\":true}}') RETURNING id")
+TRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e trial', '{\"styleId\":\"documentary\",\"stylePack\":{\"id\":\"documentary\",\"version\":\"1.0.1\",\"status\":\"trial\",\"trial\":true}}') RETURNING id")
 q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, qc_gates, presentation_score, owner_decision)
-   VALUES ('$TRUN', 'documentary-stills', '1.0.0', true, '[{\"gate\":\"G-technical\",\"passed\":true,\"score\":null}]', 84, 'approved')" >/dev/null || fail "style_trial_outcomes refused a valid outcome"
-q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, owner_decision) VALUES ('$TRUN', 'documentary-stills', '1.0.0', true, 'maybe')" >/dev/null 2>&1 && fail "style_trial_outcomes accepted an unknown owner decision"
+   VALUES ('$TRUN', 'documentary', '1.0.1', true, '[{\"gate\":\"G-technical\",\"passed\":true,\"score\":null}]', 84, 'approved')" >/dev/null || fail "style_trial_outcomes refused a valid outcome"
+q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed, owner_decision) VALUES ('$TRUN', 'documentary', '1.0.1', true, 'maybe')" >/dev/null 2>&1 && fail "style_trial_outcomes accepted an unknown owner decision"
 q "UPDATE style_trial_outcomes SET pack_version = 'latest' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a version that is not semver"
 q "UPDATE style_trial_outcomes SET presentation_score = 101 WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a presentation score above 100"
 q "DELETE FROM pipeline_runs WHERE id = '$TRUN'" >/dev/null
@@ -157,8 +157,8 @@ echo "== migration 0016: the presentation score on the curation log, additive on
 for col in owner_rubric presentation_by hermes_advisory renderer; do
   [ "$(q "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'style_trial_outcomes' AND column_name = '$col' AND is_nullable = 'YES'")" = "1" ] || fail "column style_trial_outcomes.$col missing (or not nullable) after migration 0016"
 done
-TRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e trial 0016', '{\"styleId\":\"documentary-stills\",\"stylePack\":{\"id\":\"documentary-stills\",\"version\":\"1.0.0\",\"status\":\"trial\",\"trial\":true}}') RETURNING id")
-q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed) VALUES ('$TRUN', 'documentary-stills', '1.0.0', true)" >/dev/null || fail "a 0015-shaped outcome is refused after migration 0016"
+TRUN=$(q "INSERT INTO pipeline_runs (topic, config) VALUES ('e2e trial 0016', '{\"styleId\":\"documentary\",\"stylePack\":{\"id\":\"documentary\",\"version\":\"1.0.1\",\"status\":\"trial\",\"trial\":true}}') RETURNING id")
+q "INSERT INTO style_trial_outcomes (run_id, pack_id, pack_version, qc_passed) VALUES ('$TRUN', 'documentary', '1.0.1', true)" >/dev/null || fail "a 0015-shaped outcome is refused after migration 0016"
 q "UPDATE style_trial_outcomes SET presentation_score = 80, owner_rubric = '{\"hook\":5,\"pacing\":4,\"legibility\":4,\"polish\":4,\"audio\":4}', presentation_by = 'owner',
      hermes_advisory = '{\"score\":70,\"notes\":\"advisory\"}', renderer = 'html-capture' WHERE run_id = '$TRUN'" >/dev/null || fail "style_trial_outcomes refused an owner score with its rubric and advisory"
 q "UPDATE style_trial_outcomes SET presentation_by = 'hermes' WHERE run_id = '$TRUN'" >/dev/null 2>&1 && fail "style_trial_outcomes accepted a presentation score that is not the owner's"
@@ -640,11 +640,11 @@ grep -q "style packs [0-9a-f]\{12\}: signature and checksum verified" "$LOGF" ||
 [ "$(wq version)" = "$CURRENT" ] || fail "installing packs changed the worker version"
 expect_live "$(fsha "$PRISTINE")" "installing packs changed the worker file"
 run_tick "after the packs update"
-grep -qF "pack:documentary-stills@$(pack_version documentary-stills)" <<<"$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")" || fail "the worker does not report its packs after the update"
+grep -qF "pack:documentary@$(pack_version documentary)" <<<"$(q "SELECT array_to_string(capabilities, ',') FROM workers WHERE id = '$WORKER'")" || fail "the worker does not report its packs after the update"
 
 echo "== env packs travel through the signed update; the worker installs the proof pack's environment and reports env: and pack: only after its probe"
 # Read from the vendored copy, so this follows pack and environment bumps (the proof pack: docs/hermes-handover.md).
-EP=three-low-poly
+EP=low-poly-shapes
 EPV=$(pack_version "$EP") || fail "styles/lock.json has no version for $EP"
 ENVKEY=$(node -e 'const e=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).environment; console.log(`${e.id}@${e.version}`)' "$ROOT/styles/packs/$EP/style.json") || fail "no environment in $EP"
 curl -fsS "$APP_URL/install/env-packs.json" -o "$WORK/env-packs.json" || fail "env-packs.json not served"

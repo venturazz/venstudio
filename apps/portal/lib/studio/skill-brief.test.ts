@@ -15,8 +15,8 @@ import { imageSequenceSample } from "./image-sequence-sample.ts";
 const STYLES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../styles");
 const lock = JSON.parse(readFileSync(path.join(STYLES_DIR, "lock.json"), "utf8")) as { packs: Array<{ id: string; sha256: string }> };
 const load = (id: string) => parsePack(JSON.parse(readFileSync(path.join(STYLES_DIR, "packs", id, "style.json"), "utf8")), lock.packs.find((p) => p.id === id)!.sha256)!;
-const graph = load("hermes-graph");
-const stick = load("hermes-stick-figure");
+const graph = load("line-graph-skill");
+const stick = load("stick-figure");
 const skillOf = (p: ReturnType<typeof load>): BriefSkill => ({ name: p.hermes!.skill, mode: p.hermes!.mode, voice: p.hermes!.voice, input: p.hermes!.input });
 const template = packSeedTemplate(graph);
 
@@ -104,7 +104,7 @@ const request = (over: Partial<HermesRenderRequest> = {}): HermesRenderRequest =
   scenePlan: null,
   narration: { url: "http://hermes-files:8000/audio/n.wav", seconds: 7, tempo: 1 },
   captions: ["Money grows."],
-  packId: "hermes-graph",
+  packId: "line-graph-skill",
   packVersion: "0.2.0",
   contract: {},
   skill: { name: "/graph", aliases: [], mode: "spec", input: graph.hermes!.input, output: graph.hermes!.output },

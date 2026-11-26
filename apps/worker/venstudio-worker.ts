@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.17.0";
+export const VERSION = "0.18.0";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -2219,7 +2219,13 @@ function probeRemotion(dir: string): Promise<RemotionProbe> {
   });
 }
 
-export const BUNDLE_LIMITS = { files: 200, fileBytes: 1024 * 1024, totalBytes: 5 * 1024 * 1024 } as const;
+/**
+ * The portal's install bundle carries every html-capture pack (html/<id>/) and the Remotion runtime in one file.
+ * Every skill becomes a style, so the set only grows: 26 packs are 7 MB today (the two 3D looks alone are 7 MB with
+ * their texture and face atlases), and the 5 MB/200-file/1 MB limits it had would refuse them. The limits are what a
+ * worker will unpack, not what it trusts: paths and digests are still checked before anything is written.
+ */
+export const BUNDLE_LIMITS = { files: 400, fileBytes: 2 * 1024 * 1024, totalBytes: 32 * 1024 * 1024 } as const;
 
 /**
  * Writes a project bundle (the portal's /install/render-remotion.json) into `dir`. Used by install.sh, so a Muse VM

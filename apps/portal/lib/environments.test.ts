@@ -30,7 +30,7 @@ import { UPDATE_ENV_PACKS_FILE, parseEnvPacksBundle, parsePacksIndex, packCapabi
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const STYLES_DIR = path.join(ROOT, "styles");
 const LOCK = JSON.parse(readFileSync(path.join(STYLES_DIR, "lock.json"), "utf8")) as { source: { commit: string }; packs: Array<{ id: string; version: string; sha256: string; files: Record<string, string> }> };
-const PROOF = "three-low-poly";
+const PROOF = "low-poly-shapes";
 const lockOf = (id: string) => LOCK.packs.find((p) => p.id === id)!;
 const proofRaw = () => JSON.parse(readFileSync(path.join(STYLES_DIR, "packs", PROOF, "style.json"), "utf8")) as Record<string, any>;
 const proofPack = (): StylePack => parsePack(proofRaw(), lockOf(PROOF).sha256)!;
@@ -40,7 +40,7 @@ const ENV = "env:three-svg@1.0.0";
 test("engine command is a catalogue engine, the worker's and the protocol's; the proof pack is in the vendored lock", () => {
   assert.equal(ENGINES.command.capability, "command");
   assert.ok(CAPABILITIES.includes("command"));
-  assert.equal(WORKER_VERSION, "0.17.0");
+  assert.equal(WORKER_VERSION, "0.18.0");
   const lp = lockOf(PROOF);
   assert.ok(lp, "styles/lock.json lists the proof pack");
   assert.equal((lp as unknown as { engine: string }).engine, "command");
@@ -54,14 +54,14 @@ test("parsePack reads the environment; engine command without one is left out", 
   const { environment, ...bare } = proofRaw();
   void environment;
   assert.equal(parsePack(bare, "x".repeat(64)), null);
-  const hermes = JSON.parse(readFileSync(path.join(STYLES_DIR, "packs", "hermes-graph", "style.json"), "utf8"));
+  const hermes = JSON.parse(readFileSync(path.join(STYLES_DIR, "packs", "line-graph-skill", "style.json"), "utf8"));
   assert.equal(parsePack({ ...hermes, environment: proofRaw().environment }, "x".repeat(64))?.environment, null, "a hermes pack never gets an environment");
 });
 
 test("the availability line: has, installing, failed with the reason, or none yet; ready wins", () => {
   const p = proofPack();
   const w = (name: string, capabilities: string[], environments: unknown) => ({ name, capabilities, environments: parseWorkerEnvironments(environments) });
-  const installing = [{ id: "three-svg", version: "1.0.0", status: "installing", detail: "installing", packs: ["three-low-poly@0.1.0"], at: "2026-11-22T00:00:00Z" }];
+  const installing = [{ id: "three-svg", version: "1.0.0", status: "installing", detail: "installing", packs: ["low-poly-shapes@0.1.0"], at: "2026-11-22T00:00:00Z" }];
   const failed = [{ id: "three-svg", version: "1.0.0", status: "failed", detail: "download https://github.com/x: sha256 mismatch", packs: [], at: "" }];
   assert.deepEqual(environmentLine(p, [w("Muse 01", ["ffmpeg", ENV], [])]), { state: "ready", text: `A worker has ${ENV}` });
   assert.deepEqual(environmentLine(p, [w("Muse 01", ["ffmpeg"], installing)]), { state: "installing", text: `${ENV}: installing… on Muse 01` });
@@ -73,7 +73,7 @@ test("the availability line: has, installing, failed with the reason, or none ye
   assert.equal(environmentLine(p, [w("Old", [], [{ id: "three-svg", version: "0.9.0", status: "ready", detail: "", packs: [], at: "" }])])?.state, "none", "another version does not count");
   assert.deepEqual(parseWorkerEnvironments([{ id: "x", version: "1", status: "ready" }, { id: "../x", version: "1.0.0", status: "ready" }, "junk"]), []);
   assert.deepEqual(workerEnvironmentLabel(parseWorkerEnvironments(failed)[0]), { tone: "danger", text: `${ENV}: failed: download https://github.com/x: sha256 mismatch` });
-  assert.equal(workerEnvironmentLabel(parseWorkerEnvironments(installing)[0]).text, `${ENV}: installing… (for three-low-poly@0.1.0)`);
+  assert.equal(workerEnvironmentLabel(parseWorkerEnvironments(installing)[0]).text, `${ENV}: installing… (for low-poly-shapes@0.1.0)`);
 });
 
 test("a lab trial of the proof pack waits for the environment, then for the pack, then starts", () => {
@@ -155,7 +155,7 @@ test("env-packs.json travels in the signed manifest only for workers that report
 });
 
 test("worker environments stored as a JSON string (early 0.12.0 claims) read the same as an array", () => {
-  const list = [{ id: "three-svg", version: "1.0.0", status: "ready", detail: "probe passed", packs: ["three-low-poly@0.1.0"], at: "2026-11-22T19:14:46.705Z" }];
+  const list = [{ id: "three-svg", version: "1.0.0", status: "ready", detail: "probe passed", packs: ["low-poly-shapes@0.1.0"], at: "2026-11-22T19:14:46.705Z" }];
   assert.deepEqual(parseWorkerEnvironments(JSON.stringify(list)), parseWorkerEnvironments(list));
   assert.equal(parseWorkerEnvironments(list).length, 1);
   assert.deepEqual(parseWorkerEnvironments("not json"), []);

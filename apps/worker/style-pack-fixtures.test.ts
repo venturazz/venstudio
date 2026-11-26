@@ -67,7 +67,7 @@ function ctxFor(workDir: string, home: string, type: string, payload: Record<str
 }
 
 test("the vendored stills packs are the six migrated styles", () => {
-  assert.deepEqual(stills, ["ambient-loop", "documentary-stills", "horror-story", "mystery-narration", "story-read-aloud", "travel-documentary"]);
+  assert.deepEqual(stills, ["ambient-loop", "documentary", "horror-narration", "mystery-narration", "story-read-aloud", "travel-documentary"]);
 });
 
 for (const id of stills) {

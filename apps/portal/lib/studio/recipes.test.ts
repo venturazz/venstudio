@@ -68,19 +68,22 @@ test("the recipe table is the styles validator's, and the engine knows every sta
 test("stage list per vendored pack: stills and the explainer image-sequence, data pages scene-spec, hermes packs hermes-skill", () => {
   const want: Record<string, RunStage[]> = {
     "ambient-loop": IMAGE,
-    "documentary-stills": IMAGE,
+    "documentary": IMAGE,
     "explainer-flat-vector": IMAGE,
-    "horror-story": IMAGE,
+    "horror-narration": IMAGE,
     "mystery-narration": IMAGE,
     "story-read-aloud": IMAGE,
     "travel-documentary": IMAGE,
-    "three-low-poly": IMAGE,
-    "animated-line-graph": SCENE,
+    "low-poly-shapes": IMAGE,
+    "full-frame": IMAGE,
+    "line-graph": SCENE,
+    "blocky-story": SCENE,
+    "voxel-build": SCENE,
     "minimal-line-art": SCENE,
     "probe-line-graph": SCENE,
-    "hermes-designed-explainer": HTML,
-    "hermes-stick-figure": SKILL_VOICED,
-    "hermes-zach-d-films": SKILL_VOICED,
+    "designed-explainer": HTML,
+    "stick-figure": SKILL_VOICED,
+    "what-if-3d": SKILL_VOICED,
   };
   for (const p of vendored) {
     const flow = workflowForPack(p);
@@ -94,10 +97,10 @@ test("stage list per vendored pack: stills and the explainer image-sequence, dat
     assert.equal(flow.workflow.recipe, V.recipeOf(rawStyle(p.id)), `${p.id} recipe (validator)`);
   }
   // The still frames are always the owner's to approve, whatever the pack names (OWNER_ONLY_STAGES).
-  assert.deepEqual(workflowForPack(pack("animated-line-graph")).ok && workflowForPack(pack("animated-line-graph")), { ok: true, workflow: { recipe: "scene-spec", stages: SCENE, review: ["scene-spec", "preview"] } });
-  assert.deepEqual(workflowForPack(pack("hermes-designed-explainer")), { ok: true, workflow: { recipe: "html-design", stages: HTML, review: ["html-design", "preview"] } });
-  assert.equal(pack("hermes-stick-figure").hermes?.voice, "skill");
-  assert.equal(pack("hermes-graph").hermes?.voice, "run");
+  assert.deepEqual(workflowForPack(pack("line-graph")).ok && workflowForPack(pack("line-graph")), { ok: true, workflow: { recipe: "scene-spec", stages: SCENE, review: ["scene-spec", "preview"] } });
+  assert.deepEqual(workflowForPack(pack("designed-explainer")), { ok: true, workflow: { recipe: "html-design", stages: HTML, review: ["html-design", "preview"] } });
+  assert.equal(pack("stick-figure").hermes?.voice, "skill");
+  assert.equal(pack("line-graph-skill").hermes?.voice, "run");
 });
 
 test("a pack without workflow gets the recipe its engine and asset model imply; a reserved recipe is refused by name", () => {
@@ -129,7 +132,7 @@ test("a pack without workflow gets the recipe its engine and asset model imply; 
 });
 
 test("old runs keep RUN_STAGES; a stored workflow is read back only when it is a built recipe's own list", () => {
-  const old = parseRunConfig({ format: "short", styleId: "documentary-stills", stylePack: { id: "documentary-stills", version: "1.0.0", status: "trial", trial: true } });
+  const old = parseRunConfig({ format: "short", styleId: "documentary", stylePack: { id: "documentary", version: "1.0.0", status: "trial", trial: true } });
   assert.equal(old.workflow, undefined);
   assert.equal(runStagesOf(old), RUN_STAGES);
   assert.equal(runRecipeOf(old), "image-sequence");
@@ -229,7 +232,7 @@ test("Template Lab: a recipe verdict is honest about what is not built, and fit 
 
 test("the studio's voice for a skill that could voice itself: the voice stage comes back; other lists are kept", async () => {
   const { withStudioVoice } = await import("./recipes.ts");
-  const flow = workflowForPack(pack("hermes-stick-figure"));
+  const flow = workflowForPack(pack("stick-figure"));
   assert.ok(flow.ok);
   if (!flow.ok) return;
   assert.ok(!flow.workflow.stages.includes("voice"));
@@ -238,9 +241,9 @@ test("the studio's voice for a skill that could voice itself: the voice stage co
   assert.deepEqual(studio.review, flow.workflow.review);
   // A stored run with the studio's voice reads back as a valid list.
   assert.deepEqual(parseRunWorkflow(JSON.parse(JSON.stringify(studio)))?.stages, studio.stages);
-  const graph = workflowForPack(pack("hermes-graph"));
+  const graph = workflowForPack(pack("line-graph-skill"));
   assert.ok(graph.ok);
   if (graph.ok) assert.equal(withStudioVoice(graph.workflow), graph.workflow);
-  const stills = workflowForPack(pack("documentary-stills"));
+  const stills = workflowForPack(pack("documentary"));
   if (stills.ok) assert.equal(withStudioVoice(stills.workflow), stills.workflow);
 });

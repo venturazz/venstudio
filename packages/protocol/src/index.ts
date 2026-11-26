@@ -132,7 +132,7 @@ export interface EnrollResponse {
 }
 
 /** Latest worker release. Workers older than this are shown as out of date in the portal. */
-export const WORKER_VERSION = "0.17.0";
+export const WORKER_VERSION = "0.18.0";
 
 export interface ClaimRequest {
   capabilities: Capability[];
