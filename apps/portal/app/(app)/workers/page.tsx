@@ -60,11 +60,12 @@ async function updateFacts(): Promise<{ served: ServedRelease | null; settings: 
 function ManualUpdate({ message, sha }: { message: string; sha: string }) {
   return (
     <details className="rounded-lg border border-border px-3 text-xs">
-      <summary className="flex min-h-11 cursor-pointer items-center font-medium text-fg">Manual update (fallback)</summary>
+      <summary className="flex min-h-11 cursor-pointer items-center font-medium text-fg">Manual update / repair (fallback)</summary>
       <div className="space-y-2 pb-3">
         <p className="text-muted">
-          For a Muse VM, send this to that Muse account as your own message (app or WhatsApp). It is the same check as Add a worker:
-          install.sh is compared with the sha256 below before it runs.
+          For a Muse VM, send this to that Muse account as your own message (app or WhatsApp). It is the same check as Add a
+          worker: install.sh is compared with the sha256 below before it runs. It also repairs what this worker is missing
+          (the renderer, environments), so it is the path back to full capability without any diagnosis.
         </p>
         <div className="whitespace-pre-wrap break-words rounded-lg border border-border bg-surface-2 p-3 font-mono [overflow-wrap:anywhere]">{message}</div>
         <CopyButton value={message} label="Copy message" />
@@ -145,7 +146,21 @@ export default async function WorkersPage() {
                           mode={mode}
                           keyId={facts.keyId}
                           isOwner={isOwner}
-                          manual={facts.installSha ? manualUpdateMessage({ portalUrl: APP_URL, installSha256: facts.installSha, withRemotion: (w.capabilities as string[]).includes("remotion-2d"), host: String(w.host), mode: w.mode == null ? null : String(w.mode) }) : null}
+                          manual={facts.installSha ? manualUpdateMessage({
+                            portalUrl: APP_URL,
+                            installSha256: facts.installSha,
+                            // Always: this message is the repair path too, and a worker that lacks the renderer can never
+                            // gain it from a run that leaves --with-remotion out. For a worker that has it, it is a refresh.
+                            withRemotion: true,
+                            host: String(w.host),
+                            mode: w.mode == null ? null : String(w.mode),
+                            missing: [
+                              ...((w.capabilities as string[]).includes("remotion-2d") ? [] : ["the Remotion renderer"]),
+                              ...parseWorkerEnvironments(w.environments)
+                                .filter((e) => e.status !== "ready")
+                                .map((e) => `environment ${e.id}@${e.version}`),
+                            ],
+                          }) : null}
                           installSha={facts.installSha}
                         />
                       )}

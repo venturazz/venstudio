@@ -15,11 +15,22 @@ export function manualUpdateMessage(input: {
   host?: string;
   /** workers.mode, so run.sh keeps the schedule it has. Default: hold on Muse, daemon elsewhere. */
   mode?: string | null;
+  /**
+   * Capabilities this worker should have and does not (remotion-2d, env:<id>). Named in the message so the same command
+   * repairs a worker instead of only updating it — a worker without the renderer can never gain it from an update that
+   * leaves --with-remotion out.
+   */
+  missing?: readonly string[];
 }): string {
   const url = input.portalUrl.replace(/\/+$/, "");
   const muse = (input.host ?? "muse") === "muse";
   const mode = input.mode === "hold" || input.mode === "tick" || input.mode === "daemon" ? input.mode : muse ? "hold" : "daemon";
   const flags = `--portal ${url} --mode ${mode}${input.withRemotion ? " --with-remotion" : ""}`;
+  // The script installs Chromium's system libraries as root and then continues as an ordinary account, so sudo is part
+  // of the command rather than something to remember.
+  const run = `sudo bash install.sh ${flags}`;
+  const missing = (input.missing ?? []).filter(Boolean);
+  const lacks = missing.length > 0 ? ` This worker is missing ${missing.join(", ")}.` : "";
   if (!muse) {
     return [
       `On that machine, in the worker's directory (~/.venstudio unless it was installed with --home), run:`,
@@ -27,9 +38,11 @@ export function manualUpdateMessage(input: {
       `cd ~/.venstudio`,
       `curl -fsSL ${url}/install/install.sh -o install.sh`,
       `sha256sum install.sh`,
-      `bash install.sh ${flags}`,
+      run,
       ``,
-      `Run the last line only if sha256sum prints ${input.installSha256}. The enrollment is kept and the update key is ` +
+      `Run the last line only if sha256sum prints ${input.installSha256}. It installs the Chromium system libraries as ` +
+        `root and then continues as the account that owns the worker directory, so environments can install there.${lacks} ` +
+        `The enrollment is kept and the update key is ` +
         `pinned; after this the worker updates itself with signed releases.` +
         (mode === "daemon" ? ` Restart the daemon afterwards so it runs the new file.` : ""),
     ].join("\n");
@@ -42,10 +55,13 @@ export function manualUpdateMessage(input: {
     `cd ${home}`,
     `curl -fsSL ${url}/install/install.sh -o install.sh`,
     `sha256sum install.sh`,
-    `bash install.sh ${flags}`,
+    run,
     ``,
     `The sha256 should be ${input.installSha256}. If it's different, stop and tell me and run nothing.` +
-      (input.withRemotion ? ` It also refreshes the Remotion renderer (a few minutes).` : ""),
+      ` It runs as root on purpose: it installs the system libraries headless Chromium needs, hands ${home} to an ` +
+      `ordinary account and continues as that account, because environments refuse to install as root.` +
+      (input.withRemotion ? ` The Remotion renderer is refreshed too (a few minutes).` : "") +
+      lacks,
     ``,
     `This is the last time I'll ask you to run an installer for it. The script pins my portal's update signing key in ` +
       `${home}/config.json. From now on the worker updates itself between jobs: it installs only files signed by that key, ` +
