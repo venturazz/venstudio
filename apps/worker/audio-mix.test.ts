@@ -314,12 +314,14 @@ test("pieces with fades cut one shot's zoompan in two, so the join shows the sin
   const first = buildStillsChunkArgs(spec, chunks[0], { images }, { drawtext: false }, "a.mp4");
   const g1 = first.args[first.args.indexOf("-filter_complex") + 1];
   // Shot 2 (index 1) is zoompanned over its full 75 frames (+3 pad) and stops where its fade into shot 3 begins.
-  assert.ok(g1.includes(":d=78:s=1920x1080:fps=30,format=yuv420p,trim=end_frame=60[v1]"), g1);
+  // The trailing fps belongs to a trimmed chain: setpts/trim leave ffmpeg 7's xfade without a frame rate to name.
+  assert.ok(g1.includes(":d=78:s=1920x1080:fps=30,format=yuv420p,trim=end_frame=60,fps=30[v1]"), g1);
   assert.ok(g1.includes("[v0][v1]xfade=transition=fade:duration=0.5:offset=2[v]"));
   const second = buildStillsChunkArgs(spec, chunks[1], { images }, { drawtext: false }, "b.mp4");
   assert.deepEqual(second.args.filter((_, i, a) => a[i - 1] === "-i"), ["in/1.png", "in/2.png", "in/3.png"]);
   const g2 = second.args[second.args.indexOf("-filter_complex") + 1];
-  assert.ok(g2.includes(":d=78:s=1920x1080:fps=30,format=yuv420p,trim=start_frame=60,setpts=PTS-STARTPTS[h]"), g2);
+  // The head is trimmed from a longer chain, so it carries the rate ffmpeg 7's xfade insists on naming.
+  assert.ok(g2.includes(":d=78:s=1920x1080:fps=30,format=yuv420p,trim=start_frame=60,setpts=PTS-STARTPTS,fps=30[h]"), g2);
   // The fade into shot 3 is transition 2 of the whole video (slideup), at the start of the piece.
   assert.ok(g2.includes("[h][v2]xfade=transition=slideup:duration=0.5:offset=0[x2]"), g2);
   assert.ok(g2.includes("[x2][v3]xfade=transition=fade:duration=0.5:offset=2[v]"), g2);

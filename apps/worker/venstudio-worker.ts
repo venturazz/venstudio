@@ -1943,9 +1943,13 @@ function shotChain(spec: RenderSpec, tl: StillsTimeline, i: number, input: numbe
   // With fades, every shot but the last runs XFADE_PAD_FRAMES past its fade. xfade drops those frames; without
   // them an ffmpeg whose first input ends inside the fade ends the whole output there.
   const length = tl.fade && i < spec.shots.length - 1 ? frames + XFADE_PAD_FRAMES : frames;
+  // A trimmed chain loses the frame rate ffmpeg needs to name: setpts leaves the link's rate at 1/0, and ffmpeg 7's
+  // xfade refuses such an input ("The inputs needs to be a constant frame rate"), where ffmpeg 9 infers it. Only a
+  // chain that trims needs the trailing fps filter; adding it to every chain would re-round the untrimmed shots.
+  const rate = extra ? `,fps=${fps}` : "";
   return (
     `[${input}:v]scale=${bigW}:${bigH}:force_original_aspect_ratio=increase,crop=${bigW}:${bigH},setsar=1,` +
-    `zoompan=${zoompanFor(spec.shots[i].motion, frames)}:d=${length}:s=${w}x${h}:fps=${fps},format=yuv420p${extra}[${label}]`
+    `zoompan=${zoompanFor(spec.shots[i].motion, frames)}:d=${length}:s=${w}x${h}:fps=${fps},format=yuv420p${extra}${rate}[${label}]`
   );
 }
 
