@@ -16,6 +16,9 @@
 #                  also install the Remotion renderer for the remotion-2d engine into <home>/remotion: the templates
 #                  from this portal, their npm packages and Remotion's own headless Chromium (about 400 MB, a few
 #                  minutes). Safe to repeat; run it again after a portal update to refresh the templates.
+#   --no-provision  never install the renderer from the portal on this machine (a worker without --with-remotion would
+#                  otherwise fetch the portal's installer itself on its first run; use this on a box that must not
+#                  install a browser, and in a test that stands for one).
 #   --user NAME    the account the worker runs as (default venstudio). Started as root, this script installs the
 #                  machine-level pieces first (Chromium's system libraries, the account, ownership) and then runs the
 #                  rest as NAME. Environments refuse to install as root, so this is what makes full-frame and
@@ -33,6 +36,7 @@ NAME="$(hostname)"
 MODE=""
 HOME_DIR=""
 WITH_REMOTION=0
+NO_PROVISION=0
 # The worker runs as this account whenever the script is started as root (see "run as a normal user" below).
 AS_USER="venstudio"
 AS_USER_SET=0
@@ -40,6 +44,7 @@ STAY_ROOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-remotion) WITH_REMOTION=1; shift ;;
+    --no-provision) NO_PROVISION=1; shift ;;
     --user) AS_USER="${2:-}"; AS_USER_SET=1; shift 2 ;;
     --stay-root) STAY_ROOT=1; shift ;;
     --portal) PORTAL="$2"; shift 2 ;;
@@ -134,6 +139,7 @@ if [ "$(id -u)" -eq 0 ] && [ "$STAY_ROOT" = 0 ]; then
     _args=(--portal "$PORTAL" --name "$NAME" --mode "$MODE" --home "$HOME_DIR")
     [ -n "$CODE" ] && _args+=(--code "$CODE")
     [ "$WITH_REMOTION" = 1 ] && _args+=(--with-remotion)
+    [ "$NO_PROVISION" = 1 ] && _args+=(--no-provision)
     say0 "continuing as $AS_USER"
     if command -v runuser >/dev/null 2>&1; then
       exec runuser -u "$AS_USER" -- env HOME="$AS_HOME" VENSTUDIO_SERVICE_USER="$AS_USER" bash "$_tmp/install.sh" "${_args[@]}"
@@ -229,6 +235,9 @@ export PATH="$HOME_DIR/bin:$(dirname "$NODE_BIN"):\$PATH"
 export NODE_USE_ENV_PROXY=1
 # The account install.sh provisioned for (it hands off to it when started as root).
 export VENSTUDIO_SERVICE_USER="\${VENSTUDIO_SERVICE_USER:-$SERVICE_USER}"
+# A worker that lacks the renderer installs it from the portal on its first run. --no-provision keeps that off this
+# machine (a box that must never install a browser, or a test that stands for one).
+export VENSTUDIO_NO_PROVISION="${NO_PROVISION}"
 APP="$HOME_DIR/app"
 LOG="$HOME_DIR/logs/worker.log"
 # Keep the log under ~2 MB.

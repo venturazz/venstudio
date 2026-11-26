@@ -100,7 +100,9 @@ WORKER=$(q "SELECT id FROM workers WHERE name = 'E2E worker'")
 echo "== queue jobs and run one tick"
 ECHO_JOB=$(q "INSERT INTO jobs (type, capability, payload, channel_id, preferred_worker_id) VALUES ('echo','echo','{\"e2e\":true}', '$CHANNEL', '$WORKER') RETURNING id")
 SMOKE_JOB=$(q "INSERT INTO jobs (type, capability, payload) VALUES ('smoke-test','ffmpeg','{\"seconds\":3,\"width\":540,\"height\":960,\"fps\":30}') RETURNING id")
-"$WORK/worker/run.sh" tick || { cat "$WORK/worker/logs/worker.log"; fail "tick exited non-zero"; }
+# VENSTUDIO_NO_PROVISION: a worker that lacks the renderer installs it from the portal on its first run (0.19.0). This
+# one is here to stand for a machine without it, so the assertions below still see a worker that reports only its stills.
+VENSTUDIO_NO_PROVISION=1 "$WORK/worker/run.sh" tick || { cat "$WORK/worker/logs/worker.log"; fail "tick exited non-zero"; }
 cat "$WORK/worker/logs/worker.log"
 
 [ "$(q "SELECT status FROM jobs WHERE id = '$ECHO_JOB'")" = "succeeded" ] || fail "echo job not succeeded"

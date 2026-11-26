@@ -237,3 +237,15 @@ six-still preview of a 45 s video would draw a thousand frames to prove the look
 for a composited surface, which on a slow software rasterizer can outlast the 30 s a frame gets even when the page is
 fine. Removing the preview is not the fix — it is the cheap gate that catches a broken page before the voice and the
 render spend ten minutes finding out.
+
+## A worker installs the renderer itself (0.19.0)
+
+A worker without `remotion-2d` installs it on its first run: it asks the portal for its own `/api/worker/update`, takes
+the `installSha256` the portal names, downloads that `install.sh` and runs it as its own account (never root, so the
+pack environments install too). Three attempts, six hours apart; after that it stops and logs why, so a box that cannot
+run Remotion does not retry every hour. The capabilities and environments are re-read afterwards, and the next claim
+reports `remotion-2d`, `html-capture`, `preview-frames` and the packs.
+
+Turn it off with `install.sh --no-provision` (it writes `VENSTUDIO_NO_PROVISION=1` into `run.sh`) or with
+`VENSTUDIO_NO_PROVISION=1` in the environment of one run. Use it on a machine that must never install a browser, and
+in a test that stands for a worker without the renderer (`scripts/e2e.sh` does).
