@@ -110,6 +110,8 @@ export interface PackPlan {
   /** contract.onScreen: what the page may draw and the motion it interprets (a scene spec is checked against them). */
   elements?: ElementKind[];
   motionTokens?: string[];
+  /** contract.world: the primitives this look's page can compose (render/world.js). Absent: it cannot take parts. */
+  world?: readonly string[];
   /** contract.story: the words this look understands, slot -> values. The scene spec must fill every slot from here. */
   story?: Record<string, string[]>;
   captionsRequired: boolean;
@@ -214,6 +216,11 @@ function storyOf(raw: unknown): Record<string, string[]> | null {
   }
   return Object.keys(out).length > 0 ? out : null;
 }
+/** The primitives a page composes, filtered to names the studio knows (the pack's own render/world.js decides). */
+function worldOf(raw: unknown): string[] | null {
+  const list = strs(raw, 12);
+  return list.length > 0 ? list : null;
+}
 const pair = (v: unknown, d: [number, number]): [number, number] =>
   Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === "number" && Number.isFinite(x)) ? [v[0] as number, v[1] as number] : d;
 const SKILL_RE = /^\/[a-z0-9][a-z0-9-]{0,62}$/;
@@ -240,6 +247,7 @@ function planOf(raw: Record<string, unknown>): PackPlan {
     elements: strs(on.elements).filter((k): k is ElementKind => (ELEMENT_KINDS as readonly string[]).includes(k)),
     motionTokens: strs(on.motionTokens),
     ...(storyOf(c.story) ? { story: storyOf(c.story) as Record<string, string[]> } : {}),
+    ...(worldOf(c.world) ? { world: worldOf(c.world) as string[] } : {}),
     captionsRequired: cap.required !== false,
     safeAreaPct: num(cap.safeAreaPct, 8),
     narrated: au.narrated !== false,

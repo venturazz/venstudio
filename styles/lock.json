@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "9b0884ff4854b394df3d567c2d9eecb45bb778b0"
+    "commit": "5d756d5c77f24e6a6996dda6e6ddc471cb407a83"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -20,7 +20,7 @@
     "tools/skills.test.mjs": "5e43c8b8a9d85d091616652d54125c80c617436f12ae173088d7fa7fea9b83c3",
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
-    "tools/validate.mjs": "b8948368186d70eca0f56a057476476db39944621e134b7879dc6b3b7d1f68d5",
+    "tools/validate.mjs": "053d39d1b5e58c253161c4d7064ba845bd100ec2b8e703dafee97bbce641bb0c",
     "tools/validate.test.mjs": "f90042013da30770d450fb04a59b9797cfe1eda8d9d7b11d03163759352721fc",
     "tools/world.test.mjs": "4ffb590eaf8e1c933d1a76943b1d3d3987db6c6157262ee7e73a5eaef7e942f0"
   },
@@ -408,7 +408,7 @@
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "4daacec652bbb11b18b0ef04fe3948a5f801529ed15c729c32acdbca9b22abf8",
+      "sha256": "17f309c08c34ac8c2e4d14fe11d862fc0ca9141d1942ab8fe2e49cf67458b653",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -441,7 +441,7 @@
         "render/page.js": "61dceb5d4fd99b48449c0e1ac93e138607bb70e60cd9fd1abfa993962b1aa0a7",
         "render/voxel.js": "2517b0eb3a1fc8d29bcaf9e940f2c6bcc6ade8e10ecdcb7c374a8518b64f6fbc",
         "render/world.js": "9bbab0e271f2638d976fa5fd3520a5c9d89a985d5af824a5c5c7a736ecad3817",
-        "style.json": "f7cb8019d85b06e3569e8ddcfc0749e39d75e06d5dcc064f7bd93583ee42acb8"
+        "style.json": "d1e8e4acc6d6935dc9d6bbc8553b9579c4884c60f0799d90ba5f014cd4635ade"
       }
     },
     {

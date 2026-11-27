@@ -372,6 +372,11 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   `intent`, and a scene that offers one is refused rather than silently dropped. The intent travels shot → payload →
   page untouched (`RenderShotInput.intent`, `buildHtmlCaptureProps`), and a page that does not know the slot ignores it:
   the worker contract gains one optional field, so old payloads and old pages render as before.
+- **`contract.world` — what a page can compose.** A pack that takes parts declares the primitives its page implements
+  (`"world": ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"]`); `tools/validate.mjs`
+  checks the names and refuses `world` without `story` (parts need words to build). A look that declares no world is
+  never offered parts: the prompt tells the writer to name what the page has, and a spec that sends parts anyway is
+  refused — otherwise the page would draw its fallback and the story would think it was heard.
 - **`intent.parts` — composing instead of choosing.** The kit list is a shortcut, not the limit: a scene whose subject no
   pack modelled sends `parts` instead of `structure`, and the page compiles them to the same node list the kit reads
   (`packs/*/render/world.js`). The primitives are `box` (solid or hollow shell), `walls` (perimeter with `openings` cut

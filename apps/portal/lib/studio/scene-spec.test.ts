@@ -176,6 +176,7 @@ const STORY: SpecContract = {
   elements: voxel.plan!.elements!,
   motionTokens: voxel.plan!.motionTokens!,
   story: voxel.plan!.story!,
+  world: voxel.plan!.world!,
 };
 const storySpec = () => ({
   scenes: [
@@ -222,6 +223,19 @@ test("a subject the kit never modelled is composed from parts, not refused", () 
   assert.deepEqual(readSceneSpec(JSON.parse(JSON.stringify(ok.value)))?.scenes[0].intent, { parts: gate, action: "build", focus: "structure" });
 });
 
+test("a look that cannot compose is not offered parts", () => {
+  // Same words, no world: the page would ignore parts and draw its fallback, so the spec refuses them instead.
+  const narrow: SpecContract = { ...STORY, world: undefined };
+  const r = validateSceneSpec(
+    { scenes: [{ ...storySpec().scenes[0], intent: { parts: [{ kind: "box" }], action: "build", focus: "structure" } }] },
+    { contract: narrow, noteCount: NOTES.length },
+  );
+  assert.ok(!r.ok && r.issues.some((i) => /Scene 1 composes parts, but .* cannot compose/.test(i)), JSON.stringify(r));
+  const ask = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, narrow).map((m) => m.content).join("\n");
+  assert.match(ask, /cannot compose new geometry/);
+  assert.ok(!/"parts":\[/.test(ask), "no parts in the schema of a look that cannot compose");
+});
+
 test("parts are checked for shape, not for subject", () => {
   const check = (parts: unknown) =>
     validateSceneSpec({ scenes: [{ ...storySpec().scenes[0], intent: { parts, action: "build", focus: "structure" } }] }, { contract: STORY, noteCount: NOTES.length });
@@ -229,7 +243,7 @@ test("parts are checked for shape, not for subject", () => {
     const r = check(parts);
     return r.ok ? [] : r.issues;
   };
-  assert.ok(issuesOf([{ kind: "space-elevator" }]).some((i) => /parts\[0\]\.kind is "space-elevator", not one of box, walls, roof/.test(i)));
+  assert.ok(issuesOf([{ kind: "space-elevator" }]).some((i) => /parts\[0\]\.kind is "space-elevator", not one of what this look composes: box, walls, roof/.test(i)));
   assert.ok(issuesOf([{ kind: "prism", axis: "y" }]).some((i) => /parts\[0\]\.axis must be x or z/.test(i)));
   assert.ok(issuesOf([{ kind: "box", at: [0, 0, 999] }]).some((i) => /parts\[0\]\.at is outside -96\.\.96/.test(i)));
   assert.ok(issuesOf([{ kind: "box", material: "stone" }]).some((i) => /parts\[0\]\.material is "stone", not a block name/.test(i)));

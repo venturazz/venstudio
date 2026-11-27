@@ -86,6 +86,8 @@ export interface SpecContract {
   motionTokens: readonly string[];
   /** style.json contract.story: the words the page understands, slot -> values. Absent: this look takes no intent. */
   story?: Record<string, readonly string[]>;
+  /** style.json contract.world: the primitives the page composes. Absent: the look takes a name, never parts. */
+  world?: readonly string[];
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -122,7 +124,7 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
         `caption is the part of the narration spoken during the scene (at most ${MAX_CAPTION_CHARS} characters), in script order.`,
         ...channelLines(ctx),
         ...templateLines(ctx),
-        `Schema: {"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string]${storySchema(contract.story)},"caption":string}]}`,
+        `Schema: {"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string]${storySchema(contract.story, contract.world)},"caption":string}]}`,
         dataBlock("script", script, MAX_SCRIPT_CHARS),
         dataBlock("research notes", list, MAX_RESEARCH_PROMPT_CHARS),
         ...runLines(ctx, "storyboard"),
@@ -136,29 +138,36 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
 
 /**
  * The lines that tell the writer how this look builds a script's world. The kit is the shortcut; the primitives are the
- * way anything gets built, so a subject nobody modelled is composed rather than refused.
+ * way anything gets built, so a subject nobody modelled is composed rather than refused. A look that declares no world
+ * cannot compose, and the prompt says so instead of inviting parts its page would ignore.
  */
-function storyPrompt(story: Record<string, readonly string[]> | undefined): string[] {
+function storyPrompt(story: Record<string, readonly string[]> | undefined, world?: readonly string[]): string[] {
   const slots = story ? Object.entries(story) : [];
   if (slots.length === 0) return [];
   const library = story?.structure ?? [];
   const closed = slots.filter(([slot]) => slot !== "structure");
+  const compose = world && world.length > 0 ? world : null;
+  const parts = compose
+    ? [
+        `For anything else, compose it — a scene is never refused because the kit lacks the subject. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${compose.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
+        `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
+        `Say structure or parts, never neither; if both, the parts are what the page draws.`,
+      ]
+    : [`This look cannot compose new geometry: name what it has and let the caption carry the rest.`];
   return [
     `This style builds what the script is about: every scene says how to build it in "intent".`,
     library.length > 0
       ? `Shortcut, when the kit already has the thing: "structure" is one of ${library.join(", ")}.`
       : "",
-    `For anything else, compose it — a scene is never refused because the kit lacks the subject. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${PRIMITIVES.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
-    `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
+    ...parts,
     closed.length > 0
       ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
       : "",
-    `Say structure or parts, never neither; if both, the parts are what the page draws.`,
   ].filter(Boolean);
 }
 
 /** The intent part of the schema line, so the shape Hermes is asked for and the shape checked are the same one. */
-function storySchema(story: Record<string, readonly string[]> | undefined): string {
+function storySchema(story: Record<string, readonly string[]> | undefined, world?: readonly string[]): string {
   if (!story) return "";
   const slots = Object.keys(story);
   if (slots.length === 0) return "";
@@ -167,7 +176,8 @@ function storySchema(story: Record<string, readonly string[]> | undefined): stri
     .map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`)
     .join(",");
   const structure = slots.includes("structure") ? `"structure":"<one of ${(story.structure ?? []).join("|")}, or omit it when you use parts>"` : "";
-  return `,"intent":{${[structure, closed].filter(Boolean).join(",")},"parts":[{"kind":"<${PRIMITIVES.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]}`;
+  const compose = world && world.length > 0 ? `,"parts":[{"kind":"<${world.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]` : "";
+  return `,"intent":{${[structure, closed].filter(Boolean).join(",")}${compose}}`;
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {
@@ -321,7 +331,15 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
   }
   const before = issues.length;
   const out: Record<string, unknown> = {};
-  const parts = raw.parts === undefined ? undefined : storyParts(raw.parts, n, issues);
+  const world = check.contract.world;
+  // A look that cannot compose parts is not offered them: naming a structure and leaving the page to draw its fallback
+  // would look like the story was heard when it was not.
+  const parts =
+    raw.parts === undefined
+      ? undefined
+      : world === undefined || world.length === 0
+        ? (issues.push(`Scene ${n} composes parts, but ${check.contract.name} cannot compose: it draws only ${Object.values(story)[0]?.join(", ") ?? "its own scenes"}`), undefined)
+        : storyParts(raw.parts, n, issues, world);
   if (parts) out.parts = parts;
   for (const [slot, values] of Object.entries(story)) {
     const given = raw[slot];
@@ -362,7 +380,7 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
 }
 
 /** The parts of one scene, checked for shape and bounds (never for subject). Pure. */
-function storyParts(raw: unknown, n: number, issues: string[]): SpecPart[] | undefined {
+function storyParts(raw: unknown, n: number, issues: string[], world: readonly string[] = PRIMITIVES): SpecPart[] | undefined {
   const before = issues.length;
   if (!Array.isArray(raw)) {
     issues.push(`Scene ${n} intent.parts must be a list`);
@@ -397,8 +415,8 @@ function storyParts(raw: unknown, n: number, issues: string[]): SpecPart[] | und
       return;
     }
     const kind = typeof p.kind === "string" ? p.kind.trim() : "";
-    if (!(PRIMITIVES as readonly string[]).includes(kind)) {
-      issues.push(`${at}.kind is "${kind || "(missing)"}", not one of ${PRIMITIVES.join(", ")}`);
+    if (!world.includes(kind)) {
+      issues.push(`${at}.kind is "${kind || "(missing)"}", not one of what this look composes: ${world.join(", ")}`);
       return;
     }
     const part: SpecPart = { kind };
