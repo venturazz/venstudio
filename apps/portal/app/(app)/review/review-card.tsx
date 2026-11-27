@@ -183,6 +183,16 @@ function PlanBlock({ payload }: { payload: ReviewPayload }) {
           </li>
         ))}
       </ol>
+      {payload.composed && payload.composed.length > 0 && (
+        <details className="rounded-lg border border-border bg-surface-2 p-3 text-xs" data-testid="composed-parts">
+          <summary className="cursor-pointer break-words text-muted">
+            Composed parts — copy into <code>contract.library</code> to promote this structure
+          </summary>
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed">
+            {JSON.stringify(Object.fromEntries(payload.composed.map((c) => [c.name, c.parts])), null, 2)}
+          </pre>
+        </details>
+      )}
       {plan.text && (
         <p className="whitespace-pre-wrap break-words rounded-lg border border-border p-3 text-sm" data-testid={plan.kind === "html-design" ? "html-design-note" : "skill-brief-text"}>
           {plan.text}

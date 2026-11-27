@@ -2,7 +2,7 @@ import "server-only";
 import { parsePlanPayload } from "../studio/plan-review.ts";
 import { db } from "./db.ts";
 import type { GateId, GateResult } from "../studio/qc.ts";
-import { parseQcFacts, type ReviewKind, type ReviewMedia, type ReviewPayload, type ReviewState } from "../studio/review.ts";
+import { composedScenes, parseQcFacts, type ReviewKind, type ReviewMedia, type ReviewPayload, type ReviewState } from "../studio/review.ts";
 import { parseProviderRows } from "../studio/terms-review.ts";
 import { parseVoiceFix } from "../studio/voice-fit.ts";
 
@@ -51,6 +51,8 @@ function toPayload(raw: unknown): ReviewPayload {
   if (typeof p.error === "string") payload.error = p.error;
   if (typeof p.reason === "string") payload.reason = p.reason;
   if (Array.isArray(p.checks)) payload.checks = p.checks.filter((i): i is string => typeof i === "string");
+  const composed = composedScenes(p);
+  if (composed.length > 0) payload.composed = composed;
   if (typeof p.media === "object" && p.media !== null) {
     const m = p.media as Record<string, unknown>;
     const media: ReviewMedia = {};

@@ -403,8 +403,27 @@ export interface ReviewPayload {
    * shot, the brief's project text, and a note on what the card shows.
    */
   plan?: { kind: PlanKind; lines: string[]; text?: string; note?: string };
+  /**
+   * Scene spec cards: scenes that composed their own geometry instead of naming a kit structure, with the exact parts.
+   * Shown so promoting one into `contract.library` is a copy, not a guess — the pack's own validator decides the rest.
+   */
+  composed?: Array<{ name: string; parts: unknown[] }>;
   /** Final quality check cards: the gates that failed and whether the style is narrated. Read with parseQcFacts. */
   qc?: QcFacts;
+}
+
+/**
+ * A composed scene is a kit candidate: name the parts by the structure it asked for, or by its place in the run. Pure,
+ * because the card only reformats what the stage already stored — the pack's validator still decides the rest.
+ */
+export function composedScenes(raw: Record<string, unknown>): Array<{ name: string; parts: unknown[] }> {
+  const shots = Array.isArray(raw.shots) ? (raw.shots as Array<{ intent?: { structure?: unknown; parts?: unknown } }>) : [];
+  return shots
+    .filter((s) => s && s.intent && Array.isArray(s.intent.parts) && s.intent.parts.length > 0)
+    .map((s, i) => ({
+      name: typeof s.intent!.structure === "string" && s.intent!.structure ? (s.intent!.structure as string) : `composed-${i + 1}`,
+      parts: s.intent!.parts as unknown[],
+    }));
 }
 
 /** The kinds of plan a card can show (plan-review.ts). */
