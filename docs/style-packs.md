@@ -372,6 +372,12 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   `intent`, and a scene that offers one is refused rather than silently dropped. The intent travels shot → payload →
   page untouched (`RenderShotInput.intent`, `buildHtmlCaptureProps`), and a page that does not know the slot ignores it:
   the worker contract gains one optional field, so old payloads and old pages render as before.
+- **Promoting a composed scene into the pack.** A scene that composed `parts` and passed review is a candidate structure:
+  copy its `parts` into `contract.library` under a short name (`"gate": [ … ]`), bump the pack version, and the next
+  script can ask for `{"structure": "gate"}`. The portal expands the name back into parts before freezing, so the render
+  payload still carries the blocks: a name is sugar, never a dependency on the worker having heard of it. Keep the name
+  lowercase and stable — renaming it breaks stored specs, which is why the expansion is stored, not re-resolved at render
+  time. `voxel-build@0.5.1` ships one such name (`gate`) as the worked example.
 - **`contract.world` — what a page can compose.** A pack that takes parts declares the primitives its page implements
   (`"world": ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"]`); `tools/validate.mjs`
   checks the names and refuses `world` without `story` (parts need words to build). A look that declares no world is
