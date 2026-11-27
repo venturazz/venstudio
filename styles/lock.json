@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "b8d8b320df7d334ae392bc8fb5c91221d791fac8"
+    "commit": "715b7838416c82f4532950241bf5f0db3dda11fe"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -22,7 +22,7 @@
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
     "tools/validate.mjs": "b8948368186d70eca0f56a057476476db39944621e134b7879dc6b3b7d1f68d5",
     "tools/validate.test.mjs": "f90042013da30770d450fb04a59b9797cfe1eda8d9d7b11d03163759352721fc",
-    "tools/world.test.mjs": "c29c9b3641c1d6e0eb48a17b7da3b29584442a1e321684e4f90e5abfdd3d69f2"
+    "tools/world.test.mjs": "e67283f549eb582ccacf3f435ec29dee35b67fe6ce8dfd9b31ec9656e21eedba"
   },
   "packs": [
     {
@@ -408,7 +408,7 @@
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "6c048f71d7f85a5c81feda66f8788ded513d414577282e424a69c7912dee8ae9",
+      "sha256": "0984e86a7dec1b24f4bff38f652f79d300945a729951f6787ea79dc71427d11d",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -438,9 +438,9 @@
         "render/assets/vendor/trees.json": "e244780e4cfca37d627e6aa04df38d4753be5d906b6ce5d9ded41808c0cff282",
         "render/assets/vendor/villager.json": "17e91b80bdf6f38d63e18e2e0fa3b05c354d7b8be7126d7d1aad1358367d2b3d",
         "render/index.html": "0301e6c55002345ce060200ea82b2186c7419bf54437c70117cada14a202978f",
-        "render/page.js": "1d14676cca2e45f38afb5179d54fb4e5fc360362f4389224eda81a27585b618a",
-        "render/voxel.js": "e6eb4ee399e547b2f12bd72bc75e31ae8a452b141e414701abda664ac9889c09",
-        "render/world.js": "d8a4c133f50a037d7f3906fdf32adb01cbb777b9633f6050145ca5cc9eb20fe3",
+        "render/page.js": "34f520f45a25814a38527be6d2eb1262ffa12e173964bfc4473d4a1e0bd3dd83",
+        "render/voxel.js": "2517b0eb3a1fc8d29bcaf9e940f2c6bcc6ade8e10ecdcb7c374a8518b64f6fbc",
+        "render/world.js": "ca6ddde5b6936513b39bb1d369bb47efe66a604dd1fd45e09181614fe2c2ba1d",
         "style.json": "f7cb8019d85b06e3569e8ddcfc0749e39d75e06d5dcc064f7bd93583ee42acb8"
       }
     },
