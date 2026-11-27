@@ -86,6 +86,12 @@ export interface Shot {
    * guess; with it the template gets the real content.
    */
   onScreen?: OnScreenSpec;
+  /**
+   * The story words this shot uses, filled from the pack's own vocabulary (style.json contract.story): a scene spec
+   * for a look that builds what the script is about. The page draws them; a look without a vocabulary never sees one.
+   */
+  /** The pack's own words for what to draw, or composed parts: the page reads both (see scene-spec.storyIntent). */
+  intent?: Record<string, unknown>;
 }
 export interface StoryboardOutput {
   shots: Shot[];

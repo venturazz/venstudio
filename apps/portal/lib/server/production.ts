@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
-import { MUSE_POLL_SEC, isMuseThinkStage, runsOnMuse } from "../studio/muse-stage.ts";
+import { MUSE_POLL_SEC, isMuseThinkStage, renderExecutor, renderRoute } from "../studio/muse-stage.ts";
+import { frozenRender } from "../studio/freeze.ts";
 import { museRenderReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
@@ -1066,7 +1067,13 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const [font] = await sql`SELECT id FROM assets WHERE kind = 'font' AND storage_path IS NOT NULL ORDER BY created_at DESC LIMIT 1`;
   // The style decides the engine, and an engine the worker has no path for must fail here rather
   // than fall through to stills. Same for the scene plan: it is what an animating template renders.
-  const shotSpecs = workOrdersFromStoryboard(planShots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
+  // The story words of each shot ride along with its length: the pack's page draws them, and a look without a
+  // vocabulary simply never has any (planShots and the work orders are one list in the same order).
+  const shotSpecs = workOrdersFromStoryboard(planShots).map((w, i) => ({
+    shotRef: w.shotRef,
+    seconds: w.spec.seconds,
+    ...(planShots[i]?.intent ? { intent: { ...planShots[i]?.intent } as Record<string, unknown> } : {}),
+  }));
   // A pack the catalogue does not know (an html-capture adaptation, a research pack) plans and renders from its own
   // contract (styleFromPack), never as stills by default.
   const packStyle = await packStyleFor(template.styleId);
@@ -1219,8 +1226,12 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   });
   const music = bedPick ? bedNote(bedPick, template.audio.musicPolicy) : null;
   const starts = payloadSceneStarts(plan.payload);
+  // Frozen: the payload hash and the pack that draws it. `intent.parts` travels inside the payload, so a story composed
+  // from primitives is covered by the same hash as a named one — a re-render can be compared, not remembered.
+  const frozen = frozenRender(plan.payload, stylePack ? { id: stylePack.id, version: stylePack.version } : null);
   await mergeStageOutput(st.id, {
     jobId,
+    frozen,
     shots: plan.payload.shots.length,
     narrationSec: plan.payload.narrationSec,
     // Where each scene sits in the video that was rendered: the qc stage compares the approved stills against these.
@@ -1506,10 +1517,18 @@ async function runHermesRenderStage(
   const mux = skillVoice ? null : narrationId && narrationSec > 0 ? { narrationId, narrationSec, tempo } : null;
   const scale = hermesTimeoutScale(process.env);
   const fin: RenderFinish = { run, st, template, pack, frame, durationSec, skill: skill?.name ?? null, brief, skillVoice, mux };
-  // "Muse does the work": the Muse agent renders with the same skill and brief; the run's narration is laid on after.
-  if (runsOnMuse(run.config.executors, "render")) {
-    await runMuseRender(fin, { skill, brief, captions: i.captions, script: i.script ?? "", narrationId, narrationSec });
-    return;
+  // Worker first: a Muse worker draws this video, whatever the run asked for. The portal keeps the render only when
+  // the owner said so (executors.render = "hermes", research only) or when no Muse renderer is ready — and then the
+  // stage says so in its own words, instead of quietly rendering in the portal as it used to.
+  const choice = renderExecutor(run.config.executors);
+  if (choice !== "hermes") {
+    const ready = choice === "muse" ? null : await museRenderReadiness(pack.id);
+    const route = renderRoute(run.config.executors, ready ? { skill: ready.skill !== null, refusals: ready.refusals } : null);
+    if (route.route === "muse") {
+      await runMuseRender(fin, { skill, brief, captions: i.captions, script: i.script ?? "", narrationId, narrationSec });
+      return;
+    }
+    if (route.note) await mergeStageOutput(st.id, { renderNote: route.note });
   }
   let job = readRenderJob(st.output.hermesRender);
   // Started (the start ask was sent): never ask again, wait for the file. Also after a restart or a reaper resume.

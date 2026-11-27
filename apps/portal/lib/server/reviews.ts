@@ -2,7 +2,7 @@ import "server-only";
 import { parsePlanPayload } from "../studio/plan-review.ts";
 import { db } from "./db.ts";
 import type { GateId, GateResult } from "../studio/qc.ts";
-import { parseQcFacts, type ReviewKind, type ReviewMedia, type ReviewPayload, type ReviewState } from "../studio/review.ts";
+import { composedScenes, parseQcFacts, type ReviewKind, type ReviewMedia, type ReviewPayload, type ReviewState } from "../studio/review.ts";
 import { parseProviderRows } from "../studio/terms-review.ts";
 import { parseVoiceFix } from "../studio/voice-fit.ts";
 
@@ -29,6 +29,8 @@ export interface ReviewCard {
   labTrial: boolean;
   /** The run draws a page Hermes wrote (workflow html-design): research only, always a trial, never published. */
   designed: boolean;
+  /** The frozen render payload's short hash, when the render has been queued. */
+  frozenShort?: string;
   /** False when the run's workflow makes no pictures (no assets stage): labels say "the plan", not "the pictures". */
   pictures: boolean;
   /** False when the run has no voice stage (a Hermes skill that voices itself). */
@@ -49,6 +51,8 @@ function toPayload(raw: unknown): ReviewPayload {
   if (typeof p.error === "string") payload.error = p.error;
   if (typeof p.reason === "string") payload.reason = p.reason;
   if (Array.isArray(p.checks)) payload.checks = p.checks.filter((i): i is string => typeof i === "string");
+  const composed = composedScenes(p);
+  if (composed.length > 0) payload.composed = composed;
   if (typeof p.media === "object" && p.media !== null) {
     const m = p.media as Record<string, unknown>;
     const media: ReviewMedia = {};
@@ -129,11 +133,17 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     SELECT ri.id, ri.run_id, ri.stage, ri.kind, ri.state, ri.payload, ri.note, ri.created_at, r.topic, c.name AS channel_name,
       coalesce((r.config->'stylePack'->>'trial')::boolean, false) OR coalesce(r.config->'stylePack'->>'engine' = 'hermes', false)
         OR coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) AS trial,
-      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_render,
-      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AND coalesce(r.config->'workflow'->'stages' ? 'voice', false)
-        AND coalesce(r.config->'executors'->>'render', '') <> 'muse' AS muse_render,
+      coalesce(r.config->'stylePack'->>'engine' = 'hermes', false) AS hermes_engine,
+      exists (
+        SELECT 1 FROM pipeline_stages ps
+        WHERE ps.run_id = r.id AND ps.stage = 'render' AND ps.output ? 'museJobId'
+      ) AS muse_drawn,
+      coalesce(r.config->'executors'->>'render', '') AS render_exec,
       coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial,
       coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) OR coalesce((r.config->'stylePack'->>'designed')::boolean, false) AS designed,
+      (SELECT ps.output->'frozen'->>'short' FROM pipeline_stages ps
+        WHERE ps.run_id = r.id AND ps.stage = 'render' AND ps.output ? 'frozen'
+        ORDER BY ps.attempt DESC LIMIT 1) AS frozen_short,
       (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures,
       (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'voice', false)) AS voiced
     FROM review_items ri
@@ -157,10 +167,13 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     channelName: (r.channel_name as string | null) ?? "",
     gates: gates.get(r.run_id as string) ?? [],
     trial: r.trial === true,
-    hermesRender: r.hermes_render === true,
-    museRender: r.muse_render === true,
+    // The badge follows the engine (the publish policy does), and the Muse flag follows who actually drew the video.
+    hermesRender: r.hermes_engine === true,
+    museRender: r.muse_drawn === true || (r.hermes_engine === true && r.voiced !== false && r.render_exec !== "hermes"),
     labTrial: r.lab_trial === true,
     designed: r.designed === true,
+    // What the render was drawn from: same payload, same video. Empty for a run whose render has not started.
+    frozenShort: (r.frozen_short as string | null) ?? "",
     pictures: r.pictures !== false,
     voiced: r.voiced !== false,
   }));

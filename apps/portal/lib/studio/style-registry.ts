@@ -110,6 +110,12 @@ export interface PackPlan {
   /** contract.onScreen: what the page may draw and the motion it interprets (a scene spec is checked against them). */
   elements?: ElementKind[];
   motionTokens?: string[];
+  /** contract.world: the primitives this look's page can compose (render/world.js). Absent: it cannot take parts. */
+  world?: readonly string[];
+  /** contract.library: structures this pack composed before, name -> parts. Expanded to parts before the payload. */
+  library?: Record<string, readonly Record<string, unknown>[]>;
+  /** contract.story: the words this look understands, slot -> values. The scene spec must fill every slot from here. */
+  story?: Record<string, string[]>;
   captionsRequired: boolean;
   safeAreaPct: number;
   narrated: boolean;
@@ -197,6 +203,39 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const strs = (v: unknown, max = 64): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, max) : []);
+
+/**
+ * contract.story, read from a vendored pack: slot -> the values the pack can draw. A slot is kept only when it names at
+ * least one value, so a half-written contract cannot make every scene spec uncheckable. Vendored packs are validated
+ * before they get here (tools/validate.mjs), so this reads rather than re-checks.
+ */
+function storyOf(raw: unknown): Record<string, string[]> | null {
+  if (!isRecord(raw)) return null;
+  const out: Record<string, string[]> = {};
+  for (const [slot, values] of Object.entries(raw)) {
+    const list = strs(values, 24);
+    if (list.length > 0) out[slot] = list;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+/** Named composed structures: name -> parts. Shape only here; the scene-spec check spells out every part it accepts. */
+function libraryOf(raw: unknown): Record<string, Record<string, unknown>[]> | null {
+  if (!isRecord(raw)) return null;
+  const out: Record<string, Record<string, unknown>[]> = {};
+  for (const [name, parts] of Object.entries(raw)) {
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) continue;
+    if (!Array.isArray(parts) || parts.length === 0) continue;
+    const list = parts.filter((p): p is Record<string, unknown> => isRecord(p) && typeof p.kind === "string");
+    if (list.length > 0) out[name] = list.slice(0, 64);
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** The primitives a page composes, filtered to names the studio knows (the pack's own render/world.js decides). */
+function worldOf(raw: unknown): string[] | null {
+  const list = strs(raw, 12);
+  return list.length > 0 ? list : null;
+}
 const pair = (v: unknown, d: [number, number]): [number, number] =>
   Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === "number" && Number.isFinite(x)) ? [v[0] as number, v[1] as number] : d;
 const SKILL_RE = /^\/[a-z0-9][a-z0-9-]{0,62}$/;
@@ -222,6 +261,9 @@ function planOf(raw: Record<string, unknown>): PackPlan {
     elementAnimation: on.elementAnimation === true,
     elements: strs(on.elements).filter((k): k is ElementKind => (ELEMENT_KINDS as readonly string[]).includes(k)),
     motionTokens: strs(on.motionTokens),
+    ...(storyOf(c.story) ? { story: storyOf(c.story) as Record<string, string[]> } : {}),
+    ...(worldOf(c.world) ? { world: worldOf(c.world) as string[] } : {}),
+    ...(libraryOf(c.library) ? { library: libraryOf(c.library) as Record<string, Record<string, unknown>[]> } : {}),
     captionsRequired: cap.required !== false,
     safeAreaPct: num(cap.safeAreaPct, 8),
     narrated: au.narrated !== false,

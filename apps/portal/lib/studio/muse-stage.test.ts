@@ -17,6 +17,8 @@ import {
   museStageRefusals,
   museThinkingExecutors,
   parseStageExecutors,
+  renderExecutor,
+  renderRoute,
   runsOnMuse,
 } from "./muse-stage.ts";
 import { buildRunConfig, parseRunConfig, runSettings } from "./run-config.ts";
@@ -219,4 +221,39 @@ test("a Muse render goes only to a worker that installed exactly the pack's skil
   assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, capabilities: ["skill:stick-figure@0.9.0"] }], now: NOW })[0], /has \/stick-figure@1\.0\.0 installed yet/);
   assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, jobTypes: [] }], now: NOW })[0], /reports agent-task/);
   assert.match(museRenderRefusals({ skill, packId: "p", workers: [{ ...w, lastSeenAt: ago(200) }], now: NOW })[0], /last 75 min/);
+});
+
+test("render choice: worker first, the portal only when the owner says so", () => {
+  // "hermes" is a render-only choice and it survives a round trip; the other stages still drop it.
+  assert.deepEqual(parseStageExecutors({ render: "hermes" }), { render: "hermes" });
+  assert.deepEqual(parseStageExecutors({ render: "hermes", idea: "muse" }), { idea: "muse", render: "hermes" });
+  assert.deepEqual(parseStageExecutors({ idea: "hermes" }), {});
+  assert.equal(renderExecutor(undefined), null);
+  assert.equal(renderExecutor({}), null);
+  assert.equal(renderExecutor({ idea: "muse" }), null);
+  assert.equal(renderExecutor({ render: "muse" }), "muse");
+  assert.equal(renderExecutor({ render: "hermes" }), "hermes");
+  assert.equal(executorsText({ render: "hermes" }), "The portal renders (research only)");
+  assert.equal(executorsText({ idea: "muse", render: "hermes" }), "Muse does the idea (except the render: the portal draws it, research only)");
+});
+
+test("render route: no choice and a ready Muse worker renders on the worker, not in the portal", () => {
+  const ready = { skill: true, refusals: [] as string[] };
+  // The default: a run that never ticked "Muse does the work" still renders on a worker when one is ready.
+  assert.deepEqual(renderRoute(undefined, ready), { route: "muse" });
+  assert.deepEqual(renderRoute({}, ready), { route: "muse" });
+  assert.deepEqual(renderRoute({ idea: "muse" }, ready), { route: "muse" });
+  // The owner said Muse explicitly: the stage does not second-guess it.
+  assert.deepEqual(renderRoute({ render: "muse" }, null), { route: "muse" });
+  // The owner kept the portal: no note, no fallback.
+  assert.deepEqual(renderRoute({ render: "hermes" }, ready), { route: "portal" });
+  // Nothing can take it: the portal renders and the stage carries the reason, in words.
+  const blocked = renderRoute(undefined, { skill: false, refusals: ["Set MUSE_AGENT_TASKS=1 on the portal"] });
+  assert.equal(blocked.route, "portal");
+  assert.match(blocked.note ?? "", /research only, never published/);
+  assert.match(blocked.note ?? "", /Set MUSE_AGENT_TASKS=1 on the portal/);
+  // A skill with a reason is refused too: both halves must be fine.
+  const half = renderRoute(undefined, { skill: true, refusals: ["Update this worker to 0.16.0 or later"] });
+  assert.equal(half.route, "portal");
+  assert.match(half.note ?? "", /0\.16\.0/);
 });

@@ -233,6 +233,90 @@ function checkKeys(obj, allowed, at, issues) {
   for (const k of Object.keys(obj)) if (!allowed.includes(k)) issues.push(`${at}: unknown field "${k}"`);
 }
 
+/**
+ * contract.story: the words this look understands, one list per slot (structure, action, focus, or anything a pack
+ * invents). The scene spec must fill every slot with one of these values, so the list is a promise the pack can keep.
+ */
+const STORY_SLOT = /^[a-z][a-z0-9-]{0,23}$/;
+const STORY_VALUE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+function checkStory(v, issues) {
+  if (!isRecord(v)) {
+    issues.push("contract.story must be an object of slot -> list of values");
+    return;
+  }
+  const slots = Object.keys(v);
+  if (slots.length === 0 || slots.length > 12) issues.push(`contract.story must declare 1..12 slots, not ${slots.length}`);
+  for (const slot of slots) {
+    if (!STORY_SLOT.test(slot)) {
+      issues.push(`contract.story: "${slot}" is not a slot name (lowercase letters, digits and dashes, starting with a letter)`);
+      continue;
+    }
+    const values = v[slot];
+    if (!Array.isArray(values) || values.length === 0 || values.length > 24) {
+      issues.push(`contract.story.${slot} must be a list of 1..24 values`);
+      continue;
+    }
+    const seen = new Set();
+    for (const x of values) {
+      if (typeof x !== "string" || !STORY_VALUE.test(x)) issues.push(`contract.story.${slot}: ${JSON.stringify(x)} is not a value (lowercase letters, digits, dash or underscore)`);
+      else if (seen.has(x)) issues.push(`contract.story.${slot}: "${x}" is listed twice`);
+      seen.add(x);
+    }
+  }
+}
+
+/**
+ * contract.world: the primitives the pack's page can compose, by name, mirroring render/world.js. Declared so the portal
+ * only offers parts a page actually implements — a page that cannot compose says so instead of drawing its fallback and
+ * letting the story think it was heard.
+ */
+export const WORLD_PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"];
+
+function checkWorld(v, issues) {
+  if (!Array.isArray(v) || v.length === 0 || v.length > WORLD_PRIMITIVES.length) {
+    issues.push(`contract.world must be a list of 1..${WORLD_PRIMITIVES.length} primitives`);
+    return;
+  }
+  const seen = new Set();
+  for (const x of v) {
+    if (!WORLD_PRIMITIVES.includes(x)) issues.push(`contract.world: ${JSON.stringify(x)} is not a primitive (${WORLD_PRIMITIVES.join(", ")})`);
+    else if (seen.has(x)) issues.push(`contract.world: "${x}" is listed twice`);
+    seen.add(x);
+  }
+}
+
+/**
+ * contract.library: structures this pack has composed before, by name, each a list of parts (the same shape a scene
+ * sends in intent.parts). Data, not code — a name is sugar the portal expands back into parts before the payload is
+ * frozen, so a render never depends on the worker knowing the name.
+ */
+function checkLibrary(v, issues) {
+  if (!isRecord(v)) {
+    issues.push("contract.library must be an object of name -> parts");
+    return;
+  }
+  const names = Object.keys(v);
+  if (names.length === 0 || names.length > 12) issues.push(`contract.library must declare 1..12 names, not ${names.length}`);
+  for (const name of names) {
+    if (!STORY_VALUE.test(name)) {
+      issues.push(`contract.library: ${JSON.stringify(name)} is not a name (lowercase letters, digits, dash or underscore)`);
+      continue;
+    }
+    const parts = v[name];
+    if (!Array.isArray(parts) || parts.length === 0 || parts.length > 64) {
+      issues.push(`contract.library.${name} must be a list of 1..64 parts`);
+      continue;
+    }
+    parts.forEach((part, i) => {
+      if (!isRecord(part)) issues.push(`contract.library.${name}[${i}] must be an object`);
+      else if (!WORLD_PRIMITIVES.includes(part.kind)) {
+        issues.push(`contract.library.${name}[${i}].kind is ${JSON.stringify(part.kind)}, not one of ${WORLD_PRIMITIVES.join(", ")}`);
+      }
+    });
+  }
+}
+
 function checkList(v, allowed, at, issues, { min = 1 } = {}) {
   if (!Array.isArray(v) || v.length < min || v.length > LIMITS.list) {
     issues.push(`${at} must be a list of ${min}..${LIMITS.list} entries`);
@@ -321,7 +405,14 @@ export function validateStyle(style, { dirName, files } = {}) {
   const c = style.contract;
   if (!isRecord(c)) issues.push("contract must be an object");
   else {
-    checkKeys(c, ["pacing", "onScreen", "captions", "audio", "assets"], "contract", issues);
+    checkKeys(c, ["pacing", "onScreen", "captions", "audio", "assets", "story", "world", "library"], "contract", issues);
+    if (c.story !== undefined) checkStory(c.story, issues);
+    if (c.world !== undefined) checkWorld(c.world, issues);
+    if (c.library !== undefined) checkLibrary(c.library, issues);
+    // Composing needs words to build: a page that takes parts but no story has nothing to build from.
+    if (c.world !== undefined && c.story === undefined) issues.push("contract.world needs contract.story: parts build what the scenes say");
+    // A named structure is a shortcut to parts, so the look must also be able to compose them.
+    if (c.library !== undefined && c.world === undefined) issues.push("contract.library needs contract.world: a name expands to parts");
     const p = c.pacing;
     if (!isRecord(p)) issues.push("contract.pacing must be an object");
     else {

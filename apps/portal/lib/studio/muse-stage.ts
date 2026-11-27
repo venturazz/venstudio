@@ -22,19 +22,58 @@ export function isMuseThinkStage(v: unknown): v is MuseThinkStage {
 export type MuseStage = MuseThinkStage | "render";
 const MUSE_STAGES: readonly MuseStage[] = [...MUSE_THINK_STAGES, "render"];
 
-/** `pipeline_runs.config.executors`: the stages this run sends to Muse. Absent: everything goes to Hermes, as before. */
-export type StageExecutors = Partial<Record<MuseStage, "muse">>;
+/**
+ * Who renders a run whose style only the portal can draw (engine hermes): "muse" (a Muse worker with the skill),
+ * "hermes" (the portal, research only), or null when the run did not choose and the render stage decides.
+ */
+export type RenderExecutor = "muse" | "hermes";
+
+/** `pipeline_runs.config.executors`: the stages this run sends to Muse. Absent: the render stage decides by itself. */
+export type StageExecutors = Partial<Record<MuseThinkStage, "muse">> & { render?: RenderExecutor };
 
 /** First worker that accepts video.mp4 from a render task (and reports PROGRESS.json and FAILED.json). */
 export const MUSE_STAGE_WORKER_VERSION = "0.16.0";
 
-/** Reads a stored `executors` value: known stages set to "muse" only, anything else dropped. */
+/** Reads a stored `executors` value: known stages set to "muse" only, plus the render's explicit "hermes". */
 export function parseStageExecutors(raw: unknown): StageExecutors {
   const out: StageExecutors = {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
   const r = raw as Record<string, unknown>;
   for (const stage of MUSE_STAGES) if (r[stage] === "muse") out[stage] = "muse";
+  // "hermes" is only a render choice: it keeps the portal instead of a Muse worker (research only).
+  if (r.render === "hermes") out.render = "hermes";
   return out;
+}
+
+/** The render's explicit executor, or null when the run did not choose and the render stage decides by itself. */
+export function renderExecutor(executors: StageExecutors | undefined): RenderExecutor | null {
+  const v = executors?.render;
+  return v === "muse" || v === "hermes" ? v : null;
+}
+
+/** What the render stage knows about the Muse side: whether a skill exists and why a worker cannot take it. */
+export interface RenderReadiness {
+  skill: boolean;
+  refusals: readonly string[];
+}
+
+/**
+ * Where a run's render goes (owner decision, 2026-11-26): the worker first, the portal only by explicit choice or when
+ * no Muse renderer can take it — and then the stage carries the reason instead of rendering quietly.
+ * `ready` is null when the render stage did not need to ask (the run already said "muse").
+ */
+export function renderRoute(
+  executors: StageExecutors | undefined,
+  ready: RenderReadiness | null,
+): { route: "muse" | "portal"; note?: string } {
+  const choice = renderExecutor(executors);
+  if (choice === "hermes") return { route: "portal" };
+  if (ready === null || (ready.skill && ready.refusals.length === 0)) return { route: "muse" };
+  const why = ready.refusals.length > 0 ? ` ${ready.refusals.join(". ")}.` : "";
+  return {
+    route: "portal",
+    note: `No Muse renderer is ready, so the portal draws this video with Hermes: research only, never published.${why}`,
+  };
 }
 
 /**
@@ -46,13 +85,17 @@ export function museThinkingExecutors(): StageExecutors {
 }
 
 export function runsOnMuse(executors: StageExecutors | undefined, stage: string): boolean {
-  return (MUSE_STAGES as readonly string[]).includes(stage) && executors?.[stage as MuseStage] === "muse";
+  if (!(MUSE_STAGES as readonly string[]).includes(stage)) return false;
+  if (stage === "render") return executors?.render === "muse";
+  return executors?.[stage as MuseThinkStage] === "muse";
 }
 
 /** The label the run page shows, or null when nothing goes to Muse. */
 export function executorsText(executors: StageExecutors | undefined): string | null {
-  const stages = MUSE_STAGES.filter((s) => executors?.[s] === "muse");
-  return stages.length === 0 ? null : `Muse does the ${stages.join(", ")}`;
+  const stages = MUSE_STAGES.filter((s) => runsOnMuse(executors, s));
+  if (stages.length === 0) return executors?.render === "hermes" ? "The portal renders (research only)" : null;
+  const base = `Muse does the ${stages.join(", ")}`;
+  return executors?.render === "hermes" ? `${base} (except the render: the portal draws it, research only)` : base;
 }
 
 /** The ask Hermes would get, as one document for PROMPT.md: each message under its role. Pure. */

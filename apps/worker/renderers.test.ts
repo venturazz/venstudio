@@ -359,6 +359,24 @@ test("buildHtmlCaptureProps: the same timeline Remotion gets, relative URLs, and
   assert.throws(() => buildHtmlCaptureProps(spec, { images: images.slice(1), font: null, drawsCaptions: false }), NonRetryableError);
 });
 
+test("buildHtmlCaptureProps: a shot's story words reach the page untouched, and a payload without any is unchanged", () => {
+  const spec = htmlSpec();
+  const images = spec.shots.map((s) => `../in/${s.assetId}.png`);
+  // A look that takes no intent (no contract.story) carries none, and the shot is the same object shape as before.
+  const plain = buildHtmlCaptureProps(spec, { images, font: null, drawsCaptions: false });
+  assert.deepEqual(plain.shots.map((s) => "intent" in s), spec.shots.map(() => false));
+  // A story-driven pack (voxel-build) gets its own words per shot, copied rather than referenced.
+  const withStory = {
+    ...spec,
+    shots: spec.shots.map((s, i) => ({ ...s, ...(i === 0 ? { intent: { structure: "church", action: "damage", focus: "villager" } } : {}) })),
+  };
+  const props = buildHtmlCaptureProps(withStory, { images, font: null, drawsCaptions: false });
+  assert.deepEqual(props.shots[0].intent, { structure: "church", action: "damage", focus: "villager" });
+  assert.equal(props.shots[1].intent, undefined);
+  props.shots[0].intent!.structure = "well";
+  assert.equal((withStory.shots[0] as { intent?: Record<string, string> }).intent!.structure, "church", "the payload is not mutated");
+});
+
 test("installed HTML packs: only entries whose files match their digest, cached per directory", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "vs-html-packs-"));
   t.after(async () => {

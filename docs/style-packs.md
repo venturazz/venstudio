@@ -360,6 +360,44 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   shows 1200 but cites no research note. Numbers must come from the research notes; never invent data." The script of
   a scene-spec run is burned in as captions, so its script gate also fails a number written in digits that no sourced
   note contains (numbers spelled out in words are not read).
+- **`contract.story` — the pack's own vocabulary.** A look that builds what the script is about declares the words it can
+  draw, one list per slot: `voxel-build` ships `structure` (the eight kit buildings), `action` (`build`, `damage`,
+  `idle`) and `focus` (`structure`, `villager`). The slots are the pack's business — a chart look could declare `chart`
+  and `palette` — and `tools/validate.mjs` checks the contract (slot names, 1 to 24 values, no duplicates) so a pack
+  cannot promise a word it cannot draw. When a pack has a vocabulary, every scene of the spec must carry `intent`
+  filling **every** slot from that list, the prompt names the lists and the schema, and the validator refuses anything
+  else by name, with the alternatives: *Scene 2 intent.structure is "spaceship", which Minecraft Village (Muse) does not
+  have in its kit. Compose it from parts instead (box, walls, roof, cylinder, stair, path, tree, blocks), or name one of:
+  well, farm, medium_house, blacksmith, church, tavern, large_house, library.* A look without a vocabulary takes no
+  `intent`, and a scene that offers one is refused rather than silently dropped. The intent travels shot → payload →
+  page untouched (`RenderShotInput.intent`, `buildHtmlCaptureProps`), and a page that does not know the slot ignores it:
+  the worker contract gains one optional field, so old payloads and old pages render as before.
+- **Promoting a composed scene into the pack.** A scene that composed `parts` and passed review is a candidate structure:
+  copy its `parts` into `contract.library` under a short name (`"gate": [ … ]`), bump the pack version, and the next
+  script can ask for `{"structure": "gate"}`. The portal expands the name back into parts before freezing, so the render
+  payload still carries the blocks: a name is sugar, never a dependency on the worker having heard of it. Keep the name
+  lowercase and stable — renaming it breaks stored specs, which is why the expansion is stored, not re-resolved at render
+  time. `voxel-build@0.5.1` ships one such name (`gate`) as the worked example.
+- **`contract.world` — what a page can compose.** A pack that takes parts declares the primitives its page implements
+  (`"world": ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"]`); `tools/validate.mjs`
+  checks the names and refuses `world` without `story` (parts need words to build). A look that declares no world is
+  never offered parts: the prompt tells the writer to name what the page has, and a spec that sends parts anyway is
+  refused — otherwise the page would draw its fallback and the story would think it was heard.
+- **`intent.parts` — composing instead of choosing.** The kit list is a shortcut, not the limit: a scene whose subject no
+  pack modelled sends `parts` instead of `structure`, and the page compiles them to the same node list the kit reads
+  (`packs/*/render/world.js`). The primitives are `box` (solid or hollow shell), `walls` (perimeter with `openings` cut
+  out), `roof` (gable, hip, flat), `cylinder`, `prism` (a wedge, for fins and noses), `stair`, `path`, `tree` and `blocks`
+  (raw kit nodes), each placed with
+  whole-block `at`, `size`, and a `material` the map knows. The portal checks **shape, not subject** (`storyParts`):
+  1..64 pieces, coordinates within ±96, sizes 1..48, a block-name material, openings and node lists bounded — so a gate,
+  a ship or a tower is buildable while a typo is still refused by name. A composed page is as reproducible as a kit one:
+  the page is the pack's frozen bundle and the parts are data in the payload, so a re-render is the same video (proved
+  twice: identical PNG hashes for a gate nobody modelled). What the page had to decide alone — an unknown material
+  swapped for stone brick, a part past the limit — comes back as `world` notes on init and `pageNotes` on the job result,
+  so a run that drifted says so instead of looking fine.
+- A pack's page draws what its story asks for, and falls back to its own default when a shot names nothing: `voxel.js`
+  uses `intent.structure` when the kit knows it, otherwise the fixed `ROTATION[i % 8]` it always used, so runs recorded
+  before the vocabulary existed are unchanged.
 - The spec becomes the scene plan and the render payload directly (`sceneSpecShots` → `buildScenePlan` →
   `buildRenderPayload`): the worker contract is unchanged, so no worker bump. The render contract carries a picture per
   shot, so the portal draws one plain-colour plate per run (`lib/studio/plate.ts`, source `generated`, executor

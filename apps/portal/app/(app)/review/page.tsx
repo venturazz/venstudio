@@ -78,6 +78,7 @@ export default async function ReviewPage() {
         museRender: r.museRender,
         labTrial: r.labTrial,
         designed: r.designed,
+        frozenShort: r.frozenShort,
         pictures: r.pictures,
         voiced: r.voiced,
         ...(scores.get(r.id) ?? {}),

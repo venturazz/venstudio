@@ -28,6 +28,8 @@ export interface ReviewCardView {
   labTrial?: boolean;
   /** The run draws a page Hermes wrote (html-design): research only, never published. */
   designed?: boolean;
+  /** The frozen render payload's short hash, when this run's render is queued. */
+  frozenShort?: string;
   /** False when the run's workflow makes no pictures, so the voice fixes say "keep the plan". */
   pictures?: boolean;
   /** False when the run has no voice stage (a Hermes skill that voices itself). */
@@ -181,6 +183,16 @@ function PlanBlock({ payload }: { payload: ReviewPayload }) {
           </li>
         ))}
       </ol>
+      {payload.composed && payload.composed.length > 0 && (
+        <details className="rounded-lg border border-border bg-surface-2 p-3 text-xs" data-testid="composed-parts">
+          <summary className="cursor-pointer break-words text-muted">
+            Composed parts — copy into <code>contract.library</code> to promote this structure
+          </summary>
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed">
+            {JSON.stringify(Object.fromEntries(payload.composed.map((c) => [c.name, c.parts])), null, 2)}
+          </pre>
+        </details>
+      )}
       {plan.text && (
         <p className="whitespace-pre-wrap break-words rounded-lg border border-border p-3 text-sm" data-testid={plan.kind === "html-design" ? "html-design-note" : "skill-brief-text"}>
           {plan.text}
@@ -300,8 +312,16 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
                 <Badge tone="warn">{TRIAL_BADGE}</Badge>
               </span>
             )}
+            {item.frozenShort ? (
+              <span
+                data-testid="frozen-badge"
+                title="The render payload this video was drawn from. A scene composed from parts is inside it, so the same run renders the same video."
+              >
+                <Badge tone="info">{`frozen ${item.frozenShort.slice(0, 12)}`}</Badge>
+              </span>
+            ) : null}
             {item.hermesRender && (
-              <span data-testid="hermes-render-badge" title="Hermes renders this video with its own tools; it is never published">
+              <span data-testid="hermes-render-badge" title="A Hermes-skill style: research only, never published, whoever draws it">
                 <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
               </span>
             )}
