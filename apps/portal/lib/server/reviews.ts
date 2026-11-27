@@ -29,6 +29,8 @@ export interface ReviewCard {
   labTrial: boolean;
   /** The run draws a page Hermes wrote (workflow html-design): research only, always a trial, never published. */
   designed: boolean;
+  /** The frozen render payload's short hash, when the render has been queued. */
+  frozenShort?: string;
   /** False when the run's workflow makes no pictures (no assets stage): labels say "the plan", not "the pictures". */
   pictures: boolean;
   /** False when the run has no voice stage (a Hermes skill that voices itself). */
@@ -137,6 +139,9 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
       coalesce(r.config->'executors'->>'render', '') AS render_exec,
       coalesce((r.config->'stylePack'->>'lab')::boolean, false) AS lab_trial,
       coalesce(r.config->'workflow'->>'recipe' = 'html-design', false) OR coalesce((r.config->'stylePack'->>'designed')::boolean, false) AS designed,
+      (SELECT ps.output->'frozen'->>'short' FROM pipeline_stages ps
+        WHERE ps.run_id = r.id AND ps.stage = 'render' AND ps.output ? 'frozen'
+        ORDER BY ps.attempt DESC LIMIT 1) AS frozen_short,
       (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'assets', false)) AS pictures,
       (r.config->'workflow' IS NULL OR coalesce(r.config->'workflow'->'stages' ? 'voice', false)) AS voiced
     FROM review_items ri
@@ -165,6 +170,8 @@ export async function listOpenReviews(): Promise<ReviewCard[]> {
     museRender: r.muse_drawn === true || (r.hermes_engine === true && r.voiced !== false && r.render_exec !== "hermes"),
     labTrial: r.lab_trial === true,
     designed: r.designed === true,
+    // What the render was drawn from: same payload, same video. Empty for a run whose render has not started.
+    frozenShort: (r.frozen_short as string | null) ?? "",
     pictures: r.pictures !== false,
     voiced: r.voiced !== false,
   }));

@@ -33,6 +33,19 @@ function outputText(stage: string, output: Record<string, unknown>): string {
   return text.length > 6000 ? `${text.slice(0, 6000)}\n...` : text;
 }
 
+/**
+ * What this render was drawn from: the payload's hash (twelve hex) and the pack that drew it. Composed parts live inside
+ * the payload, so the same line covers a story the kit never had — and a re-render can be compared against it.
+ */
+function frozenText(output: Record<string, unknown>): string {
+  const frozen = output.frozen;
+  if (!frozen || typeof frozen !== "object") return "";
+  const f = frozen as { short?: unknown; pack?: unknown };
+  if (typeof f.short !== "string" || f.short.length === 0) return "";
+  const pack = typeof f.pack === "string" && f.pack.length > 0 ? ` from ${f.pack}` : "";
+  return `Frozen payload ${f.short}${pack}: the same run renders the same video.`;
+}
+
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
   const { id } = await params;
@@ -187,6 +200,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                   {typeof s.output.renderNote === "string" && (
                     <p className="break-words text-xs text-muted" data-testid={`stage-${s.stage}-note`}>
                       {s.output.renderNote}
+                    </p>
+                  )}
+                  {frozenText(s.output) && (
+                    <p className="break-words text-xs text-muted" data-testid={`stage-${s.stage}-frozen`}>
+                      {frozenText(s.output)}
                     </p>
                   )}
                   {typeof s.output.previewWorkerNote === "string" && (

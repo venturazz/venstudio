@@ -4,6 +4,7 @@ import type { Sql, TransactionSql } from "postgres";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
 import { MUSE_POLL_SEC, isMuseThinkStage, renderExecutor, renderRoute } from "../studio/muse-stage.ts";
+import { frozenRender } from "../studio/freeze.ts";
 import { museRenderReadiness, pollMuseRender, startMuseRender } from "./muse-stages.ts";
 import { createJob, URGENT_PRIORITY } from "./jobs.ts";
 import { evaluateQcJob } from "./pipeline.ts";
@@ -1225,8 +1226,12 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   });
   const music = bedPick ? bedNote(bedPick, template.audio.musicPolicy) : null;
   const starts = payloadSceneStarts(plan.payload);
+  // Frozen: the payload hash and the pack that draws it. `intent.parts` travels inside the payload, so a story composed
+  // from primitives is covered by the same hash as a named one — a re-render can be compared, not remembered.
+  const frozen = frozenRender(plan.payload, stylePack ? { id: stylePack.id, version: stylePack.version } : null);
   await mergeStageOutput(st.id, {
     jobId,
+    frozen,
     shots: plan.payload.shots.length,
     narrationSec: plan.payload.narrationSec,
     // Where each scene sits in the video that was rendered: the qc stage compares the approved stills against these.

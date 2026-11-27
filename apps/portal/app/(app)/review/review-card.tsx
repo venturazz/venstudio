@@ -28,6 +28,8 @@ export interface ReviewCardView {
   labTrial?: boolean;
   /** The run draws a page Hermes wrote (html-design): research only, never published. */
   designed?: boolean;
+  /** The frozen render payload's short hash, when this run's render is queued. */
+  frozenShort?: string;
   /** False when the run's workflow makes no pictures, so the voice fixes say "keep the plan". */
   pictures?: boolean;
   /** False when the run has no voice stage (a Hermes skill that voices itself). */
@@ -300,6 +302,14 @@ export function ReviewCard({ item }: { item: ReviewCardView }) {
                 <Badge tone="warn">{TRIAL_BADGE}</Badge>
               </span>
             )}
+            {item.frozenShort ? (
+              <span
+                data-testid="frozen-badge"
+                title="The render payload this video was drawn from. A scene composed from parts is inside it, so the same run renders the same video."
+              >
+                <Badge tone="info">{`frozen ${item.frozenShort.slice(0, 12)}`}</Badge>
+              </span>
+            ) : null}
             {item.hermesRender && (
               <span data-testid="hermes-render-badge" title="A Hermes-skill style: research only, never published, whoever draws it">
                 <Badge tone="warn">{HERMES_RENDER_LABEL}</Badge>
