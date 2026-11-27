@@ -510,6 +510,7 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       // A look with a vocabulary (contract.story) is asked which of its own words each scene uses, and checked on it.
       ...(pack?.plan?.story ? { story: pack.plan.story } : {}),
       ...(pack?.plan?.world ? { world: pack.plan.world } : {}),
+      ...(pack?.plan?.library ? { library: pack.plan.library } : {}),
     };
     if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
     const r = await think(run, st, "scene-spec", sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }));

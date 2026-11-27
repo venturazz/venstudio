@@ -236,6 +236,31 @@ test("a look that cannot compose is not offered parts", () => {
   assert.ok(!/"parts":\[/.test(ask), "no parts in the schema of a look that cannot compose");
 });
 
+test("a structure the pack composed before is named, and expands to parts in the payload", () => {
+  const gate = [
+    { kind: "walls", at: [1, 0, 0], size: [11, 7, 3], material: "mcl_core:stonebrick" },
+    { kind: "cylinder", at: [0, 0, 0], radius: 2, height: 12, material: "mcl_core:cobble" },
+  ];
+  const withLibrary: SpecContract = { ...STORY, library: { gate } };
+  const r = validateSceneSpec(
+    { scenes: [{ ...storySpec().scenes[0], intent: { structure: "gate", action: "build", focus: "structure" } }] },
+    { contract: withLibrary, noteCount: NOTES.length },
+  );
+  assert.ok(r.ok, JSON.stringify(r));
+  // The name is kept for the card, and the blocks travel with the payload: a worker never needs to know the name.
+  assert.deepEqual(r.value.scenes[0].intent, { structure: "gate", parts: gate, action: "build", focus: "structure" });
+  assert.deepEqual(sceneSpecShots(r.value)[0].intent, { structure: "gate", parts: gate, action: "build", focus: "structure" });
+  // A name nobody composed still fails, and now says which names exist.
+  const bad = validateSceneSpec(
+    { scenes: [{ ...storySpec().scenes[0], intent: { structure: "tower", action: "build", focus: "structure" } }] },
+    { contract: withLibrary, noteCount: NOTES.length },
+  );
+  assert.ok(!bad.ok && bad.issues.some((i) => /does not have in its kit or its composed structures \(gate\)/.test(i)), JSON.stringify(bad));
+  // And the prompt tells the writer the name is available.
+  const ask = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, withLibrary).map((m) => m.content).join("\n");
+  assert.match(ask, /Structures this look composed before, usable the same way: gate\./);
+});
+
 test("parts are checked for shape, not for subject", () => {
   const check = (parts: unknown) =>
     validateSceneSpec({ scenes: [{ ...storySpec().scenes[0], intent: { parts, action: "build", focus: "structure" } }] }, { contract: STORY, noteCount: NOTES.length });

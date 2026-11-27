@@ -88,6 +88,8 @@ export interface SpecContract {
   story?: Record<string, readonly string[]>;
   /** style.json contract.world: the primitives the page composes. Absent: the look takes a name, never parts. */
   world?: readonly string[];
+  /** style.json contract.library: structures this pack composed before, by name -> parts. A name is sugar for parts. */
+  library?: Record<string, readonly unknown[]>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -106,7 +108,7 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
   const list = notes.map((n, i) => `${i + 1}. ${n.claim} (${n.sourced && n.sourceUrl ? `source: ${n.sourceUrl}` : "no source"}): ${n.summary}`).join("\n");
   const tokens = contract.motionTokens.length > 0 ? contract.motionTokens.join(", ") : "none";
   // A pack with a story vocabulary is a look that draws a script's own world: the scene must say which words it uses.
-  const storyLines = storyPrompt(contract.story);
+  const storyLines = storyPrompt(contract.story, contract.world, contract.library ? Object.keys(contract.library) : undefined);
   return [
     system(`Turn the script into a scene spec for the ${contract.name} page.`),
     {
@@ -141,10 +143,11 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
  * way anything gets built, so a subject nobody modelled is composed rather than refused. A look that declares no world
  * cannot compose, and the prompt says so instead of inviting parts its page would ignore.
  */
-function storyPrompt(story: Record<string, readonly string[]> | undefined, world?: readonly string[]): string[] {
+function storyPrompt(story: Record<string, readonly string[]> | undefined, world?: readonly string[], composedNames?: readonly string[]): string[] {
   const slots = story ? Object.entries(story) : [];
   if (slots.length === 0) return [];
   const library = story?.structure ?? [];
+  const named = composedNames ?? [];
   const closed = slots.filter(([slot]) => slot !== "structure");
   const compose = world && world.length > 0 ? world : null;
   const parts = compose
@@ -159,6 +162,7 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
     library.length > 0
       ? `Shortcut, when the kit already has the thing: "structure" is one of ${library.join(", ")}.`
       : "",
+    named && named.length > 0 ? `Structures this look composed before, usable the same way: ${named.join(", ")}.` : "",
     ...parts,
     closed.length > 0
       ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
@@ -352,9 +356,21 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
         continue;
       }
       const v = (given as string).trim();
+      // Three ways to name a structure: the kit's own, a name this pack composed before (expanded to parts below), or
+      // a refusal that says how to build it instead.
+      const composed = check.contract.library?.[v];
+      if (composed) {
+        // Expanded here, not on the page, and checked like any other parts: the frozen payload then carries the blocks,
+        // and no worker needs to have heard of the name.
+        const expanded = storyParts(composed, n, issues, check.contract.world ?? PRIMITIVES);
+        out.structure = v;
+        if (expanded) out.parts = expanded;
+        continue;
+      }
       if (!values.includes(v)) {
+        const known = check.contract.library ? Object.keys(check.contract.library) : [];
         issues.push(
-          `Scene ${n} intent.structure is "${v}", which ${check.contract.name} does not have in its kit. Compose it from parts instead (${PRIMITIVES.join(", ")}), or name one of: ${values.join(", ")}.`,
+          `Scene ${n} intent.structure is "${v}", which ${check.contract.name} does not have in its kit${known.length > 0 ? ` or its composed structures (${known.join(", ")})` : ""}. Compose it from parts instead (${PRIMITIVES.join(", ")}), or name one of: ${values.join(", ")}.`,
         );
         continue;
       }
