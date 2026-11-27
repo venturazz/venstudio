@@ -152,18 +152,18 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
   const compose = world && world.length > 0 ? world : null;
   const parts = compose
     ? [
-        `For anything else, compose it — a scene is never refused because the kit lacks the subject. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${compose.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
+        `Compose the subject from parts — a scene is never refused because the kit lacks it. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${compose.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
         `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
-        `Say structure or parts, never neither; if both, the parts are what the page draws.`,
+        `Every scene says how the subject is built: parts, or a composed name, or — when the subject is something the kit really has — its structure. Never none of them; if both, the parts are what the page draws.`,
       ]
     : [`This look cannot compose new geometry: name what it has and let the caption carry the rest.`];
   return [
     `This style builds what the script is about: every scene says how to build it in "intent".`,
+    ...parts,
     library.length > 0
-      ? `Shortcut, when the kit already has the thing: "structure" is one of ${library.join(", ")}.`
+      ? `Shortcut, only for something the kit already has and that is not the point of the scene: "structure" is one of ${library.join(", ")}. A kit name that merely resembles the subject is not the subject: compose the subject from parts and name a structure only for what surrounds it.`
       : "",
     named && named.length > 0 ? `Structures this look composed before, usable the same way: ${named.join(", ")}.` : "",
-    ...parts,
     closed.length > 0
       ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
       : "",
@@ -179,9 +179,9 @@ function storySchema(story: Record<string, readonly string[]> | undefined, world
     .filter((s) => s !== "structure")
     .map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`)
     .join(",");
-  const structure = slots.includes("structure") ? `"structure":"<one of ${(story.structure ?? []).join("|")}, or omit it when you use parts>"` : "";
-  const compose = world && world.length > 0 ? `,"parts":[{"kind":"<${world.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]` : "";
-  return `,"intent":{${[structure, closed].filter(Boolean).join(",")}${compose}}`;
+  const structure = slots.includes("structure") ? `"structure":"<a kit shortcut only, one of ${(story.structure ?? []).join("|")}; leave it out when you compose parts>"` : "";
+  const compose = world && world.length > 0 ? `"parts":[{"kind":"<${world.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]` : "";
+  return `,"intent":{${[compose, structure, closed].filter(Boolean).join(",")}}`;
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {

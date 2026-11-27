@@ -289,10 +289,13 @@ test("a look without a vocabulary takes no intent, and the prompt asks for none"
   assert.ok(!/intent/.test(plain), "no vocabulary, no intent in the ask");
   const withStory = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, STORY).map((m) => m.content).join("\n");
   assert.match(withStory, /every scene says how to build it in "intent"/);
-  assert.match(withStory, /Shortcut, when the kit already has the thing: "structure" is one of well, farm/);
+  assert.match(withStory, /Shortcut, only for something the kit already has and that is not the point of the scene: "structure" is one of well, farm/);
+  // Composition is the rule and the kit is the exception: the parts sentence comes before the shortcut, and the schema
+  // puts parts first, so a writer reading top to bottom reaches for parts before it reaches for a kit name.
+  assert.ok(withStory.indexOf("Compose the subject from parts") < withStory.indexOf("Shortcut, only for something"), "parts are offered before the kit shortcut");
   assert.match(withStory, /These are closed lists: use one of the listed values, nothing else\./);
-  assert.match(withStory, /"intent":\{"structure":"<one of well\|farm/);
-  assert.match(withStory, /"parts":\[\{"kind":"<box\|walls\|roof/);
+  assert.match(withStory, /"intent":\{"parts":\[\{"kind":"<box\|walls\|roof/);
+  assert.match(withStory, /"structure":"<a kit shortcut only, one of well\|farm/);
 });
 
 test("the story words reach the shot, the review card and the render payload; a stored spec keeps them", () => {
