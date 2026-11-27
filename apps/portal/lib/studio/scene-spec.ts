@@ -68,8 +68,11 @@ export interface SpecScene {
   tokens: string[];
   /** The narration spoken during the scene, shown on Review. */
   caption: string;
-  /** contract.story filled in: the words this scene uses, e.g. { structure: "church", action: "damage" }. */
-  intent?: Record<string, string>;
+  /**
+   * How this scene builds what the script is about: the pack's own words (e.g. { structure: "church", action: "damage" }),
+   * or parts composed from the world's primitives when the kit has nothing that fits ({ parts: [...] }).
+   */
+  intent?: Record<string, unknown>;
 }
 
 export interface SceneSpec {
@@ -132,17 +135,26 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
 }
 
 /**
- * The lines that tell the writer which words this look understands, or nothing at all for a look without a vocabulary.
- * Each slot is a closed list: an unknown value is refused with the list, never quietly swapped for a default.
+ * The lines that tell the writer how this look builds a script's world. The kit is the shortcut; the primitives are the
+ * way anything gets built, so a subject nobody modelled is composed rather than refused.
  */
 function storyPrompt(story: Record<string, readonly string[]> | undefined): string[] {
   const slots = story ? Object.entries(story) : [];
   if (slots.length === 0) return [];
-  const described = slots.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ");
+  const library = story?.structure ?? [];
+  const closed = slots.filter(([slot]) => slot !== "structure");
   return [
-    `This style builds what the script is about, so every scene must say which of its own words it uses in "intent". Fill every slot: ${described}.`,
-    "Names in intent are not free text: use exactly one of the listed values per slot, and nothing else. If the script asks for something this list does not have, choose the closest listed value and let the caption carry the difference.",
-  ];
+    `This style builds what the script is about: every scene says how to build it in "intent".`,
+    library.length > 0
+      ? `Shortcut, when the kit already has the thing: "structure" is one of ${library.join(", ")}.`
+      : "",
+    `For anything else, compose it — a scene is never refused because the kit lacks the subject. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${PRIMITIVES.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
+    `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
+    closed.length > 0
+      ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
+      : "",
+    `Say structure or parts, never neither; if both, the parts are what the page draws.`,
+  ].filter(Boolean);
 }
 
 /** The intent part of the schema line, so the shape Hermes is asked for and the shape checked are the same one. */
@@ -150,7 +162,12 @@ function storySchema(story: Record<string, readonly string[]> | undefined): stri
   if (!story) return "";
   const slots = Object.keys(story);
   if (slots.length === 0) return "";
-  return `,"intent":{${slots.map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`).join(",")}}`;
+  const closed = slots
+    .filter((s) => s !== "structure")
+    .map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`)
+    .join(",");
+  const structure = slots.includes("structure") ? `"structure":"<one of ${(story.structure ?? []).join("|")}, or omit it when you use parts>"` : "";
+  return `,"intent":{${[structure, closed].filter(Boolean).join(",")},"parts":[{"kind":"<${PRIMITIVES.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]}`;
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {
@@ -253,12 +270,40 @@ export function validateSceneSpec(value: unknown, check: SceneSpecCheck): Valida
   return issues.length > 0 ? { ok: false, issues } : { ok: true, value: { scenes } };
 }
 
+/** One geometric piece, when the story composes instead of naming a structure the kit already has. */
+export interface SpecPart {
+  kind: string;
+  at?: number[];
+  size?: number[];
+  material?: string;
+  radius?: number;
+  height?: number;
+  rise?: number;
+  style?: string;
+  hollow?: boolean;
+  openings?: Array<{ at: number[]; w: number; h: number }>;
+  nodes?: number[][];
+}
+
 /**
- * The story words of one scene, checked against what the pack can draw. A look with a vocabulary demands every slot,
- * because a missing structure would leave the page guessing; a look without one takes no intent at all, and a scene
- * that offers one is refused rather than silently dropped.
+ * The primitives every html-capture world understands, mirroring render/world.js inside each pack. This list is a check on
+ * shape, not on ideas: a scene may compose anything out of these, which is why a subject the kit never modelled is
+ * buildable rather than refused.
  */
-function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: string[]): Record<string, string> | undefined {
+export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "stair", "path", "tree", "blocks"] as const;
+const MAX_PARTS = 64;
+const MAX_PART_OPENINGS = 8;
+const MAX_PART_NODES = 4000;
+const PART_LIMIT = 96;
+const MATERIAL_TOKEN = /^[a-z0-9_]+:[a-z0-9_]+$/;
+
+/**
+ * The story words of one scene, checked against what the pack can draw. Two ways to say what to build: a structure the
+ * kit has (cheap), or parts composed from the primitives (anything the blocks can make). A look with a vocabulary
+ * demands one of the two plus every other slot, because a missing word would leave the page guessing; a look without a
+ * vocabulary takes no intent at all, and a scene that offers one is refused rather than silently dropped.
+ */
+function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: string[]): Record<string, unknown> | undefined {
   const story = check.contract.story;
   if (!story || Object.keys(story).length === 0) {
     // A stored spec read back with no vocabulary at hand: keep the words the owner approved, sanitized, so the page
@@ -272,34 +317,167 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
     if (!check.readBack) issues.push(`Scene ${n} needs intent with ${Object.keys(story).join(", ")}`);
     return undefined;
   }
-  const out: Record<string, string> = {};
+  const before = issues.length;
+  const out: Record<string, unknown> = {};
+  const parts = raw.parts === undefined ? undefined : storyParts(raw.parts, n, issues);
+  if (parts) out.parts = parts;
   for (const [slot, values] of Object.entries(story)) {
     const given = raw[slot];
-    if (typeof given !== "string" || given.trim() === "") {
+    const has = typeof given === "string" && given.trim() !== "";
+    if (slot === "structure") {
+      // Composed parts already say what to build; the kit name is the shortcut, not the rule.
+      if (parts && !has) continue;
+      if (!has) {
+        issues.push(`Scene ${n} intent needs either structure (${values.join(", ")}) or parts to compose it`);
+        continue;
+      }
+      const v = (given as string).trim();
+      if (!values.includes(v)) {
+        issues.push(
+          `Scene ${n} intent.structure is "${v}", which ${check.contract.name} does not have in its kit. Compose it from parts instead (${PRIMITIVES.join(", ")}), or name one of: ${values.join(", ")}.`,
+        );
+        continue;
+      }
+      out.structure = v;
+      continue;
+    }
+    if (!has) {
       issues.push(`Scene ${n} intent is missing ${slot}`);
       continue;
     }
-    const v = given.trim();
+    const v = (given as string).trim();
     if (!values.includes(v)) {
       issues.push(`Scene ${n} intent.${slot} is "${v}", which ${check.contract.name} cannot draw. It can draw: ${values.join(", ")}.`);
       continue;
     }
     out[slot] = v;
   }
-  for (const slot of Object.keys(raw)) if (!(slot in story)) issues.push(`Scene ${n} intent names "${slot}", which ${check.contract.name} does not know`);
+  for (const slot of Object.keys(raw)) {
+    if (slot !== "parts" && !(slot in story)) issues.push(`Scene ${n} intent names "${slot}", which ${check.contract.name} does not know`);
+  }
+  if (issues.length > before) return undefined;
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The parts of one scene, checked for shape and bounds (never for subject). Pure. */
+function storyParts(raw: unknown, n: number, issues: string[]): SpecPart[] | undefined {
+  const before = issues.length;
+  if (!Array.isArray(raw)) {
+    issues.push(`Scene ${n} intent.parts must be a list`);
+    return undefined;
+  }
+  if (raw.length === 0) {
+    issues.push(`Scene ${n} intent.parts is empty: give at least one piece`);
+    return undefined;
+  }
+  if (raw.length > MAX_PARTS) {
+    issues.push(`Scene ${n} intent.parts has ${raw.length} pieces, more than ${MAX_PARTS}`);
+    return undefined;
+  }
+  const nums = (v: unknown, label: string, min: number, max: number, want: number[]): number[] | undefined => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.length < want[0] || v.length > want[1] || !v.every(finite)) {
+      issues.push(`${label} must be ${want[0]}-${want[1]} numbers`);
+      return undefined;
+    }
+    const list = v as number[];
+    if (list.some((x) => x < min || x > max)) {
+      issues.push(`${label} is outside ${min}..${max}`);
+      return undefined;
+    }
+    return list.map((x) => Math.round(x));
+  };
+  const out: SpecPart[] = [];
+  raw.forEach((p, i) => {
+    const at = `Scene ${n} intent.parts[${i}]`;
+    if (!isRecord(p)) {
+      issues.push(`${at} must be an object`);
+      return;
+    }
+    const kind = typeof p.kind === "string" ? p.kind.trim() : "";
+    if (!(PRIMITIVES as readonly string[]).includes(kind)) {
+      issues.push(`${at}.kind is "${kind || "(missing)"}", not one of ${PRIMITIVES.join(", ")}`);
+      return;
+    }
+    const part: SpecPart = { kind };
+    const pos = nums(p.at, `${at}.at`, -PART_LIMIT, PART_LIMIT, [2, 3]);
+    if (pos) part.at = pos;
+    const size = nums(p.size, `${at}.size`, 1, 48, [2, 3]);
+    if (size) part.size = size;
+    if (typeof p.material === "string" && p.material.trim() !== "") {
+      const m = p.material.trim();
+      if (!MATERIAL_TOKEN.test(m)) issues.push(`${at}.material is "${m}", not a block name like mcl_core:stonebrick`);
+      else part.material = m;
+    }
+    for (const key of ["radius", "height", "rise"] as const) {
+      if (p[key] === undefined) continue;
+      if (!finite(p[key]) || (p[key] as number) < 1 || (p[key] as number) > 48) {
+        issues.push(`${at}.${key} must be a number 1..48`);
+        continue;
+      }
+      part[key] = Math.round(p[key] as number);
+    }
+    if (p.style !== undefined) {
+      const style = String(p.style);
+      if (!["gable", "hip", "flat"].includes(style)) issues.push(`${at}.style must be gable, hip or flat`);
+      else part.style = style;
+    }
+    if (p.hollow !== undefined) part.hollow = p.hollow === true;
+    if (p.openings !== undefined) {
+      if (!Array.isArray(p.openings) || p.openings.length > MAX_PART_OPENINGS) {
+        issues.push(`${at}.openings must be a list of at most ${MAX_PART_OPENINGS}`);
+      } else {
+        const openings: Array<{ at: number[]; w: number; h: number }> = [];
+        p.openings.forEach((o, k) => {
+          if (!isRecord(o)) {
+            issues.push(`${at}.openings[${k}] must be an object`);
+            return;
+          }
+          const corner = nums(o.at, `${at}.openings[${k}].at`, -PART_LIMIT, PART_LIMIT, [2, 2]);
+          if (!corner) return;
+          if (!finite(o.w) || !finite(o.h) || o.w < 1 || o.h < 1 || o.w > 12 || o.h > 12) {
+            issues.push(`${at}.openings[${k}] needs w and h as numbers 1..12`);
+            return;
+          }
+          openings.push({ at: corner, w: Math.round(o.w), h: Math.round(o.h) });
+        });
+        if (openings.length > 0) part.openings = openings;
+      }
+    }
+    if (p.nodes !== undefined) {
+      const rawNodes = Array.isArray(p.nodes) ? p.nodes : [];
+      if (!Array.isArray(p.nodes) || rawNodes.length > MAX_PART_NODES) {
+        issues.push(`${at}.nodes must be a list of at most ${MAX_PART_NODES} nodes`);
+      } else {
+        const nodes = rawNodes.filter(
+          (node): node is number[] => Array.isArray(node) && node.length >= 4 && node.slice(0, 3).every(finite) && typeof node[3] === "string",
+        );
+        if (nodes.length !== rawNodes.length) issues.push(`${at}.nodes needs [x, y, z, blockName] per node`);
+        if (nodes.length > 0) part.nodes = nodes;
+      }
+    }
+    out.push(part);
+  });
+  if (issues.length > before) return undefined;
+  return out;
 }
 
 /** A stored intent read back with no vocabulary at hand: slot -> short lowercase value, at most twelve slots. Pure. */
 const INTENT_SLOT = /^[a-z][a-z0-9-]{0,23}$/;
-function storyIntentReadBack(raw: unknown): Record<string, string> | undefined {
+function storyIntentReadBack(raw: unknown): Record<string, unknown> | undefined {
   if (!isRecord(raw)) return undefined;
-  const out: Record<string, string> = {};
+  const out: Record<string, unknown> = {};
+  if (raw.parts !== undefined) {
+    // A stored spec is what the owner approved: keep its parts if they still have the shape the page reads.
+    const salvage: string[] = [];
+    const kept = storyParts(raw.parts, 0, salvage);
+    if (kept) out.parts = kept;
+  }
   for (const [slot, value] of Object.entries(raw)) {
     if (!INTENT_SLOT.test(slot) || typeof value !== "string") continue;
     const v = value.trim();
     if (v && v.length <= 32) out[slot] = v;
-    if (Object.keys(out).length >= 12) break;
+    if (Object.keys(out).length >= 13) break;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -421,7 +599,15 @@ export function sceneSpecLines(spec: SceneSpec): string[] {
         return `${e.kind}${e.text ? ` "${e.text}"` : ""}${nums ? ` ${nums}` : ""}${nums ? src : ""}`;
       })
       .join("; ");
-    const story = s.intent ? Object.entries(s.intent).map(([k, v]) => `${k}: ${v}`).join(", ") : "";
+    const story = s.intent
+      ? Object.entries(s.intent)
+          .map(([k, v]) =>
+            Array.isArray(v)
+              ? `${k}: ${v.length} pieces (${[...new Set(v.map((p) => (p && typeof p === "object" && "kind" in p ? String((p as { kind: unknown }).kind) : "?")))].join(", ")})`
+              : `${k}: ${String(v)}`,
+          )
+          .join(", ")
+      : "";
     return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""} Caption: ${s.caption}`;
   });
 }

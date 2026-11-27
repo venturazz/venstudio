@@ -195,7 +195,7 @@ test("a pack with a vocabulary: every scene must fill the slots, from the list t
     return r.ok ? [] : r.issues;
   };
   // A word the look cannot draw is refused with the list, not quietly swapped for a default.
-  assert.ok(with_((s) => (s.scenes[0].intent.structure = "spaceship")).some((i) => /Scene 1 intent\.structure is "spaceship", which .* cannot draw\. It can draw: well, farm/.test(i)));
+  assert.ok(with_((s) => (s.scenes[0].intent.structure = "spaceship")).some((i) => /Scene 1 intent\.structure is "spaceship", which .* does not have in its kit\. Compose it from parts instead \(box, walls, roof/.test(i)));
   assert.ok(with_((s) => (s.scenes[1].intent.action = "explode")).some((i) => /It can draw: build, damage, idle/.test(i)));
   // Every slot is required: a missing one would leave the page guessing.
   assert.ok(with_((s) => delete s.scenes[0].intent.action).some((i) => /Scene 1 intent is missing action/.test(i)));
@@ -204,15 +204,55 @@ test("a pack with a vocabulary: every scene must fill the slots, from the list t
   assert.ok(with_((s) => (s.scenes[0].intent.weather = "rain")).some((i) => /Scene 1 intent names "weather", which .* does not know/.test(i)));
 });
 
+// Composition: a subject the kit never modelled is built from primitives, not refused. docs/style-families.md, "parts".
+test("a subject the kit never modelled is composed from parts, not refused", () => {
+  const gate = [
+    { kind: "walls", at: [1, 0, 0], size: [11, 7, 3], material: "mcl_core:stonebrick", openings: [{ at: [4, 0], w: 2, h: 4 }] },
+    { kind: "cylinder", at: [0, 0, 0], radius: 2, height: 12, material: "mcl_core:cobble" },
+    { kind: "roof", at: [0, 12, 0], size: [5, 5], style: "hip", rise: 3, material: "mcl_core:wood" },
+  ];
+  const spec = { scenes: [{ ...storySpec().scenes[0], intent: { parts: gate, action: "build", focus: "structure" } }] };
+  const ok = validateSceneSpec(spec, { contract: STORY, noteCount: NOTES.length });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  assert.deepEqual(ok.value.scenes[0].intent, { parts: gate, action: "build", focus: "structure" });
+  // The review card says what it is, not "[object Object]".
+  assert.match(sceneSpecLines(ok.value)[0], /Story: parts: 3 pieces \(walls, cylinder, roof\), action: build, focus: structure\./);
+  // Parts travel to the render payload exactly as reviewed, and a stored spec keeps them.
+  assert.deepEqual(sceneSpecShots(ok.value)[0].intent, { parts: gate, action: "build", focus: "structure" });
+  assert.deepEqual(readSceneSpec(JSON.parse(JSON.stringify(ok.value)))?.scenes[0].intent, { parts: gate, action: "build", focus: "structure" });
+});
+
+test("parts are checked for shape, not for subject", () => {
+  const check = (parts: unknown) =>
+    validateSceneSpec({ scenes: [{ ...storySpec().scenes[0], intent: { parts, action: "build", focus: "structure" } }] }, { contract: STORY, noteCount: NOTES.length });
+  const issuesOf = (parts: unknown) => {
+    const r = check(parts);
+    return r.ok ? [] : r.issues;
+  };
+  assert.ok(issuesOf([{ kind: "space-elevator" }]).some((i) => /parts\[0\]\.kind is "space-elevator", not one of box, walls, roof/.test(i)));
+  assert.ok(issuesOf([{ kind: "box", at: [0, 0, 999] }]).some((i) => /parts\[0\]\.at is outside -96\.\.96/.test(i)));
+  assert.ok(issuesOf([{ kind: "box", material: "stone" }]).some((i) => /parts\[0\]\.material is "stone", not a block name/.test(i)));
+  assert.ok(issuesOf(Array.from({ length: 65 }, () => ({ kind: "box" }))).some((i) => /more than 64/.test(i)));
+  // Both at once is allowed: the kit name is a shortcut, and the page draws the parts.
+  const both = validateSceneSpec(
+    { scenes: [{ ...storySpec().scenes[0], intent: { structure: "church", parts: [{ kind: "box" }], action: "build", focus: "structure" } }] },
+    { contract: STORY, noteCount: NOTES.length },
+  );
+  assert.ok(both.ok);
+  assert.deepEqual(Object.keys(both.value.scenes[0].intent!), ["parts", "structure", "action", "focus"]);
+});
+
 test("a look without a vocabulary takes no intent, and the prompt asks for none", () => {
   const issues = validateSceneSpec({ scenes: [{ ...goodSpec().scenes[0], intent: { structure: "church" } }] }, { contract: CONTRACT, noteCount: NOTES.length });
   assert.ok(!issues.ok && issues.issues.some((i) => /Scene 1 names an intent, but Line Graph takes no story vocabulary/.test(i)));
   const plain = sceneSpecPrompt({} as DirectorContext, "Solar power grew.", NOTES, CONTRACT).map((m) => m.content).join("\n");
   assert.ok(!/intent/.test(plain), "no vocabulary, no intent in the ask");
   const withStory = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, STORY).map((m) => m.content).join("\n");
-  assert.match(withStory, /every scene must say which of its own words it uses in "intent"\. Fill every slot: structure \(well, farm/);
-  assert.match(withStory, /use exactly one of the listed values per slot/);
+  assert.match(withStory, /every scene says how to build it in "intent"/);
+  assert.match(withStory, /Shortcut, when the kit already has the thing: "structure" is one of well, farm/);
+  assert.match(withStory, /These are closed lists: use one of the listed values, nothing else\./);
   assert.match(withStory, /"intent":\{"structure":"<one of well\|farm/);
+  assert.match(withStory, /"parts":\[\{"kind":"<box\|walls\|roof/);
 });
 
 test("the story words reach the shot, the review card and the render payload; a stored spec keeps them", () => {

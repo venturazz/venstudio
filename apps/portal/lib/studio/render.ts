@@ -30,7 +30,8 @@ export interface RenderShotInput {
   shotRef: string;
   seconds: number;
   /** The pack's own story words for this shot (contract.story), carried to the page untouched. */
-  intent?: Record<string, string>;
+  /** Story words or composed parts: whatever the pack's page reads (intent.parts when the kit has no such thing). */
+  intent?: Record<string, unknown>;
 }
 
 export interface CaptionCue {
@@ -50,7 +51,7 @@ export interface RenderPayload {
   transitionSec: number;
   /** Scene plan, for engines that animate elements. Absent when the stills engine has enough. */
   scenePlan?: ScenePlan;
-  shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion; intent?: Record<string, string> }>;
+  shots: Array<{ shotRef: string; assetId: string; seconds: number; motion: Motion; intent?: Record<string, unknown> }>;
   narrationAssetId: string;
   /** Length of the narration as it plays (after narrationTempo). */
   narrationSec: number;

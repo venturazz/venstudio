@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "c2c9ea6ef7c781dfa89612d2ff016aa5508a74d3"
+    "commit": "b8d8b320df7d334ae392bc8fb5c91221d791fac8"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -21,7 +21,8 @@
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
     "tools/validate.mjs": "b8948368186d70eca0f56a057476476db39944621e134b7879dc6b3b7d1f68d5",
-    "tools/validate.test.mjs": "f90042013da30770d450fb04a59b9797cfe1eda8d9d7b11d03163759352721fc"
+    "tools/validate.test.mjs": "f90042013da30770d450fb04a59b9797cfe1eda8d9d7b11d03163759352721fc",
+    "tools/world.test.mjs": "c29c9b3641c1d6e0eb48a17b7da3b29584442a1e321684e4f90e5abfdd3d69f2"
   },
   "packs": [
     {
@@ -403,11 +404,11 @@
     },
     {
       "id": "voxel-build",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "41d2a44010f83f92736c6e0da7a24a05fc7c797fe116e970d3395894a1cb432a",
+      "sha256": "6c048f71d7f85a5c81feda66f8788ded513d414577282e424a69c7912dee8ae9",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -437,9 +438,10 @@
         "render/assets/vendor/trees.json": "e244780e4cfca37d627e6aa04df38d4753be5d906b6ce5d9ded41808c0cff282",
         "render/assets/vendor/villager.json": "17e91b80bdf6f38d63e18e2e0fa3b05c354d7b8be7126d7d1aad1358367d2b3d",
         "render/index.html": "0301e6c55002345ce060200ea82b2186c7419bf54437c70117cada14a202978f",
-        "render/page.js": "684957a7767c942a660f0c803b203f7518db428f5db1cd8a886b02bf64519be3",
-        "render/voxel.js": "1761fa29213b997877907b4ea10828ccebfa06d91b3770a9d02c6f933940b75c",
-        "style.json": "433a9e331d3fa27806513e52575e4c3ed0b8add7085a7541fe5c5d49829e7367"
+        "render/page.js": "1d14676cca2e45f38afb5179d54fb4e5fc360362f4389224eda81a27585b618a",
+        "render/voxel.js": "e6eb4ee399e547b2f12bd72bc75e31ae8a452b141e414701abda664ac9889c09",
+        "render/world.js": "d8a4c133f50a037d7f3906fdf32adb01cbb777b9633f6050145ca5cc9eb20fe3",
+        "style.json": "f7cb8019d85b06e3569e8ddcfc0749e39d75e06d5dcc064f7bd93583ee42acb8"
       }
     },
     {

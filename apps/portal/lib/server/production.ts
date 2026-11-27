@@ -1071,7 +1071,7 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   const shotSpecs = workOrdersFromStoryboard(planShots).map((w, i) => ({
     shotRef: w.shotRef,
     seconds: w.spec.seconds,
-    ...(planShots[i]?.intent ? { intent: { ...planShots[i]?.intent } as Record<string, string> } : {}),
+    ...(planShots[i]?.intent ? { intent: { ...planShots[i]?.intent } as Record<string, unknown> } : {}),
   }));
   // A pack the catalogue does not know (an html-capture adaptation, a research pack) plans and renders from its own
   // contract (styleFromPack), never as stills by default.
