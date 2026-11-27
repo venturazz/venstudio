@@ -230,6 +230,7 @@ test("parts are checked for shape, not for subject", () => {
     return r.ok ? [] : r.issues;
   };
   assert.ok(issuesOf([{ kind: "space-elevator" }]).some((i) => /parts\[0\]\.kind is "space-elevator", not one of box, walls, roof/.test(i)));
+  assert.ok(issuesOf([{ kind: "prism", axis: "y" }]).some((i) => /parts\[0\]\.axis must be x or z/.test(i)));
   assert.ok(issuesOf([{ kind: "box", at: [0, 0, 999] }]).some((i) => /parts\[0\]\.at is outside -96\.\.96/.test(i)));
   assert.ok(issuesOf([{ kind: "box", material: "stone" }]).some((i) => /parts\[0\]\.material is "stone", not a block name/.test(i)));
   assert.ok(issuesOf(Array.from({ length: 65 }, () => ({ kind: "box" }))).some((i) => /more than 64/.test(i)));

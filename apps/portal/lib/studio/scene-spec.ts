@@ -148,7 +148,7 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined): stri
     library.length > 0
       ? `Shortcut, when the kit already has the thing: "structure" is one of ${library.join(", ")}.`
       : "",
-    `For anything else, compose it — a scene is never refused because the kit lacks the subject. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${PRIMITIVES.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
+    `For anything else, compose it — a scene is never refused because the kit lacks the subject. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${PRIMITIVES.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
     `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
     closed.length > 0
       ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
@@ -280,6 +280,8 @@ export interface SpecPart {
   height?: number;
   rise?: number;
   style?: string;
+  axis?: string;
+  flip?: boolean;
   hollow?: boolean;
   openings?: Array<{ at: number[]; w: number; h: number }>;
   nodes?: number[][];
@@ -290,7 +292,7 @@ export interface SpecPart {
  * shape, not on ideas: a scene may compose anything out of these, which is why a subject the kit never modelled is
  * buildable rather than refused.
  */
-export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "stair", "path", "tree", "blocks"] as const;
+export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"] as const;
 const MAX_PARTS = 64;
 const MAX_PART_OPENINGS = 8;
 const MAX_PART_NODES = 4000;
@@ -422,6 +424,12 @@ function storyParts(raw: unknown, n: number, issues: string[]): SpecPart[] | und
       if (!["gable", "hip", "flat"].includes(style)) issues.push(`${at}.style must be gable, hip or flat`);
       else part.style = style;
     }
+    if (p.axis !== undefined) {
+      const axis = String(p.axis);
+      if (axis !== "x" && axis !== "z") issues.push(`${at}.axis must be x or z`);
+      else part.axis = axis;
+    }
+    if (p.flip !== undefined) part.flip = p.flip === true;
     if (p.hollow !== undefined) part.hollow = p.hollow === true;
     if (p.openings !== undefined) {
       if (!Array.isArray(p.openings) || p.openings.length > MAX_PART_OPENINGS) {

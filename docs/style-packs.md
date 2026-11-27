@@ -375,7 +375,8 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
 - **`intent.parts` — composing instead of choosing.** The kit list is a shortcut, not the limit: a scene whose subject no
   pack modelled sends `parts` instead of `structure`, and the page compiles them to the same node list the kit reads
   (`packs/*/render/world.js`). The primitives are `box` (solid or hollow shell), `walls` (perimeter with `openings` cut
-  out), `roof` (gable, hip, flat), `cylinder`, `stair`, `path`, `tree` and `blocks` (raw kit nodes), each placed with
+  out), `roof` (gable, hip, flat), `cylinder`, `prism` (a wedge, for fins and noses), `stair`, `path`, `tree` and `blocks`
+  (raw kit nodes), each placed with
   whole-block `at`, `size`, and a `material` the map knows. The portal checks **shape, not subject** (`storyParts`):
   1..64 pieces, coordinates within ±96, sizes 1..48, a block-name material, openings and node lists bounded — so a gate,
   a ship or a tower is buildable while a typo is still refused by name. A composed page is as reproducible as a kit one:

@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "715b7838416c82f4532950241bf5f0db3dda11fe"
+    "commit": "9b0884ff4854b394df3d567c2d9eecb45bb778b0"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -22,7 +22,7 @@
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
     "tools/validate.mjs": "b8948368186d70eca0f56a057476476db39944621e134b7879dc6b3b7d1f68d5",
     "tools/validate.test.mjs": "f90042013da30770d450fb04a59b9797cfe1eda8d9d7b11d03163759352721fc",
-    "tools/world.test.mjs": "e67283f549eb582ccacf3f435ec29dee35b67fe6ce8dfd9b31ec9656e21eedba"
+    "tools/world.test.mjs": "4ffb590eaf8e1c933d1a76943b1d3d3987db6c6157262ee7e73a5eaef7e942f0"
   },
   "packs": [
     {
@@ -408,7 +408,7 @@
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "0984e86a7dec1b24f4bff38f652f79d300945a729951f6787ea79dc71427d11d",
+      "sha256": "4daacec652bbb11b18b0ef04fe3948a5f801529ed15c729c32acdbca9b22abf8",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -438,9 +438,9 @@
         "render/assets/vendor/trees.json": "e244780e4cfca37d627e6aa04df38d4753be5d906b6ce5d9ded41808c0cff282",
         "render/assets/vendor/villager.json": "17e91b80bdf6f38d63e18e2e0fa3b05c354d7b8be7126d7d1aad1358367d2b3d",
         "render/index.html": "0301e6c55002345ce060200ea82b2186c7419bf54437c70117cada14a202978f",
-        "render/page.js": "34f520f45a25814a38527be6d2eb1262ffa12e173964bfc4473d4a1e0bd3dd83",
+        "render/page.js": "61dceb5d4fd99b48449c0e1ac93e138607bb70e60cd9fd1abfa993962b1aa0a7",
         "render/voxel.js": "2517b0eb3a1fc8d29bcaf9e940f2c6bcc6ade8e10ecdcb7c374a8518b64f6fbc",
-        "render/world.js": "ca6ddde5b6936513b39bb1d369bb47efe66a604dd1fd45e09181614fe2c2ba1d",
+        "render/world.js": "9bbab0e271f2638d976fa5fd3520a5c9d89a985d5af824a5c5c7a736ecad3817",
         "style.json": "f7cb8019d85b06e3569e8ddcfc0749e39d75e06d5dcc064f7bd93583ee42acb8"
       }
     },
