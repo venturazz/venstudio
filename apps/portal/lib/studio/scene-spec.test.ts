@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { researchPrompt, SCENE_SPEC_RESEARCH_LINES, type DirectorContext, type ResearchNote } from "./director.ts";
+import { knownMaterials } from "../server/voxel-known.ts";
 import { numbersInText, readSceneSpec, revisionPrompt, scriptNumberIssues, sceneSpecGate, sceneSpecLines, sceneSpecPrompt, sceneSpecShots, sketchSheet, sourcingIssues, validateSceneSpec, type SpecContract } from "./scene-spec.ts";
 import { buildScenePlan } from "./scene-plan.ts";
 import { buildRenderPayload } from "./render.ts";
@@ -348,7 +349,7 @@ test("the story words reach the shot, the review card and the render payload; a 
 });
 
 test("the writer is shown its own build: measured, and drawn from above and the side", () => {
-  const sheet = sketchSheet(storySpec() as never, "voxel-build");
+  const sheet = sketchSheet(storySpec() as never, knownMaterials("voxel-build"));
   assert.equal(sheet.length, 2, "one sheet per composed scene");
   assert.match(sheet[0].line, /^2 parts, \d+ blocks, \d+x\d+x\d+, symmetric x 0\/0|asymmetric/, "blocks and bounds are measured, not guessed");
   assert.match(sheet[0].text, /seen from above/);
@@ -357,7 +358,7 @@ test("the writer is shown its own build: measured, and drawn from above and the 
 });
 
 test("the revision ask carries the drawings and forbids changing what is already right", () => {
-  const asked = revisionPrompt({} as never, "The village woke to smoke.", NOTES, STORY, storySpec() as never, "voxel-build")
+  const asked = revisionPrompt({} as never, "The village woke to smoke.", NOTES, STORY, storySpec() as never, knownMaterials("voxel-build"))
     .map((m) => m.content)
     .join("\n");
   assert.match(asked, /Here is what its parts build/);
@@ -369,7 +370,7 @@ test("the revision ask carries the drawings and forbids changing what is already
 });
 
 test("the card says what the parts measured, next to the story words", () => {
-  const lines = sceneSpecLines(storySpec() as never, "voxel-build");
+  const lines = sceneSpecLines(storySpec() as never, knownMaterials("voxel-build"));
   assert.match(lines[0], /Story: parts: 2 pieces \(walls, roof\)/);
   assert.match(lines[0], /Built: 2 parts, \d+ blocks, \d+x\d+x\d+, .*stands on the ground|floats/);
 });

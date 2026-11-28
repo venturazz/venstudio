@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { knownMaterials } from "../server/voxel-known.ts";
 import { checkLine, sketchOf, sketchText, voxelise } from "./voxel.ts";
 
 // The pack's real compiler, imported at runtime so TypeScript does not try to type a browser module: the whole point of
@@ -12,7 +13,8 @@ const MAP = path.resolve(import.meta.dirname, "../../../../styles/packs/voxel-bu
 const world = (await import(new URL(`file://${PACK}`).href)) as {
   compileParts: (parts: unknown, opts?: { known?: Set<string> }) => { nodes: unknown[]; notes: string[]; size: number[] };
 };
-const known = new Set(Object.keys(JSON.parse(readFileSync(MAP, "utf8")) as Record<string, unknown>));
+const known = knownMaterials("voxel-build") ?? new Set<string>();
+const mapNames = new Set(Object.keys(JSON.parse(readFileSync(MAP, "utf8")) as Record<string, unknown>));
 
 const GATE = [
   { kind: "walls", at: [1, 0, 0], size: [11, 7, 3], material: "mcl_core:stonebrick", openings: [{ at: [4, 0], w: 2, h: 4 }] },

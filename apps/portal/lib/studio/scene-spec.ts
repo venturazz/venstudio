@@ -190,8 +190,7 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
  * gap, and the shape from above and from the side. Empty when nothing composed parts — a look that names kit pieces has
  * nothing for this to add.
  */
-export function sketchSheet(spec: SceneSpec, packId?: string): Array<{ scene: number; line: string; text: string }> {
-  const known = packId ? knownMaterials(packId) : undefined;
+export function sketchSheet(spec: SceneSpec, known?: Set<string>): Array<{ scene: number; line: string; text: string }> {
   return spec.scenes.flatMap((s, i) => {
     const parts = s.intent?.parts;
     if (!Array.isArray(parts) || parts.length === 0) return [];
@@ -212,9 +211,9 @@ export function revisionPrompt(
   notes: readonly ResearchNote[],
   contract: SpecContract,
   spec: SceneSpec,
-  packId?: string,
+  known?: Set<string>,
 ): ChatMessage[] {
-  const sheet = sketchSheet(spec, packId);
+  const sheet = sketchSheet(spec, known);
   if (sheet.length === 0) return sceneSpecPrompt(ctx, script, notes, contract);
   return [
     ...sceneSpecPrompt(ctx, script, notes, contract),
@@ -376,7 +375,7 @@ export interface SpecPart {
  * shape, not on ideas: a scene may compose anything out of these, which is why a subject the kit never modelled is
  * buildable rather than refused.
  */
-import { checkLine, knownMaterials, sketchOf, sketchText } from "./voxel.ts";
+import { checkLine, sketchOf, sketchText } from "./voxel.ts";
 
 export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"] as const;
 const MAX_PARTS = 64;
@@ -717,7 +716,7 @@ export function sceneSpecShots(spec: SceneSpec): Shot[] {
 }
 
 /** One line per scene for the Review card: what is on screen, with the numbers and the note each cites. */
-export function sceneSpecLines(spec: SceneSpec, packId?: string): string[] {
+export function sceneSpecLines(spec: SceneSpec, known?: Set<string>): string[] {
   return spec.scenes.map((s, i) => {
     const els = s.elements
       .map((e) => {
@@ -736,7 +735,7 @@ export function sceneSpecLines(spec: SceneSpec, packId?: string): string[] {
           .join(", ")
       : "";
     const built = Array.isArray(s.intent?.parts) && s.intent.parts.length > 0
-      ? ` Built: ${checkLine(sketchOf(s.intent.parts, packId ? knownMaterials(packId) : undefined).check)}.`
+      ? ` Built: ${checkLine(sketchOf(s.intent.parts, known).check)}.`
       : "";
     return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""}${built} Caption: ${s.caption}`;
   });

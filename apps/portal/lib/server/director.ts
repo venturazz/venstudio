@@ -56,6 +56,7 @@ import {
 } from "../studio/engine.ts";
 import { alwaysReviewed, runRecipeOf, runStagesOf, withStudioVoice, workflowForPack } from "../studio/recipes.ts";
 import { planReview } from "../studio/plan-review.ts";
+import { knownMaterials } from "./voxel-known.ts";
 import { revisionPrompt, sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, sketchSheet, validateSceneSpec } from "../studio/scene-spec.ts";
 import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill } from "../studio/skill-brief.ts";
 import { htmlDesignGate, htmlDesignPrompt, validateHtmlDesign, type DesignBrief } from "../studio/html-design.ts";
@@ -529,12 +530,12 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
     // shown what its own parts build — measured and drawn from above and from the side — and may revise once. A second
     // answer that does not validate is dropped, and the first spec is the one that runs.
     let spec = r.value;
-    if (contract.world && contract.world.length > 0 && sketchSheet(spec, template.styleId).length > 0) {
+    if (contract.world && contract.world.length > 0 && sketchSheet(spec, knownMaterials(template.styleId)).length > 0) {
       const again = await think(
         run,
         st,
         "scene-spec",
-        revisionPrompt(ctx, checkedScript.value.script, notes, contract, spec, template.styleId),
+        revisionPrompt(ctx, checkedScript.value.script, notes, contract, spec, knownMaterials(template.styleId)),
         (v) => validateSceneSpec(v, { contract, noteCount: notes.length }),
         { fresh: true },
       );

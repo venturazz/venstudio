@@ -13,9 +13,6 @@
  * ever disagree, so this file cannot drift silently.
  */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-
 const PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"] as const;
 const FALLBACK_MATERIAL = "mcl_core:stonebrick";
 const MAX_PARTS = 64;
@@ -283,21 +280,6 @@ export function sketchOf(parts: unknown, known?: Set<string>): Sketch {
     side: grid(sideCells, minX, maxX, minY, maxY, true),
     legend: [...materials].slice(0, 6),
   };
-}
-
-/** The block names the installed map knows, so a wrong material is a note rather than a stone block that looks right. */
-const KNOWN = new Map<string, Set<string> | undefined>();
-export function knownMaterials(packId: string): Set<string> | undefined {
-  if (KNOWN.has(packId)) return KNOWN.get(packId);
-  let set: Set<string> | undefined;
-  try {
-    const dir = path.resolve(import.meta.dirname, "../../../../styles/packs", packId, "render/assets/vendor/blockmap.json");
-    set = new Set(Object.keys(JSON.parse(readFileSync(dir, "utf8")) as Record<string, unknown>));
-  } catch {
-    set = undefined;
-  }
-  KNOWN.set(packId, set);
-  return set;
 }
 
 /** One line a writer (and the owner) can read: what the parts measurably are. */
