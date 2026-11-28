@@ -516,3 +516,25 @@ test("contract.story: the words a look understands, and only well-formed ones", 
   // A slot a pack invents is fine: that is the point of a vocabulary rather than a fixed schema.
   assert.deepEqual(story({ chart: ["line", "bar"], palette: ["warm", "cold"] }), []);
 });
+
+test("a look that composes owes the writer a craft note, and the note must exist", () => {
+  // Method, not a subject list: the note is what makes "any story" buildable instead of only the names the pack came with.
+  const shipped = V.validateStyle(clone(load("voxel-build")), { dirName: "voxel-build", names: ["style.json", "render/CRAFT.md"] });
+  assert.deepEqual(shipped, [], "the shipped note is in the pack and validates");
+  const body = clone(load("voxel-build"));
+  delete body.contract.craft;
+  assert.ok(has(V.validateStyle(body, { dirName: "voxel-build", names: ["style.json"] }), /contract\.world needs contract\.craft/), "no note, no composing pack");
+
+  const missing = clone(load("voxel-build"));
+  missing.contract.craft = "render/METHOD.md";
+  assert.ok(has(V.validateStyle(missing, { dirName: "voxel-build", names: ["style.json", "render/CRAFT.md"] }), /names render\/METHOD\.md, which is not in the pack/));
+
+  const escape = clone(load("voxel-build"));
+  escape.contract.craft = "../CRAFT.md";
+  assert.ok(has(V.validateStyle(escape, { dirName: "voxel-build", names: ["style.json"] }), /must be a safe path inside the pack/));
+
+  // A look that cannot compose has no use for one.
+  const graph = clone(load("line-graph"));
+  graph.contract.craft = "render/CRAFT.md";
+  assert.ok(has(V.validateStyle(graph, { dirName: "line-graph", names: ["style.json"] }), /contract\.craft needs contract\.world/));
+});

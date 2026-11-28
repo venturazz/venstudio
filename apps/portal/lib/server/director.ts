@@ -56,7 +56,8 @@ import {
 } from "../studio/engine.ts";
 import { alwaysReviewed, runRecipeOf, runStagesOf, withStudioVoice, workflowForPack } from "../studio/recipes.ts";
 import { planReview } from "../studio/plan-review.ts";
-import { sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, validateSceneSpec } from "../studio/scene-spec.ts";
+import { knownMaterials } from "./voxel-known.ts";
+import { revisionPrompt, sceneSpecGate, sceneSpecPrompt, scriptNumberIssues, sketchSheet, validateSceneSpec } from "../studio/scene-spec.ts";
 import { skillBriefGate, skillBriefPrompt, validateSkillBrief, type BriefSkill } from "../studio/skill-brief.ts";
 import { htmlDesignGate, htmlDesignPrompt, validateHtmlDesign, type DesignBrief } from "../studio/html-design.ts";
 import { packVendoredFiles } from "./style-packs.ts";
@@ -381,8 +382,16 @@ function stageAsk(kind: HermesAskKind, st: StageRow): { kind: HermesAskKind; slo
  * Muse agent as a task, the stage waits on the job without holding a Hermes slot, and result.json is read back with the
  * same validator. A task's failure (including the agent's own reason) is the stage's error.
  */
-async function think<T>(run: RunInfo, st: StageRow, stage: MuseThinkStage, prompt: ChatMessage[], validate: (v: unknown) => Validated<T>): Promise<{ ok: true; value: T } | StageFailure> {
-  const existing = typeof st.output.museJobId === "string" ? st.output.museJobId : "";
+async function think<T>(
+  run: RunInfo,
+  st: StageRow,
+  stage: MuseThinkStage,
+  prompt: ChatMessage[],
+  validate: (v: unknown) => Validated<T>,
+  opts: { fresh?: boolean } = {},
+): Promise<{ ok: true; value: T } | StageFailure> {
+  // A second ask in the same stage (the revision pass) must not resume the first answer: `fresh` starts a new task.
+  const existing = !opts.fresh && typeof st.output.museJobId === "string" ? st.output.museJobId : "";
   const waitFor = (jobId: string, text: string, sec: number, overflow = false): StageFailure => ({ ok: false, error: text, museWait: { jobId, until: new Date(Date.now() + sec * 1000), text, overflow } });
   // A task already queued for this attempt (chosen at the start, or taken over from a busy Hermes) is always the one to wait for.
   if (existing) {
@@ -511,11 +520,28 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       ...(pack?.plan?.story ? { story: pack.plan.story } : {}),
       ...(pack?.plan?.world ? { world: pack.plan.world } : {}),
       ...(pack?.plan?.library ? { library: pack.plan.library } : {}),
+      // The pack's craft note, word for word: Hermes reads it when it builds by hand, and now so does every writer.
+      ...(pack?.plan?.craftText ? { craft: pack.plan.craftText } : {}),
     };
     if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
     const r = await think(run, st, "scene-spec", sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }));
     if (!r.ok) return r;
-    return { ok: true, result: r.value, gate: sceneSpecGate(template, r.value, notes, narrationSec) };
+    // Hermes renders, looks, and fixes before it shows anyone. A look that composes parts gets the same: the writer is
+    // shown what its own parts build — measured and drawn from above and from the side — and may revise once. A second
+    // answer that does not validate is dropped, and the first spec is the one that runs.
+    let spec = r.value;
+    if (contract.world && contract.world.length > 0 && sketchSheet(spec, knownMaterials(template.styleId)).length > 0) {
+      const again = await think(
+        run,
+        st,
+        "scene-spec",
+        revisionPrompt(ctx, checkedScript.value.script, notes, contract, spec, knownMaterials(template.styleId)),
+        (v) => validateSceneSpec(v, { contract, noteCount: notes.length }),
+        { fresh: true },
+      );
+      if (again.ok) spec = again.value;
+    }
+    return { ok: true, result: spec, gate: sceneSpecGate(template, spec, notes, narrationSec) };
   }
   if (st.stage === "html-design") {
     // Research only (owner decision): Hermes writes the page, checked here before anything runs (html-design.ts).

@@ -116,6 +116,10 @@ export interface PackPlan {
   library?: Record<string, readonly Record<string, unknown>[]>;
   /** contract.story: the words this look understands, slot -> values. The scene spec must fill every slot from here. */
   story?: Record<string, string[]>;
+  /** contract.craft: where the pack keeps the note that teaches any writer how it builds (render/CRAFT.md). */
+  craft?: string;
+  /** The note itself, filled in when the pack is loaded from disk: the same text every writer gets, Hermes included. */
+  craftText?: string;
   captionsRequired: boolean;
   safeAreaPct: number;
   narrated: boolean;
@@ -264,6 +268,7 @@ function planOf(raw: Record<string, unknown>): PackPlan {
     ...(storyOf(c.story) ? { story: storyOf(c.story) as Record<string, string[]> } : {}),
     ...(worldOf(c.world) ? { world: worldOf(c.world) as string[] } : {}),
     ...(libraryOf(c.library) ? { library: libraryOf(c.library) as Record<string, Record<string, unknown>[]> } : {}),
+    ...(typeof c.craft === "string" && c.craft.trim() ? { craft: c.craft.trim() } : {}),
     captionsRequired: cap.required !== false,
     safeAreaPct: num(cap.safeAreaPct, 8),
     narrated: au.narrated !== false,

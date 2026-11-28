@@ -113,6 +113,7 @@ import { ensureRunPlate } from "./plate.ts";
 import { ensureRunPage } from "./html-page.ts";
 import { htmlDesignLines, htmlDesignShots, readHtmlDesign, type HtmlDesign } from "../studio/html-design.ts";
 import { sceneSpecLines } from "../studio/scene-spec.ts";
+import { knownMaterials } from "./voxel-known.ts";
 import {
   HTML_DESIGN_NEEDS_PREVIEW,
   NO_PREVIEW_CONTINUE,
@@ -1264,7 +1265,8 @@ async function previewPlanOf(q: Q, run: RunInfo): Promise<{ shots: Shot[]; plan:
     return design ? { shots: htmlDesignShots(design), plan: { kind: "html-design", lines: htmlDesignLines(design), text: design.note }, design } : null;
   }
   const spec = readSceneSpec((await latestPassedOutput(q, run.id, "scene-spec"))?.result);
-  return spec ? { shots: sceneSpecShots(spec), plan: { kind: "scene-spec", lines: sceneSpecLines(spec) }, design: null } : null;
+    // The card carries the measured build beside the story words: what the parts became, in blocks and symmetry.
+  return spec ? { shots: sceneSpecShots(spec), plan: { kind: "scene-spec", lines: sceneSpecLines(spec, knownMaterials(run.config.styleId)) }, design: null } : null;
 }
 
 /** A failed check that only the owner decides on (production stages are never revised automatically). */

@@ -550,6 +550,22 @@ fits the renderer (an unknown or misfitting one is fed back to Hermes). A recipe
 plainly ("needs a workflow that isn't built yet: html-design"); the exported style.json carries `workflow` only for a
 built recipe, so the draft still validates, and its README names the recommendation.
 
+## contract.craft: one note, every writer
+
+A look that composes parts owes the writer a **craft note** (`contract.craft`, e.g. `render/CRAFT.md`). The validator
+refuses `contract.world` without it, and refuses a note without `world`.
+
+The note is method, not a subject list: the unit, what makes a silhouette readable, thickness and hollows, symmetry,
+proportions in blocks, what each material means, patterns to start from, and a checklist before answering. It ships in the
+pack and the portal sends it **word for word** in the scene-spec prompt — the same text Hermes reads when it builds by
+hand. Nothing rewrites it, because the point of one note is that every writer reads the same words.
+
+Consequences worth stating:
+
+- a look cannot be handed a vocabulary of primitives and no idea how to use them;
+- a better method reaches every writer at once, including a Muse worker on another machine;
+- the note is bounded (12000 characters) so a pack cannot take over the prompt, and it is sent as data, not as voice.
+
 ## A look that composes does not offer its prefabs
 
 When `contract.world` is present the writer is **not** offered `contract.story.structure`. Eight ready buildings are what made every village video the same one: the writer could always name a prefab and be done, and the script stopped mattering. For a composing look:

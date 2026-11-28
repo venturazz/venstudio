@@ -90,6 +90,8 @@ export interface SpecContract {
   world?: readonly string[];
   /** style.json contract.library: structures this pack composed before, by name -> parts. A name is sugar for parts. */
   library?: Record<string, readonly unknown[]>;
+  /** contract.craft: the pack's own note on how anything is built in this look, sent to every writer word for word. */
+  craft?: string;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -121,6 +123,9 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
         `On-screen elements this style allows: ${contract.elements.join(", ")}. Use no other kind. Each scene has 1 to ${MAX_ELEMENTS} elements.`,
         `Motion tokens this style allows: ${tokens}. Each scene names 1 to ${MAX_ELEMENT_TOKENS} of them.`,
         ...storyLines,
+        // The same note Hermes reads when it builds by hand: method, not a list of subjects. It goes in as data, because a
+        // pack's own note is not this portal's voice.
+        contract.craft ? dataBlock("how this look is built (the note every writer gets)", contract.craft, MAX_CRAFT_CHARS) : "",
         `A counter, gauge or tally shows value; a bar plots series (1 to ${MAX_ELEMENT_SERIES} numbers, oldest first) with labels, one per value. text is a short label (at most ${MAX_ELEMENT_TEXT} characters).`,
         "Every number on screen (value, series, and any digit in text) must come from the research notes, exactly as a note gives it. Put that note's number in source. Use only notes that have a source. Never invent data: when the notes have no number for a scene, show no number in it.",
         `caption is the part of the narration spoken during the scene (at most ${MAX_CAPTION_CHARS} characters), in script order.`,
@@ -176,6 +181,56 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
       ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
       : "",
   ].filter(Boolean);
+}
+
+/**
+ * What the composed scenes actually build, measured and drawn.
+ *
+ * A writer cannot see the page, so the page's own compilation is drawn for it as text: blocks, bounds, symmetry, ground
+ * gap, and the shape from above and from the side. Empty when nothing composed parts — a look that names kit pieces has
+ * nothing for this to add.
+ */
+export function sketchSheet(spec: SceneSpec, known?: Set<string>): Array<{ scene: number; line: string; text: string }> {
+  return spec.scenes.flatMap((s, i) => {
+    const parts = s.intent?.parts;
+    if (!Array.isArray(parts) || parts.length === 0) return [];
+    const drawn = sketchOf(parts, known);
+    return [{ scene: i + 1, line: checkLine(drawn.check), text: sketchText(drawn) }];
+  });
+}
+
+/**
+ * The second ask. The writer is shown its own build and told to change only what the drawings get wrong.
+ *
+ * This is the step Hermes always takes and the worker never did: render, look, then fix. The page is still the renderer;
+ * this is its compilation, drawn as characters, which is the only picture a text writer can be trusted to read.
+ */
+export function revisionPrompt(
+  ctx: DirectorContext,
+  script: string,
+  notes: readonly ResearchNote[],
+  contract: SpecContract,
+  spec: SceneSpec,
+  known?: Set<string>,
+): ChatMessage[] {
+  const sheet = sketchSheet(spec, known);
+  if (sheet.length === 0) return sceneSpecPrompt(ctx, script, notes, contract);
+  return [
+    ...sceneSpecPrompt(ctx, script, notes, contract),
+    { role: "assistant", content: JSON.stringify(spec) },
+    {
+      role: "user",
+      content: [
+        "That is the spec you just wrote. Here is what its parts build when the page compiles them.",
+        "",
+        ...sheet.map((s) => [`Scene ${s.scene}: ${s.line}`, s.text, ""].join("\n")),
+        "The drawings are the page's own reading of your parts: `#` is a block, `.` is air, and the whole build is in the frame (wide builds are sampled, never cut).",
+        "",
+        "Now compare each drawing with what that scene is about, in the caption and the brief. Change a scene only if the drawing is wrong: a wing you did not build, a tower drawn as a ring, a part hanging in the air, a single box where the story needs a shape, a subject that looks like something else. If a drawing is right, leave that scene exactly as it is.",
+        "Answer with the complete spec again, the same JSON shape and nothing else. Do not explain.",
+      ].join("\n"),
+    },
+  ];
 }
 
 /** The intent part of the schema line, so the shape Hermes is asked for and the shape checked are the same one. */
@@ -320,8 +375,12 @@ export interface SpecPart {
  * shape, not on ideas: a scene may compose anything out of these, which is why a subject the kit never modelled is
  * buildable rather than refused.
  */
+import { checkLine, sketchOf, sketchText } from "./voxel.ts";
+
 export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"] as const;
 const MAX_PARTS = 64;
+/** A craft note is a note: long enough for method and patterns, bounded so a pack cannot take over the prompt. */
+const MAX_CRAFT_CHARS = 12000;
 const MAX_PART_OPENINGS = 8;
 const MAX_PART_NODES = 4000;
 const PART_LIMIT = 96;
@@ -657,7 +716,7 @@ export function sceneSpecShots(spec: SceneSpec): Shot[] {
 }
 
 /** One line per scene for the Review card: what is on screen, with the numbers and the note each cites. */
-export function sceneSpecLines(spec: SceneSpec): string[] {
+export function sceneSpecLines(spec: SceneSpec, known?: Set<string>): string[] {
   return spec.scenes.map((s, i) => {
     const els = s.elements
       .map((e) => {
@@ -675,7 +734,10 @@ export function sceneSpecLines(spec: SceneSpec): string[] {
           )
           .join(", ")
       : "";
-    return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""} Caption: ${s.caption}`;
+    const built = Array.isArray(s.intent?.parts) && s.intent.parts.length > 0
+      ? ` Built: ${checkLine(sketchOf(s.intent.parts, known).check)}.`
+      : "";
+    return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""}${built} Caption: ${s.caption}`;
   });
 }
 

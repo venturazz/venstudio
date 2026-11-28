@@ -287,6 +287,21 @@ function checkWorld(v, issues) {
 }
 
 /**
+ * contract.craft: the note the writer reads before it composes, one markdown file inside the pack.
+ *
+ * It is method, not a subject list: any story can be built in this look, and this is how. Required whenever contract.world
+ * is declared, so no writing model is handed a vocabulary of primitives with no idea how to use them.
+ */
+function checkCraft(v, names, issues) {
+  if (typeof v !== "string" || !PATH_RE.test(v) || v.split("/").some((s) => s === "." || s === "..")) {
+    issues.push(`contract.craft must be a safe path inside the pack (e.g. render/CRAFT.md), not ${JSON.stringify(v)}`);
+    return;
+  }
+  if (!v.endsWith(".md")) issues.push(`contract.craft must name a markdown file, not ${JSON.stringify(v)}`);
+  if (Array.isArray(names) && names.length > 0 && !names.includes(v)) issues.push(`contract.craft names ${v}, which is not in the pack`);
+}
+
+/**
  * contract.library: structures this pack has composed before, by name, each a list of parts (the same shape a scene
  * sends in intent.parts). Data, not code — a name is sugar the portal expands back into parts before the payload is
  * frozen, so a render never depends on the worker knowing the name.
@@ -340,7 +355,7 @@ function checkRange(v, at, issues, { min = 0, integer = false } = {}) {
  * Validates a parsed style.json. `dirName` is the pack's directory name (the id must match it). Returns plain-text
  * problems; an empty list means valid. Never throws on bad input.
  */
-export function validateStyle(style, { dirName, files } = {}) {
+export function validateStyle(style, { dirName, files, names = [] } = {}) {
   const issues = [];
   if (!isRecord(style)) return ["style.json must be a JSON object"];
   checkKeys(style, TOP_KEYS, "style.json", issues);
@@ -405,10 +420,14 @@ export function validateStyle(style, { dirName, files } = {}) {
   const c = style.contract;
   if (!isRecord(c)) issues.push("contract must be an object");
   else {
-    checkKeys(c, ["pacing", "onScreen", "captions", "audio", "assets", "story", "world", "library"], "contract", issues);
+    checkKeys(c, ["pacing", "onScreen", "captions", "audio", "assets", "story", "world", "library", "craft"], "contract", issues);
     if (c.story !== undefined) checkStory(c.story, issues);
     if (c.world !== undefined) checkWorld(c.world, issues);
     if (c.library !== undefined) checkLibrary(c.library, issues);
+    if (c.craft !== undefined) checkCraft(c.craft, names, issues);
+    // A look that composes owes the writer a craft note: the same method Hermes reads, sent to every writer.
+    if (c.world !== undefined && c.craft === undefined) issues.push("contract.world needs contract.craft: a look that composes tells every writer how it builds");
+    if (c.craft !== undefined && c.world === undefined) issues.push("contract.craft needs contract.world: a craft note is for a look that composes parts");
     // Composing needs words to build: a page that takes parts but no story has nothing to build from.
     if (c.world !== undefined && c.story === undefined) issues.push("contract.world needs contract.story: parts build what the scenes say");
     // A named structure is a shortcut to parts, so the look must also be able to compose them.
@@ -1076,7 +1095,7 @@ export function validatePackDir(dir) {
   }
   const envTexts = {};
   for (const rel of names) if (rel.startsWith("env/")) envTexts[rel] = read(rel);
-  if (style) for (const m of validateStyle(style, { dirName, files: envTexts })) issues.push(at(m));
+  if (style) for (const m of validateStyle(style, { dirName, files: envTexts, names })) issues.push(at(m));
   const envFiles = names.filter((n) => n.startsWith("env/"));
   if (envFiles.length > 0 && style?.environment === undefined) issues.push(at("env/ holds the lockfiles of an environment; this pack has none"));
   for (const rel of envFiles) if (!ENV_FILE_RE.test(rel)) issues.push(at(`${rel}: env/ holds only package.json, package-lock.json, requirements*.txt, LICENSE, NOTICE and README.md (one level of subdirectory)`));
