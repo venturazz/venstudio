@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "69d1d3b0b67011804fd3c114d5159a0b7a1efd95"
+    "commit": "e08b0b2aa1f76be3e28bd1f958d0d210f233ad0c"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -15,7 +15,7 @@
     "tools/embed-blocky-assets.mjs": "10d6ec8c9f7c0265be2340335a82ff3365091930274e19e31fb1b562946ff813",
     "tools/embed-voxel-assets.mjs": "237ac2d906741cf54841b8872c4dbaa86eacb8c4c06e832bf3ceb9ee6d7413f8",
     "tools/environment.test.mjs": "b9f6cb67efe64e60e5eeff2818efb9c875ccbcc99a22cf31ca2eed98d4655898",
-    "tools/html-pages.test.mjs": "e9e220bd77944014f8c983adacf2e121fb0f7a6d1659b22b8a9e88114f29aead",
+    "tools/html-pages.test.mjs": "81009033e3b05bf1dab37feacda697789a568501df89d347b6db956c6dc1e212",
     "tools/skills.mjs": "097308c5eec96443204eed619c9e541f1f9aff76b681fb84b5256d493e4dcbb2",
     "tools/skills.test.mjs": "5e43c8b8a9d85d091616652d54125c80c617436f12ae173088d7fa7fea9b83c3",
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",

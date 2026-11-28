@@ -139,7 +139,12 @@ async function render(pack, mutate) {
   const root = inner.children.length > 0 ? inner : stage;
   // This harness has no WebGL, so a page that needs it must say so instead of pretending it drew something. The four
   // numbers are still the job's; `degraded` is allowed and, when set, is checked below: text only, no blocks.
-  const { degraded, ...meta } = got;
+  // `world` is what the page decided alone (shots with nothing to build, and why). It is not part of the job's four
+  // numbers, so it is set aside here and checked for shape.
+  const { degraded, world, ...meta } = got;
+  if (world !== undefined) {
+    assert.ok(Array.isArray(world) && world.every((w) => typeof w === "string" && w.length > 0), `${pack.id}: world is a list of notes`);
+  }
   assert.deepEqual(meta, { totalFrames: props.totalFrames, fps: props.fps, width: props.width, height: props.height }, `${pack.id}: init answers the job's size, fps and frame count`);
   if (degraded === true) {
     const drawn = [...root.walk()].flatMap((n) => [...Object.values(n.style)]).filter((v) => typeof v === "string" && /rgb|url/.test(v));
