@@ -473,9 +473,11 @@ test("html-design: research only, html-capture only, at most trial, the owner re
 
 test("workflow.skip drops only a stage the recipe calls optional", () => {
   const voxel = load("voxel-build");
-  // The 3D page costs seconds per frame to photograph, so this pack runs without the still-frame preview.
-  assert.deepEqual(V.workflowStages(voxel), ["idea", "research", "script", "scene-spec", "voice", "render", "qc"]);
+  // voxel-build keeps the still: a composed scene cannot be checked any other way before the video exists.
+  assert.deepEqual(V.workflowStages(voxel), ["idea", "research", "script", "scene-spec", "preview", "voice", "render", "qc"]);
   assert.deepEqual(V.validateStyle(voxel), []);
+  // The pack that does drop it, and is allowed to.
+  assert.deepEqual(V.workflowStages(load("blocky-story")), ["idea", "research", "script", "scene-spec", "voice", "render", "qc"]);
   // A pack that skips a stage its recipe needs is refused by name.
   assert.ok(
     has(V.validateStyle({ ...clone(voxel), workflow: { recipe: "scene-spec", skip: ["qc"] } }), /workflow\.skip: qc is not optional in scene-spec/),
