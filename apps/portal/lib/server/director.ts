@@ -519,6 +519,8 @@ async function runModel(run: RunInfo, st: StageRow, template: Template, feedback
       ...(pack?.plan?.story ? { story: pack.plan.story } : {}),
       ...(pack?.plan?.world ? { world: pack.plan.world } : {}),
       ...(pack?.plan?.library ? { library: pack.plan.library } : {}),
+      // The pack's craft note, word for word: Hermes reads it when it builds by hand, and now so does every writer.
+      ...(pack?.plan?.craftText ? { craft: pack.plan.craftText } : {}),
     };
     if (contract.elements.length === 0) return { ok: false, error: "This style's pack names no on-screen elements, so no scene spec can be checked against it" };
     const r = await think(run, st, "scene-spec", sceneSpecPrompt(ctx, checkedScript.value.script, notes, contract, hint), (v) => validateSceneSpec(v, { contract, noteCount: notes.length }));

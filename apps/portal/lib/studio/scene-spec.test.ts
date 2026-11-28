@@ -373,3 +373,22 @@ test("the card says what the parts measured, next to the story words", () => {
   assert.match(lines[0], /Story: parts: 2 pieces \(walls, roof\)/);
   assert.match(lines[0], /Built: 2 parts, \d+ blocks, \d+x\d+x\d+, .*stands on the ground|floats/);
 });
+
+test("the writer is handed the pack's craft note, word for word", () => {
+  const note = "The unit: one block is one unit.\nSilhouette first: the widest axis carries the identity.";
+  const withNote = sceneSpecPrompt({} as never, "The village woke to smoke.", NOTES, { ...STORY, craft: note }).map((m) => m.content).join("\n");
+  assert.match(withNote, /how this look is built \(the note every writer gets\)/);
+  assert.ok(withNote.includes("The unit: one block is one unit."), "the note is not paraphrased");
+  // A look without a note gains nothing: the line only appears when the pack ships one.
+  const without = sceneSpecPrompt({} as never, "The village woke to smoke.", NOTES, STORY).map((m) => m.content).join("\n");
+  assert.ok(!/how this look is built/.test(without));
+});
+
+test("the shipped pack carries its note to the prompt, loaded from the pack files", () => {
+  // The vendored voxel-build declares render/CRAFT.md; the loader attaches the text, and the ask must contain a rule from it.
+  const note = readFileSync(path.join(STYLES_DIR, "packs/voxel-build/render/CRAFT.md"), "utf8");
+  const asked = sceneSpecPrompt({} as never, "The village woke to smoke.", NOTES, { ...STORY, craft: note }).map((m) => m.content).join("\n");
+  assert.match(asked, /Silhouette first/);
+  assert.match(asked, /Before you answer/);
+  assert.ok(asked.length > 4000, "the whole note is sent, not a summary of it");
+});

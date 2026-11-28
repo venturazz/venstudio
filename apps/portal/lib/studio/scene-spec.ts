@@ -90,6 +90,8 @@ export interface SpecContract {
   world?: readonly string[];
   /** style.json contract.library: structures this pack composed before, by name -> parts. A name is sugar for parts. */
   library?: Record<string, readonly unknown[]>;
+  /** contract.craft: the pack's own note on how anything is built in this look, sent to every writer word for word. */
+  craft?: string;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -121,6 +123,9 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
         `On-screen elements this style allows: ${contract.elements.join(", ")}. Use no other kind. Each scene has 1 to ${MAX_ELEMENTS} elements.`,
         `Motion tokens this style allows: ${tokens}. Each scene names 1 to ${MAX_ELEMENT_TOKENS} of them.`,
         ...storyLines,
+        // The same note Hermes reads when it builds by hand: method, not a list of subjects. It goes in as data, because a
+        // pack's own note is not this portal's voice.
+        contract.craft ? dataBlock("how this look is built (the note every writer gets)", contract.craft, MAX_CRAFT_CHARS) : "",
         `A counter, gauge or tally shows value; a bar plots series (1 to ${MAX_ELEMENT_SERIES} numbers, oldest first) with labels, one per value. text is a short label (at most ${MAX_ELEMENT_TEXT} characters).`,
         "Every number on screen (value, series, and any digit in text) must come from the research notes, exactly as a note gives it. Put that note's number in source. Use only notes that have a source. Never invent data: when the notes have no number for a scene, show no number in it.",
         `caption is the part of the narration spoken during the scene (at most ${MAX_CAPTION_CHARS} characters), in script order.`,
@@ -375,6 +380,8 @@ import { checkLine, knownMaterials, sketchOf, sketchText } from "./voxel.ts";
 
 export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"] as const;
 const MAX_PARTS = 64;
+/** A craft note is a note: long enough for method and patterns, bounded so a pack cannot take over the prompt. */
+const MAX_CRAFT_CHARS = 12000;
 const MAX_PART_OPENINGS = 8;
 const MAX_PART_NODES = 4000;
 const PART_LIMIT = 96;

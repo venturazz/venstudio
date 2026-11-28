@@ -110,6 +110,13 @@ async function load(): Promise<VendoredStyles> {
       texts.set(rel, body.toString("utf8"));
     }
     const pack = bad ? null : parsePack(JSON.parse(texts.get("style.json") ?? "null") as unknown, lp.sha256);
+    // The craft note is shipped with the pack and handed to every writer as text: the portal does not rewrite it, because
+    // the point of one note is that Hermes and the workers read the same words.
+    if (pack?.plan?.craft) {
+      const note = texts.get(pack.plan.craft);
+      if (typeof note === "string" && note.trim()) pack.plan = { ...pack.plan, craftText: note.trim() };
+      else out.problems.push(`style pack ${pack.id} declares contract.craft ${pack.plan.craft}, which is not in its files`);
+    }
     if (!pack || pack.version !== lp.version) {
       out.problems.push(`style pack ${lp.id} left out: ${bad || "its style.json is not usable by this portal"}`);
       continue;
