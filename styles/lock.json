@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "cb12e93cbfbe95d6d0b42c3ee94d904a46117fe9"
+    "commit": "dd79181fc74b85b8957128e6a14f96b85afe43b6"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -21,7 +21,7 @@
     "tools/style-check.mjs": "2322c7fabdce5dd5be0385ca650ad0ee31954f5f243fe232c511f17217aa6575",
     "tools/style-check.test.mjs": "0b1eb9bad22ab54361018910b3a47b784884b559b46b4ed137da0dd4636d4114",
     "tools/validate.mjs": "9bed639a69ca0d8171a631f2eefbc157d52c8a1de4bce6ff5e4c6578a071df4f",
-    "tools/validate.test.mjs": "4671cddbe73b58a5d81b558e7bc02561bc884d2540c04adb8fb05de89f1b304f",
+    "tools/validate.test.mjs": "8b06f271a4690a1d2cba65d99012f174410e6e00a1da7dd801a953396bb00796",
     "tools/world.test.mjs": "f912bb0305db41c62f027412c807a013146b610f2cc54f0fa9c91c5d3783b7aa"
   },
   "packs": [
