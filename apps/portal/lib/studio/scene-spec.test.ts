@@ -178,17 +178,21 @@ const STORY: SpecContract = {
   story: voxel.plan!.story!,
   world: voxel.plan!.world!,
 };
+const GATE = [
+  { kind: "walls", at: [1, 0, 0], size: [11, 7, 3], material: "mcl_core:stonebrick", openings: [{ at: [4, 0], w: 2, h: 4 }] },
+  { kind: "roof", at: [0, 7, 0], size: [13, 3], style: "gable", rise: 3, material: "mcl_core:wood" },
+];
 const storySpec = () => ({
   scenes: [
-    { seconds: 4, beat: "hook", elements: [{ kind: "heading", text: "Smoke behind the roofs" }], tokens: ["pop"], caption: "The village woke to smoke.", intent: { structure: "church", role: "background", action: "build", focus: "structure" } },
-    { seconds: 4, beat: "body", elements: [{ kind: "heading", text: "Ruined" }], tokens: ["pull"], caption: "By noon the roof was gone.", intent: { structure: "church", role: "background", action: "damage", focus: "villager" } },
+    { seconds: 4, beat: "hook", elements: [{ kind: "heading", text: "Smoke behind the roofs" }], tokens: ["pop"], caption: "The village woke to smoke.", intent: { parts: GATE, action: "build", focus: "structure" } },
+    { seconds: 4, beat: "body", elements: [{ kind: "heading", text: "Ruined" }], tokens: ["pull"], caption: "By noon the roof was gone.", intent: { parts: GATE, action: "damage", focus: "villager" } },
   ],
 });
 
 test("a pack with a vocabulary: every scene must fill the slots, from the list the pack can draw", () => {
   const ok = validateSceneSpec(storySpec(), { contract: STORY, noteCount: NOTES.length });
   assert.ok(ok.ok, ok.ok ? "" : ok.issues.join("; "));
-  assert.deepEqual(ok.value.scenes[0].intent, { role: "background", structure: "church", action: "build", focus: "structure" });
+  assert.deepEqual(ok.value.scenes[0].intent, { parts: GATE, action: "build", focus: "structure" });
   const with_ = (edit: (s: any) => void) => {
     const s = storySpec() as any;
     edit(s);
@@ -196,7 +200,7 @@ test("a pack with a vocabulary: every scene must fill the slots, from the list t
     return r.ok ? [] : r.issues;
   };
   // A word the look cannot draw is refused with the list, not quietly swapped for a default.
-  assert.ok(with_((s) => (s.scenes[0].intent.structure = "spaceship")).some((i) => /Scene 1 intent\.structure is "spaceship", which .* does not have in its kit\. Compose it from parts instead \(box, walls, roof/.test(i)));
+  assert.ok(with_((s) => (s.scenes[0].intent.structure = "spaceship")).some((i) => /Scene 1 intent\.structure is "spaceship", which .* does not have as a composed name.*Compose it from parts instead \(box, walls, roof/.test(i)));
   assert.ok(with_((s) => (s.scenes[1].intent.action = "explode")).some((i) => /It can draw: build, damage, idle/.test(i)));
   // Every slot is required: a missing one would leave the page guessing.
   assert.ok(with_((s) => delete s.scenes[0].intent.action).some((i) => /Scene 1 intent is missing action/.test(i)));
@@ -206,30 +210,23 @@ test("a pack with a vocabulary: every scene must fill the slots, from the list t
 });
 
 // Composition: a subject the kit never modelled is built from primitives, not refused. docs/style-families.md, "parts".
-test("a kit structure is a background piece: the subject is composed, never named from the kit", () => {
+test("a composing look does not draw the kit's prefabs: the subject is composed, never named", () => {
   const withIntent = (intent: unknown) => validateSceneSpec({ scenes: [{ ...storySpec().scenes[0], intent }] } as never, { contract: STORY, noteCount: NOTES.length });
-  // The behaviour that made every village video draw the same eight buildings: a kit name quietly becoming the subject.
-  const subject = withIntent({ structure: "church", action: "build", focus: "structure" });
-  assert.ok(!subject.ok);
-  assert.ok(subject.issues.some((i) => /Scene 1 builds "church" from the kit, which is a background piece: name role "background"/.test(i)), subject.issues.join("; "));
-  // Named as background it passes, and the record says so.
-  const background = withIntent({ structure: "church", role: "background", action: "build", focus: "structure" });
-  assert.ok(background.ok, background.ok ? "" : background.issues.join("; "));
-  assert.equal(background.value.scenes[0].intent?.role, "background");
-  // "subject" is an answer, not an error: the schema offers it, so a composed scene may say it and keeps it on record.
-  const declared = withIntent({ parts: [{ kind: "walls", at: [0, 0, 0], size: [7, 6, 3], material: "mcl_core:stonebrick" }], role: "subject", action: "build", focus: "structure" });
-  assert.ok(declared.ok, declared.ok ? "" : declared.issues.join("; "));
-  assert.equal(declared.value.scenes[0].intent?.role, "subject");
-  // With a kit structure it is still refused: the background piece cannot be the point of the scene.
-  const subjectOfKit = withIntent({ structure: "church", role: "subject", action: "build", focus: "structure" });
-  assert.ok(!subjectOfKit.ok && subjectOfKit.issues.some((i) => /is a background piece/.test(i)));
-  // Any other word is not a role at all.
-  const wrong = withIntent({ parts: [{ kind: "box", at: [0, 0, 0], size: [1, 1, 1], material: "mcl_core:stonebrick" }], role: "hero", action: "build", focus: "structure" });
-  assert.ok(!wrong.ok && wrong.issues.some((i) => /intent\.role is "hero", which is not a role: use "subject" or "background"/.test(i)));
-  // Composed parts need no role: the subject is what the parts build.
-  const parts = withIntent({ parts: [{ kind: "walls", at: [0, 0, 0], size: [7, 6, 3], material: "mcl_core:stonebrick" }], action: "build", focus: "structure" });
+  // The behaviour that made every village video the same: the writer could always name a prefab and be done.
+  const prefab = withIntent({ structure: "church", action: "build", focus: "structure" });
+  assert.ok(!prefab.ok);
+  assert.ok(prefab.issues.some((i) => /Scene 1 would draw "church" from the kit, and this look composes instead: send parts/.test(i)), prefab.issues.join("; "));
+  // No role word rescues it: role is gone from this look's vocabulary entirely.
+  const disguised = withIntent({ structure: "church", role: "background", action: "build", focus: "structure" });
+  assert.ok(!disguised.ok && disguised.issues.some((i) => /composes instead/.test(i)), "background does not make a prefab the subject");
+  // Composed parts pass, and need no role at all: the subject is whatever the parts build.
+  const parts = withIntent({ parts: GATE, action: "build", focus: "structure" });
   assert.ok(parts.ok, parts.ok ? "" : parts.issues.join("; "));
   assert.equal(parts.value.scenes[0].intent?.role, undefined);
+  // A role word the writer volunteers is tolerated and ignored, never a reason to fail a good spec.
+  const chatter = withIntent({ parts: GATE, role: "subject", action: "build", focus: "structure" });
+  assert.ok(chatter.ok, chatter.ok ? "" : chatter.issues.join("; "));
+  assert.equal(chatter.value.scenes[0].intent?.role, undefined);
 });
 
 test("a subject the kit never modelled is composed from parts, not refused", () => {
@@ -281,10 +278,10 @@ test("a structure the pack composed before is named, and expands to parts in the
     { scenes: [{ ...storySpec().scenes[0], intent: { structure: "tower", action: "build", focus: "structure" } }] },
     { contract: withLibrary, noteCount: NOTES.length },
   );
-  assert.ok(!bad.ok && bad.issues.some((i) => /does not have in its kit or its composed structures \(gate\)/.test(i)), JSON.stringify(bad));
+  assert.ok(!bad.ok && bad.issues.some((i) => /does not have as a composed name \(gate\)/.test(i)), JSON.stringify(bad));
   // And the prompt tells the writer the name is available.
   const ask = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, withLibrary).map((m) => m.content).join("\n");
-  assert.match(ask, /Structures this look composed before, usable the same way: gate\./);
+  assert.match(ask, /"structure" is only for a name this look composed before \(gate\)/);
 });
 
 test("parts are checked for shape, not for subject", () => {
@@ -299,13 +296,12 @@ test("parts are checked for shape, not for subject", () => {
   assert.ok(issuesOf([{ kind: "box", at: [0, 0, 999] }]).some((i) => /parts\[0\]\.at is outside -96\.\.96/.test(i)));
   assert.ok(issuesOf([{ kind: "box", material: "stone" }]).some((i) => /parts\[0\]\.material is "stone", not a block name/.test(i)));
   assert.ok(issuesOf(Array.from({ length: 65 }, () => ({ kind: "box" }))).some((i) => /more than 64/.test(i)));
-  // Both at once is allowed: the kit name is a shortcut, and the page draws the parts.
-  const both = validateSceneSpec(
+  // Naming a prefab next to the parts does not smuggle it back in.
+  const smuggled = validateSceneSpec(
     { scenes: [{ ...storySpec().scenes[0], intent: { structure: "church", parts: [{ kind: "box" }], action: "build", focus: "structure" } }] },
     { contract: STORY, noteCount: NOTES.length },
   );
-  assert.ok(both.ok);
-  assert.deepEqual(Object.keys(both.value.scenes[0].intent!), ["parts", "structure", "action", "focus"]);
+  assert.ok(!smuggled.ok && !smuggled.ok && smuggled.issues.some((i) => /composes instead/.test(i)));
 });
 
 test("a look without a vocabulary takes no intent, and the prompt asks for none", () => {
@@ -315,21 +311,22 @@ test("a look without a vocabulary takes no intent, and the prompt asks for none"
   assert.ok(!/intent/.test(plain), "no vocabulary, no intent in the ask");
   const withStory = sceneSpecPrompt({} as DirectorContext, "The village woke to smoke.", NOTES, STORY).map((m) => m.content).join("\n");
   assert.match(withStory, /every scene says how to build it in "intent"/);
-  assert.match(withStory, /Shortcut, only for something the kit already has and that is not the point of the scene: "structure" is one of well, farm/);
-  // Composition is the rule and the kit is the exception: the parts sentence comes before the shortcut, and the schema
-  // puts parts first, so a writer reading top to bottom reaches for parts before it reaches for a kit name.
-  assert.ok(withStory.indexOf("Compose the subject from parts") < withStory.indexOf("Shortcut, only for something"), "parts are offered before the kit shortcut");
+  // This look has no prefabs to name, so the eight village buildings never reach the writer at all.
+  for (const prefab of STORY.story!.structure) {
+    assert.ok(!new RegExp(`\\b${prefab}\\b`).test(withStory), `the prefab "${prefab}" is not offered to a look that composes`);
+  }
+  assert.match(withStory, /This look has no kit prefabs to name: every scene composes its subject in parts\./);
   assert.match(withStory, /These are closed lists: use one of the listed values, nothing else\./);
   assert.match(withStory, /"intent":\{"parts":\[\{"kind":"<box\|walls\|roof/);
-  assert.match(withStory, /"structure":"<a background piece only, one of well\|farm/);
+  assert.ok(!/"structure":/.test(withStory), "no structure slot in the schema of a look with nothing composed yet");
 });
 
 test("the story words reach the shot, the review card and the render payload; a stored spec keeps them", () => {
   const shots = sceneSpecShots(storySpec() as never);
-  assert.deepEqual(shots[0].intent, { role: "background", structure: "church", action: "build", focus: "structure" });
-  assert.match(sceneSpecLines(storySpec() as never)[1], /Story: structure: church, role: background, action: damage, focus: villager\./);
+  assert.deepEqual(shots[0].intent, { parts: GATE, action: "build", focus: "structure" });
+  assert.match(sceneSpecLines(storySpec() as never)[1], /Story: parts: 2 pieces \(walls, roof\), action: damage, focus: villager\./);
   const back = readSceneSpec(JSON.parse(JSON.stringify(storySpec())));
-  assert.deepEqual(back?.scenes[0].intent, { role: "background", structure: "church", action: "build", focus: "structure" });
+  assert.deepEqual(back?.scenes[0].intent, { parts: GATE, action: "build", focus: "structure" });
   // A stored spec from before the vocabulary has no intent, and is still readable.
   const old = readSceneSpec({ scenes: [{ seconds: 4, beat: "body", elements: [{ kind: "heading", text: "Village" }], tokens: ["pop"], caption: "Once." }] });
   assert.equal(old?.scenes[0].intent, undefined);
@@ -347,5 +344,5 @@ test("the story words reach the shot, the review card and the render payload; a 
     transitionSec: 0,
   });
   assert.ok(plan.ok, plan.ok ? "" : plan.issues.join("; "));
-  assert.deepEqual(plan.payload.shots[0].intent, { role: "background", structure: "church", action: "build", focus: "structure" });
+  assert.deepEqual(plan.payload.shots[0].intent, { parts: GATE, action: "build", focus: "structure" });
 });
