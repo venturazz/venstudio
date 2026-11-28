@@ -1350,7 +1350,16 @@ async function runPreviewStage(run: RunInfo, st: StageRow, template: Template): 
   const voiceResult = toObject((await latestPassedOutput(sql, run.id, "voice"))?.result);
   const tempo = tempoOf(voiceResult.tempo);
   const recorded = typeof voiceResult.narrationSec === "number" && voiceResult.narrationSec > 0 ? voiceResult.narrationSec / tempo : 0;
-  const shotSpecs = workOrdersFromStoryboard(shown.shots).map((w) => ({ shotRef: w.shotRef, seconds: w.spec.seconds }));
+  // The stills must be stills of the same shots the render will make: same refs, same seconds, and — for a look that
+  // composes — the same story words. Taken from work orders alone, a composed scene's still would have no intent and show
+  // an empty field, which is a preview of nothing rather than a preview of the video.
+  const shownSpec = recipe === "scene-spec" ? readSceneSpec((await latestPassedOutput(sql, run.id, "scene-spec"))?.result) : null;
+  const intents = shownSpec ? shownSpec.scenes.map((s) => s.intent) : [];
+  const shotSpecs = workOrdersFromStoryboard(shown.shots).map((w, k) => ({
+    shotRef: w.shotRef,
+    seconds: w.spec.seconds,
+    ...(intents[k] ? { intent: intents[k] } : {}),
+  }));
   const narrationSec = recorded > 0 ? recorded : shotSpecs.reduce((n, x) => n + x.seconds, 0);
   const frame = VIDEO_FORMATS[run.config.format];
   const plate = await ensureRunPlate(run, { width: frame.width, height: frame.height });

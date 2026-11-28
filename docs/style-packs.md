@@ -329,10 +329,10 @@ a recipe, the stage kinds in order, plus `review`, the stages where the owner al
   itself, and without the stages the pack's `workflow.skip` names) and the review points are stored in
   `pipeline_runs.config.workflow` (additive). A recipe that is not built refuses the start: "This style needs a workflow
   that isn't built yet: <name>".
-- `workflow.skip` drops a stage only where the recipe calls it optional: today `preview` in `scene-spec`. `voxel-build`
-  and `blocky-story` draw a 3D scene per frame, so a six-still preview would draw a thousand frames to make six pictures
-  and a single capture can outlast any useful timeout; their runs are Idea → Research → Script → Scene spec → Voice →
-  Video → Quality check and the look is judged on the video. A light page keeps the preview — it is the cheap gate
+- `workflow.skip` drops a stage only where the recipe calls it optional: today `preview` in `scene-spec`. `blocky-story`
+  drops it; `voxel-build` does not, because a composed scene has to be *seen* before the video exists — the still is the
+  only place a shot with nothing to build can be caught for the price of one frame. The still list comes from the scene
+  spec, so a still of a composed shot carries the same `intent` the render will. A light page keeps the preview — it is the cheap gate
   before the voice and the render, and a preview that fails now stops the run (stage error: Retry or a note back to the
   plan) instead of offering Approve.
 - The engine reads the run's own list (`runStagesOf`) for the next stage (`approveStage`), revision targets

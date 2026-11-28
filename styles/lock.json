@@ -2,7 +2,7 @@
   "format": 1,
   "source": {
     "repo": "venturazz/venstudio-styles",
-    "commit": "ffa0b80d23e8ad13abda0baeda0c4711cbed4a0f"
+    "commit": "cb12e93cbfbe95d6d0b42c3ee94d904a46117fe9"
   },
   "files": {
     "FORMAT.md": "b576909a0cca2fc90b04eb5ff55ff86abad65afe243951dda9a98a0d04093a1a",
@@ -404,11 +404,11 @@
     },
     {
       "id": "voxel-build",
-      "version": "0.5.3",
+      "version": "0.5.4",
       "status": "trial",
       "engine": "html-capture",
       "composition": null,
-      "sha256": "57799041e015d669bb4299d1e32cae144579ad97a82255ad0794f9ccde01d215",
+      "sha256": "d85b76d1717da9a902a4c214dc581aa48c85cd61289c7bb2d9f28b59df677f13",
       "files": {
         "README.md": "f3f67deb4bbff50518b933f70047fd1e0a43cfbe3053f0168c6904e9e2d38fed",
         "fixtures/expect.json": "d2c5ab0bf8a69e82d37872afb7b3e1aeed244f5a0b3b86d508a8ee14a46b46fb",
@@ -442,7 +442,7 @@
         "render/page.js": "7d81b72a632fdd4c8573a03a0583c716b4881cd8b00cbe0db5c1ff9fd643621f",
         "render/voxel.js": "06a609465fd09bd3d7fc244c6ba32bb762be7a5ea147259442acc6616240b955",
         "render/world.js": "9bbab0e271f2638d976fa5fd3520a5c9d89a985d5af824a5c5c7a736ecad3817",
-        "style.json": "5d0c47b222563290767685aa78b783a19a62521402d2ed115abc2a46bdd13219"
+        "style.json": "0875fa8011b150de1e668738a999913cdbe0d5d3a223cba2e7cc66eecd90ae3a"
       }
     },
     {

@@ -79,9 +79,10 @@ test("stage list per vendored pack: stills and the explainer image-sequence, dat
     "low-poly-shapes": IMAGE,
     "full-frame": IMAGE,
     "line-graph": SCENE,
-    // A 3D page costs seconds per frame to photograph, so these two run without the still-frame preview.
+    // blocky-story still runs without the preview; voxel-build takes stills again — the still is the only place a composed
+    // scene can be checked before the video exists.
     "blocky-story": SCENE_NO_PREVIEW,
-    "voxel-build": SCENE_NO_PREVIEW,
+    "voxel-build": SCENE,
     "minimal-line-art": SCENE,
     "probe-line-graph": SCENE,
     "designed-explainer": HTML,
