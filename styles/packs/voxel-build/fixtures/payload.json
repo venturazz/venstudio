@@ -11,21 +11,216 @@
       "seconds": 2,
       "motion": "zoom-in",
       "beat": "a village starts with one well",
-      "assetId": "asset-shot-01"
+      "assetId": "asset-shot-01",
+      "intent": {
+        "parts": [
+          {
+            "kind": "cylinder",
+            "at": [
+              0,
+              0,
+              0
+            ],
+            "radius": 2,
+            "height": 2,
+            "material": "mcl_core:cobble"
+          },
+          {
+            "kind": "box",
+            "at": [
+              -2,
+              2,
+              -2
+            ],
+            "size": [
+              5,
+              1,
+              5
+            ],
+            "material": "mcl_core:wood",
+            "hollow": true
+          },
+          {
+            "kind": "box",
+            "at": [
+              -2,
+              3,
+              -2
+            ],
+            "size": [
+              1,
+              2,
+              1
+            ],
+            "material": "mcl_core:wood"
+          },
+          {
+            "kind": "box",
+            "at": [
+              2,
+              3,
+              -2
+            ],
+            "size": [
+              1,
+              2,
+              1
+            ],
+            "material": "mcl_core:wood"
+          },
+          {
+            "kind": "box",
+            "at": [
+              -2,
+              5,
+              -2
+            ],
+            "size": [
+              5,
+              1,
+              5
+            ],
+            "material": "mcl_core:brick_block"
+          }
+        ],
+        "action": "build",
+        "focus": "structure"
+      }
     },
     {
       "shotRef": "shot-02",
       "seconds": 2,
       "motion": "pan-left",
       "beat": "then a farm, block by block",
-      "assetId": "asset-shot-02"
+      "assetId": "asset-shot-02",
+      "intent": {
+        "parts": [
+          {
+            "kind": "path",
+            "at": [
+              -4,
+              0,
+              -3
+            ],
+            "size": [
+              9,
+              1,
+              7
+            ],
+            "material": "mcl_core:dirt"
+          },
+          {
+            "kind": "box",
+            "at": [
+              -4,
+              0,
+              -3
+            ],
+            "size": [
+              9,
+              1,
+              1
+            ],
+            "material": "mcl_core:wood"
+          },
+          {
+            "kind": "box",
+            "at": [
+              -4,
+              0,
+              3
+            ],
+            "size": [
+              9,
+              1,
+              1
+            ],
+            "material": "mcl_core:wood"
+          },
+          {
+            "kind": "box",
+            "at": [
+              -3,
+              0,
+              -2
+            ],
+            "size": [
+              7,
+              1,
+              1
+            ],
+            "material": "mcl_core:leaves"
+          },
+          {
+            "kind": "box",
+            "at": [
+              -3,
+              0,
+              0
+            ],
+            "size": [
+              7,
+              1,
+              1
+            ],
+            "material": "mcl_core:leaves"
+          }
+        ],
+        "action": "build",
+        "focus": "structure"
+      }
     },
     {
       "shotRef": "shot-03",
       "seconds": 2,
       "motion": "zoom-out",
       "beat": "and a house that closes its own roof",
-      "assetId": "asset-shot-03"
+      "assetId": "asset-shot-03",
+      "intent": {
+        "parts": [
+          {
+            "kind": "walls",
+            "at": [
+              -3,
+              0,
+              -2
+            ],
+            "size": [
+              7,
+              4,
+              5
+            ],
+            "material": "mcl_core:wood",
+            "openings": [
+              {
+                "at": [
+                  3,
+                  0
+                ],
+                "w": 1,
+                "h": 3
+              }
+            ]
+          },
+          {
+            "kind": "roof",
+            "at": [
+              -4,
+              4,
+              -3
+            ],
+            "size": [
+              9,
+              7
+            ],
+            "style": "gable",
+            "rise": 3,
+            "material": "mcl_core:brick_block"
+          }
+        ],
+        "action": "build",
+        "focus": "structure"
+      }
     }
   ],
   "durationSec": 6,
