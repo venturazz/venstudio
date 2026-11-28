@@ -42,7 +42,7 @@ const bundle = (files: Record<string, unknown>) => ({ format: 1, kind: PAGE_BUND
 const INDEX = "<!doctype html><script>window.VENSTUDIO={init(p){return p},renderFrame(){}}</script>";
 
 test("worker 0.11.0+ runs preview-frames, and names the job type in a claim only once its still probe passed", () => {
-  assert.equal(VERSION, "0.19.1");
+  assert.equal(VERSION, "0.19.2");
   assert.ok(advertisedJobTypes({}).includes("preview-frames"));
   assert.ok(!claimJobTypes(advertisedJobTypes({}), ["ffmpeg", "html-capture", "pack:probe-line-graph@0.1.1"]).includes("preview-frames"));
   assert.ok(claimJobTypes(advertisedJobTypes({}), ["ffmpeg", "html-capture", "preview-frames"]).includes("preview-frames"));

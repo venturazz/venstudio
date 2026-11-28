@@ -222,3 +222,14 @@ per folder. The manifest names it only for a worker that reports it. The worker 
 - `scripts/ui-e2e.mjs` (CI): the owner switches the update mode on the Workers page.
 - `scripts/e2e.sh` (CI): `env-packs.json` reaches a worker through the signed update, its environment installs from
   the recipe, and the worker reports `env:` and `pack:` for the proof pack only after the probe.
+
+## Bump `VERSION` when the worker's behaviour changes
+
+A worker's update check asks the portal what release exists and compares the manifest with the files it has. Two changes
+in one version are still two releases by hash, but the **version label on the Workers page cannot tell them apart** — and
+neither can the owner. `0.19.1` was shipped with the intent fix and without it, three hours apart, and "already on
+0.19.1" read as "already fixed" while every render still dropped the story.
+
+So: any change to `apps/worker/venstudio-worker.ts` that alters what it does bumps `VERSION` (and `WORKER_VERSION` in
+`packages/protocol`) in the same commit. A version number that stays put while behaviour moves is a lie the owner cannot
+check.
