@@ -216,9 +216,16 @@ test("a kit structure is a background piece: the subject is composed, never name
   const background = withIntent({ structure: "church", role: "background", action: "build", focus: "structure" });
   assert.ok(background.ok, background.ok ? "" : background.issues.join("; "));
   assert.equal(background.value.scenes[0].intent?.role, "background");
-  // role is not a free word: only "background" means anything.
-  const wrong = withIntent({ structure: "church", role: "subject", action: "build", focus: "structure" });
-  assert.ok(!wrong.ok && wrong.issues.some((i) => /intent\.role is "subject", which is not a role/.test(i)));
+  // "subject" is an answer, not an error: the schema offers it, so a composed scene may say it and keeps it on record.
+  const declared = withIntent({ parts: [{ kind: "walls", at: [0, 0, 0], size: [7, 6, 3], material: "mcl_core:stonebrick" }], role: "subject", action: "build", focus: "structure" });
+  assert.ok(declared.ok, declared.ok ? "" : declared.issues.join("; "));
+  assert.equal(declared.value.scenes[0].intent?.role, "subject");
+  // With a kit structure it is still refused: the background piece cannot be the point of the scene.
+  const subjectOfKit = withIntent({ structure: "church", role: "subject", action: "build", focus: "structure" });
+  assert.ok(!subjectOfKit.ok && subjectOfKit.issues.some((i) => /is a background piece/.test(i)));
+  // Any other word is not a role at all.
+  const wrong = withIntent({ parts: [{ kind: "box", at: [0, 0, 0], size: [1, 1, 1], material: "mcl_core:stonebrick" }], role: "hero", action: "build", focus: "structure" });
+  assert.ok(!wrong.ok && wrong.issues.some((i) => /intent\.role is "hero", which is not a role: use "subject" or "background"/.test(i)));
   // Composed parts need no role: the subject is what the parts build.
   const parts = withIntent({ parts: [{ kind: "walls", at: [0, 0, 0], size: [7, 6, 3], material: "mcl_core:stonebrick" }], action: "build", focus: "structure" });
   assert.ok(parts.ok, parts.ok ? "" : parts.issues.join("; "));
