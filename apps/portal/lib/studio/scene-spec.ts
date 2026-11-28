@@ -126,7 +126,7 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
         `caption is the part of the narration spoken during the scene (at most ${MAX_CAPTION_CHARS} characters), in script order.`,
         ...channelLines(ctx),
         ...templateLines(ctx),
-        `Schema: {"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string]${storySchema(contract.story, contract.world)},"caption":string}]}`,
+        `Schema: {"scenes":[{"seconds":number,"beat":string,"elements":[{"kind":string,"text"?:string,"value"?:number,"series"?:number[],"labels"?:string[],"source"?:number}],"tokens":[string]${storySchema(contract.story, contract.world, contract.library ? Object.keys(contract.library) : undefined)},"caption":string}]}`,
         dataBlock("script", script, MAX_SCRIPT_CHARS),
         dataBlock("research notes", list, MAX_RESEARCH_PROMPT_CHARS),
         ...runLines(ctx, "storyboard"),
@@ -143,27 +143,35 @@ export function sceneSpecPrompt(ctx: DirectorContext, script: string, notes: rea
  * way anything gets built, so a subject nobody modelled is composed rather than refused. A look that declares no world
  * cannot compose, and the prompt says so instead of inviting parts its page would ignore.
  */
+function values_of_structure(story: Record<string, readonly string[]>): readonly string[] {
+  return story.structure ?? [];
+}
+
 function storyPrompt(story: Record<string, readonly string[]> | undefined, world?: readonly string[], composedNames?: readonly string[]): string[] {
   const slots = story ? Object.entries(story) : [];
   if (slots.length === 0) return [];
-  const library = story?.structure ?? [];
+  const kit = story?.structure ?? [];
   const named = composedNames ?? [];
   const closed = slots.filter(([slot]) => slot !== "structure");
   const compose = world && world.length > 0 ? world : null;
+  // A look that composes does not name the kit's prefabs. Eight ready buildings are exactly what made every village
+  // video the same one: the writer could always fall back to them and the script stopped mattering. The only name a
+  // composing look offers is one it composed before, and that name is expanded to parts in the payload.
+  const names = compose ? named : kit;
   const parts = compose
     ? [
-        `Compose the subject from parts — a scene is never refused because the kit lacks it. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${compose.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
-        `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
-        `Every scene says how the subject is built: parts, or a composed name. The kit's own structures are background pieces: name one only with \"role\":\"background\" for what stands behind the subject — a scene whose subject is a kit building is refused, because the video would then be about the kit instead of the script.`,`If both parts and structure are given, the parts are what the page draws and the structure is only context.`,
-        `"role" is "subject" unless the piece is scenery: compose the subject in parts and leave role out (or say "subject"); say "background" only when the structure you name stands behind the subject.`,      ]
+        `Compose the subject from parts — a scene is never refused because the kit lacks it. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
+        `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2x4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
+        names.length > 0
+          ? `"structure" is only for a name this look composed before (${names.join(", ")}) — the portal expands it to parts. The kit's own prefabs are not offered for this look, and a prefab name is refused.`
+          : `This look has no kit prefabs to name: every scene composes its subject in parts.`,
+        `If both parts and structure are given, the parts are what the page draws.`,
+      ]
     : [`This look cannot compose new geometry: name what it has and let the caption carry the rest.`];
   return [
     `This style builds what the script is about: every scene says how to build it in "intent".`,
     ...parts,
-    library.length > 0
-      ? `Shortcut, only for something the kit already has and that is not the point of the scene: "structure" is one of ${library.join(", ")}. A kit name that merely resembles the subject is not the subject: compose the subject from parts and name a structure only for what surrounds it.`
-      : "",
-    named && named.length > 0 ? `Structures this look composed before, usable the same way: ${named.join(", ")}.` : "",
+    !compose && kit.length > 0 ? `"structure" is one of ${kit.join(", ")}.` : "",
     closed.length > 0
       ? `Also fill every scene: ${closed.map(([slot, values]) => `${slot} (${values.join(", ")})`).join("; ")}. These are closed lists: use one of the listed values, nothing else.`
       : "",
@@ -171,18 +179,23 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
 }
 
 /** The intent part of the schema line, so the shape Hermes is asked for and the shape checked are the same one. */
-function storySchema(story: Record<string, readonly string[]> | undefined, world?: readonly string[]): string {
+function storySchema(story: Record<string, readonly string[]> | undefined, world?: readonly string[], composedNames?: readonly string[]): string {
   if (!story) return "";
   const slots = Object.keys(story);
   if (slots.length === 0) return "";
+  const compose = Boolean(world && world.length > 0);
+  const names = compose ? (composedNames ?? []) : (story.structure ?? []);
   const closed = slots
     .filter((s) => s !== "structure")
     .map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`)
     .join(",");
-  const structure = slots.includes("structure") ? `"structure":"<a background piece only, one of ${(story.structure ?? []).join("|")}; leave it out when you compose parts>"` : "";
-  const role = world && world.length > 0 && slots.includes("structure") ? `"role":"<subject|background; subject is the default for a composed scene, background is required when you name a kit structure>"` : "";
-  const compose = world && world.length > 0 ? `"parts":[{"kind":"<${world.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]` : "";
-  return `,"intent":{${[compose, closed, structure, role].filter(Boolean).join(",")}}`;
+  const structure = slots.includes("structure") && names.length > 0
+    ? compose
+      ? `"structure":"<a name this look composed before, one of ${names.join("|")}; leave it out and send parts>"`
+      : `"structure":"<one of ${names.join("|")}>"`
+    : "";
+  const parts = compose ? `"parts":[{"kind":"<${world!.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]` : "";
+  return `,"intent":{${[parts, closed, structure].filter(Boolean).join(",")}}`;
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {
@@ -336,13 +349,6 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
   }
   const before = issues.length;
   const out: Record<string, unknown> = {};
-  // role is a writing-time word, and both values are honest: the schema offers subject|background, so a writer that
-  // answers "subject" is right, not wrong. Only a scene built from the kit is held to "background".
-  const roleRaw = raw.role;
-  const role = roleRaw === undefined ? "" : typeof roleRaw === "string" ? roleRaw.trim() : "";
-  if (role !== "" && role !== "subject" && role !== "background") {
-    issues.push(`Scene ${n} intent.role is "${String(roleRaw)}", which is not a role: use "subject" or "background"`);
-  }
   const world = check.contract.world;
   // A look that cannot compose parts is not offered them: naming a structure and leaving the page to draw its fallback
   // would look like the story was heard when it was not.
@@ -352,10 +358,12 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
       : world === undefined || world.length === 0
         ? (issues.push(`Scene ${n} composes parts, but ${check.contract.name} cannot compose: it draws only ${Object.values(story)[0]?.join(", ") ?? "its own scenes"}`), undefined)
         : storyParts(raw.parts, n, issues, world);
-  if (parts) {
-    out.parts = parts;
-    if (role === "subject" || role === "background") out.role = role;
-  }
+  if (parts) out.parts = parts;
+  // What a composing look may name: only structures it composed before. The kit's prefabs are not in this list.
+  const allowed = world && world.length > 0
+    ? (check.contract.library ? Object.keys(check.contract.library) : [])
+    : values_of_structure(story);
+
   for (const [slot, values] of Object.entries(story)) {
     const given = raw[slot];
     const has = typeof given === "string" && given.trim() !== "";
@@ -378,23 +386,18 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
         if (expanded) out.parts = expanded;
         continue;
       }
-      if (!values.includes(v)) {
-        const known = check.contract.library ? Object.keys(check.contract.library) : [];
+      if (!allowed.includes(v) && !values.includes(v)) {
         issues.push(
-          `Scene ${n} intent.structure is "${v}", which ${check.contract.name} does not have in its kit${known.length > 0 ? ` or its composed structures (${known.join(", ")})` : ""}. Compose it from parts instead (${PRIMITIVES.join(", ")}), or name one of: ${values.join(", ")}.`,
+          `Scene ${n} intent.structure is "${v}", which ${check.contract.name} does not have${allowed.length > 0 ? ` as a composed name (${allowed.join(", ")})` : " as a composed name"}. Compose it from parts instead (${PRIMITIVES.join(", ")}).`,
         );
         continue;
       }
-      // A kit structure is a background piece: naming it as the subject is the behaviour that made every village video
-      // draw the same eight buildings, so it is refused by name instead of quietly becoming the point of the scene.
-      if (!parts) {
-        if (role !== "background") {
-          issues.push(
-            `Scene ${n} builds "${v}" from the kit, which is a background piece: name role "background" for what stands behind the subject, or compose the subject from parts (${(check.contract.world ?? PRIMITIVES).join(", ")})`,
-          );
-          continue;
-        }
-        out.role = "background";
+      // Composing looks never reach a prefab: allowed is library names only, so the block below is the old look's path.
+      if (world && world.length > 0) {
+        issues.push(
+          `Scene ${n} would draw "${v}" from the kit, and this look composes instead: send parts (${(world).join(", ")})${allowed.length > 0 ? `, or name one of ${allowed.join(", ")}` : ""}`,
+        );
+        continue;
       }
       out.structure = v;
       continue;

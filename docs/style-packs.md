@@ -550,6 +550,15 @@ fits the renderer (an unknown or misfitting one is fed back to Hermes). A recipe
 plainly ("needs a workflow that isn't built yet: html-design"); the exported style.json carries `workflow` only for a
 built recipe, so the draft still validates, and its README names the recommendation.
 
+## A look that composes does not offer its prefabs
+
+When `contract.world` is present the writer is **not** offered `contract.story.structure`. Eight ready buildings are what made every village video the same one: the writer could always name a prefab and be done, and the script stopped mattering. For a composing look:
+
+- the prompt and schema offer `parts`, and `structure` only for names in `contract.library` (composed before, expanded to parts in the payload);
+- a prefab name is refused with *"would draw X from the kit, and this look composes instead"*;
+- `role` is gone from the vocabulary — a volunteered `role` is tolerated and ignored, never a reason to fail a good spec;
+- a pack may still list prefabs in `contract.story.structure` (the page can draw them for old payloads and for library entries), but they never reach the writer.
+
 ## Curation log and promotion
 
 A Trial run's outcome is written to `style_trial_outcomes` (migration 0015, additive) after its quality check and
