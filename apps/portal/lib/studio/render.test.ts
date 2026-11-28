@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRenderPayload, captionCues, motionFor } from "./render.ts";
+import { blankComposingShots, buildRenderPayload, captionCues, motionFor } from "./render.ts";
 import { buildAudioPlan } from "./audio-plan.ts";
 import { captionSpecFor } from "./caption-spec.ts";
 import { buildScenePlan } from "./scene-plan.ts";
@@ -191,4 +191,18 @@ test("caption geometry that leaves the words nowhere to go fails the plan", () =
   const r = buildRenderPayload({ ...base, captionSpec: spec, captionRequired: true });
   assert.equal(r.ok, false);
   assert.match(!r.ok ? r.issues.join(" | ") : "", /no font/);
+});
+
+test("a composing look's shot with nothing to build is named, before a frame is drawn", () => {
+  // The page used to fill this gap from its own kit: four scripts, one village. It is a pipeline defect, so the render
+  // refuses it and says which shots, rather than drawing something the story never asked for.
+  const shots = [
+    { intent: { parts: [{ kind: "box" }] } },
+    { intent: { structure: "gate" } },
+    {},
+    { intent: {} },
+    { intent: { parts: [] } },
+  ];
+  assert.deepEqual(blankComposingShots(shots), [3, 4, 5]);
+  assert.deepEqual(blankComposingShots([{ intent: { parts: [{ kind: "box" }] } }]), []);
 });

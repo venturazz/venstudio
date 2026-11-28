@@ -81,6 +81,21 @@ export interface RenderPayload {
 
 export type RenderPlan = { ok: true; payload: RenderPayload } | { ok: false; issues: string[] };
 
+/**
+ * The shots of a composing look that say nothing to build.
+ *
+ * A look that composes (`contract.world`) draws what the story asks, from parts or from a name it composed before. A shot
+ * with neither is a shot of a different pipeline: the page used to fill the gap from its own kit, which is how four
+ * different scripts came out as the same village. The caller refuses the render and says which shots and why.
+ */
+export function blankComposingShots(shots: ReadonlyArray<{ intent?: Record<string, unknown> }>): number[] {
+  return shots.flatMap((s, k) => {
+    const intent = s.intent ?? {};
+    const parts = Array.isArray(intent.parts) ? intent.parts : [];
+    return parts.length > 0 || typeof intent.structure === "string" ? [] : [k + 1];
+  });
+}
+
 export interface RenderInput {
   format: Format;
   shots: RenderShotInput[];

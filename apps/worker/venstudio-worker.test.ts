@@ -1009,3 +1009,32 @@ test("narrationLengthIssue flags a real length far from the planned one", () => 
   assert.match(narrationLengthIssue(15, 20) as string, /Make the narration again/);
   assert.match(narrationLengthIssue(null, 20) as string, /Could not read/);
 });
+
+test("a shot's intent survives the payload, because the page draws it", () => {
+  // It did not survive: the portal sent the story, the worker parsed the shot without it, and every page fell back to
+  // whatever it did on its own. Four scripts, one picture, and nothing in the logs.
+  const parts = [
+    { kind: "walls", at: [0, 0, 0], size: [7, 4, 5], material: "mcl_core:wood", openings: [{ at: [3, 0], w: 1, h: 3 }] },
+    { kind: "roof", at: [-1, 4, -1], size: [9, 7], style: "gable", rise: 3, material: "mcl_core:brick_block" },
+  ];
+  const payload = renderPayload({
+    shots: [
+      { shotRef: "s1", assetId: A1, seconds: 2, motion: "zoom-in", intent: { parts, action: "build", focus: "structure" } },
+      { shotRef: "s2", assetId: A2, seconds: 2.5, motion: "pan-left" },
+    ],
+  });
+  const spec = parseRenderSpec(payload);
+  assert.deepEqual(spec.shots[0].intent, { parts, action: "build", focus: "structure" });
+  assert.equal(spec.shots[1].intent, undefined, "a shot without a story stays without one");
+
+  // Bounded: a page is not handed an arbitrary payload.
+  const many = Array.from({ length: 65 }, () => ({ kind: "box" }));
+  assert.throws(
+    () => parseRenderSpec(renderPayload({ shots: [{ shotRef: "s1", assetId: A1, seconds: 2, motion: "zoom-in", intent: { parts: many } }, { shotRef: "s2", assetId: A2, seconds: 2.5, motion: "pan-left" }] })),
+    /intent\.parts has 65 pieces; the limit is 64/,
+  );
+  assert.throws(
+    () => parseRenderSpec(renderPayload({ shots: [{ shotRef: "s1", assetId: A1, seconds: 2, motion: "zoom-in", intent: { structure: 7 } }, { shotRef: "s2", assetId: A2, seconds: 2.5, motion: "pan-left" }] })),
+    /intent\.structure must be a word/,
+  );
+});
