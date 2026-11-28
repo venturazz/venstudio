@@ -48,7 +48,7 @@ import type {
 } from "../../packages/protocol/src/index.ts";
 import type { TemplateProps } from "../render-remotion/src/props.ts";
 
-export const VERSION = "0.19.1";
+export const VERSION = "0.19.2";
 
 // ---------------------------------------------------------------------------
 // Config
