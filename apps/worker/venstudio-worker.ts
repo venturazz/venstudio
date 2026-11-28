@@ -1582,6 +1582,40 @@ export function xfadeTimeline(starts: readonly number[], totalSec: number, trans
 }
 
 /** Strict check of a render-video payload. Throws NonRetryableError with a plain message. */
+/**
+ * The story words of a shot: what a scene-spec page draws (`intent.parts`, or a name the look composed before).
+ *
+ * They were dropped here, silently, for every render — the portal sent them, the page waited for them, and the worker threw
+ * them away, so every shot fell back to whatever the page did on its own. Kept now, and bounded: parts are pieces a page
+ * can compile, not an arbitrary payload.
+ */
+const INTENT_PART_LIMIT = 64;
+const INTENT_PART_CHARS = 1200;
+function shotIntentOf(raw: unknown, i: number, bad: (m: string) => never): Record<string, unknown> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) bad(`shot ${i + 1} intent must be an object`);
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (src.parts !== undefined) {
+    if (!Array.isArray(src.parts)) bad(`shot ${i + 1} intent.parts must be a list`);
+    const parts = src.parts as unknown[];
+    if (parts.length > INTENT_PART_LIMIT) bad(`shot ${i + 1} intent.parts has ${parts.length} pieces; the limit is ${INTENT_PART_LIMIT}`);
+    out.parts = parts.map((p, k) => {
+      if (typeof p !== "object" || p === null || Array.isArray(p)) bad(`shot ${i + 1} intent.parts[${k}] is not an object`);
+      const piece = p as Record<string, unknown>;
+      if (JSON.stringify(piece).length > INTENT_PART_CHARS) bad(`shot ${i + 1} intent.parts[${k}] is larger than ${INTENT_PART_CHARS} characters`);
+      return { ...piece };
+    });
+  }
+  for (const key of ["structure", "action", "focus"] as const) {
+    const v = src[key];
+    if (v === undefined) continue;
+    if (typeof v !== "string") bad(`shot ${i + 1} intent.${key} must be a word`);
+    out[key] = (v as string).slice(0, 40);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
   const bad = (m: string): never => {
     throw new NonRetryableError(`render-video payload: ${m}`);
@@ -1603,7 +1637,8 @@ export function parseRenderSpec(payload: Record<string, unknown>): RenderSpec {
     if (!inputs.includes(s.assetId)) return bad(`shot ${i + 1} uses an asset that is not listed in inputs`);
     if (!(seconds >= RENDER_LIMITS.minShotSeconds) || seconds > 120) return bad(`shot ${i + 1} must last 0.5 to 120 seconds`);
     const motion = typeof s.motion === "string" && MOTIONS.includes(s.motion) ? (s.motion as RenderMotion) : "zoom-in";
-    return { shotRef: typeof s.shotRef === "string" ? s.shotRef.slice(0, 40) : `shot-${i + 1}`, assetId: s.assetId, seconds, motion };
+    const intent = shotIntentOf(s.intent, i, bad);
+    return { shotRef: typeof s.shotRef === "string" ? s.shotRef.slice(0, 40) : `shot-${i + 1}`, assetId: s.assetId, seconds, motion, ...(intent ? { intent } : {}) };
   });
   const narrationAssetId = payload.narrationAssetId;
   if (typeof narrationAssetId !== "string" || !UUID_RE.test(narrationAssetId)) bad("there is no narration asset");
@@ -5727,7 +5762,11 @@ export function htmlInitIssue(meta: Record<string, unknown> | null, want: { widt
   // hand back a caption on a blank plate as if it were the look, and a preview on one machine would then disagree with
   // a render on another; the page says so and the job stops here instead.
   if (meta.degraded === true) {
-    return "The page drew nothing: it could not get a WebGL context on this machine, so it has only its text. Nothing was rendered — a worker with working WebGL must take this job.";
+    // The page knows why it degraded; the worker does not. Quote it, so a dead shot is not reported as a dead GPU.
+    const said = Array.isArray(meta.world) ? (meta.world as unknown[]).filter((w) => typeof w === "string" && w.trim()).slice(0, 4) : [];
+    return said.length > 0
+      ? `The page drew nothing: ${said.map((w) => String(w)).join("; ")}`
+      : "The page drew nothing: it could not get a WebGL context on this machine, so it has only its text. Nothing was rendered — a worker with working WebGL must take this job.";
   }
   const bad: string[] = [];
   if (meta.width !== want.width || meta.height !== want.height) bad.push(`it is ${String(meta.width)}x${String(meta.height)}, the job is ${want.width}x${want.height}`);
