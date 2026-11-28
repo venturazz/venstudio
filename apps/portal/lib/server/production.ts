@@ -52,7 +52,7 @@ import {
 import { countWords, type Pace } from "../studio/speech-rate.ts";
 import { fitWindow, parseTightenRequest, tempoOf, tightenRequest, type LengthDirection, type TightenRequest } from "../studio/voice-fit.ts";
 import type { Template } from "../studio/templates.ts";
-import { buildRenderPayload, type RenderPlan } from "../studio/render.ts";
+import { blankComposingShots, buildRenderPayload, type RenderPlan } from "../studio/render.ts";
 import { buildAudioPlan } from "../studio/audio-plan.ts";
 import { DEFAULT_SOUND, pairCues, sfxCues, type BedChoice, type SfxAsset } from "../studio/sound.ts";
 import { recordNeeds } from "./asset-needs.ts";
@@ -1203,6 +1203,17 @@ async function runRenderStage(run: RunInfo, st: StageRow, template: Template): P
   // A run started with a style pack renders with the pack version this portal serves now (workers update to it) and
   // only on a worker that reports it. Runs started before packs keep the engine routing they had.
   const stylePack = await renderPackFor(run.config.stylePack ?? null);
+  // A look that composes parts draws what the story asks. If the shots say nothing, this render would be a page with nothing
+  // on it — refuse it here, naming the shots and the reason, instead of letting the page fall back to its own kit.
+  const composingPack = stylePack ? (await registryEntry(stylePack.id).catch(() => undefined))?.pack ?? null : null;
+  if (composingPack?.plan?.world) {
+    const blank = blankComposingShots(plan.payload.shots);
+    if (blank.length > 0) {
+      await recordStageError(run.id, st.id, "render",
+        `Shot ${blank.join(", ")} says nothing to build, and ${composingPack.id}@${composingPack.version} composes what the story asks. The scene-spec stage did not reach this render: the run was started before this look, or its recipe has no scene-spec stage. Start a new video with this look.`);
+      return;
+    }
+  }
   const packNote = packWaitNote(stylePack, gate);
   // Phase 4 has no animatic, so the draft stage is recorded as skipped once.
   await sql`

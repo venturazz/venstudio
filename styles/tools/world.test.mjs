@@ -1,6 +1,7 @@
 // The primitives a story builds from: shape and bounds, never subject. A gate is nobody's kit model, which is the point.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { compileParts, PRIMITIVES, MATERIALS } from "../packs/voxel-build/render/world.js";
 
 const gate = [
@@ -91,4 +92,14 @@ test("every kind makes blocks and reports its bound size", () => {
     assert.deepEqual(built.notes, [], `${part.kind}: ${built.notes.join(" | ")}`);
     assert.ok(built.size.every((n) => n >= 1), `${part.kind} size ${built.size}`);
   }
+});
+
+test("a shot with nothing to build draws nothing, and says so", async () => {
+  // The page used to rotate the kit's own structures for a shot with no intent: four different scripts, one village, and
+  // no error anywhere. A look that composes draws what the story asks; when the story says nothing, the page says so.
+  const src = await readFile(new URL("../packs/voxel-build/render/voxel.js", import.meta.url), "utf8");
+  assert.equal(/ROTATION\s*=\s*KIT|ROTATION\[i %/.test(src), false, "no rotation fallback");
+  assert.match(src, /nothing to build on shot/);
+  assert.match(src, /nothingToBuild\.length > 0 \? \{ degraded: true \}/, "an empty shot marks the page degraded, so the worker refuses it");
+  assert.match(src, /if \(!parts && !KIT\.includes\(named\)\)/, "the empty case is decided with the same two tests the build uses");
 });

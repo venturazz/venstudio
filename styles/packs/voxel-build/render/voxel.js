@@ -22,7 +22,6 @@ import { compileParts } from "./world.js";
 const KIT = ["well", "farm", "medium_house", "blacksmith", "church", "tavern", "large_house", "library"];
 // Older runs carry no intent at all: they keep the fixed rotation, so a video recorded before the vocabulary existed
 // still renders exactly as it did.
-const ROTATION = KIT;
 
 /** What a shot can do to its structure: raised from the ground, taken apart from the top, or just standing there. */
 const ACTIONS = { build: "build", damage: "damage", idle: "idle" };
@@ -52,6 +51,8 @@ let captions = [];
 // What the page had to decide alone this run (unknown material, part outside the limit, fallback to the rotation). The
 // worker's job result carries it, so a run that drifted says so instead of looking fine.
 let worldNotes = [];
+/** Shots that had nothing to build: the video says so instead of quietly showing the kit. */
+let nothingToBuild = [];
 /** The pack's own block names, read from the map the kit draws with (null until the first composed shot asks). */
 let knownBlocks = null;
 let totalFrames = 0;
@@ -159,12 +160,16 @@ async function buildScene(THREE_, rig, struct, parts, cam, action, focus) {
     for (const n of built.notes) worldNotes.push(`shot: ${n}`);
     const url = URL.createObjectURL(new Blob([JSON.stringify({ size: built.size, nodes: built.nodes })], { type: "application/json" }));
     body = await vox.build(url, { origin: [0, 0, 0], name: "parts" });
-  } else {
+  } else if (struct) {
     body = await vox.build(`assets/vendor/struct/${struct}.json`, { origin: [0, 0, 0], name: struct });
+  } else {
+    // Nothing to build: the frame is the ground and the sky. Framing on the ground keeps the camera valid and shows the
+    // emptiness honestly, instead of drawing a kit structure the story never asked for.
+    body = null;
   }
   // The kit caches materials and shares them between meshes; a clipping plane set on the scene object would be ignored by
   // half the blocks. Attach it to every material the build produced, or the sweep stops halfway.
-  for (const mesh of [body, ground]) {
+  for (const mesh of [body, ground].filter(Boolean)) {
     mesh.traverse((o) => {
       const m = o.material;
       for (const mat of Array.isArray(m) ? m : m ? [m] : []) {
@@ -174,10 +179,11 @@ async function buildScene(THREE_, rig, struct, parts, cam, action, focus) {
       }
     });
   }
-  scene.add(body);
+  const framed = body ?? ground;
+  if (body) scene.add(body);
 
-  body.updateMatrixWorld(true);
-  const box = new THREE_.Box3().setFromObject(body);
+  framed.updateMatrixWorld(true);
+  const box = new THREE_.Box3().setFromObject(framed);
   const top = Math.max(2, box.max.y);
   const mid = new THREE_.Vector3((box.min.x + box.max.x) / 2, 0, (box.min.z + box.max.z) / 2);
   // Framing: the whole structure has to fit, tower and all. Distance comes from the bounding sphere and the narrower of
@@ -281,6 +287,7 @@ function draw(t) {
 const page = {
   async init(props) {
     worldNotes = [];
+    nothingToBuild = [];
     W = Number(props?.width) || 1080;
     H = Number(props?.height) || 1920;
     FPS = Number(props?.fps) || 30;
@@ -289,8 +296,9 @@ const page = {
     let at = 0;
     shots = list.map((s, i) => {
       const seconds = Math.max(0.5, Number(s.seconds) || 3);
-      // The story is the request's: the scene spec names a structure, an action and what the camera holds. Anything the
-      // kit does not know falls back to the fixed rotation, so an old run or a stale payload still renders.
+      // The story is the request's: the scene spec says what to build, from parts or from a name this look composed before.
+      // There is no fallback any more: rotating the kit's own structures when a shot says nothing is how four different
+      // stories came out as the same village. A shot with nothing to build builds nothing, and says so.
       const intent = s.intent && typeof s.intent === "object" ? s.intent : {};
       const named = typeof intent.structure === "string" ? intent.structure : "";
       // Two ways to say what to build, and the story is free to pick either: a named structure from the kit (cheap, and
@@ -301,12 +309,18 @@ const page = {
         seconds,
         motion: s.motion ?? "zoom-in",
         caption: s.caption ?? null,
-        struct: parts ? null : KIT.includes(named) ? named : ROTATION[i % ROTATION.length],
+        struct: parts ? null : KIT.includes(named) ? named : null,
         parts,
         action: ACTIONS[intent.action] ?? "build",
         focus: FOCUS[intent.focus] ?? "structure",
       };
       if (parts && !KIT.includes(named)) worldNotes.push(`shot ${i + 1}: built from parts, not from the kit`);
+      if (!parts && !KIT.includes(named)) {
+        worldNotes.push(
+          `shot ${i + 1}: nothing to build${named ? ` ("${named}" is not a structure this look has)` : " (the shot carries no intent)"} — this look composes the story's own build, so an empty shot draws the ground alone`,
+        );
+        nothingToBuild.push(i + 1);
+      }
       at += seconds;
       return shot;
     });
@@ -366,7 +380,14 @@ const page = {
     draw(0);
     // `world` is what the page decided alone (see worldNotes): the worker stores it with the job, so a run that fell
     // back or swapped a material can be seen without opening the video.
-    return { totalFrames, fps: FPS, width: W, height: H, ...(worldNotes.length > 0 ? { world: worldNotes.slice(0, 24) } : {}) };
+    // A shot with nothing to build is not a shot of this look: say so, and mark the page degraded so the worker refuses it
+    // instead of delivering a video of empty ground that looks like a render went fine.
+    if (nothingToBuild.length > 0) {
+      worldNotes.unshift(
+        `nothing to build on shot ${nothingToBuild.join(", ")}: the scene spec never reached this render (no intent, or a structure this look does not have). This look composes what the story asks; it does not choose a structure for the story.`,
+      );
+    }
+    return { totalFrames, fps: FPS, width: W, height: H, ...(nothingToBuild.length > 0 ? { degraded: true } : {}), ...(worldNotes.length > 0 ? { world: worldNotes.slice(0, 24) } : {}) };
   },
 
   renderFrame(f) {
