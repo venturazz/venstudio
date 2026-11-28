@@ -178,6 +178,57 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
   ].filter(Boolean);
 }
 
+/**
+ * What the composed scenes actually build, measured and drawn.
+ *
+ * A writer cannot see the page, so the page's own compilation is drawn for it as text: blocks, bounds, symmetry, ground
+ * gap, and the shape from above and from the side. Empty when nothing composed parts — a look that names kit pieces has
+ * nothing for this to add.
+ */
+export function sketchSheet(spec: SceneSpec, packId?: string): Array<{ scene: number; line: string; text: string }> {
+  const known = packId ? knownMaterials(packId) : undefined;
+  return spec.scenes.flatMap((s, i) => {
+    const parts = s.intent?.parts;
+    if (!Array.isArray(parts) || parts.length === 0) return [];
+    const drawn = sketchOf(parts, known);
+    return [{ scene: i + 1, line: checkLine(drawn.check), text: sketchText(drawn) }];
+  });
+}
+
+/**
+ * The second ask. The writer is shown its own build and told to change only what the drawings get wrong.
+ *
+ * This is the step Hermes always takes and the worker never did: render, look, then fix. The page is still the renderer;
+ * this is its compilation, drawn as characters, which is the only picture a text writer can be trusted to read.
+ */
+export function revisionPrompt(
+  ctx: DirectorContext,
+  script: string,
+  notes: readonly ResearchNote[],
+  contract: SpecContract,
+  spec: SceneSpec,
+  packId?: string,
+): ChatMessage[] {
+  const sheet = sketchSheet(spec, packId);
+  if (sheet.length === 0) return sceneSpecPrompt(ctx, script, notes, contract);
+  return [
+    ...sceneSpecPrompt(ctx, script, notes, contract),
+    { role: "assistant", content: JSON.stringify(spec) },
+    {
+      role: "user",
+      content: [
+        "That is the spec you just wrote. Here is what its parts build when the page compiles them.",
+        "",
+        ...sheet.map((s) => [`Scene ${s.scene}: ${s.line}`, s.text, ""].join("\n")),
+        "The drawings are the page's own reading of your parts: `#` is a block, `.` is air, and the whole build is in the frame (wide builds are sampled, never cut).",
+        "",
+        "Now compare each drawing with what that scene is about, in the caption and the brief. Change a scene only if the drawing is wrong: a wing you did not build, a tower drawn as a ring, a part hanging in the air, a single box where the story needs a shape, a subject that looks like something else. If a drawing is right, leave that scene exactly as it is.",
+        "Answer with the complete spec again, the same JSON shape and nothing else. Do not explain.",
+      ].join("\n"),
+    },
+  ];
+}
+
 /** The intent part of the schema line, so the shape Hermes is asked for and the shape checked are the same one. */
 function storySchema(story: Record<string, readonly string[]> | undefined, world?: readonly string[], composedNames?: readonly string[]): string {
   if (!story) return "";
@@ -320,6 +371,8 @@ export interface SpecPart {
  * shape, not on ideas: a scene may compose anything out of these, which is why a subject the kit never modelled is
  * buildable rather than refused.
  */
+import { checkLine, knownMaterials, sketchOf, sketchText } from "./voxel.ts";
+
 export const PRIMITIVES = ["box", "walls", "roof", "cylinder", "prism", "stair", "path", "tree", "blocks"] as const;
 const MAX_PARTS = 64;
 const MAX_PART_OPENINGS = 8;
@@ -657,7 +710,7 @@ export function sceneSpecShots(spec: SceneSpec): Shot[] {
 }
 
 /** One line per scene for the Review card: what is on screen, with the numbers and the note each cites. */
-export function sceneSpecLines(spec: SceneSpec): string[] {
+export function sceneSpecLines(spec: SceneSpec, packId?: string): string[] {
   return spec.scenes.map((s, i) => {
     const els = s.elements
       .map((e) => {
@@ -675,7 +728,10 @@ export function sceneSpecLines(spec: SceneSpec): string[] {
           )
           .join(", ")
       : "";
-    return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""} Caption: ${s.caption}`;
+    const built = Array.isArray(s.intent?.parts) && s.intent.parts.length > 0
+      ? ` Built: ${checkLine(sketchOf(s.intent.parts, packId ? knownMaterials(packId) : undefined).check)}.`
+      : "";
+    return `${i + 1}. ${s.beat}, ${s.seconds} s: ${els}. Motion: ${s.tokens.join(", ") || "none"}.${story ? ` Story: ${story}.` : ""}${built} Caption: ${s.caption}`;
   });
 }
 
