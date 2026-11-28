@@ -154,7 +154,7 @@ function storyPrompt(story: Record<string, readonly string[]> | undefined, world
     ? [
         `Compose the subject from parts — a scene is never refused because the kit lacks it. "parts" is 1 to ${MAX_PARTS} pieces, each {"kind":..., "at":[x,y,z], "size":[w,h,d], "material":"block:name"} with whole-block coordinates at most ${PART_LIMIT} from the origin. Kinds: ${compose.join(", ")}; box (solid, or hollow for a shell), walls (perimeter, with openings like [{"at":[x,y],"w":2,"h":4}] cut out), roof (size [w,d], style gable|hip|flat, rise), cylinder (radius, height), prism (a wedge: size [w,h,d] sloping along axis x|z, flip to turn it — fins, noses, ramps), stair (rise), path (ground strip), tree (rise), blocks (raw [x,y,z,block] nodes). material is any block the pack knows, e.g. mcl_core:stonebrick, mcl_core:wood, mcl_core:cobble.`,
         `Example — a gate with two towers, which no kit has: walls [11,7,3] with a 2×4 opening, a gable roof over it, a cylinder radius 2 height 12 at each end, a hip roof on each tower.`,
-        `Every scene says how the subject is built: parts, or a composed name, or — when the subject is something the kit really has — its structure. Never none of them; if both, the parts are what the page draws.`,
+        `Every scene says how the subject is built: parts, or a composed name. The kit's own structures are background pieces: name one only with \"role\":\"background\" for what stands behind the subject — a scene whose subject is a kit building is refused, because the video would then be about the kit instead of the script.`,`If both parts and structure are given, the parts are what the page draws and the structure is only context.`,
       ]
     : [`This look cannot compose new geometry: name what it has and let the caption carry the rest.`];
   return [
@@ -179,9 +179,10 @@ function storySchema(story: Record<string, readonly string[]> | undefined, world
     .filter((s) => s !== "structure")
     .map((s) => `"${s}":"<one of ${(story[s] ?? []).join("|")}>"`)
     .join(",");
-  const structure = slots.includes("structure") ? `"structure":"<a kit shortcut only, one of ${(story.structure ?? []).join("|")}; leave it out when you compose parts>"` : "";
+  const structure = slots.includes("structure") ? `"structure":"<a background piece only, one of ${(story.structure ?? []).join("|")}; leave it out when you compose parts>"` : "";
+  const role = world && world.length > 0 && slots.includes("structure") ? `"role":"<subject|background; background is required with a kit structure>"` : "";
   const compose = world && world.length > 0 ? `"parts":[{"kind":"<${world.join("|")}>","at":[0,0,0],"size":[1,1,1],"material":"block:name"}]` : "";
-  return `,"intent":{${[compose, structure, closed].filter(Boolean).join(",")}}`;
+  return `,"intent":{${[compose, closed, structure, role].filter(Boolean).join(",")}}`;
 }
 
 function text(v: unknown, label: string, max: number, issues: string[]): string {
@@ -374,6 +375,18 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
         );
         continue;
       }
+      // A kit structure is a background piece: naming it as the subject is the behaviour that made every village video
+      // draw the same eight buildings, so it is refused by name instead of quietly becoming the point of the scene.
+      if (!parts) {
+        const role = typeof raw.role === "string" ? raw.role.trim() : "";
+        if (role !== "background") {
+          issues.push(
+            `Scene ${n} builds "${v}" from the kit, which is a background piece: name role "background" for what stands behind the subject, or compose the subject from parts (${(check.contract.world ?? PRIMITIVES).join(", ")})`,
+          );
+          continue;
+        }
+        out.role = "background";
+      }
       out.structure = v;
       continue;
     }
@@ -388,8 +401,13 @@ function storyIntent(raw: unknown, check: SceneSpecCheck, n: number, issues: str
     }
     out[slot] = v;
   }
+  // role is a writing-time declaration, never a word the page draws: it says whether a kit structure is the subject
+  // (refused) or the background it is meant to be.
+  if (raw.role !== undefined && raw.role !== "background") {
+    issues.push(`Scene ${n} intent.role is "${String(raw.role)}", which is not a role: use "background" with a kit structure, or leave it out`);
+  }
   for (const slot of Object.keys(raw)) {
-    if (slot !== "parts" && !(slot in story)) issues.push(`Scene ${n} intent names "${slot}", which ${check.contract.name} does not know`);
+    if (slot !== "parts" && slot !== "role" && !(slot in story)) issues.push(`Scene ${n} intent names "${slot}", which ${check.contract.name} does not know`);
   }
   if (issues.length > before) return undefined;
   return Object.keys(out).length > 0 ? out : undefined;
